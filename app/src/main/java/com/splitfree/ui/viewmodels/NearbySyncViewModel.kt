@@ -11,7 +11,10 @@ import com.splitfree.data.ble.NearbySync
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.sync.PowerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -30,13 +33,15 @@ class NearbySyncViewModel @Inject constructor(
     private val bleTransfer: BleTransfer,
     private val identity: IdentityManager,
     private val groupRepo: GroupRepository,
-    private val eventDao: EventDao
+    private val eventDao: EventDao,
+    private val powerManager: PowerManager
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
     private val _uiState = MutableStateFlow(NearbySyncUiState())
     val uiState: StateFlow<NearbySyncUiState> = _uiState.asStateFlow()
 
     private val peerHandshakes = mutableMapOf<String, BleHandshake>()
+    private var dutyCycleJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -81,11 +86,21 @@ class NearbySyncViewModel @Inject constructor(
 
     fun startScan() {
         _uiState.value = _uiState.value.copy(scanning = true, peers = emptyList(), status = "Scanning…")
-        nearbySync.startAdvertising()
-        nearbySync.startDiscovery()
+        dutyCycleJob = viewModelScope.launch {
+            while (true) {
+                val (scanMs, pauseMs) = powerManager.bleScanDuty()
+                nearbySync.startAdvertising()
+                nearbySync.startDiscovery()
+                delay(scanMs)
+                nearbySync.stopDiscovery()
+                delay(pauseMs)
+            }
+        }
     }
 
     fun stopScan() {
+        dutyCycleJob?.cancel()
+        dutyCycleJob = null
         nearbySync.stop()
         _uiState.value = _uiState.value.copy(scanning = false)
     }

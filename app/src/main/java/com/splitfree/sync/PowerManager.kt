@@ -40,4 +40,12 @@ class PowerManager @Inject constructor(
         PowerMode.POWER_SAVER -> 2
         PowerMode.ULTRA_LOW_POWER -> 1
     }
+
+    /** BLE scan duty cycle: (scanMs, pauseMs) per power mode. */
+    fun bleScanDuty(): Pair<Long, Long> = when (currentMode()) {
+        PowerMode.PERFORMANCE -> 10_000L to 2_000L
+        PowerMode.BALANCED -> 5_000L to 5_000L
+        PowerMode.POWER_SAVER -> 3_000L to 10_000L
+        PowerMode.ULTRA_LOW_POWER -> 2_000L to 15_000L
+    }
 }

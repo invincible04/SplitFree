@@ -148,6 +148,11 @@ class ForegroundSyncService : Service() {
                     }
                 } catch (_: Exception) {}
             }
+
+            ExpenseNotifier.notifyIfNeeded(
+                this@ForegroundSyncService, eventType, decrypted, authorHex,
+                identity.getPublicKeyHex(), group?.name ?: "Group"
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to process event: ${e.message}")
         }

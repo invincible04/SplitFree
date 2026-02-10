@@ -28,8 +28,11 @@ fun SettingsScreen(
     val context = LocalContext.current
     val nsec = viewModel.nsec
     val npub = viewModel.npub
+    val seedPhrase = viewModel.seedPhrase
     var showKey by remember { mutableStateOf(false) }
+    var showSeedPhrase by remember { mutableStateOf(false) }
     var showCopyWarning by remember { mutableStateOf(false) }
+    var showCopySeedWarning by remember { mutableStateOf(false) }
     var giftWrapEnabled by remember { mutableStateOf(viewModel.giftWrapEnabled) }
 
     Scaffold(
@@ -139,9 +142,61 @@ fun SettingsScreen(
                 )
             }
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            Spacer(Modifier.height(4.dp))
 
-            // Privacy section
+            if (showSeedPhrase) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Text("Seed Phrase", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    // 3-column grid of numbered words
+                    for (rowStart in seedPhrase.indices step 3) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            for (i in rowStart until minOf(rowStart + 3, seedPhrase.size)) {
+                                Surface(
+                                    modifier = Modifier.weight(1f),
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                                ) {
+                                    Text(
+                                        "${i + 1}. ${seedPhrase[i]}",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { showSeedPhrase = false }) {
+                            Text("Hide")
+                        }
+                        FilledTonalButton(onClick = { showCopySeedWarning = true }) {
+                            Text("Copy")
+                        }
+                    }
+                }
+            } else {
+                ListItem(
+                    headlineContent = { Text("Show Seed Phrase") },
+                    supportingContent = { Text("24 words to recover your identity on any device") },
+                    leadingContent = {
+                        Icon(Icons.Outlined.GridView, contentDescription = null)
+                    },
+                    trailingContent = {
+                        FilledTonalButton(onClick = { showSeedPhrase = true }) {
+                            Text("Reveal")
+                        }
+                    }
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             SectionHeader(icon = Icons.Outlined.Shield, title = "Privacy")
 
             ListItem(
@@ -193,6 +248,29 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCopyWarning = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showCopySeedWarning) {
+        AlertDialog(
+            onDismissRequest = { showCopySeedWarning = false },
+            icon = { Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Security Warning") },
+            text = {
+                Text("Your seed phrase will be copied to the clipboard. Anyone with these 24 words can access your identity. Write them down on paper instead if possible.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        copyToClipboard(context, "seed", seedPhrase.joinToString(" "))
+                        showCopySeedWarning = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Copy Anyway") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCopySeedWarning = false }) { Text("Cancel") }
             }
         )
     }

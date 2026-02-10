@@ -36,7 +36,7 @@ fun GroupsListScreen(
 
     Scaffold(
         topBar = {
-            LargeTopAppBar(
+            TopAppBar(
                 title = { Text("SplitFree") },
                 actions = {
                     IconButton(onClick = onSettings) {

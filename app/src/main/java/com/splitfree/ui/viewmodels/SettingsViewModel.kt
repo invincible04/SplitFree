@@ -13,6 +13,7 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
     val nsec: String get() = if (identity.hasIdentity()) identity.getPrivateKeyHex() else ""
     val npub: String get() = if (identity.hasIdentity()) identity.getPublicKeyHex() else ""
+    val seedPhrase: List<String> get() = if (identity.hasIdentity()) identity.exportAsMnemonic() else emptyList()
 
     var giftWrapEnabled: Boolean
         get() = giftWrap.enabled

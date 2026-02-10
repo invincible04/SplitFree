@@ -192,6 +192,11 @@ class SyncWorker @AssistedInject constructor(
                 } catch (_: Exception) {}
             }
 
+            ExpenseNotifier.notifyIfNeeded(
+                applicationContext, eventType, decrypted, authorHex,
+                identity.getPublicKeyHex(), group?.name ?: "Group"
+            )
+
             true
         } catch (e: Exception) {
             Log.w(TAG, "Failed to process event: ${e.message}")

@@ -60,17 +60,36 @@ class IdentityManager @Inject constructor(
     }
 
     /**
-     * Import a key from hex string.
+     * Export private key as 24-word BIP-39 mnemonic.
+     */
+    fun exportAsMnemonic(): List<String> {
+        val privBytes = getPrivateKeyBytes()
+        try {
+            return Bip39.toMnemonic(privBytes)
+        } finally {
+            privBytes.fill(0)
+        }
+    }
+
+    /**
+     * Import a key from hex string, or BIP-39 mnemonic (space-separated words).
      * @throws IllegalArgumentException if the key is invalid.
      */
     fun importKey(input: String) {
         val trimmed = input.trim()
-        val privBytes = trimmed.hexToBytes()
+        val words = trimmed.split("\\s+".toRegex())
+        val privBytes = if (Bip39.isMnemonic(trimmed)) {
+            require(words.size == 24) { "Only 24-word seed phrases are supported (got ${words.size})" }
+            Bip39.toEntropy(words)
+        } else {
+            trimmed.hexToBytes()
+        }
         require(privBytes.size == 32 && Secp256k1.secKeyVerify(privBytes)) { "Invalid private key" }
 
         val pubHex = NostrEvent.pubkeyFromPrivkey(privBytes)
+        val privHex = privBytes.toHex()
         prefs.edit()
-            .putString(KEY_PRIVATE, trimmed)
+            .putString(KEY_PRIVATE, privHex)
             .putString(KEY_PUBLIC, pubHex)
             .apply()
         privBytes.fill(0)

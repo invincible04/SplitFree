@@ -99,10 +99,14 @@ fun OnboardingScreen(
                                 importInput = it
                                 viewModel.clearError()
                             },
-                            label = { Text("nsec, hex key, or seed phrase") },
+                            label = { Text("Private key or seed phrase") },
+                            placeholder = { Text("nsec / hex key / 24 words") },
                             modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 5,
                             isError = error != null,
-                            supportingText = error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                            supportingText = error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
+                                ?: { Text("Hex private key or 24 words separated by spaces") },
                             shape = MaterialTheme.shapes.medium
                         )
                         Spacer(Modifier.height(16.dp))

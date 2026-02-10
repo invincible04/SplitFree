@@ -27,7 +27,7 @@ class OnboardingViewModel @Inject constructor(
             _error.value = null
             true
         } catch (e: Exception) {
-            _error.value = "Invalid key. Enter nsec, hex private key, or seed phrase."
+            _error.value = "Invalid key. Enter a hex private key or 24-word seed phrase."
             false
         }
     }

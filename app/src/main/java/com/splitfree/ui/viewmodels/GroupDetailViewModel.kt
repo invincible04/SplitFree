@@ -10,6 +10,7 @@ import com.splitfree.domain.model.DebtTransaction
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
 import com.splitfree.domain.usecase.ComputeBalancesUseCase
+import com.splitfree.domain.usecase.ExportGroupUseCase
 import com.splitfree.domain.usecase.JoinGroupUseCase
 import com.splitfree.domain.usecase.SimplifyDebtsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,7 +35,8 @@ class GroupDetailViewModel @Inject constructor(
     private val eventDao: EventDao,
     private val expenseRepo: ExpenseRepository,
     private val computeBalances: ComputeBalancesUseCase,
-    private val simplifyDebts: SimplifyDebtsUseCase
+    private val simplifyDebts: SimplifyDebtsUseCase,
+    private val exportGroup: ExportGroupUseCase
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
     private val json = Json { ignoreUnknownKeys = true }
@@ -96,4 +98,6 @@ class GroupDetailViewModel @Inject constructor(
             expenseRepo.addSettlement(settlement, groupId)
         }
     }
+
+    suspend fun exportGroupData(): String = exportGroup(groupId)
 }

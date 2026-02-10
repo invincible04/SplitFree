@@ -9,7 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -85,7 +85,7 @@ fun NearbySyncScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                            Icons.Default.BluetoothSearching,
+                            Icons.Default.Bluetooth,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(24.dp)
@@ -113,7 +113,7 @@ fun NearbySyncScreen(
                         enabled = permissionsGranted,
                         shape = MaterialTheme.shapes.large
                     ) {
-                        Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
                             if (permissionsGranted) "Scan for nearby members" else "Permissions required",

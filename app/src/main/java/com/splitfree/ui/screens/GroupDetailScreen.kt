@@ -1,6 +1,8 @@
 package com.splitfree.ui.screens
 
 import android.content.Intent
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,13 +14,17 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,6 +47,7 @@ fun GroupDetailScreen(
     val context = LocalContext.current
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
     var selectedTab by remember { mutableIntStateOf(0) }
+    var showQrDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -58,8 +65,24 @@ fun GroupDetailScreen(
                     }
                 },
                 actions = {
+                    val scope = rememberCoroutineScope()
                     IconButton(onClick = { onNearbySync(uiState.groupId) }) {
                         Icon(Icons.Default.Bluetooth, "Nearby sync")
+                    }
+                    IconButton(onClick = { showQrDialog = true }) {
+                        Icon(Icons.Outlined.QrCode2, "Show QR")
+                    }
+                    IconButton(onClick = {
+                        scope.launch {
+                            val json = viewModel.exportGroupData()
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/json"
+                                putExtra(Intent.EXTRA_TEXT, json)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Export group data"))
+                        }
+                    }) {
+                        Icon(Icons.Outlined.FileDownload, "Export")
                     }
                     IconButton(onClick = {
                         val link = viewModel.getInviteLink()
@@ -117,6 +140,35 @@ fun GroupDetailScreen(
                 ) {
                     Icon(Icons.Outlined.PersonAdd, contentDescription = "Invite members")
                 }
+        }
+    }
+
+    if (showQrDialog) {
+        val link = viewModel.getInviteLink()
+        if (link != null) {
+            val qrBitmap = remember(link) { com.splitfree.domain.crypto.QrGenerator.encode(link) }
+            AlertDialog(
+                onDismissRequest = { showQrDialog = false },
+                title = { Text("Invite QR Code") },
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "Invite QR code",
+                            modifier = Modifier.size(256.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Scan to join ${uiState.groupName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showQrDialog = false }) { Text("Done") }
+                }
+            )
         }
     }
 

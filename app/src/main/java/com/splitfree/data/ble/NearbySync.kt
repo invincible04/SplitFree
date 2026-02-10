@@ -56,6 +56,10 @@ class NearbySync @Inject constructor(
         client.sendPayload(endpointId, Payload.fromBytes(data))
     }
 
+    fun stopDiscovery() {
+        client.stopDiscovery()
+    }
+
     fun stop() {
         client.stopAdvertising()
         client.stopDiscovery()
