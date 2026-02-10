@@ -54,11 +54,14 @@ fun SplitFreeNavGraph(
             )
         }
         composable(Screen.CreateGroup.route) {
-            CreateGroupScreen(onGroupCreated = { groupId ->
-                navController.navigate(Screen.GroupDetail.withId(groupId)) {
-                    popUpTo(Screen.GroupsList.route)
-                }
-            })
+            CreateGroupScreen(
+                onGroupCreated = { groupId ->
+                    navController.navigate(Screen.GroupDetail.withId(groupId)) {
+                        popUpTo(Screen.GroupsList.route)
+                    }
+                },
+                onBack = { navController.popBackStack() }
+            )
         }
         composable(Screen.Settings.route) {
             SettingsScreen(onBack = { navController.popBackStack() })

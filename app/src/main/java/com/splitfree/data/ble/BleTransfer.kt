@@ -104,7 +104,7 @@ class BleTransfer @Inject constructor(
 
             val authorHex = event.pubkey
             val group = groupRepo.getById(groupId)
-            if (eventType != "group_meta" && group != null && authorHex !in group.members) {
+            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting BLE event from non-member $authorHex in group $groupId")
                 return false
             }
@@ -128,6 +128,55 @@ class BleTransfer @Inject constructor(
             Log.w(TAG, "Failed to store BLE event: ${e.message}")
             false
         }
+    }
+
+    /**
+     * Send missing events using binary protocol (compact, with fragmentation).
+     */
+    suspend fun sendMissingEventsBinary(endpointId: String, groupId: String, peerEventIds: Set<String>, senderPubkey: String) {
+        val localEvents = eventDao.getEventsByGroup(groupId)
+        var sent = 0
+        for (event in localEvents) {
+            if (event.eventId !in peerEventIds) {
+                val eventJson = event.originalEventJson ?: continue
+                val msgType = MessageType.fromEventType(event.eventType) ?: MessageType.EXPENSE
+                val packet = BleProtocol.encode(
+                    type = msgType,
+                    payload = eventJson.toByteArray(),
+                    senderPubkey = senderPubkey,
+                    groupId = groupId
+                )
+                val fragments = FragmentManager.fragment(packet)
+                for (frag in fragments) {
+                    nearbySync.sendPayload(endpointId, frag)
+                }
+                sent++
+            }
+        }
+        Log.i(TAG, "Sent $sent missing events (binary) for group $groupId to $endpointId")
+    }
+
+    /**
+     * Process a binary protocol packet. Returns the decoded BlePacket or null.
+     */
+    suspend fun processBinaryPayload(data: ByteArray): BlePacket? {
+        // Try direct decode first
+        val packet = BleProtocol.decode(data)
+        if (packet != null) {
+            // Store the event from the payload
+            storeReceivedEvent(String(packet.payload))
+            return packet
+        }
+        // Try as fragment
+        val assembled = FragmentManager.addFragment(data)
+        if (assembled != null) {
+            val fullPacket = BleProtocol.decode(assembled)
+            if (fullPacket != null) {
+                storeReceivedEvent(String(fullPacket.payload))
+                return fullPacket
+            }
+        }
+        return null
     }
 
     companion object {

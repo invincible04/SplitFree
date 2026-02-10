@@ -1,17 +1,20 @@
 package com.splitfree.ui.viewmodels
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.DebtTransaction
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
 import com.splitfree.domain.usecase.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.ExportGroupUseCase
 import com.splitfree.domain.usecase.JoinGroupUseCase
+import com.splitfree.domain.usecase.MigrateGroupUseCase
 import com.splitfree.domain.usecase.SimplifyDebtsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -24,6 +27,9 @@ data class GroupDetailUiState(
     val groupId: String = "",
     val groupName: String = "",
     val memberCount: Int = 1,
+    val members: List<String> = emptyList(),
+    val createdBy: String = "",
+    val myPubkey: String = "",
     val debts: List<DebtTransaction> = emptyList(),
     val expenses: List<Expense> = emptyList()
 )
@@ -36,7 +42,9 @@ class GroupDetailViewModel @Inject constructor(
     private val expenseRepo: ExpenseRepository,
     private val computeBalances: ComputeBalancesUseCase,
     private val simplifyDebts: SimplifyDebtsUseCase,
-    private val exportGroup: ExportGroupUseCase
+    private val exportGroup: ExportGroupUseCase,
+    private val migrateGroup: MigrateGroupUseCase,
+    private val identity: IdentityManager
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
     private val json = Json { ignoreUnknownKeys = true }
@@ -47,7 +55,16 @@ class GroupDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val group = groupRepo.getById(groupId)
-            _uiState.update { it.copy(groupName = group?.name ?: "Group", memberCount = group?.members?.size ?: 1) }
+            val myPub = identity.getPublicKeyHex()
+            _uiState.update {
+                it.copy(
+                    groupName = group?.name ?: "Group",
+                    memberCount = group?.members?.size ?: 1,
+                    members = group?.members ?: emptyList(),
+                    createdBy = group?.createdBy ?: "",
+                    myPubkey = myPub
+                )
+            }
         }
         loadInviteLink()
         viewModelScope.launch {
@@ -100,4 +117,15 @@ class GroupDetailViewModel @Inject constructor(
     }
 
     suspend fun exportGroupData(): String = exportGroup(groupId)
+
+    fun removeMember(pubkey: String, onMigrated: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val newGroup = migrateGroup(groupId, pubkey)
+                onMigrated(newGroup.id)
+            } catch (e: Exception) {
+                Log.w("GroupDetailVM", "Remove member failed: ${e.message}")
+            }
+        }
+    }
 }

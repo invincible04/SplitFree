@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material3.*
@@ -48,6 +49,8 @@ fun GroupDetailScreen(
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var showQrDialog by remember { mutableStateOf(false) }
+
+    var showRemoveDialog by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -115,11 +118,20 @@ fun GroupDetailScreen(
                         text = { Text("Balances") })
                     Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 },
                         text = { Text("Expenses") })
+                    Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 },
+                        text = { Text("Members") })
                 }
 
                 when (selectedTab) {
                     0 -> BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), onSettle = { showSettleDialog = it })
                     1 -> ExpensesTab(uiState.expenses)
+                    2 -> MembersTab(
+                        members = uiState.members,
+                        createdBy = uiState.createdBy,
+                        isCreator = uiState.myPubkey == uiState.createdBy,
+                        myPubkey = uiState.myPubkey,
+                        onRemove = { showRemoveDialog = it }
+                    )
                 }
             }
 
@@ -202,6 +214,23 @@ fun GroupDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showSettleDialog = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    showRemoveDialog?.let { pubkey ->
+        AlertDialog(
+            onDismissRequest = { showRemoveDialog = null },
+            title = { Text("Remove Member") },
+            text = { Text("Remove ${pubkey.take(8)}…? This creates a new group without them. All remaining members will be migrated automatically.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemoveDialog = null
+                    viewModel.removeMember(pubkey) { /* new group created, list will refresh */ }
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveDialog = null }) { Text("Cancel") }
             }
         )
     }
@@ -394,4 +423,45 @@ private fun formatAmount(amountCents: Long, currency: String): String {
         else -> currency
     }
     return "$symbol${"%.2f".format(amountCents / 100.0)}"
+}
+
+@Composable
+private fun MembersTab(
+    members: List<String>,
+    createdBy: String,
+    isCreator: Boolean,
+    myPubkey: String,
+    onRemove: (String) -> Unit
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
+        items(members) { pubkey ->
+            ListItem(
+                headlineContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(pubkey.take(8) + "…" + pubkey.takeLast(4))
+                        if (pubkey == createdBy) {
+                            Surface(shape = MaterialTheme.shapes.extraSmall, color = MaterialTheme.colorScheme.primaryContainer) {
+                                Text("Creator", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        if (pubkey == myPubkey) {
+                            Surface(shape = MaterialTheme.shapes.extraSmall, color = MaterialTheme.colorScheme.tertiaryContainer) {
+                                Text("You", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                },
+                trailingContent = {
+                    if (isCreator && pubkey != myPubkey) {
+                        IconButton(onClick = { onRemove(pubkey) }) {
+                            Icon(Icons.Outlined.PersonRemove, "Remove member",
+                                tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            )
+        }
+    }
 }

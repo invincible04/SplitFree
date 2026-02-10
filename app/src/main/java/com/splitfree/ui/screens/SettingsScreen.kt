@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -26,14 +28,16 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val nsec = viewModel.nsec
-    val npub = viewModel.npub
-    val seedPhrase = viewModel.seedPhrase
+    val nsec by viewModel.nsec.collectAsStateWithLifecycle()
+    val npub by viewModel.npub.collectAsStateWithLifecycle()
+    val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
     var showKey by remember { mutableStateOf(false) }
     var showSeedPhrase by remember { mutableStateOf(false) }
     var showCopyWarning by remember { mutableStateOf(false) }
     var showCopySeedWarning by remember { mutableStateOf(false) }
     var giftWrapEnabled by remember { mutableStateOf(viewModel.giftWrapEnabled) }
+    var showRevokeDialog by remember { mutableStateOf(false) }
+    val revokeState by viewModel.revokeState.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -217,6 +221,37 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
+            // Danger zone
+            SectionHeader(icon = Icons.Outlined.Warning, title = "Danger Zone")
+
+            ListItem(
+                headlineContent = { Text("Revoke Key", color = MaterialTheme.colorScheme.error) },
+                supportingContent = {
+                    Text("If your key is compromised, revoke it and generate a new identity. All groups will be updated.")
+                },
+                trailingContent = {
+                    FilledTonalButton(
+                        onClick = { showRevokeDialog = true },
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        ),
+                        enabled = revokeState !is RevokeState.InProgress
+                    ) {
+                        Text(if (revokeState is RevokeState.InProgress) "Revoking…" else "Revoke")
+                    }
+                }
+            )
+
+            if (revokeState is RevokeState.Done) {
+                ListItem(
+                    headlineContent = { Text("Key revoked successfully") },
+                    supportingContent = { Text("New pubkey: ${(revokeState as RevokeState.Done).newPubkey.take(12)}…") },
+                    leadingContent = { Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary) }
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
             // About section
             SectionHeader(icon = Icons.Outlined.Info, title = "About")
 
@@ -271,6 +306,29 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCopySeedWarning = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showRevokeDialog) {
+        AlertDialog(
+            onDismissRequest = { showRevokeDialog = false },
+            icon = { Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Revoke Key?") },
+            text = {
+                Text("This will generate a new identity and notify all your groups. Your old key will be invalidated. This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRevokeDialog = false
+                        viewModel.revokeKey()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Revoke Key") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRevokeDialog = false }) { Text("Cancel") }
             }
         )
     }

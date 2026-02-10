@@ -17,6 +17,8 @@ import com.splitfree.domain.crypto.EventValidator
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.GroupMeta
+import com.splitfree.domain.usecase.MigrateGroupUseCase
+import com.splitfree.domain.usecase.RevokeKeyUseCase
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
@@ -32,6 +34,8 @@ class ForegroundSyncService : Service() {
     @Inject lateinit var encryption: GroupEncryption
     @Inject lateinit var signer: EventSigner
     @Inject lateinit var giftWrap: com.splitfree.domain.crypto.GiftWrapService
+    @Inject lateinit var migrateGroup: MigrateGroupUseCase
+    @Inject lateinit var revokeKey: RevokeKeyUseCase
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false
@@ -114,7 +118,7 @@ class ForegroundSyncService : Service() {
 
             val authorHex = inner.pubkey
             val group = groupRepo.getById(groupId)
-            if (eventType != "group_meta" && group != null && authorHex !in group.members) {
+            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
                 return
             }
@@ -147,6 +151,14 @@ class ForegroundSyncService : Service() {
                         groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays)
                     }
                 } catch (_: Exception) {}
+            }
+
+            if (eventType == "group_migrate" && decrypted != null) {
+                try { migrateGroup.handleMigration(decrypted, authorHex, groupId) } catch (_: Exception) {}
+            }
+
+            if (eventType == "key_revocation" && decrypted != null) {
+                try { revokeKey.handleRevocation(decrypted, authorHex, groupId) } catch (_: Exception) {}
             }
 
             ExpenseNotifier.notifyIfNeeded(

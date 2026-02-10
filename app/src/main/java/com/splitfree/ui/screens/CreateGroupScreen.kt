@@ -14,6 +14,7 @@ import com.splitfree.ui.viewmodels.CreateGroupViewModel
 @Composable
 fun CreateGroupScreen(
     onGroupCreated: (String) -> Unit,
+    onBack: () -> Unit = {},
     viewModel: CreateGroupViewModel = hiltViewModel()
 ) {
     var name by remember { mutableStateOf("") }
@@ -26,7 +27,7 @@ fun CreateGroupScreen(
             TopAppBar(
                 title = { Text("New Group") },
                 navigationIcon = {
-                    IconButton(onClick = { /* handled by nav */ }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 }
