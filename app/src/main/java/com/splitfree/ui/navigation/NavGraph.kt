@@ -1,5 +1,7 @@
 package com.splitfree.ui.navigation
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -29,7 +31,14 @@ fun SplitFreeNavGraph(
     navController: NavHostController,
     startDestination: String
 ) {
-    NavHost(navController = navController, startDestination = startDestination) {
+    NavHost(
+        navController = navController,
+        startDestination = startDestination,
+        enterTransition = { EnterTransition.None },
+        exitTransition = { ExitTransition.None },
+        popEnterTransition = { EnterTransition.None },
+        popExitTransition = { ExitTransition.None }
+    ) {
         composable(Screen.Onboarding.route) {
             OnboardingScreen(onComplete = {
                 navController.navigate(Screen.GroupsList.route) {

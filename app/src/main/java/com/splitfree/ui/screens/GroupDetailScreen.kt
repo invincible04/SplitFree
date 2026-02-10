@@ -95,7 +95,7 @@ fun GroupDetailScreen(
                 }
 
                 when (selectedTab) {
-                    0 -> BalancesTab(uiState.debts, onSettle = { showSettleDialog = it })
+                    0 -> BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), onSettle = { showSettleDialog = it })
                     1 -> ExpensesTab(uiState.expenses)
                 }
             }
@@ -156,7 +156,7 @@ fun GroupDetailScreen(
 }
 
 @Composable
-private fun BalancesTab(debts: List<DebtTransaction>, onSettle: (DebtTransaction) -> Unit) {
+private fun BalancesTab(debts: List<DebtTransaction>, hasExpenses: Boolean, onSettle: (DebtTransaction) -> Unit) {
     if (debts.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize().padding(48.dp),
@@ -164,17 +164,24 @@ private fun BalancesTab(debts: List<DebtTransaction>, onSettle: (DebtTransaction
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    Icons.Outlined.CheckCircle,
+                    if (hasExpenses) Icons.Outlined.CheckCircle else Icons.Outlined.CheckCircle,
                     contentDescription = null,
                     modifier = Modifier.size(56.dp),
-                    tint = MaterialTheme.colorScheme.primary
+                    tint = if (hasExpenses) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "All settled up! 🎉",
+                    if (hasExpenses) "All settled up! 🎉" else "No balances yet",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                    if (!hasExpenses) {
+                        Text(
+                            "Add an expense to see balances",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
             }
         }
     } else {
