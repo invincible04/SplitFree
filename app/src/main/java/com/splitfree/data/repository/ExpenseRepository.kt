@@ -67,7 +67,7 @@ class ExpenseRepository @Inject constructor(
     suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String = "") {
         val original = eventDao.getExpenseByUuid(expenseUuid)
         checkNotNull(original) { "Expense $expenseUuid not found" }
-        check(original.pubkey == identity.getPublicKey()) {
+        check(original.pubkey == identity.getPublicKeyHex()) {
             "Only the creator can delete this expense"
         }
 
@@ -95,7 +95,7 @@ class ExpenseRepository @Inject constructor(
     suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String) {
         val original = eventDao.getExpenseByUuid(originalUuid)
         checkNotNull(original) { "Expense $originalUuid not found" }
-        check(original.pubkey == identity.getPublicKey()) {
+        check(original.pubkey == identity.getPublicKeyHex()) {
             "Only the creator can correct this expense"
         }
 
@@ -114,40 +114,55 @@ class ExpenseRepository @Inject constructor(
     }
 
     private suspend fun saveEventAndQueue(
-        event: rust.nostr.sdk.Event,
+        event: com.splitfree.domain.crypto.NostrEvent,
         groupId: String,
         encrypted: String,
         plaintext: String,
         eventType: String,
         expenseUuid: String?
     ) {
-        val eventJson = event.asJson()
+        val eventJson = event.toJson()
         eventDao.insert(
             EventEntity(
-                eventId = event.id().toHex(),
+                eventId = event.id,
                 groupId = groupId,
-                pubkey = event.author().toHex(),
-                createdAt = event.createdAt().asSecs().toLong(),
+                pubkey = event.pubkey,
+                createdAt = event.createdAt,
                 kind = 30078,
                 contentEncrypted = encrypted,
                 contentDecrypted = plaintext,
                 eventType = eventType,
                 expenseUuid = expenseUuid,
-                sig = event.signature().toHex(),
+                sig = event.sig,
                 receivedAt = System.currentTimeMillis() / 1000,
                 originalEventJson = eventJson
             )
         )
-        // Gift wrap for relay publishing (local store keeps unwrapped)
-        val publishEvent = giftWrap.wrapIfEnabled(event)
-        val publishJson = publishEvent.asJson()
-        outboxDao.insert(
-            OutboxEntity(
-                eventId = publishEvent.id().toHex(),
-                eventJson = publishJson,
-                createdAt = publishEvent.createdAt().asSecs().toLong()
+
+        if (giftWrap.enabled) {
+            // NIP-59: wrap individually for each group member
+            val members = groupRepo.getMembers(groupId)
+            for (memberPubHex in members) {
+                val wrapped = giftWrap.wrapIfEnabled(event, memberPubHex)
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = wrapped.id,
+                        eventJson = wrapped.toJson(),
+                        createdAt = wrapped.createdAt
+                    )
+                )
+                throttler.enqueue(wrapped)
+            }
+        } else {
+            // No gift wrap — publish the signed event directly
+            outboxDao.insert(
+                OutboxEntity(
+                    eventId = event.id,
+                    eventJson = eventJson,
+                    createdAt = event.createdAt
+                )
             )
-        )
-        throttler.enqueue(publishEvent)
+            throttler.enqueue(event)
+        }
     }
 }

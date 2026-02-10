@@ -69,7 +69,7 @@ class CreateSnapshotUseCase @Inject constructor(
             id = UUID.randomUUID().toString(),
             as_of_event_count = eventCount,
             as_of_timestamp = System.currentTimeMillis() / 1000,
-            balances = balances.map { SnapshotBalance(it.pubkey, it.net) },
+            balances = balances.map { SnapshotBalance(it.pubkey, it.net, it.currency) },
             event_hashes = eventHashes
         )
 
@@ -86,25 +86,25 @@ class CreateSnapshotUseCase @Inject constructor(
 
         eventDao.insert(
             EventEntity(
-                eventId = event.id().toHex(),
+                eventId = event.id,
                 groupId = groupId,
-                pubkey = event.author().toHex(),
-                createdAt = event.createdAt().asSecs().toLong(),
+                pubkey = event.pubkey,
+                createdAt = event.createdAt,
                 kind = 30078,
                 contentEncrypted = encrypted,
                 contentDecrypted = plaintext,
                 eventType = "snapshot",
                 expenseUuid = snapshot.id,
-                sig = event.signature().toHex(),
+                sig = event.sig,
                 receivedAt = System.currentTimeMillis() / 1000,
-                originalEventJson = event.asJson()
+                originalEventJson = event.toJson()
             )
         )
         outboxDao.insert(
             OutboxEntity(
-                eventId = event.id().toHex(),
-                eventJson = event.asJson(),
-                createdAt = event.createdAt().asSecs().toLong()
+                eventId = event.id,
+                eventJson = event.toJson(),
+                createdAt = event.createdAt
             )
         )
         return true

@@ -35,7 +35,7 @@ class NearbySync @Inject constructor(
     fun startAdvertising() {
         val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
         client.startAdvertising(
-            identity.getPublicKey().take(8),
+            identity.getPublicKeyHex().take(8),
             SERVICE_ID,
             connectionLifecycleCallback,
             options
@@ -49,7 +49,7 @@ class NearbySync @Inject constructor(
     }
 
     fun requestConnection(endpointId: String) {
-        client.requestConnection(identity.getPublicKey().take(8), endpointId, connectionLifecycleCallback)
+        client.requestConnection(identity.getPublicKeyHex().take(8), endpointId, connectionLifecycleCallback)
     }
 
     fun sendPayload(endpointId: String, data: ByteArray) {
@@ -76,8 +76,14 @@ class NearbySync @Inject constructor(
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            // Auto-accept all connections (same service ID = same app)
-            client.acceptConnection(endpointId, payloadCallback)
+            // Only accept connections from devices advertising our service ID
+            // The service ID check happens at discovery level, but we also verify
+            // the endpoint name starts with a hex prefix (our pubkey format)
+            if (info.endpointName.length >= 8 && info.endpointName.all { it in "0123456789abcdef" }) {
+                client.acceptConnection(endpointId, payloadCallback)
+            } else {
+                client.rejectConnection(endpointId)
+            }
         }
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {

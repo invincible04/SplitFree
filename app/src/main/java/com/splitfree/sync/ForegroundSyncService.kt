@@ -63,7 +63,8 @@ class ForegroundSyncService : Service() {
             if (allRelays.isEmpty()) return@launch
 
             try {
-                nostrClient.connect(identity.getKeys(), allRelays)
+                nostrClient.authSigner = { challenge, relayUrl -> createAuthEvent(challenge, relayUrl) }
+                nostrClient.connect(allRelays)
                 nostrClient.acquireConnection()
                 connectionAcquired = true
             } catch (e: Exception) {
@@ -83,37 +84,35 @@ class ForegroundSyncService : Service() {
         }
     }
 
-    private suspend fun processIncomingEvent(event: rust.nostr.sdk.Event) {
+    private suspend fun processIncomingEvent(event: com.splitfree.domain.crypto.NostrEvent) {
         try {
-            val inner = giftWrap.tryUnwrap(event) ?: event
+            val unwrapResult = giftWrap.tryUnwrap(event)
+            val inner = unwrapResult?.first ?: event
             if (!signer.verify(inner)) return
 
-            // Reject future/stale timestamps (design doc Section 13.7)
-            if (!EventValidator.isTimestampValid(inner.createdAt().asSecs().toLong())) {
-                Log.w(TAG, "Rejecting event with invalid timestamp: ${inner.id().toHex()}")
+            if (!EventValidator.isTimestampValid(inner.createdAt)) {
+                Log.w(TAG, "Rejecting event with invalid timestamp: ${inner.id}")
                 return
             }
 
-            val eventId = inner.id().toHex()
+            val eventId = inner.id
             if (eventDao.getEvent(eventId) != null) return
 
             var groupId: String? = null
             var eventType = "unknown"
             var expenseUuid: String? = null
-            for (tag in inner.tags().toVec()) {
-                val items = tag.asVec()
-                if (items.size >= 2) {
-                    when (items[0]) {
-                        "d" -> groupId = items[1]
-                        "t" -> eventType = items[1]
-                        "e" -> expenseUuid = items[1]
+            for (tag in inner.tags) {
+                if (tag.size >= 2) {
+                    when (tag[0]) {
+                        "g" -> groupId = tag[1]
+                        "t" -> eventType = tag[1]
+                        "e" -> expenseUuid = tag[1]
                     }
                 }
             }
             groupId ?: return
 
-            // Reject events from non-members (design doc Section 13.2)
-            val authorHex = inner.author().toHex()
+            val authorHex = inner.pubkey
             val group = groupRepo.getById(groupId)
             if (eventType != "group_meta" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
@@ -121,7 +120,7 @@ class ForegroundSyncService : Service() {
             }
 
             val groupKey = groupRepo.getGroupKey(groupId) ?: return
-            val encrypted = inner.content()
+            val encrypted = inner.content
             val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
 
             eventDao.insert(
@@ -129,15 +128,15 @@ class ForegroundSyncService : Service() {
                     eventId = eventId,
                     groupId = groupId,
                     pubkey = authorHex,
-                    createdAt = inner.createdAt().asSecs().toLong(),
+                    createdAt = inner.createdAt,
                     kind = 30078,
                     contentEncrypted = encrypted,
                     contentDecrypted = decrypted,
                     eventType = eventType,
                     expenseUuid = expenseUuid,
-                    sig = inner.signature().toHex(),
+                    sig = inner.sig,
                     receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = inner.asJson()
+                    originalEventJson = inner.toJson()
                 )
             )
 
@@ -168,6 +167,21 @@ class ForegroundSyncService : Service() {
             .setSmallIcon(android.R.drawable.ic_popup_sync)
             .setOngoing(true)
             .build()
+
+    private fun createAuthEvent(challenge: String, relayUrl: String): com.splitfree.domain.crypto.NostrEvent {
+        val privKey = identity.getPrivateKeyBytes()
+        try {
+            return com.splitfree.domain.crypto.NostrEvent(
+                pubkey = identity.getPublicKeyHex(),
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 22242,
+                tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
+                content = ""
+            ).sign(privKey)
+        } finally {
+            privKey.fill(0)
+        }
+    }
 
     companion object {
         private const val TAG = "ForegroundSyncService"

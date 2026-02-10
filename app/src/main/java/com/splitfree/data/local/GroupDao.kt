@@ -27,6 +27,9 @@ interface GroupDao {
     @Query("UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId")
     suspend fun updateMeta(groupId: String, name: String, members: String, relays: String)
 
+    @Query("UPDATE `groups` SET groupKey = '' WHERE groupId = :groupId")
+    suspend fun clearGroupKey(groupId: String)
+
     @Delete
     suspend fun delete(group: GroupEntity)
 }

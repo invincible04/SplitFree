@@ -1,5 +1,9 @@
 package com.splitfree.ui.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +25,26 @@ fun NearbySyncScreen(
     viewModel: NearbySyncViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var permissionsGranted by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results -> permissionsGranted = results.values.all { it } }
+
+    LaunchedEffect(Unit) {
+        val perms = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        permissionLauncher.launch(perms.toTypedArray())
+    }
 
     Scaffold(
         topBar = {
@@ -44,8 +68,12 @@ fun NearbySyncScreen(
             }
 
             if (!uiState.scanning) {
-                Button(onClick = { viewModel.startScan() }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Scan for nearby members")
+                Button(
+                    onClick = { viewModel.startScan() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = permissionsGranted
+                ) {
+                    Text(if (permissionsGranted) "Scan for nearby members" else "Permissions required")
                 }
             } else {
                 OutlinedButton(onClick = { viewModel.stopScan() }, modifier = Modifier.fillMaxWidth()) {

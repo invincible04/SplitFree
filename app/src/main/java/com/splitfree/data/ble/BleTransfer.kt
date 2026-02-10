@@ -9,7 +9,6 @@ import com.splitfree.domain.crypto.EventValidator
 import com.splitfree.domain.crypto.GroupEncryption
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import rust.nostr.sdk.Event
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -80,34 +79,30 @@ class BleTransfer @Inject constructor(
 
     private suspend fun storeReceivedEvent(eventJson: String): Boolean {
         return try {
-            val event = Event.fromJson(eventJson)
+            val event = com.splitfree.domain.crypto.NostrEvent.fromJson(eventJson) ?: return false
             if (!signer.verify(event)) return false
 
-            // Reject future/stale timestamps (design doc Section 13.7)
-            val createdAt = event.createdAt().asSecs().toLong()
-            if (!EventValidator.isTimestampValid(createdAt)) {
-                Log.w(TAG, "Rejecting BLE event with invalid timestamp: ${event.id().toHex()}")
+            if (!EventValidator.isTimestampValid(event.createdAt)) {
+                Log.w(TAG, "Rejecting BLE event with invalid timestamp: ${event.id}")
                 return false
             }
 
-            val eventId = event.id().toHex()
+            val eventId = event.id
             if (eventDao.getEvent(eventId) != null) return false
 
             var groupId: String? = null
             var eventType = "unknown"
             var expenseUuid: String? = null
-            for (tag in event.tags().toVec()) {
-                val items = tag.asVec()
-                if (items.size >= 2) when (items[0]) {
-                    "d" -> groupId = items[1]
-                    "t" -> eventType = items[1]
-                    "e" -> expenseUuid = items[1]
+            for (tag in event.tags) {
+                if (tag.size >= 2) when (tag[0]) {
+                    "g" -> groupId = tag[1]
+                    "t" -> eventType = tag[1]
+                    "e" -> expenseUuid = tag[1]
                 }
             }
             groupId ?: return false
 
-            // Reject events from non-members (design doc Section 13.2)
-            val authorHex = event.author().toHex()
+            val authorHex = event.pubkey
             val group = groupRepo.getById(groupId)
             if (eventType != "group_meta" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting BLE event from non-member $authorHex in group $groupId")
@@ -115,16 +110,16 @@ class BleTransfer @Inject constructor(
             }
 
             val groupKey = groupRepo.getGroupKey(groupId) ?: return false
-            val encrypted = event.content()
+            val encrypted = event.content
             val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
 
             eventDao.insert(EventEntity(
                 eventId = eventId, groupId = groupId,
                 pubkey = authorHex,
-                createdAt = createdAt,
+                createdAt = event.createdAt,
                 kind = 30078, contentEncrypted = encrypted,
                 contentDecrypted = decrypted, eventType = eventType,
-                expenseUuid = expenseUuid, sig = event.signature().toHex(),
+                expenseUuid = expenseUuid, sig = event.sig,
                 receivedAt = System.currentTimeMillis() / 1000,
                 originalEventJson = eventJson
             ))

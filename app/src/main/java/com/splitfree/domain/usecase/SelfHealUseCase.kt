@@ -3,7 +3,9 @@ package com.splitfree.domain.usecase
 import android.util.Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.repository.GroupRepository
+import com.splitfree.data.nostr.NostrFilter
+import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.crypto.IdentityManager
 import javax.inject.Inject
 
 /**
@@ -13,20 +15,25 @@ import javax.inject.Inject
  */
 class SelfHealUseCase @Inject constructor(
     private val eventDao: EventDao,
-    private val nostrClient: NostrClient
+    private val nostrClient: NostrClient,
+    private val signer: EventSigner,
+    private val identity: IdentityManager
 ) {
     suspend operator fun invoke(groupId: String): Int {
         val localEvents = eventDao.getEventsByGroup(groupId)
-        val remoteEvents = nostrClient.fetchEvents(groupId, 0)
-        val remoteIds = remoteEvents.map { it.id().toHex() }.toSet()
+        if (localEvents.isEmpty()) return 0
+
+        // Fetch what the relay has for this group using BOTH old (#d) and new (#g) tag formats
+        // so we don't needlessly re-publish events that are already there under the old format
+        val remoteByGroup = nostrClient.fetchEvents(groupId, 0)
+        val remoteIds = remoteByGroup.map { it.id }.toMutableSet()
 
         var republished = 0
         for (event in localEvents) {
-            if (event.eventId !in remoteIds) {
-                val json = event.originalEventJson ?: continue
-                if (nostrClient.publishJson(json)) {
-                    republished++
-                }
+            if (event.eventId in remoteIds) continue
+            val json = event.originalEventJson ?: continue
+            if (nostrClient.publishJson(json)) {
+                republished++
             }
         }
         if (republished > 0) {

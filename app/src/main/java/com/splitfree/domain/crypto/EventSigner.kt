@@ -1,17 +1,11 @@
 package com.splitfree.domain.crypto
 
-import rust.nostr.sdk.Event
-import rust.nostr.sdk.EventBuilder
-import rust.nostr.sdk.Keys
-import rust.nostr.sdk.Kind
-import rust.nostr.sdk.NostrSigner
-import rust.nostr.sdk.Tag
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Creates and signs valid Nostr events (NIP-01 compliant).
- * Event ID = SHA256 of serialized event. Signature = Schnorr (BIP-340).
+ * Creates and signs valid Nostr events (NIP-01 compliant) — no SDK.
+ * Event ID = SHA256 of serialized event. Signature = BIP-340 Schnorr.
  */
 @Singleton
 class EventSigner @Inject constructor(
@@ -19,35 +13,59 @@ class EventSigner @Inject constructor(
 ) {
     /**
      * Build a signed Nostr kind-30078 event for SplitFree.
-     * Returns the signed Event with correct SHA256 id and Schnorr signature.
      */
-    suspend fun createSignedEvent(
+    fun createSignedEvent(
         groupId: String,
         eventType: String,
         encryptedContent: String,
         expenseUuid: String? = null
-    ): Event {
-        val keys = identityManager.getKeys()
-        val signer = NostrSigner.keys(keys)
-        val tags = buildList {
-            add(Tag.parse(listOf("d", groupId)))
-            add(Tag.parse(listOf("t", eventType)))
-            expenseUuid?.let { add(Tag.parse(listOf("e", it))) }
+    ): NostrEvent {
+        val privKey = identityManager.getPrivateKeyBytes()
+        try {
+            val pubHex = identityManager.getPublicKeyHex()
+
+            // Kind 30078 is ADDRESSABLE (NIP-01): relays keep only the latest event
+            // per (pubkey, kind, d-tag). We MUST make d unique per event, otherwise
+            // each new expense overwrites the previous one on the relay.
+            val dTagValue = if (expenseUuid != null) "$groupId:$expenseUuid" else "$groupId:${System.nanoTime()}"
+            val tags = buildList {
+                add(listOf("d", dTagValue))
+                add(listOf("g", groupId))  // group membership tag for filtering
+                add(listOf("t", eventType))
+                expenseUuid?.let { add(listOf("e", it)) }
+            }
+
+            return NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags = tags,
+                content = encryptedContent
+            ).sign(privKey)
+        } finally {
+            privKey.fill(0)
         }
-        return EventBuilder(Kind(30078u), encryptedContent)
-            .tags(tags)
-            .sign(signer)
     }
 
+    /** Verify a received event's signature. */
+    fun verify(event: NostrEvent): Boolean = event.verify()
+
     /**
-     * Verify a received event's signature.
+     * NIP-09: Create a kind 5 deletion event requesting relays delete the given event IDs.
      */
-    fun verify(event: Event): Boolean {
-        return try {
-            event.verify()
-            true
-        } catch (_: Exception) {
-            false
+    fun createDeletionEvent(eventIds: List<String>, reason: String = ""): NostrEvent {
+        val privKey = identityManager.getPrivateKeyBytes()
+        try {
+            val tags = eventIds.map { listOf("e", it) }
+            return NostrEvent(
+                pubkey = identityManager.getPublicKeyHex(),
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 5,
+                tags = tags,
+                content = reason
+            ).sign(privKey)
+        } finally {
+            privKey.fill(0)
         }
     }
 }

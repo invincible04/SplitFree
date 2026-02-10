@@ -43,7 +43,7 @@ class JoinGroupUseCase @Inject constructor(
         val existing = groupRepo.getById(groupId)
         if (existing != null) return existing
 
-        val pubkey = identity.getPublicKey()
+        val pubkey = identity.getPublicKeyHex()
         val group = Group(
             id = groupId,
             name = name,
@@ -66,7 +66,19 @@ class JoinGroupUseCase @Inject constructor(
         try {
             val wasConnected = nostrClient.isConnected
             if (!wasConnected) {
-                nostrClient.connect(identity.getKeys(), group.relays)
+                nostrClient.authSigner = { challenge, relayUrl ->
+                    val privKey = identity.getPrivateKeyBytes()
+                    try {
+                        com.splitfree.domain.crypto.NostrEvent(
+                            pubkey = identity.getPublicKeyHex(),
+                            createdAt = System.currentTimeMillis() / 1000,
+                            kind = 22242,
+                            tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
+                            content = ""
+                        ).sign(privKey)
+                    } finally { privKey.fill(0) }
+                }
+                nostrClient.connect(group.relays)
             }
             nostrClient.acquireConnection()
             try {
@@ -74,38 +86,35 @@ class JoinGroupUseCase @Inject constructor(
                 val existingIds = eventDao.getEventIds(group.id).toSet()
                 var count = 0
                 for (event in events) {
-                    val eventId = event.id().toHex()
+                    val eventId = event.id
                     if (eventId in existingIds) continue
                     try {
                         if (!signer.verify(event)) continue
 
-                        // Reject future/stale timestamps (design doc Section 13.7)
-                        val createdAt = event.createdAt().asSecs().toLong()
-                        if (!EventValidator.isTimestampValid(createdAt)) {
+                        if (!EventValidator.isTimestampValidLenient(event.createdAt)) {
                             Log.w(TAG, "Rejecting event with invalid timestamp: $eventId")
                             continue
                         }
 
-                        val encrypted = event.content()
+                        val encrypted = event.content
                         val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
                         var eventType = "unknown"
                         var expenseUuid: String? = null
-                        for (tag in event.tags().toVec()) {
-                            val items = tag.asVec()
-                            if (items.size >= 2) when (items[0]) {
-                                "t" -> eventType = items[1]
-                                "e" -> expenseUuid = items[1]
+                        for (tag in event.tags) {
+                            if (tag.size >= 2) when (tag[0]) {
+                                "t" -> eventType = tag[1]
+                                "e" -> expenseUuid = tag[1]
                             }
                         }
                         eventDao.insert(EventEntity(
                             eventId = eventId, groupId = group.id,
-                            pubkey = event.author().toHex(),
-                            createdAt = createdAt,
+                            pubkey = event.pubkey,
+                            createdAt = event.createdAt,
                             kind = 30078, contentEncrypted = encrypted,
                             contentDecrypted = decrypted, eventType = eventType,
-                            expenseUuid = expenseUuid, sig = event.signature().toHex(),
+                            expenseUuid = expenseUuid, sig = event.sig,
                             receivedAt = System.currentTimeMillis() / 1000,
-                            originalEventJson = event.asJson()
+                            originalEventJson = event.toJson()
                         ))
 
                         // Update local group from group_meta events (ISSUE-12)

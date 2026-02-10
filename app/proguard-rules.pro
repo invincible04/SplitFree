@@ -1,10 +1,11 @@
 # SplitFree ProGuard Rules
 
-# Keep Nostr SDK (rust-nostr via UniFFI JNI bindings)
--keep class rust.nostr.sdk.** { *; }
--keep class uniffi.** { *; }
--keep class com.sun.jna.** { *; }
--dontwarn com.sun.jna.**
+# Keep secp256k1 native library (ACINQ secp256k1-kmp)
+-keep class fr.acinq.secp256k1.** { *; }
+
+# Keep BouncyCastle crypto (ChaCha20 engine)
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
 
 # Keep all native method implementations
 -keepclasseswithmembernames class * {

@@ -2,25 +2,13 @@ package com.splitfree.domain.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import rust.nostr.sdk.Event
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * NIP-59 Gift Wrap service for metadata protection.
- * Design doc Section 8.2 Layer 3.
- *
- * DISABLED: Kotlin bindings for NIP-59 are not yet available in rust-nostr 0.44.2.
- * The official rust-nostr book shows "TODO" for the Kotlin NIP-59 example.
- * See: https://rust-nostr.org/sdk/nips/59.html
- *
- * When Kotlin bindings become available, the correct API is:
- *   Wrap:   gift_wrap(signer, receiverPubkey, rumor: UnsignedEvent, extraTags?)
- *   Unwrap: UnwrappedGift.fromGiftWrap(signer, giftWrapEvent) → .sender(), .rumor()
- *
- * TODO: Enable when rust-nostr publishes Kotlin NIP-59 support.
+ * NIP-59 Gift Wrap service for metadata protection — no SDK.
+ * Uses from-scratch Nip59 implementation.
  */
 @Singleton
 class GiftWrapService @Inject constructor(
@@ -33,25 +21,40 @@ class GiftWrapService @Inject constructor(
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_GIFT_WRAP, false)
-        set(value) {
-            if (value) Log.w(TAG, "Gift wrap requested but NIP-59 Kotlin bindings not yet available")
-            prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply()
+        set(value) { prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply() }
+
+    /**
+     * Wrap a NostrEvent in NIP-59 gift wrap for a recipient.
+     * Returns the original event if gift wrap is disabled.
+     */
+    fun wrapIfEnabled(event: NostrEvent, recipientPubKeyHex: String): NostrEvent {
+        if (!enabled) return event
+        val privKey = identityManager.getPrivateKeyBytes()
+        try {
+            return Nip59.giftWrap(
+                rumor = event.copy(sig = ""), // rumor must be unsigned
+                senderPrivKey = privKey,
+                recipientPubKey = recipientPubKeyHex.hexToBytes()
+            )
+        } finally {
+            privKey.fill(0)
         }
+    }
 
     /**
-     * NIP-59 Kotlin bindings not yet available in rust-nostr 0.44.2.
-     * Always returns the original event unchanged.
+     * Unwrap a gift wrap event. Returns (rumor, senderPubkey) or null.
      */
-    suspend fun wrapIfEnabled(event: Event): Event = event
-
-    /**
-     * NIP-59 Kotlin bindings not yet available in rust-nostr 0.44.2.
-     * Always returns null (no unwrapping possible).
-     */
-    suspend fun tryUnwrap(event: Event): Event? = null
+    fun tryUnwrap(event: NostrEvent): Pair<NostrEvent, String>? {
+        if (event.kind != 1059) return null
+        val privKey = identityManager.getPrivateKeyBytes()
+        try {
+            return Nip59.unwrap(event, privKey)
+        } finally {
+            privKey.fill(0)
+        }
+    }
 
     companion object {
-        private const val TAG = "GiftWrapService"
         private const val KEY_GIFT_WRAP = "gift_wrap_enabled"
     }
 }

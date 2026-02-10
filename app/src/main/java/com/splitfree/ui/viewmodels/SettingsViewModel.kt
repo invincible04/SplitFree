@@ -11,8 +11,8 @@ class SettingsViewModel @Inject constructor(
     private val identity: IdentityManager,
     private val giftWrap: GiftWrapService
 ) : ViewModel() {
-    val nsec: String get() = if (identity.hasIdentity()) identity.getNsec() else ""
-    val npub: String get() = if (identity.hasIdentity()) identity.getNpub() else ""
+    val nsec: String get() = if (identity.hasIdentity()) identity.getPrivateKeyHex() else ""
+    val npub: String get() = if (identity.hasIdentity()) identity.getPublicKeyHex() else ""
 
     var giftWrapEnabled: Boolean
         get() = giftWrap.enabled

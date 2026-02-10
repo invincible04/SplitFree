@@ -56,7 +56,7 @@ class NearbySyncViewModel @Inject constructor(
                     }
                     is BleEvent.Connected -> {
                         val groups = groupRepo.getAll().map { it.id }
-                        bleTransfer.sendHandshake(event.endpointId, identity.getPublicKey(), groups)
+                        bleTransfer.sendHandshake(event.endpointId, identity.getPublicKeyHex(), groups)
                     }
                     is BleEvent.PayloadReceived -> {
                         val result = bleTransfer.processPayload(event.endpointId, event.data)

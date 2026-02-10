@@ -38,7 +38,7 @@ class AddExpenseViewModel @Inject constructor(
             val group = groupRepo.getById(groupId) ?: return@launch
             _uiState.value = AddExpenseUiState(
                 members = group.members,
-                myPubkey = identity.getPublicKey()
+                myPubkey = identity.getPublicKeyHex()
             )
         }
     }

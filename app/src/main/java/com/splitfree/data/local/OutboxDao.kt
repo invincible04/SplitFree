@@ -14,6 +14,9 @@ interface OutboxDao {
     @Query("DELETE FROM outbox WHERE eventId = :eventId")
     suspend fun delete(eventId: String)
 
+    @Query("DELETE FROM outbox WHERE createdAt < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long)
+
     @Query("UPDATE outbox SET retryCount = retryCount + 1, lastRetryAt = :now WHERE eventId = :eventId")
     suspend fun incrementRetry(eventId: String, now: Long)
 }

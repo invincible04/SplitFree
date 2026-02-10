@@ -1,52 +1,56 @@
 package com.splitfree.data.nostr
 
 import android.util.Log
-import rust.nostr.sdk.Client
-import rust.nostr.sdk.Event
-import rust.nostr.sdk.Filter
-import rust.nostr.sdk.HandleNotification
-import rust.nostr.sdk.Kind
-import rust.nostr.sdk.Keys
-import rust.nostr.sdk.NostrSigner
-import rust.nostr.sdk.RelayMessage
-import rust.nostr.sdk.RelayUrl
-import rust.nostr.sdk.SubscriptionId
-import rust.nostr.sdk.Timestamp
+import com.splitfree.domain.crypto.NostrEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Nostr relay pool client — from scratch using OkHttp WebSocket, no SDK.
+ * Manages multiple relay connections, subscriptions, publishing, deduplication.
+ *
+ * Keeps the same public API surface as the old SDK-based NostrClient so callers
+ * need minimal changes.
+ */
 @Singleton
 class NostrClient @Inject constructor() {
 
-    @Volatile
-    private var client: Client? = null
+    private val relays = ConcurrentHashMap<String, Relay>()
     private val connectionMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val subIdCounter = AtomicLong(0)
+    // Bounded dedup set — evicts oldest entries beyond 10K to prevent memory leak
+    private val seenEventIds = object : LinkedHashSet<String>() {
+        override fun add(element: String): Boolean {
+            val added = super.add(element)
+            if (size > 10_000) iterator().let { it.next(); it.remove() }
+            return added
+        }
+    }
+    private val seenLock = Any()
 
-    private val _incomingEvents = MutableSharedFlow<Event>(extraBufferCapacity = 64)
-    val incomingEvents: SharedFlow<Event> = _incomingEvents
+    private val _incomingEvents = MutableSharedFlow<NostrEvent>(extraBufferCapacity = 64)
+    val incomingEvents: SharedFlow<NostrEvent> = _incomingEvents
 
-    /** Track how many components are actively using this connection. */
     private val activeUsers = AtomicInteger(0)
+    // groupId → subId mapping
+    private val activeSubscriptions = ConcurrentHashMap<String, String>()
 
-    /** Track active subscription IDs per group for cleanup. */
-    private val activeSubscriptions = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Set this before connect() to enable NIP-42 AUTH on relays that require it. */
+    var authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)? = null
 
-    val isConnected: Boolean get() = client != null
-
-    @Volatile
-    private var currentKeys: Keys? = null
     @Volatile
     private var currentRelays: List<String> = emptyList()
-    private val reconnectAttempts = AtomicInteger(0)
-    private var reconnectJob: Job? = null
+
+    val isConnected: Boolean get() = relays.values.any { it.state.value == Relay.State.CONNECTED }
 
     fun acquireConnection() { activeUsers.incrementAndGet() }
     fun releaseConnection() {
@@ -56,152 +60,165 @@ class NostrClient @Inject constructor() {
         }
     }
 
-    suspend fun connect(keys: Keys, relayUrls: List<String>) {
+    /**
+     * Connect to relay URLs. No SDK keys needed — signing is handled by our Nip01 layer.
+     * Accepts unused Keys parameter for backward compat during migration.
+     */
+    suspend fun connect(relayUrls: List<String>) {
         connectionMutex.withLock {
-            if (client != null) return
-            currentKeys = keys
             currentRelays = relayUrls
-            try {
-                val signer = NostrSigner.keys(keys)
-                val c = Client(signer = signer)
-                relayUrls.forEach { url ->
-                    try { c.addRelay(RelayUrl.parse(url)) } catch (e: Exception) {
-                        Log.w(TAG, "Failed to add relay $url: ${e.message}")
+            relayUrls.forEach { url ->
+                if (!relays.containsKey(url)) {
+                    val relay = Relay(url, scope, authSigner = authSigner)
+                    relays[url] = relay
+                    // Collect messages from this relay, verify signatures, and deduplicate
+                    scope.launch {
+                        relay.messages.collect { msg ->
+                            when (msg) {
+                                is RelayMessage.EventMsg -> {
+                                    if (msg.event.verify() &&
+                                        synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                                        _incomingEvents.emit(msg.event)
+                                    }
+                                }
+                                is RelayMessage.EoseMsg -> { /* subscription EOSE — no action needed */ }
+                                is RelayMessage.ClosedMsg -> Log.w(TAG, "Sub ${msg.subId} closed by $url: ${msg.message}")
+                                is RelayMessage.NoticeMsg -> Log.i(TAG, "Notice from $url: ${msg.message}")
+                                is RelayMessage.AuthMsg -> { /* handled in Relay.handleAuth() */ }
+                                else -> {}
+                            }
+                        }
                     }
+                    relay.connect()
                 }
-                c.connect()
-                client = c
-                reconnectAttempts.set(0)
-                Log.i(TAG, "Connected to ${relayUrls.size} relays")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to connect: ${e.message}")
-                scheduleReconnect()
             }
-        }
-    }
-
-    private fun scheduleReconnect() {
-        reconnectJob?.cancel()
-        val keys = currentKeys ?: return
-        val relays = currentRelays.ifEmpty { return }
-        val attempt = reconnectAttempts.getAndIncrement()
-        val delayMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L) // 1s..60s
-
-        reconnectJob = scope.launch {
-            Log.i(TAG, "Reconnecting in ${delayMs}ms (attempt ${attempt + 1})")
-            delay(delayMs)
-            client = null
-            connect(keys, relays)
+            Log.i(TAG, "Connected to ${relayUrls.size} relays")
         }
     }
 
     suspend fun subscribe(groupId: String, since: Long) {
-        val c = client ?: return
-        try {
-            val filter = Filter()
-                .kind(Kind(30078u))
-                .customTag(
-                    rust.nostr.sdk.SingleLetterTag.lowercase(rust.nostr.sdk.Alphabet.D),
-                    listOf(groupId)
-                )
-                .since(Timestamp.fromSecs(since.toULong()))
-            val output = c.subscribe(filter, null)
-            activeSubscriptions[groupId] = output.`val`.toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "Subscribe failed for group $groupId: ${e.message}")
-        }
+        val subId = "${subIdCounter.incrementAndGet()}:$groupId"
+        activeSubscriptions[groupId] = subId
+        val filter = NostrFilter(
+            kinds = listOf(30078),
+            tags = mapOf("#g" to listOf(groupId)),
+            since = if (since > 0) since else null
+        )
+        relays.values.forEach { it.subscribe(subId, listOf(filter)) }
     }
 
     suspend fun unsubscribe(groupId: String) {
-        val c = client ?: return
         val subId = activeSubscriptions.remove(groupId) ?: return
-        try {
-            c.unsubscribe(SubscriptionId(subId))
-        } catch (e: Exception) {
-            Log.w(TAG, "Unsubscribe failed for group $groupId: ${e.message}")
-        }
+        relays.values.forEach { it.closeSubscription(subId) }
     }
 
     suspend fun unsubscribeAll() {
-        val c = client ?: return
-        for ((_, subId) in activeSubscriptions.toMap()) {
-            try {
-                c.unsubscribe(SubscriptionId(subId))
-            } catch (_: Exception) {}
+        activeSubscriptions.forEach { (_, subId) ->
+            relays.values.forEach { it.closeSubscription(subId) }
         }
         activeSubscriptions.clear()
     }
 
-    fun startListening() {
-        val c = client ?: return
-        scope.launch {
-            try {
-                c.handleNotifications(object : HandleNotification {
-                    override fun handleMsg(relayUrl: String, msg: RelayMessage) {}
-                    override fun handle(relayUrl: String, subscriptionId: String, event: Event) {
-                        _incomingEvents.tryEmit(event)
-                    }
-                })
-            } catch (e: Exception) {
-                Log.e(TAG, "Notification handler error: ${e.message}")
-                scheduleReconnect()
-            }
-        }
-    }
+    /** Start listening is now a no-op — messages flow automatically via SharedFlow. */
+    fun startListening() { /* messages already flowing via relay.messages collectors */ }
 
-    suspend fun publish(event: Event): Boolean {
-        return try {
-            client?.sendEvent(event)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Publish failed: ${e.message}")
-            false
-        }
+    suspend fun publish(event: NostrEvent): Boolean {
+        var anySuccess = false
+        relays.values.map { relay ->
+            scope.async {
+                try { relay.sendEvent(event) } catch (_: Exception) { false }
+            }
+        }.forEach { if (it.await()) anySuccess = true }
+        return anySuccess
     }
 
     suspend fun publishJson(eventJson: String): Boolean {
-        return try {
-            publish(Event.fromJson(eventJson))
-        } catch (e: Exception) {
-            Log.e(TAG, "Publish JSON failed: ${e.message}")
-            false
-        }
+        val event = NostrEvent.fromJson(eventJson) ?: return false
+        return publish(event)
     }
 
-    suspend fun fetchEvents(groupId: String, since: Long): List<Event> {
-        val c = client ?: return emptyList()
-        return try {
-            val filter = Filter()
-                .kind(Kind(30078u))
-                .customTag(
-                    rust.nostr.sdk.SingleLetterTag.lowercase(rust.nostr.sdk.Alphabet.D),
-                    listOf(groupId)
-                )
-            val sinceFilter = if (since > 0) filter.since(Timestamp.fromSecs(since.toULong())) else filter
-            c.fetchEvents(filter = sinceFilter, timeout = Duration.ofSeconds(15)).toVec()
-        } catch (e: Exception) {
-            Log.e(TAG, "Fetch failed for group $groupId: ${e.message}")
-            emptyList()
+    /**
+     * Fetch events matching a group filter. Subscribes temporarily, collects until EOSE,
+     * then closes the subscription.
+     */
+    suspend fun fetchEvents(groupId: String, since: Long): List<NostrEvent> {
+        val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
+        // Query both new #g tag and old #d tag format for backward compatibility
+        val filterNew = NostrFilter(
+            kinds = listOf(30078),
+            tags = mapOf("#g" to listOf(groupId)),
+            since = if (since > 0) since else null
+        )
+        val filterOld = NostrFilter(
+            kinds = listOf(30078),
+            tags = mapOf("#d" to listOf(groupId)),
+            since = if (since > 0) since else null
+        )
+
+        val events = mutableListOf<NostrEvent>()
+        val relayCount = relays.size.coerceAtLeast(1)
+        val eoseCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val allEose = CompletableDeferred<Unit>()
+
+        // Collect events from all relays for this subscription
+        val collectJob = scope.launch {
+            relays.values.forEach { relay ->
+                launch {
+                    relay.messages.collect { msg ->
+                        when (msg) {
+                            is RelayMessage.EventMsg -> {
+                                if (msg.subId == subId && msg.event.verify() &&
+                                    synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                                    synchronized(events) { events.add(msg.event) }
+                                }
+                            }
+                            is RelayMessage.EoseMsg -> {
+                                if (msg.subId == subId && eoseCount.incrementAndGet() >= relayCount) {
+                                    allEose.complete(Unit)
+                                }
+                            }
+                            else -> {}
+                        }
+                    }
+                }
+            }
         }
+
+        // Subscribe on all relays with both filters (OR'd per NIP-01)
+        relays.values.forEach { it.subscribe(subId, listOf(filterNew, filterOld)) }
+
+        // Wait for EOSE or timeout
+        try {
+            withTimeout(15_000) { allEose.await() }
+        } catch (_: Exception) { /* timeout — return what we have */ }
+
+        // Cleanup
+        relays.values.forEach { it.closeSubscription(subId) }
+        collectJob.cancel()
+
+        return events
     }
 
     fun addRelay(url: String) {
+        if (relays.containsKey(url)) return
+        val relay = Relay(url, scope, authSigner = authSigner)
+        relays[url] = relay
         scope.launch {
-            try { client?.addRelay(RelayUrl.parse(url)) } catch (e: Exception) {
-                Log.w(TAG, "Failed to add relay $url: ${e.message}")
+            relay.messages.collect { msg ->
+                if (msg is RelayMessage.EventMsg && msg.event.verify() &&
+                    synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                    _incomingEvents.emit(msg.event)
+                }
             }
         }
+        relay.connect()
     }
 
     fun disconnect() {
-        reconnectJob?.cancel()
         activeSubscriptions.clear()
-        scope.launch {
-            connectionMutex.withLock {
-                try { client?.disconnect() } catch (_: Exception) {}
-                client = null
-            }
-        }
+        relays.values.forEach { it.disconnect() }
+        relays.clear()
+        synchronized(seenLock) { seenEventIds.clear() }
     }
 
     companion object {

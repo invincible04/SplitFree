@@ -26,8 +26,8 @@ class SimplifyDebtsUseCase @Inject constructor() {
 
         val transactions = mutableListOf<DebtTransaction>()
         while (creditors.isNotEmpty() && debtors.isNotEmpty()) {
-            val (creditor, credit) = creditors.poll()
-            val (debtor, debt) = debtors.poll()
+            val (creditor, credit) = creditors.poll() ?: break
+            val (debtor, debt) = debtors.poll() ?: break
             val transfer = minOf(credit, debt)
             transactions.add(DebtTransaction(from = debtor, to = creditor, amount = transfer, currency = currency))
             val remainingCredit = credit - transfer

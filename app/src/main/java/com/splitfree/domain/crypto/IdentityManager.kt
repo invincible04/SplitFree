@@ -5,15 +5,14 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
-import rust.nostr.sdk.Keys
-import rust.nostr.sdk.PublicKey
-import rust.nostr.sdk.SecretKey
+import fr.acinq.secp256k1.Secp256k1
+import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Manages the user's secp256k1 Schnorr keypair via rust-nostr SDK.
- * Keys stored in EncryptedSharedPreferences (hardware-backed on supported devices).
+ * Manages the user's secp256k1 keypair using ACINQ secp256k1-kmp (no SDK).
+ * Keys stored in EncryptedSharedPreferences.
  */
 @Singleton
 class IdentityManager @Inject constructor(
@@ -32,53 +31,50 @@ class IdentityManager @Inject constructor(
         )
     }
 
-    private var cachedKeys: Keys? = null
-
     fun hasIdentity(): Boolean = prefs.contains(KEY_PRIVATE)
 
-    fun getPublicKey(): String = prefs.getString(KEY_PUBLIC, "")!!
+    fun getPublicKeyHex(): String = prefs.getString(KEY_PUBLIC, "")!!
 
-    fun getPrivateKey(): String = prefs.getString(KEY_PRIVATE, "")!!
+    fun getPrivateKeyHex(): String = prefs.getString(KEY_PRIVATE, "")!!
 
-    fun getKeys(): Keys {
-        cachedKeys?.let { return it }
-        val keys = Keys(SecretKey.fromHex(getPrivateKey()))
-        cachedKeys = keys
-        return keys
-    }
+    fun getPrivateKeyBytes(): ByteArray = getPrivateKeyHex().hexToBytes()
+
+    fun getPublicKeyBytes(): ByteArray = getPublicKeyHex().hexToBytes()
 
     fun generateKeyPair(): Pair<String, String> {
-        val keys = Keys.generate()
-        val privHex = keys.secretKey().toHex()
-        val pubHex = keys.publicKey().toHex()
+        val privKey = ByteArray(32)
+        val random = SecureRandom()
+        do {
+            random.nextBytes(privKey)
+        } while (!Secp256k1.secKeyVerify(privKey))
+
+        val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
+        val privHex = privKey.toHex()
+        privKey.fill(0)
+
         prefs.edit()
             .putString(KEY_PRIVATE, privHex)
             .putString(KEY_PUBLIC, pubHex)
             .apply()
-        cachedKeys = keys
         return privHex to pubHex
     }
 
     /**
-     * Import a key from hex, nsec bech32, or 12/24-word BIP-39 mnemonic.
-     * @throws Exception if the input is not a valid key format.
+     * Import a key from hex string.
+     * @throws IllegalArgumentException if the key is invalid.
      */
     fun importKey(input: String) {
-        val keys = Keys.parse(input.trim())
-        val privHex = keys.secretKey().toHex()
-        val pubHex = keys.publicKey().toHex()
+        val trimmed = input.trim()
+        val privBytes = trimmed.hexToBytes()
+        require(privBytes.size == 32 && Secp256k1.secKeyVerify(privBytes)) { "Invalid private key" }
+
+        val pubHex = NostrEvent.pubkeyFromPrivkey(privBytes)
         prefs.edit()
-            .putString(KEY_PRIVATE, privHex)
+            .putString(KEY_PRIVATE, trimmed)
             .putString(KEY_PUBLIC, pubHex)
             .apply()
-        cachedKeys = keys
+        privBytes.fill(0)
     }
-
-    /** Returns the nsec (bech32) representation for display/backup. */
-    fun getNsec(): String = getKeys().secretKey().toBech32()
-
-    /** Returns the npub (bech32) representation for sharing. */
-    fun getNpub(): String = getKeys().publicKey().toBech32()
 
     companion object {
         private const val KEY_PRIVATE = "nsec"
