@@ -52,7 +52,6 @@ ksp {
 
 dependencies {
     // From-scratch Nostr implementation (NIP-01, NIP-44, NIP-59, relay client)
-    // NO Nostr SDK — everything implemented from scratch
     implementation(libs.secp256k1.android)
     implementation(libs.bouncycastle)
     implementation(libs.okhttp)

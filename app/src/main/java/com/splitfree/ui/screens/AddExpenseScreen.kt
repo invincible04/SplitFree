@@ -27,15 +27,29 @@ fun AddExpenseScreen(
     var description by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
     var currency by remember { mutableStateOf("INR") }
+    var currencyExpanded by remember { mutableStateOf(false) }
     var paidBy by remember { mutableStateOf("") }
     var splitType by remember { mutableStateOf(SplitType.EQUAL) }
     var memberInputs by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var category by remember { mutableStateOf("") }
+    var categoryExpanded by remember { mutableStateOf(false) }
 
-    // Initialize paidBy to self when members load
+    val currencies = listOf("INR", "USD", "EUR", "GBP", "JPY", "AUD", "CAD")
+    val categories = listOf(
+        "" to "None",
+        "food" to "🍕 Food",
+        "transport" to "🚗 Transport",
+        "shopping" to "🛍️ Shopping",
+        "entertainment" to "🎬 Entertainment",
+        "utilities" to "💡 Utilities",
+        "rent" to "🏠 Rent",
+        "health" to "💊 Health",
+        "other" to "💰 Other"
+    )
+
     LaunchedEffect(uiState.myPubkey) {
         if (paidBy.isEmpty() && uiState.myPubkey.isNotEmpty()) paidBy = uiState.myPubkey
     }
-    // Initialize member inputs when members load
     LaunchedEffect(uiState.members) {
         if (uiState.members.isNotEmpty() && memberInputs.isEmpty()) {
             memberInputs = uiState.members.associateWith { "" }
@@ -57,35 +71,94 @@ fun AddExpenseScreen(
         Column(
             modifier = Modifier
                 .padding(padding)
-                .padding(16.dp)
+                .padding(horizontal = 20.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Spacer(Modifier.height(4.dp))
+
+            // Amount + Currency row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it },
+                    label = { Text("Amount") },
+                    placeholder = { Text("0.00") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    shape = MaterialTheme.shapes.medium
+                )
+                ExposedDropdownMenuBox(
+                    expanded = currencyExpanded,
+                    onExpandedChange = { currencyExpanded = it },
+                    modifier = Modifier.width(110.dp)
+                ) {
+                    OutlinedTextField(
+                        value = currency,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Currency") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = currencyExpanded) },
+                        modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                        shape = MaterialTheme.shapes.medium
+                    )
+                    ExposedDropdownMenu(
+                        expanded = currencyExpanded,
+                        onDismissRequest = { currencyExpanded = false }
+                    ) {
+                        currencies.forEach { c ->
+                            DropdownMenuItem(
+                                text = { Text(c) },
+                                onClick = { currency = c; currencyExpanded = false }
+                            )
+                        }
+                    }
+                }
+            }
+
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
                 label = { Text("Description") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = amount,
-                onValueChange = { amount = it },
-                label = { Text("Amount") },
+                placeholder = { Text("What was this for?") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-            )
-            OutlinedTextField(
-                value = currency,
-                onValueChange = { currency = it },
-                label = { Text("Currency") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                shape = MaterialTheme.shapes.medium
             )
 
-            // Paid by selector
+            // Category picker
+            ExposedDropdownMenuBox(
+                expanded = categoryExpanded,
+                onExpandedChange = { categoryExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = categories.find { it.first == category }?.second ?: "None",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Category") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                    shape = MaterialTheme.shapes.medium
+                )
+                ExposedDropdownMenu(
+                    expanded = categoryExpanded,
+                    onDismissRequest = { categoryExpanded = false }
+                ) {
+                    categories.forEach { (key, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = { category = key; categoryExpanded = false }
+                        )
+                    }
+                }
+            }
+
+            // Paid by
             if (uiState.members.size > 1) {
                 Text("Paid by", style = MaterialTheme.typography.labelLarge)
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
@@ -94,14 +167,25 @@ fun AddExpenseScreen(
                             selected = paidBy == pk,
                             onClick = { paidBy = pk },
                             shape = SegmentedButtonDefaults.itemShape(index, uiState.members.size)
-                        ) { Text(pk.take(6) + "…") }
+                        ) {
+                            Text(
+                                if (pk == uiState.myPubkey) "Me" else pk.take(6) + "…",
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
 
-            // Split type selector
+            // Split type
             Text("Split type", style = MaterialTheme.typography.labelLarge)
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                val labels = mapOf(
+                    SplitType.EQUAL to "Equal",
+                    SplitType.EXACT to "Exact",
+                    SplitType.PERCENTAGE to "Percent",
+                    SplitType.SHARES to "Shares"
+                )
                 SplitType.entries.forEachIndexed { index, type ->
                     SegmentedButton(
                         selected = splitType == type,
@@ -110,35 +194,59 @@ fun AddExpenseScreen(
                             memberInputs = uiState.members.associateWith { "" }
                         },
                         shape = SegmentedButtonDefaults.itemShape(index, SplitType.entries.size)
-                    ) { Text(type.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    ) {
+                        Text(labels[type] ?: type.name, maxLines = 1)
+                    }
                 }
             }
 
-            // Per-member inputs (not shown for equal split)
+            // Per-member inputs
             if (splitType != SplitType.EQUAL && uiState.members.isNotEmpty()) {
                 val label = when (splitType) {
                     SplitType.EXACT -> "Amount"
-                    SplitType.PERCENTAGE -> "%"
+                    SplitType.PERCENTAGE -> "Percentage"
                     SplitType.SHARES -> "Shares"
                     else -> ""
                 }
-                uiState.members.forEach { pk ->
-                    OutlinedTextField(
-                        value = memberInputs[pk] ?: "",
-                        onValueChange = { memberInputs = memberInputs + (pk to it) },
-                        label = { Text("${pk.take(6)}… — $label") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        uiState.members.forEach { pk ->
+                            val displayName = if (pk == uiState.myPubkey) "Me" else pk.take(8) + "…"
+                            OutlinedTextField(
+                                value = memberInputs[pk] ?: "",
+                                onValueChange = { memberInputs = memberInputs + (pk to it) },
+                                label = { Text("$displayName — $label") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                shape = MaterialTheme.shapes.medium
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Error
+            uiState.error?.let {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Text(
+                        it,
+                        modifier = Modifier.padding(12.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
 
-            uiState.error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Spacer(Modifier.height(4.dp))
+            // Submit
             Button(
                 onClick = {
                     val amountCents = amount.toBigDecimalOrNull()
@@ -151,11 +259,13 @@ fun AddExpenseScreen(
                         onExpenseAdded()
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = amount.isNotBlank() && description.isNotBlank()
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                enabled = amount.isNotBlank() && description.isNotBlank(),
+                shape = MaterialTheme.shapes.large
             ) {
-                Text("Add Expense")
+                Text("Add Expense", style = MaterialTheme.typography.titleMedium)
             }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }

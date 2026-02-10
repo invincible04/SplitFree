@@ -22,6 +22,7 @@ import javax.inject.Inject
 data class GroupDetailUiState(
     val groupId: String = "",
     val groupName: String = "",
+    val memberCount: Int = 1,
     val debts: List<DebtTransaction> = emptyList(),
     val expenses: List<Expense> = emptyList()
 )
@@ -44,7 +45,7 @@ class GroupDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val group = groupRepo.getById(groupId)
-            _uiState.update { it.copy(groupName = group?.name ?: "Group") }
+            _uiState.update { it.copy(groupName = group?.name ?: "Group", memberCount = group?.members?.size ?: 1) }
         }
         loadInviteLink()
         viewModelScope.launch {

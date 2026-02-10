@@ -21,7 +21,7 @@ class GiftWrapService @Inject constructor(
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_GIFT_WRAP, false)
-        set(value) { prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply() }
+        set(value) { prefs.edit().putBoolean(KEY_GIFT_WRAP, value).commit() }
 
     /**
      * Wrap a NostrEvent in NIP-59 gift wrap for a recipient.
