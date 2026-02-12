@@ -25,6 +25,10 @@ fun AddExpenseScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var description by remember { mutableStateOf("") }
+
+    LaunchedEffect(uiState.saved) {
+        if (uiState.saved) onExpenseAdded()
+    }
     var amount by remember { mutableStateOf("") }
     var currency by remember { mutableStateOf("INR") }
     var currencyExpanded by remember { mutableStateOf(false) }
@@ -256,7 +260,6 @@ fun AddExpenseScreen(
                     if (amountCents > 0 && description.isNotBlank()) {
                         val inputs = memberInputs.mapValues { (_, v) -> v.toLongOrNull() ?: 0L }
                         viewModel.addExpense(description, amountCents, currency, paidBy, splitType, inputs)
-                        onExpenseAdded()
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp),

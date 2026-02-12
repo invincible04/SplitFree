@@ -23,7 +23,7 @@ import java.util.UUID
  */
 object BleProtocol {
     const val VERSION: Byte = 1
-    const val HEADER_SIZE = 13
+    const val HEADER_SIZE = 14
     const val SENDER_ID_SIZE = 8
     const val GROUP_ID_SIZE = 16
     const val BLE_MTU = 512

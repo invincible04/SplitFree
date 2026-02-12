@@ -21,6 +21,9 @@ interface GroupDao {
     @Query("SELECT * FROM `groups` WHERE groupId = :groupId")
     suspend fun getById(groupId: String): GroupEntity?
 
+    @Query("SELECT * FROM `groups` WHERE groupId = :groupId")
+    fun observeById(groupId: String): Flow<GroupEntity?>
+
     @Query("UPDATE `groups` SET lastSyncTimestamp = :timestamp WHERE groupId = :groupId")
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 

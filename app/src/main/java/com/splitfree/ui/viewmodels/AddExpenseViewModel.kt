@@ -18,7 +18,8 @@ import javax.inject.Inject
 data class AddExpenseUiState(
     val members: List<String> = emptyList(),
     val myPubkey: String = "",
-    val error: String? = null
+    val error: String? = null,
+    val saved: Boolean = false
 )
 
 @HiltViewModel
@@ -64,7 +65,7 @@ class AddExpenseViewModel @Inject constructor(
                     splitType = splitType,
                     splitAmong = splits
                 )
-                _uiState.value = _uiState.value.copy(error = null)
+                _uiState.value = _uiState.value.copy(error = null, saved = true)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(error = e.message)
             }

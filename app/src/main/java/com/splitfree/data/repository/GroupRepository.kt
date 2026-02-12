@@ -46,6 +46,8 @@ class GroupRepository @Inject constructor(
 
     suspend fun getById(groupId: String): Group? = groupDao.getById(groupId)?.toDomain()
 
+    fun observeById(groupId: String): Flow<Group?> = groupDao.observeById(groupId).map { it?.toDomain() }
+
     suspend fun getGroupKey(groupId: String): String? {
         // Try encrypted store first, fall back to Room for migration
         val fromStore = keyStore.getString(groupId, null)

@@ -41,6 +41,7 @@ import com.splitfree.ui.viewmodels.GroupDetailViewModel
 fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
     onNearbySync: (String) -> Unit = {},
+    onNavigateToGroup: (String) -> Unit = {},
     onBack: () -> Unit,
     viewModel: GroupDetailViewModel = hiltViewModel()
 ) {
@@ -226,7 +227,7 @@ fun GroupDetailScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showRemoveDialog = null
-                    viewModel.removeMember(pubkey) { /* new group created, list will refresh */ }
+                    viewModel.removeMember(pubkey) { newGroupId -> onNavigateToGroup(newGroupId) }
                 }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {

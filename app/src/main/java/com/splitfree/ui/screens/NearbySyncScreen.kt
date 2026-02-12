@@ -30,6 +30,10 @@ fun NearbySyncScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var permissionsGranted by remember { mutableStateOf(false) }
 
+    DisposableEffect(Unit) {
+        onDispose { viewModel.stopScan() }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results -> permissionsGranted = results.values.all { it } }

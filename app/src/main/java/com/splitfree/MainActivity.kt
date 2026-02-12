@@ -9,8 +9,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.JoinGroupUseCase
@@ -27,7 +30,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var identity: IdentityManager
     @Inject lateinit var joinGroup: JoinGroupUseCase
 
-    private var pendingDeepLink: String? = null
+    private var pendingDeepLink by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,17 +46,16 @@ class MainActivity : ComponentActivity() {
                     val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
                     SplitFreeNavGraph(navController = navController, startDestination = start)
 
-                    // Process pending deep link after nav is ready
-                    pendingDeepLink?.let { uri ->
-                        pendingDeepLink = null
-                        if (identity.hasIdentity()) {
-                            lifecycleScope.launch {
-                                try {
-                                    val group = joinGroup(uri)
-                                    navController.navigate(Screen.GroupDetail.withId(group.id))
-                                } catch (e: Exception) {
-                                    Toast.makeText(this@MainActivity, "Invalid invite link", Toast.LENGTH_SHORT).show()
-                                }
+                    // Process pending deep link once nav is ready
+                    val deepLink = pendingDeepLink
+                    LaunchedEffect(deepLink) {
+                        if (deepLink != null && identity.hasIdentity()) {
+                            pendingDeepLink = null
+                            try {
+                                val group = joinGroup(deepLink)
+                                navController.navigate(Screen.GroupDetail.withId(group.id))
+                            } catch (e: Exception) {
+                                Toast.makeText(this@MainActivity, "Invalid invite link", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }

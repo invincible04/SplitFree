@@ -15,6 +15,8 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.GroupMeta
 import com.splitfree.domain.usecase.CreateSnapshotUseCase
+import com.splitfree.domain.usecase.MigrateGroupUseCase
+import com.splitfree.domain.usecase.RevokeKeyUseCase
 import com.splitfree.domain.usecase.SelfHealUseCase
 import com.splitfree.data.local.entities.EventEntity
 import dagger.assisted.Assisted
@@ -40,7 +42,9 @@ class MidnightSyncWorker @AssistedInject constructor(
     private val signer: EventSigner,
     private val giftWrap: GiftWrapService,
     private val createSnapshot: CreateSnapshotUseCase,
-    private val selfHeal: SelfHealUseCase
+    private val selfHeal: SelfHealUseCase,
+    private val migrateGroup: MigrateGroupUseCase,
+    private val revokeKey: RevokeKeyUseCase
 ) : CoroutineWorker(context, params) {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -142,7 +146,7 @@ class MidnightSyncWorker @AssistedInject constructor(
 
             val authorHex = inner.pubkey
             val group = groupRepo.getById(groupId)
-            if (eventType != "group_meta" && group != null && authorHex !in group.members) {
+            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
                 return false
             }
@@ -166,6 +170,14 @@ class MidnightSyncWorker @AssistedInject constructor(
                         groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays)
                     }
                 } catch (_: Exception) {}
+            }
+
+            if (eventType == "group_migrate" && decrypted != null) {
+                try { migrateGroup.handleMigration(decrypted, authorHex, groupId) } catch (_: Exception) {}
+            }
+
+            if (eventType == "key_revocation" && decrypted != null) {
+                try { revokeKey.handleRevocation(decrypted, authorHex, groupId) } catch (_: Exception) {}
             }
 
             true

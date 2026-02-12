@@ -54,16 +54,17 @@ class GroupDetailViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            val group = groupRepo.getById(groupId)
-            val myPub = identity.getPublicKeyHex()
-            _uiState.update {
-                it.copy(
-                    groupName = group?.name ?: "Group",
-                    memberCount = group?.members?.size ?: 1,
-                    members = group?.members ?: emptyList(),
-                    createdBy = group?.createdBy ?: "",
-                    myPubkey = myPub
-                )
+            groupRepo.observeById(groupId).collect { group ->
+                val myPub = identity.getPublicKeyHex()
+                _uiState.update {
+                    it.copy(
+                        groupName = group?.name ?: "Group",
+                        memberCount = group?.members?.size ?: 1,
+                        members = group?.members ?: emptyList(),
+                        createdBy = group?.createdBy ?: "",
+                        myPubkey = myPub
+                    )
+                }
             }
         }
         loadInviteLink()
