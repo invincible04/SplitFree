@@ -8,7 +8,6 @@ import java.security.SecureRandom
  * Extended NIP-01 tests: JSON edge cases, fromJson robustness, event signing edge cases.
  */
 class Nip01ExtendedTest {
-
     private val privKey = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a".hexToBytes()
     private val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
 
@@ -55,20 +54,22 @@ class Nip01ExtendedTest {
 
     @Test
     fun `toJson-fromJson round-trip preserves all fields`() {
-        val original = NostrEvent(
-            id = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-            pubkey = pubHex,
-            createdAt = 1700000000L,
-            kind = 30078,
-            tags = listOf(
-                listOf("d", "group:uuid"),
-                listOf("g", "group-id"),
-                listOf("t", "expense"),
-                listOf("e", "expense-uuid")
-            ),
-            content = "encrypted content here",
-            sig = "a".repeat(128)
-        )
+        val original =
+            NostrEvent(
+                id = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                pubkey = pubHex,
+                createdAt = 1700000000L,
+                kind = 30078,
+                tags =
+                    listOf(
+                        listOf("d", "group:uuid"),
+                        listOf("g", "group-id"),
+                        listOf("t", "expense"),
+                        listOf("e", "expense-uuid"),
+                    ),
+                content = "encrypted content here",
+                sig = "a".repeat(128),
+            )
         val json = original.toJson()
         val parsed = NostrEvent.fromJson(json)!!
         assertEquals(original.id, parsed.id)
@@ -122,10 +123,14 @@ class Nip01ExtendedTest {
 
     @Test
     fun `verify rejects event with modified tag`() {
-        val signed = NostrEvent(
-            pubkey = pubHex, createdAt = 1, kind = 1,
-            tags = listOf(listOf("d", "original")), content = "test"
-        ).sign(privKey)
+        val signed =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = 1,
+                kind = 1,
+                tags = listOf(listOf("d", "original")),
+                content = "test",
+            ).sign(privKey)
         val tampered = signed.copy(tags = listOf(listOf("d", "tampered")))
         assertFalse(tampered.verify())
     }

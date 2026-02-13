@@ -21,30 +21,33 @@ import java.util.concurrent.TimeUnit
  * Requires network. Gracefully skips if no relay is reachable.
  */
 class NostrRelayIntegrationTest {
-
-    private val relays = listOf(
-        "wss://relay.damus.io",
-        "wss://nos.lol",
-        "wss://relay.nostr.band"
-    )
+    private val relays =
+        listOf(
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://relay.nostr.band",
+        )
 
     private val privKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
     private val pubKeyHex = NostrEvent.pubkeyFromPrivkey(privKey)
-    private val httpClient = OkHttpClient.Builder()
-        .pingInterval(30, TimeUnit.SECONDS)
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val httpClient =
+        OkHttpClient
+            .Builder()
+            .pingInterval(30, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
 
     @Test
     fun `publish event to real relay and read it back`() {
-        val event = NostrEvent(
-            pubkey = pubKeyHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 1,
-            tags = listOf(listOf("t", "splitfree-test")),
-            content = "SplitFree integration test ${System.currentTimeMillis()}"
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubKeyHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 1,
+                tags = listOf(listOf("t", "splitfree-test")),
+                content = "SplitFree integration test ${System.currentTimeMillis()}",
+            ).sign(privKey)
 
         assertTrue("Event must verify locally", event.verify())
 
@@ -60,16 +63,18 @@ class NostrRelayIntegrationTest {
 
     @Test
     fun `relay accepts kind 30078 NIP-78 events`() {
-        val event = NostrEvent(
-            pubkey = pubKeyHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(
-                listOf("d", "splitfree-test-${System.currentTimeMillis()}"),
-                listOf("t", "expense")
-            ),
-            content = "encrypted-expense-placeholder"
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubKeyHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags =
+                    listOf(
+                        listOf("d", "splitfree-test-${System.currentTimeMillis()}"),
+                        listOf("t", "expense"),
+                    ),
+                content = "encrypted-expense-placeholder",
+            ).sign(privKey)
 
         val accepted = tryRelays { url -> publishAndWaitForOk(url, event) }
         if (accepted != null) {
@@ -86,16 +91,18 @@ class NostrRelayIntegrationTest {
         val convKey = Nip44.getConversationKey(privKey, recipientPub)
         val encrypted = Nip44.encrypt(plaintext, convKey)
 
-        val event = NostrEvent(
-            pubkey = pubKeyHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(
-                listOf("d", "splitfree-enc-${System.currentTimeMillis()}"),
-                listOf("p", recipientPub.toHex())
-            ),
-            content = encrypted
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubKeyHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags =
+                    listOf(
+                        listOf("d", "splitfree-enc-${System.currentTimeMillis()}"),
+                        listOf("p", recipientPub.toHex()),
+                    ),
+                content = encrypted,
+            ).sign(privKey)
 
         val result = tryRelays { url -> publishAndReadBack(url, event) }
         if (result != null) {
@@ -122,21 +129,33 @@ class NostrRelayIntegrationTest {
         return null
     }
 
-    private fun publishAndReadBack(relayUrl: String, event: NostrEvent): NostrEvent? {
+    private fun publishAndReadBack(
+        relayUrl: String,
+        event: NostrEvent,
+    ): NostrEvent? {
         val receivedEvents = CopyOnWriteArrayList<NostrEvent>()
         val eventLatch = CountDownLatch(1)
         val okLatch = CountDownLatch(1)
         var accepted = false
 
-        val ws = openWs(relayUrl) { text ->
-            when (val msg = parseMsg(text)) {
-                is Msg.Ok -> { accepted = msg.accepted; okLatch.countDown() }
-                is Msg.Event -> if (msg.event.id == event.id) {
-                    receivedEvents.add(msg.event); eventLatch.countDown()
+        val ws =
+            openWs(relayUrl) { text ->
+                when (val msg = parseMsg(text)) {
+                    is Msg.Ok -> {
+                        accepted = msg.accepted
+                        okLatch.countDown()
+                    }
+
+                    is Msg.Event -> {
+                        if (msg.event.id == event.id) {
+                            receivedEvents.add(msg.event)
+                            eventLatch.countDown()
+                        }
+                    }
+
+                    else -> {}
                 }
-                else -> {}
-            }
-        } ?: return null
+            } ?: return null
 
         try {
             val subId = "t${System.currentTimeMillis()}"
@@ -153,16 +172,21 @@ class NostrRelayIntegrationTest {
         }
     }
 
-    private fun publishAndWaitForOk(relayUrl: String, event: NostrEvent): Boolean? {
+    private fun publishAndWaitForOk(
+        relayUrl: String,
+        event: NostrEvent,
+    ): Boolean? {
         val okLatch = CountDownLatch(1)
         var accepted = false
 
-        val ws = openWs(relayUrl) { text ->
-            val msg = parseMsg(text)
-            if (msg is Msg.Ok && msg.eventId == event.id) {
-                accepted = msg.accepted; okLatch.countDown()
-            }
-        } ?: return null
+        val ws =
+            openWs(relayUrl) { text ->
+                val msg = parseMsg(text)
+                if (msg is Msg.Ok && msg.eventId == event.id) {
+                    accepted = msg.accepted
+                    okLatch.countDown()
+                }
+            } ?: return null
 
         try {
             ws.send("""["EVENT",${event.toJson()}]""")
@@ -175,24 +199,41 @@ class NostrRelayIntegrationTest {
 
     // --- OkHttp WebSocket ---
 
-    private fun openWs(url: String, onMessage: (String) -> Unit): WebSocket? {
+    private fun openWs(
+        url: String,
+        onMessage: (String) -> Unit,
+    ): WebSocket? {
         val openLatch = CountDownLatch(1)
         var opened = false
 
-        val ws = httpClient.newWebSocket(
-            Request.Builder().url(url).build(),
-            object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    opened = true; openLatch.countDown()
-                }
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    onMessage(text)
-                }
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    openLatch.countDown()
-                }
-            }
-        )
+        val ws =
+            httpClient.newWebSocket(
+                Request.Builder().url(url).build(),
+                object : WebSocketListener() {
+                    override fun onOpen(
+                        webSocket: WebSocket,
+                        response: Response,
+                    ) {
+                        opened = true
+                        openLatch.countDown()
+                    }
+
+                    override fun onMessage(
+                        webSocket: WebSocket,
+                        text: String,
+                    ) {
+                        onMessage(text)
+                    }
+
+                    override fun onFailure(
+                        webSocket: WebSocket,
+                        t: Throwable,
+                        response: Response?,
+                    ) {
+                        openLatch.countDown()
+                    }
+                },
+            )
 
         return if (openLatch.await(10, TimeUnit.SECONDS) && opened) ws else null
     }
@@ -200,31 +241,52 @@ class NostrRelayIntegrationTest {
     // --- Minimal relay message parser ---
 
     private sealed class Msg {
-        data class Ok(val eventId: String, val accepted: Boolean) : Msg()
-        data class Event(val subId: String, val event: NostrEvent) : Msg()
+        data class Ok(
+            val eventId: String,
+            val accepted: Boolean,
+        ) : Msg()
+
+        data class Event(
+            val subId: String,
+            val event: NostrEvent,
+        ) : Msg()
+
         object Other : Msg()
     }
 
-    private fun parseMsg(json: String): Msg? = try {
-        val arr = Json.parseToJsonElement(json.trim()).jsonArray
-        when (arr[0].jsonPrimitive.content) {
-            "OK" -> Msg.Ok(arr[1].jsonPrimitive.content, arr[2].jsonPrimitive.boolean)
-            "EVENT" -> {
-                val o = arr[2].jsonObject
-                val tags = o["tags"]?.jsonArray?.map { t ->
-                    t.jsonArray.map { it.jsonPrimitive.content }
-                } ?: emptyList()
-                Msg.Event(arr[1].jsonPrimitive.content, NostrEvent(
-                    id = o["id"]!!.jsonPrimitive.content,
-                    pubkey = o["pubkey"]!!.jsonPrimitive.content,
-                    createdAt = o["created_at"]!!.jsonPrimitive.long,
-                    kind = o["kind"]!!.jsonPrimitive.int,
-                    tags = tags,
-                    content = o["content"]!!.jsonPrimitive.content,
-                    sig = o["sig"]!!.jsonPrimitive.content
-                ))
+    private fun parseMsg(json: String): Msg? =
+        try {
+            val arr = Json.parseToJsonElement(json.trim()).jsonArray
+            when (arr[0].jsonPrimitive.content) {
+                "OK" -> {
+                    Msg.Ok(arr[1].jsonPrimitive.content, arr[2].jsonPrimitive.boolean)
+                }
+
+                "EVENT" -> {
+                    val o = arr[2].jsonObject
+                    val tags =
+                        o["tags"]?.jsonArray?.map { t ->
+                            t.jsonArray.map { it.jsonPrimitive.content }
+                        } ?: emptyList()
+                    Msg.Event(
+                        arr[1].jsonPrimitive.content,
+                        NostrEvent(
+                            id = o["id"]!!.jsonPrimitive.content,
+                            pubkey = o["pubkey"]!!.jsonPrimitive.content,
+                            createdAt = o["created_at"]!!.jsonPrimitive.long,
+                            kind = o["kind"]!!.jsonPrimitive.int,
+                            tags = tags,
+                            content = o["content"]!!.jsonPrimitive.content,
+                            sig = o["sig"]!!.jsonPrimitive.content,
+                        ),
+                    )
+                }
+
+                else -> {
+                    Msg.Other
+                }
             }
-            else -> Msg.Other
+        } catch (_: Exception) {
+            null
         }
-    } catch (_: Exception) { null }
 }

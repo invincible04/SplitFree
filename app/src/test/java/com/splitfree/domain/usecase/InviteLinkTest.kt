@@ -11,9 +11,13 @@ import java.util.Base64
  * Uses java.util.Base64 instead of android.util.Base64 (same encoding).
  */
 class InviteLinkTest {
-
     // Mirror the createInviteLink logic using java.util.Base64
-    private fun createInviteLink(groupId: String, groupKey: String, relays: List<String>, name: String): String {
+    private fun createInviteLink(
+        groupId: String,
+        groupKey: String,
+        relays: List<String>,
+        name: String,
+    ): String {
         val g = Base64.getUrlEncoder().withoutPadding().encodeToString(groupId.toByteArray())
         val k = Base64.getUrlEncoder().withoutPadding().encodeToString(groupKey.toByteArray())
         val r = relays.joinToString(",")
@@ -24,7 +28,8 @@ class InviteLinkTest {
     // Mirror the parseUri logic
     private fun parseUri(uri: String): Map<String, String> {
         val query = uri.substringAfter("?", "")
-        return query.split("&")
+        return query
+            .split("&")
             .filter { it.contains("=") }
             .associate {
                 val (k, v) = it.split("=", limit = 2)
@@ -32,19 +37,19 @@ class InviteLinkTest {
             }
     }
 
-    private fun decodeParam(value: String): String =
-        String(Base64.getUrlDecoder().decode(value))
+    private fun decodeParam(value: String): String = String(Base64.getUrlDecoder().decode(value))
 
     // --- Round-trip tests ---
 
     @Test
     fun `invite link round-trip preserves all fields`() {
-        val link = createInviteLink(
-            groupId = "56a0833d-a77c-418f-ac2d-64150216af31",
-            groupKey = "oOptOxcjIjJ4avhfwNc8gkFutNgKjGjmr0RtG4XzA0c=",
-            relays = listOf("wss://relay.damus.io", "wss://nos.lol"),
-            name = "Goa Trip 2026"
-        )
+        val link =
+            createInviteLink(
+                groupId = "56a0833d-a77c-418f-ac2d-64150216af31",
+                groupKey = "oOptOxcjIjJ4avhfwNc8gkFutNgKjGjmr0RtG4XzA0c=",
+                relays = listOf("wss://relay.damus.io", "wss://nos.lol"),
+                name = "Goa Trip 2026",
+            )
 
         assertTrue(link.startsWith("splitfree://join?"))
 
@@ -64,10 +69,14 @@ class InviteLinkTest {
 
     @Test
     fun `invite link with 5 relays`() {
-        val relays = listOf(
-            "wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band",
-            "wss://relay.snort.social", "wss://nostr.wine"
-        )
+        val relays =
+            listOf(
+                "wss://relay.damus.io",
+                "wss://nos.lol",
+                "wss://relay.nostr.band",
+                "wss://relay.snort.social",
+                "wss://nostr.wine",
+            )
         val link = createInviteLink("g1", "key1", relays, "Test")
         val params = parseUri(link)
         val parsed = params["r"]!!.split(",")

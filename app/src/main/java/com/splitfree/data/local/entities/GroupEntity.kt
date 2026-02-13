@@ -14,5 +14,5 @@ data class GroupEntity(
     val relays: String, // JSON array of relay URLs
     val groupKey: String, // base64 encoded symmetric key
     val lastSyncTimestamp: Long = 0,
-    val lastMetaTimestamp: Long = 0
+    val lastMetaTimestamp: Long = 0,
 )

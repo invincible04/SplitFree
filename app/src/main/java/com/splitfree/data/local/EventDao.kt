@@ -19,7 +19,10 @@ interface EventDao {
     suspend fun getEvent(eventId: String): EventEntity?
 
     @Query("SELECT * FROM events WHERE groupId = :groupId AND eventType = :type ORDER BY createdAt DESC LIMIT 1")
-    suspend fun getLatestEventByType(groupId: String, type: String): EventEntity?
+    suspend fun getLatestEventByType(
+        groupId: String,
+        type: String,
+    ): EventEntity?
 
     @Query("SELECT eventId FROM events WHERE groupId = :groupId")
     suspend fun getEventIds(groupId: String): List<String>

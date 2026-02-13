@@ -10,8 +10,10 @@ import com.google.zxing.qrcode.QRCodeWriter
  * QR code generation using ZXing — no camera/scanning, just encoding.
  */
 object QrGenerator {
-
-    fun encode(content: String, size: Int = 512): Bitmap {
+    fun encode(
+        content: String,
+        size: Int = 512,
+    ): Bitmap {
         val hints = mapOf(EncodeHintType.MARGIN to 1)
         val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
         return Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565).apply {

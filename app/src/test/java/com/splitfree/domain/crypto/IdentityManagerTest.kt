@@ -1,7 +1,7 @@
 package com.splitfree.domain.crypto
 
-import android.content.SharedPreferences
 import android.content.Context
+import android.content.SharedPreferences
 import io.mockk.*
 import org.junit.After
 import org.junit.Assert.*
@@ -9,7 +9,6 @@ import org.junit.Before
 import org.junit.Test
 
 class IdentityManagerTest {
-
     private val context = mockk<Context>(relaxed = true)
     private val prefs = mockk<SharedPreferences>(relaxed = true)
     private val editor = mockk<SharedPreferences.Editor>(relaxed = true)

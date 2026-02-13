@@ -1,13 +1,12 @@
 package com.splitfree.data.ble
 
 import io.mockk.*
-import org.junit.Assert.*
 import org.junit.After
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 class BleProtocolEncodeDecodeTest {
-
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)
@@ -135,8 +134,15 @@ class BleProtocolEncodeDecodeTest {
 
     @Test
     fun `addFragment returns null for zero total`() {
-        val buf = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.BIG_ENDIAN)
-        buf.putLong(1L); buf.putLong(2L); buf.putShort(0); buf.putShort(0); buf.put(byteArrayOf(1))
+        val buf =
+            java.nio.ByteBuffer
+                .allocate(24)
+                .order(java.nio.ByteOrder.BIG_ENDIAN)
+        buf.putLong(1L)
+        buf.putLong(2L)
+        buf.putShort(0)
+        buf.putShort(0)
+        buf.put(byteArrayOf(1))
         assertNull(FragmentManager.addFragment("ep1", buf.array()))
     }
 
@@ -168,8 +174,15 @@ class BleProtocolEncodeDecodeTest {
 
     @Test
     fun `addFragment rejects total over 256`() {
-        val buf = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.BIG_ENDIAN)
-        buf.putLong(1L); buf.putLong(2L); buf.putShort(0); buf.putShort(257); buf.put(byteArrayOf(1))
+        val buf =
+            java.nio.ByteBuffer
+                .allocate(24)
+                .order(java.nio.ByteOrder.BIG_ENDIAN)
+        buf.putLong(1L)
+        buf.putLong(2L)
+        buf.putShort(0)
+        buf.putShort(257)
+        buf.put(byteArrayOf(1))
         assertNull(FragmentManager.addFragment("ep1", buf.array()))
     }
 

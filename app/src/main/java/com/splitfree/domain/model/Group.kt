@@ -10,5 +10,5 @@ data class Group(
     val createdBy: String, // pubkey
     val createdAt: Long, // unix seconds
     val members: List<String>, // pubkeys
-    val relays: List<String>
+    val relays: List<String>,
 )

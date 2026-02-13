@@ -5,7 +5,6 @@ import org.junit.Test
 import java.security.MessageDigest
 
 class Bip39Test {
-
     // --- Wordlist validation ---
 
     @Test
@@ -176,7 +175,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -186,7 +185,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -196,7 +195,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -206,7 +205,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -216,7 +215,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "hamster diagram private dutch cause delay private meat slide toddler razor book happy fancy gospel tennis maple dilemma loan word shrug inflict delay length",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -226,7 +225,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "panda eyebrow bullet gorilla call smoke muffin taste mesh discover soft ostrich alcohol speed nation flash devote level hobby quick inner drive ghost inside",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -236,7 +235,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "all hour make first leader extend hole alien behind guard gospel lava path output census museum junior mass reopen famous sing advance salt reform",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -246,7 +245,7 @@ class Bip39Test {
         val words = Bip39.toMnemonic(entropy)
         assertEquals(
             "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
-            words.joinToString(" ")
+            words.joinToString(" "),
         )
     }
 
@@ -254,16 +253,17 @@ class Bip39Test {
 
     @Test
     fun `round-trip all official 256-bit vectors`() {
-        val vectors = listOf(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
-            "8080808080808080808080808080808080808080808080808080808080808080",
-            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "68a79eaca2324873eacc50cb9c6eca8cc68ea5d936f98787c60c7ebc74e6ce7c",
-            "9f6a2878b2520799a44ef18bc7df394e7061a224d2c33cd015b157d746869863",
-            "066dca1a2bb7e8a1db2832148ce9933eea0f3ac9548d793112d9a95c9407efad",
-            "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f"
-        )
+        val vectors =
+            listOf(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+                "8080808080808080808080808080808080808080808080808080808080808080",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "68a79eaca2324873eacc50cb9c6eca8cc68ea5d936f98787c60c7ebc74e6ce7c",
+                "9f6a2878b2520799a44ef18bc7df394e7061a224d2c33cd015b157d746869863",
+                "066dca1a2bb7e8a1db2832148ce9933eea0f3ac9548d793112d9a95c9407efad",
+                "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f",
+            )
         for (hex in vectors) {
             val entropy = hexToBytes(hex)
             val words = Bip39.toMnemonic(entropy)
@@ -272,8 +272,7 @@ class Bip39Test {
         }
     }
 
-    private fun hexToBytes(hex: String): ByteArray =
-        ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    private fun hexToBytes(hex: String): ByteArray = ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 
     // --- Case insensitivity ---
 

@@ -5,7 +5,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class UseCaseSerializationTest {
-
     private val json = Json { ignoreUnknownKeys = true }
 
     // --- KeyRevocation ---
@@ -36,12 +35,13 @@ class UseCaseSerializationTest {
 
     @Test
     fun `GroupMigration round-trip`() {
-        val gm = GroupMigration(
-            newGroupId = "new-id",
-            encryptedKeys = mapOf("pub1" to "enc1", "pub2" to "enc2"),
-            members = listOf("pub1", "pub2"),
-            removedMember = "pub3"
-        )
+        val gm =
+            GroupMigration(
+                newGroupId = "new-id",
+                encryptedKeys = mapOf("pub1" to "enc1", "pub2" to "enc2"),
+                members = listOf("pub1", "pub2"),
+                removedMember = "pub3",
+            )
         val s = json.encodeToString(GroupMigration.serializer(), gm)
         val d = json.decodeFromString<GroupMigration>(s)
         assertEquals(gm, d)
@@ -60,16 +60,18 @@ class UseCaseSerializationTest {
 
     @Test
     fun `BalanceSnapshot round-trip`() {
-        val snap = BalanceSnapshot(
-            id = "snap-1",
-            as_of_event_count = 100,
-            as_of_timestamp = 1700000000L,
-            balances = listOf(
-                SnapshotBalance("alice", 500, "INR"),
-                SnapshotBalance("bob", -500, "INR")
-            ),
-            event_hashes = listOf("hash1", "hash2")
-        )
+        val snap =
+            BalanceSnapshot(
+                id = "snap-1",
+                as_of_event_count = 100,
+                as_of_timestamp = 1700000000L,
+                balances =
+                    listOf(
+                        SnapshotBalance("alice", 500, "INR"),
+                        SnapshotBalance("bob", -500, "INR"),
+                    ),
+                event_hashes = listOf("hash1", "hash2"),
+            )
         val s = json.encodeToString(BalanceSnapshot.serializer(), snap)
         val d = json.decodeFromString<BalanceSnapshot>(s)
         assertEquals(snap, d)
@@ -103,10 +105,15 @@ class UseCaseSerializationTest {
 
     @Test
     fun `BalanceResult holds balances and exclusions`() {
-        val br = BalanceResult(
-            balances = listOf(com.splitfree.domain.model.Balance("a", 100, "INR")),
-            excludedExpenseUuids = setOf("uuid-1", "uuid-2")
-        )
+        val br =
+            BalanceResult(
+                balances =
+                    listOf(
+                        com.splitfree.domain.model
+                            .Balance("a", 100, "INR"),
+                    ),
+                excludedExpenseUuids = setOf("uuid-1", "uuid-2"),
+            )
         assertEquals(1, br.balances.size)
         assertEquals(2, br.excludedExpenseUuids.size)
         assertTrue("uuid-1" in br.excludedExpenseUuids)

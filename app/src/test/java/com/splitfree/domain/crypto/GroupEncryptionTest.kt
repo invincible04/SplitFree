@@ -7,13 +7,15 @@ import org.junit.Test
  * GroupEncryption tests: encrypt/decrypt with shared group key.
  */
 class GroupEncryptionTest {
-
     private val encryption = GroupEncryption()
 
     @Test
     fun `generate group key is 32 bytes base64`() {
         val key = encryption.generateGroupKey()
-        val decoded = java.util.Base64.getDecoder().decode(key)
+        val decoded =
+            java.util.Base64
+                .getDecoder()
+                .decode(key)
         assertEquals(32, decoded.size)
     }
 

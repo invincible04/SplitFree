@@ -12,11 +12,12 @@ import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class BootReceiverTest {
-
     private val receiver = BootReceiver()
 
     @After
-    fun teardown() { unmockkAll() }
+    fun teardown() {
+        unmockkAll()
+    }
 
     @Test
     fun `ignores non-boot intents`() {

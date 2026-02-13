@@ -18,11 +18,14 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class ForegroundSyncService : Service() {
-
     @Inject lateinit var nostrClient: NostrClient
+
     @Inject lateinit var groupRepo: GroupRepository
+
     @Inject lateinit var identity: IdentityManager
+
     @Inject lateinit var eventProcessor: EventProcessor
+
     @Inject lateinit var signer: EventSigner
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -86,14 +89,19 @@ class ForegroundSyncService : Service() {
             nostrClient.startListening()
             nostrClient.incomingEvents.collect { event ->
                 try {
-                    val result = eventProcessor.process(
-                        rawEvent = event,
-                        nonCancellable = true
-                    )
+                    val result =
+                        eventProcessor.process(
+                            rawEvent = event,
+                            nonCancellable = true,
+                        )
                     if (result.stored) {
                         ExpenseNotifier.notifyIfNeeded(
-                            this@ForegroundSyncService, result.eventType!!, result.decrypted,
-                            result.authorHex!!, identity.getPublicKeyHex(), result.groupName ?: "Group"
+                            this@ForegroundSyncService,
+                            result.eventType!!,
+                            result.decrypted,
+                            result.authorHex!!,
+                            identity.getPublicKeyHex(),
+                            result.groupName ?: "Group",
                         )
                     }
                 } catch (e: Exception) {
@@ -104,14 +112,18 @@ class ForegroundSyncService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID, "Sync Service", NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "Background expense sync" }
+        val channel =
+            NotificationChannel(
+                CHANNEL_ID,
+                "Sync Service",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = "Background expense sync" }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun buildNotification(): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+        NotificationCompat
+            .Builder(this, CHANNEL_ID)
             .setContentTitle("SplitFree")
             .setContentText("Syncing expenses in background")
             .setSmallIcon(android.R.drawable.ic_popup_sync)

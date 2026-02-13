@@ -4,12 +4,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HashUtilTest {
-
     @Test
     fun `sha256 of empty string matches known hash`() {
         assertEquals(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            HashUtil.sha256Hex("")
+            HashUtil.sha256Hex(""),
         )
     }
 
@@ -17,7 +16,7 @@ class HashUtilTest {
     fun `sha256 of hello world matches known hash`() {
         assertEquals(
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
-            HashUtil.sha256Hex("hello world")
+            HashUtil.sha256Hex("hello world"),
         )
     }
 

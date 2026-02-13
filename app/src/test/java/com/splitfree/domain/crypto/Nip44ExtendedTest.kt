@@ -9,7 +9,6 @@ import java.security.SecureRandom
  * Tests edge cases that could cause real-world failures.
  */
 class Nip44ExtendedTest {
-
     private val privA = ByteArray(32).also { SecureRandom().nextBytes(it) }
     private val privB = ByteArray(32).also { SecureRandom().nextBytes(it) }
     private val pubB = NostrEvent.pubkeyFromPrivkey(privB).hexToBytes()
@@ -86,9 +85,15 @@ class Nip44ExtendedTest {
     fun `decrypt rejects version 0x01`() {
         val convKey = Nip44.getConversationKey(privA, pubB)
         val encrypted = Nip44.encrypt("test", convKey)
-        val decoded = java.util.Base64.getDecoder().decode(encrypted)
+        val decoded =
+            java.util.Base64
+                .getDecoder()
+                .decode(encrypted)
         decoded[0] = 0x01 // change version
-        val reencoded = java.util.Base64.getEncoder().encodeToString(decoded)
+        val reencoded =
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(decoded)
         Nip44.decrypt(reencoded, convKey)
     }
 
@@ -163,7 +168,10 @@ class Nip44ExtendedTest {
     fun `decrypt rejects too-short decoded payload`() {
         val convKey = Nip44.getConversationKey(privA, pubB)
         // Create a valid base64 that decodes to < 99 bytes but passes length check
-        val tooShort = java.util.Base64.getEncoder().encodeToString(ByteArray(98) { 0x02 })
+        val tooShort =
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(ByteArray(98) { 0x02 })
         Nip44.decrypt(tooShort, convKey)
     }
 

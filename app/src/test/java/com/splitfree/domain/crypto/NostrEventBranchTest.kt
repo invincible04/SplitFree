@@ -11,7 +11,6 @@ import org.junit.Test
  * - toJson round-trip
  */
 class NostrEventBranchTest {
-
     private val privKey = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a".hexToBytes()
     private val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
 

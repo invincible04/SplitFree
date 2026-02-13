@@ -22,7 +22,9 @@ object CompressionUtil {
             val compressedLen = compressor.compress(data, 0, data.size, buf, 0, maxLen)
             if (compressedLen >= data.size) return null
             // Prepend 4-byte big-endian original size
-            ByteBuffer.allocate(4 + compressedLen).order(ByteOrder.BIG_ENDIAN)
+            ByteBuffer
+                .allocate(4 + compressedLen)
+                .order(ByteOrder.BIG_ENDIAN)
                 .putInt(data.size)
                 .put(buf, 0, compressedLen)
                 .array()
@@ -39,7 +41,7 @@ object CompressionUtil {
             if (originalSize <= 0 || originalSize > MAX_OUTPUT_SIZE) return null
             val ratio = originalSize.toDouble() / (compressed.size - 4).toDouble()
             if (ratio > MAX_RATIO) {
-                Log.w(TAG, "Suspicious ratio ${ratio}:1 — possible bomb")
+                Log.w(TAG, "Suspicious ratio $ratio:1 — possible bomb")
                 return null
             }
             val decompressor = factory.fastDecompressor()

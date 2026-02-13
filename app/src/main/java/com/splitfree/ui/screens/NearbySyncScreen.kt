@@ -25,7 +25,7 @@ import com.splitfree.ui.viewmodels.NearbySyncViewModel
 @Composable
 fun NearbySyncScreen(
     onBack: () -> Unit,
-    viewModel: NearbySyncViewModel = hiltViewModel()
+    viewModel: NearbySyncViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var permissionsGranted by remember { mutableStateOf(false) }
@@ -34,22 +34,24 @@ fun NearbySyncScreen(
         onDispose { viewModel.stopScan() }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { results -> permissionsGranted = results.values.all { it } }
+    val permissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) { results -> permissionsGranted = results.values.all { it } }
 
     LaunchedEffect(Unit) {
-        val perms = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
+        val perms =
+            buildList {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    add(Manifest.permission.BLUETOOTH_SCAN)
+                    add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                    add(Manifest.permission.BLUETOOTH_CONNECT)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                }
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
         permissionLauncher.launch(perms.toTypedArray())
     }
 
@@ -62,9 +64,9 @@ fun NearbySyncScreen(
                         viewModel.stopScan()
                         onBack()
                     }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                }
+                },
             )
-        }
+        },
     ) { padding ->
         Column(
             modifier = Modifier.padding(padding).fillMaxSize(),
@@ -76,28 +78,29 @@ fun NearbySyncScreen(
 
             Column(
                 modifier = Modifier.padding(20.dp).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 // Explanation card
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                    )
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                        ),
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Icon(
                             Icons.Default.Bluetooth,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(24.dp),
                         )
                         Text(
                             "Sync expenses with nearby group members over Bluetooth — no internet needed.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
                 }
@@ -106,7 +109,7 @@ fun NearbySyncScreen(
                     Text(
                         uiState.status,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
 
@@ -115,13 +118,13 @@ fun NearbySyncScreen(
                         onClick = { viewModel.startScan() },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         enabled = permissionsGranted,
-                        shape = MaterialTheme.shapes.large
+                        shape = MaterialTheme.shapes.large,
                     ) {
                         Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
                             if (permissionsGranted) "Scan for nearby members" else "Permissions required",
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
                         )
                     }
                     if (!permissionsGranted) {
@@ -130,14 +133,14 @@ fun NearbySyncScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 } else {
                     OutlinedButton(
                         onClick = { viewModel.stopScan() },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = MaterialTheme.shapes.large
+                        shape = MaterialTheme.shapes.large,
                     ) {
                         Text("Stop scanning")
                     }
@@ -149,26 +152,30 @@ fun NearbySyncScreen(
                 Text(
                     "Found ${uiState.peers.size} peer${if (uiState.peers.size != 1) "s" else ""}",
                     style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                 )
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(uiState.peers) { peer ->
                         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier = Modifier.padding(16.dp).fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column {
                                     Text("Peer ${peer.name}", style = MaterialTheme.typography.titleSmall)
-                                    Text("Tap Sync to exchange expenses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                                    Text(
+                                        "Tap Sync to exchange expenses",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline,
+                                    )
                                 }
                                 FilledTonalButton(
                                     onClick = { viewModel.connectToPeer(peer.endpointId) },
-                                    enabled = !uiState.syncing
+                                    enabled = !uiState.syncing,
                                 ) {
                                     Icon(Icons.Outlined.SyncAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
@@ -181,7 +188,7 @@ fun NearbySyncScreen(
             } else if (uiState.scanning) {
                 Box(
                     modifier = Modifier.fillMaxWidth().padding(48.dp),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
@@ -189,7 +196,7 @@ fun NearbySyncScreen(
                         Text(
                             "Looking for nearby SplitFree users…",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                 }

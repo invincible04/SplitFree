@@ -8,7 +8,6 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class RelayProtocolTest {
-
     private val sampleEvent = NostrEvent("id1", "pub1", 100, 1, listOf(listOf("g", "grp")), "hello", "sig1")
 
     // --- RelayMessage.parse ---
@@ -124,15 +123,16 @@ class RelayProtocolTest {
 
     @Test
     fun `NostrFilter toJson with all fields`() {
-        val f = NostrFilter(
-            kinds = listOf(1, 30078),
-            authors = listOf("pub1"),
-            ids = listOf("id1"),
-            tags = mapOf("#d" to listOf("val")),
-            since = 100,
-            until = 200,
-            limit = 50
-        )
+        val f =
+            NostrFilter(
+                kinds = listOf(1, 30078),
+                authors = listOf("pub1"),
+                ids = listOf("id1"),
+                tags = mapOf("#d" to listOf("val")),
+                since = 100,
+                until = 200,
+                limit = 50,
+            )
         val json = f.toJson()
         assertTrue(json.contains("\"kinds\""))
         assertTrue(json.contains("\"authors\""))

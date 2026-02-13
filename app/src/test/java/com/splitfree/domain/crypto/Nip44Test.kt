@@ -11,15 +11,17 @@ import java.security.MessageDigest
  * https://github.com/paulmillr/nip44/blob/main/nip44.vectors.json
  */
 class Nip44Test {
-
     companion object {
         private lateinit var vectors: JsonObject
 
         @BeforeClass
         @JvmStatic
         fun loadVectors() {
-            val json = Nip44Test::class.java.getResourceAsStream("/nip44.vectors.json")!!
-                .bufferedReader().readText()
+            val json =
+                Nip44Test::class.java
+                    .getResourceAsStream("/nip44.vectors.json")!!
+                    .bufferedReader()
+                    .readText()
             vectors = Json.parseToJsonElement(json).jsonObject["v2"]!!.jsonObject
         }
     }
@@ -219,6 +221,5 @@ class Nip44Test {
         assertEquals(msg, decrypted)
     }
 
-    private fun sha256Hex(data: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(data).toHex()
+    private fun sha256Hex(data: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(data).toHex()
 }

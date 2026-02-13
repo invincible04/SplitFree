@@ -4,16 +4,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EntityTest {
-
     // --- EventEntity ---
 
     @Test
     fun `EventEntity defaults`() {
-        val e = EventEntity(
-            eventId = "id", groupId = "g", pubkey = "p", createdAt = 1,
-            kind = 30078, contentEncrypted = "enc", eventType = "expense",
-            sig = "sig", receivedAt = 1
-        )
+        val e =
+            EventEntity(
+                eventId = "id",
+                groupId = "g",
+                pubkey = "p",
+                createdAt = 1,
+                kind = 30078,
+                contentEncrypted = "enc",
+                eventType = "expense",
+                sig = "sig",
+                receivedAt = 1,
+            )
         assertNull(e.contentDecrypted)
         assertNull(e.expenseUuid)
         assertEquals("[]", e.syncedToRelays)
@@ -22,13 +28,22 @@ class EntityTest {
 
     @Test
     fun `EventEntity with all fields`() {
-        val e = EventEntity(
-            eventId = "id", groupId = "g", pubkey = "p", createdAt = 1,
-            kind = 30078, contentEncrypted = "enc", contentDecrypted = "dec",
-            eventType = "settlement", expenseUuid = "uuid", sig = "sig",
-            syncedToRelays = """["wss://r"]""", receivedAt = 2,
-            originalEventJson = "{}"
-        )
+        val e =
+            EventEntity(
+                eventId = "id",
+                groupId = "g",
+                pubkey = "p",
+                createdAt = 1,
+                kind = 30078,
+                contentEncrypted = "enc",
+                contentDecrypted = "dec",
+                eventType = "settlement",
+                expenseUuid = "uuid",
+                sig = "sig",
+                syncedToRelays = """["wss://r"]""",
+                receivedAt = 2,
+                originalEventJson = "{}",
+            )
         assertEquals("dec", e.contentDecrypted)
         assertEquals("uuid", e.expenseUuid)
         assertEquals("{}", e.originalEventJson)
@@ -46,10 +61,16 @@ class EntityTest {
 
     @Test
     fun `GroupEntity defaults`() {
-        val g = GroupEntity(
-            groupId = "g", name = "Test", createdBy = "p",
-            createdAt = 1, members = "[]", relays = "[]", groupKey = ""
-        )
+        val g =
+            GroupEntity(
+                groupId = "g",
+                name = "Test",
+                createdBy = "p",
+                createdAt = 1,
+                members = "[]",
+                relays = "[]",
+                groupKey = "",
+            )
         assertEquals("", g.description)
         assertEquals(0L, g.lastSyncTimestamp)
         assertEquals(0L, g.lastMetaTimestamp)

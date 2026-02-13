@@ -10,40 +10,56 @@ import org.junit.Test
  * Design doc Section 11.3.
  */
 class SplitComputationTest {
-
     // Mirror the private computeSplits logic for testing
     private fun computeSplits(
-        amount: Long, type: SplitType, members: List<String>, inputs: Map<String, Long>
-    ): List<SplitEntry> = when (type) {
-        SplitType.EQUAL -> {
-            val perPerson = amount / members.size
-            val remainder = (amount % members.size).toInt()
-            members.mapIndexed { i, pk -> SplitEntry(pk, perPerson + if (i < remainder) 1 else 0) }
-        }
-        SplitType.EXACT -> members.map { pk -> SplitEntry(pk, inputs[pk] ?: 0L) }
-        SplitType.PERCENTAGE -> {
-            val totalPct = inputs.values.sum()
-            require(totalPct == 100L) { "Percentages must sum to 100" }
-            var allocated = 0L
-            members.mapIndexed { i, pk ->
-                val share = if (i == members.lastIndex) amount - allocated
-                else amount * (inputs[pk] ?: 0L) / 100
-                allocated += share
-                SplitEntry(pk, share)
+        amount: Long,
+        type: SplitType,
+        members: List<String>,
+        inputs: Map<String, Long>,
+    ): List<SplitEntry> =
+        when (type) {
+            SplitType.EQUAL -> {
+                val perPerson = amount / members.size
+                val remainder = (amount % members.size).toInt()
+                members.mapIndexed { i, pk -> SplitEntry(pk, perPerson + if (i < remainder) 1 else 0) }
+            }
+
+            SplitType.EXACT -> {
+                members.map { pk -> SplitEntry(pk, inputs[pk] ?: 0L) }
+            }
+
+            SplitType.PERCENTAGE -> {
+                val totalPct = inputs.values.sum()
+                require(totalPct == 100L) { "Percentages must sum to 100" }
+                var allocated = 0L
+                members.mapIndexed { i, pk ->
+                    val share =
+                        if (i == members.lastIndex) {
+                            amount - allocated
+                        } else {
+                            amount * (inputs[pk] ?: 0L) / 100
+                        }
+                    allocated += share
+                    SplitEntry(pk, share)
+                }
+            }
+
+            SplitType.SHARES -> {
+                val totalUnits = inputs.values.sum()
+                require(totalUnits > 0) { "Total shares must be positive" }
+                var allocated = 0L
+                members.mapIndexed { i, pk ->
+                    val share =
+                        if (i == members.lastIndex) {
+                            amount - allocated
+                        } else {
+                            amount * (inputs[pk] ?: 0L) / totalUnits
+                        }
+                    allocated += share
+                    SplitEntry(pk, share)
+                }
             }
         }
-        SplitType.SHARES -> {
-            val totalUnits = inputs.values.sum()
-            require(totalUnits > 0) { "Total shares must be positive" }
-            var allocated = 0L
-            members.mapIndexed { i, pk ->
-                val share = if (i == members.lastIndex) amount - allocated
-                else amount * (inputs[pk] ?: 0L) / totalUnits
-                allocated += share
-                SplitEntry(pk, share)
-            }
-        }
-    }
 
     private val alice = "alice"
     private val bob = "bob"

@@ -4,24 +4,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ExpenseNotifierFormatTest {
+    private val formatAmount =
+        ExpenseNotifier::class.java
+            .getDeclaredMethod("formatAmount", Long::class.java, String::class.java)
+            .apply { isAccessible = true }
 
-    private val formatAmount = ExpenseNotifier::class.java
-        .getDeclaredMethod("formatAmount", Long::class.java, String::class.java)
-        .apply { isAccessible = true }
+    private val sanitize =
+        ExpenseNotifier::class.java
+            .getDeclaredMethod("sanitize", String::class.java)
+            .apply { isAccessible = true }
 
-    private val sanitize = ExpenseNotifier::class.java
-        .getDeclaredMethod("sanitize", String::class.java)
-        .apply { isAccessible = true }
+    private val buildExpenseNotification =
+        ExpenseNotifier::class.java
+            .getDeclaredMethod("buildExpenseNotification", String::class.java, String::class.java)
+            .apply { isAccessible = true }
 
-    private val buildExpenseNotification = ExpenseNotifier::class.java
-        .getDeclaredMethod("buildExpenseNotification", String::class.java, String::class.java)
-        .apply { isAccessible = true }
+    private val buildSettlementNotification =
+        ExpenseNotifier::class.java
+            .getDeclaredMethod("buildSettlementNotification", String::class.java, String::class.java)
+            .apply { isAccessible = true }
 
-    private val buildSettlementNotification = ExpenseNotifier::class.java
-        .getDeclaredMethod("buildSettlementNotification", String::class.java, String::class.java)
-        .apply { isAccessible = true }
+    private fun fmt(
+        amount: Long,
+        currency: String,
+    ) = formatAmount.invoke(ExpenseNotifier, amount, currency)
 
-    private fun fmt(amount: Long, currency: String) = formatAmount.invoke(ExpenseNotifier, amount, currency)
     private fun san(input: String) = sanitize.invoke(ExpenseNotifier, input) as String
 
     // --- formatAmount ---
@@ -102,6 +109,7 @@ class ExpenseNotifierFormatTest {
     @Test
     fun `buildExpenseNotification valid expense`() {
         val content = """{"id":"1","amount":50000,"currency":"INR","description":"Dinner","paid_by":"a","split_type":"equal","split_among":[{"pubkey":"a","share":50000}],"timestamp":1}"""
+
         @Suppress("UNCHECKED_CAST")
         val result = buildExpenseNotification.invoke(ExpenseNotifier, content, "Goa Trip") as Pair<String, String>?
         assertNotNull(result)
@@ -120,6 +128,7 @@ class ExpenseNotifierFormatTest {
     @Test
     fun `buildSettlementNotification valid settlement`() {
         val content = """{"id":"1","from":"a","to":"b","amount":5000,"currency":"USD","timestamp":1}"""
+
         @Suppress("UNCHECKED_CAST")
         val result = buildSettlementNotification.invoke(ExpenseNotifier, content, "Trip") as Pair<String, String>?
         assertNotNull(result)

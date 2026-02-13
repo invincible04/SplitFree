@@ -10,7 +10,6 @@ import org.junit.Test
  * Design doc Section 11.2.
  */
 class SimplifyDebtsTest {
-
     private val simplify = SimplifyDebtsUseCase()
 
     @Test
@@ -20,20 +19,22 @@ class SimplifyDebtsTest {
 
     @Test
     fun `all zero balances produce no transactions`() {
-        val balances = listOf(
-            Balance("alice", 0),
-            Balance("bob", 0)
-        )
+        val balances =
+            listOf(
+                Balance("alice", 0),
+                Balance("bob", 0),
+            )
         assertEquals(emptyList<DebtTransaction>(), simplify(balances))
     }
 
     @Test
     fun `simple two-person debt`() {
         // Alice is owed 100, Bob owes 100
-        val balances = listOf(
-            Balance("alice", 100),
-            Balance("bob", -100)
-        )
+        val balances =
+            listOf(
+                Balance("alice", 100),
+                Balance("bob", -100),
+            )
         val result = simplify(balances)
         assertEquals(1, result.size)
         assertEquals("bob", result[0].from)
@@ -45,11 +46,12 @@ class SimplifyDebtsTest {
     fun `three-person chain simplification`() {
         // Alice owes Bob 100, Bob owes Charlie 100 → Alice pays Charlie 100 directly
         // Net: Alice=-100, Bob=0, Charlie=+100
-        val balances = listOf(
-            Balance("alice", -100),
-            Balance("bob", 0),
-            Balance("charlie", 100)
-        )
+        val balances =
+            listOf(
+                Balance("alice", -100),
+                Balance("bob", 0),
+                Balance("charlie", 100),
+            )
         val result = simplify(balances)
         assertEquals(1, result.size)
         assertEquals("alice", result[0].from)
@@ -61,11 +63,12 @@ class SimplifyDebtsTest {
     fun `design doc example - three person simplification`() {
         // Alice owes Bob 100, Bob owes Charlie 100, Charlie owes Alice 50
         // Net: Alice = -100+50 = -50, Bob = 100-100 = 0, Charlie = 100-50 = 50
-        val balances = listOf(
-            Balance("alice", -50),
-            Balance("bob", 0),
-            Balance("charlie", 50)
-        )
+        val balances =
+            listOf(
+                Balance("alice", -50),
+                Balance("bob", 0),
+                Balance("charlie", 50),
+            )
         val result = simplify(balances)
         assertEquals(1, result.size)
         assertEquals(50L, result[0].amount)
@@ -73,13 +76,14 @@ class SimplifyDebtsTest {
 
     @Test
     fun `five-person group produces at most N-1 transactions`() {
-        val balances = listOf(
-            Balance("a", 500),
-            Balance("b", -200),
-            Balance("c", -150),
-            Balance("d", 100),
-            Balance("e", -250)
-        )
+        val balances =
+            listOf(
+                Balance("a", 500),
+                Balance("b", -200),
+                Balance("c", -150),
+                Balance("d", 100),
+                Balance("e", -250),
+            )
         val result = simplify(balances)
         assertTrue("Should have at most 4 transactions", result.size <= 4)
         // Net should be zero
@@ -90,11 +94,12 @@ class SimplifyDebtsTest {
 
     @Test
     fun `balances sum to zero after simplification`() {
-        val balances = listOf(
-            Balance("a", 300),
-            Balance("b", -100),
-            Balance("c", -200)
-        )
+        val balances =
+            listOf(
+                Balance("a", 300),
+                Balance("b", -100),
+                Balance("c", -200),
+            )
         val result = simplify(balances)
         val totalTransferred = result.sumOf { it.amount }
         val totalOwed = balances.filter { it.net > 0 }.sumOf { it.net }
@@ -103,12 +108,13 @@ class SimplifyDebtsTest {
 
     @Test
     fun `multi-currency keeps currencies separate`() {
-        val balances = listOf(
-            Balance("alice", 100, "INR"),
-            Balance("bob", -100, "INR"),
-            Balance("alice", 50, "USD"),
-            Balance("charlie", -50, "USD")
-        )
+        val balances =
+            listOf(
+                Balance("alice", 100, "INR"),
+                Balance("bob", -100, "INR"),
+                Balance("alice", 50, "USD"),
+                Balance("charlie", -50, "USD"),
+            )
         val result = simplify(balances)
         assertEquals(2, result.size)
         val inr = result.filter { it.currency == "INR" }
@@ -130,12 +136,19 @@ class SimplifyDebtsTest {
     @Test
     fun `large group with many small debts`() {
         // 10 people, various balances summing to 0
-        val balances = listOf(
-            Balance("p1", 1000), Balance("p2", -200), Balance("p3", -300),
-            Balance("p4", 500), Balance("p5", -400), Balance("p6", -100),
-            Balance("p7", 200), Balance("p8", -300), Balance("p9", -200),
-            Balance("p10", -200)
-        )
+        val balances =
+            listOf(
+                Balance("p1", 1000),
+                Balance("p2", -200),
+                Balance("p3", -300),
+                Balance("p4", 500),
+                Balance("p5", -400),
+                Balance("p6", -100),
+                Balance("p7", 200),
+                Balance("p8", -300),
+                Balance("p9", -200),
+                Balance("p10", -200),
+            )
         assertEquals(0L, balances.sumOf { it.net }) // sanity check
         val result = simplify(balances)
         assertTrue("At most 9 transactions for 10 people", result.size <= 9)

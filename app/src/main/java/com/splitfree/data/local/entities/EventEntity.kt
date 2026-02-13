@@ -9,8 +9,8 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["groupId", "createdAt"]),
         Index(value = ["groupId", "eventType"]),
-        Index(value = ["expenseUuid"])
-    ]
+        Index(value = ["expenseUuid"]),
+    ],
 )
 data class EventEntity(
     @PrimaryKey val eventId: String, // Nostr event ID (SHA256)
@@ -25,5 +25,5 @@ data class EventEntity(
     val sig: String,
     val syncedToRelays: String = "[]", // JSON array of relay URLs
     val receivedAt: Long,
-    val originalEventJson: String? = null // Full signed Nostr event JSON for self-healing re-publish
+    val originalEventJson: String? = null, // Full signed Nostr event JSON for self-healing re-publish
 )

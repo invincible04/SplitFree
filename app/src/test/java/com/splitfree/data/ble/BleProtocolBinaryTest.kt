@@ -7,7 +7,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class BleProtocolBinaryTest {
-
     @Before
     fun setUp() {
         FragmentManager.clear()

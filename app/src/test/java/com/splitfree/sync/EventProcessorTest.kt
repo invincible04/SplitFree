@@ -14,7 +14,6 @@ import org.junit.Before
 import org.junit.Test
 
 class EventProcessorTest {
-
     private val eventDao = mockk<EventDao>(relaxed = true)
     private val groupRepo = mockk<GroupRepository>()
     private val encryption = mockk<GroupEncryption>()
@@ -35,17 +34,20 @@ class EventProcessorTest {
         eventType: String = "expense",
         author: String = pubkey,
         expenseUuid: String? = "uuid1",
-        content: String = "encrypted"
+        content: String = "encrypted",
     ) = NostrEvent(
-        id = "evt-${System.nanoTime()}", pubkey = author,
+        id = "evt-${System.nanoTime()}",
+        pubkey = author,
         createdAt = System.currentTimeMillis() / 1000,
         kind = 30078,
-        tags = buildList {
-            add(listOf("g", groupId))
-            add(listOf("t", eventType))
-            expenseUuid?.let { add(listOf("e", it)) }
-        },
-        content = content, sig = "sig"
+        tags =
+            buildList {
+                add(listOf("g", groupId))
+                add(listOf("t", eventType))
+                expenseUuid?.let { add(listOf("e", it)) }
+            },
+        content = content,
+        sig = "sig",
     )
 
     @Before
@@ -81,310 +83,384 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process stores valid expense event`() = runBlocking {
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        assertEquals("expense", result.eventType)
-        assertEquals("Test", result.groupName)
-    }
+    fun `process stores valid expense event`() =
+        runBlocking {
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            assertEquals("expense", result.eventType)
+            assertEquals("Test", result.groupName)
+        }
 
     @Test
-    fun `process rejects event with invalid signature`() = runBlocking {
-        every { signer.verify(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects event with invalid signature`() =
+        runBlocking {
+            every { signer.verify(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects event with invalid timestamp`() = runBlocking {
-        every { EventValidator.isTimestampValid(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects event with invalid timestamp`() =
+        runBlocking {
+            every { EventValidator.isTimestampValid(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process uses lenient timestamp when flag set`() = runBlocking {
-        every { EventValidator.isTimestampValid(any()) } returns false
-        every { EventValidator.isTimestampValidLenient(any()) } returns true
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey, lenientTimestamp = true)
-        assertTrue(result.stored)
-    }
+    fun `process uses lenient timestamp when flag set`() =
+        runBlocking {
+            every { EventValidator.isTimestampValid(any()) } returns false
+            every { EventValidator.isTimestampValidLenient(any()) } returns true
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey, lenientTimestamp = true)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process rejects event for unknown group`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returns null
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects event for unknown group`() =
+        runBlocking {
+            coEvery { groupRepo.getById(groupId) } returns null
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects event from non-member`() = runBlocking {
-        val stranger = "cc".repeat(32)
-        val result = processor.process(makeEvent(author = stranger), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects event from non-member`() =
+        runBlocking {
+            val stranger = "cc".repeat(32)
+            val result = processor.process(makeEvent(author = stranger), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects rate-limited author`() = runBlocking {
-        every { EventValidator.isWithinRateLimit(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects rate-limited author`() =
+        runBlocking {
+            every { EventValidator.isWithinRateLimit(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects rate-limited group`() = runBlocking {
-        every { EventValidator.isWithinGroupRateLimit(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects rate-limited group`() =
+        runBlocking {
+            every { EventValidator.isWithinGroupRateLimit(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects unsafe content`() = runBlocking {
-        every { EventValidator.isContentSafe(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects unsafe content`() =
+        runBlocking {
+            every { EventValidator.isContentSafe(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects duplicate event`() = runBlocking {
-        coEvery { eventDao.insertIfNew(any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects duplicate event`() =
+        runBlocking {
+            coEvery { eventDao.insertIfNew(any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects deleted expense replay`() = runBlocking {
-        every { EventValidator.isDeletedExpense(any(), any(), any()) } returns true
-        coEvery { eventDao.getDeletedExpenseUuids(any()) } returns listOf("uuid1")
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects deleted expense replay`() =
+        runBlocking {
+            every { EventValidator.isDeletedExpense(any(), any(), any()) } returns true
+            coEvery { eventDao.getDeletedExpenseUuids(any()) } returns listOf("uuid1")
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects backdated expense`() = runBlocking {
-        every { EventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects backdated expense`() =
+        runBlocking {
+            every { EventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process rejects correction from wrong author`() = runBlocking {
-        every { EventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns false
-        val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects correction from wrong author`() =
+        runBlocking {
+            every { EventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns false
+            val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process handles group_meta side effect`() = runBlocking {
-        val meta = """{"name":"Updated","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
-        every { encryption.decrypt(any(), groupKey) } returns meta
-        every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns true
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify { groupRepo.updateFromMeta(groupId, "Updated", listOf(pubkey), listOf("wss://r"), any()) }
-    }
+    fun `process handles group_meta side effect`() =
+        runBlocking {
+            val meta = """{"name":"Updated","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
+            every { encryption.decrypt(any(), groupKey) } returns meta
+            every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns true
+            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify { groupRepo.updateFromMeta(groupId, "Updated", listOf(pubkey), listOf("wss://r"), any()) }
+        }
 
     @Test
-    fun `process rejects group_meta from non-creator`() = runBlocking {
-        every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns false
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects group_meta from non-creator`() =
+        runBlocking {
+            every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns false
+            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process handles group_migrate side effect`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } returns """{"newGroupId":"new-id","encryptedKeys":{},"members":["$pubkey"],"removedMember":"removed"}"""
-        val result = processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify { migrateGroup.handleMigration(any(), pubkey, groupId) }
-    }
+    fun `process handles group_migrate side effect`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } returns
+                """{"newGroupId":"new-id","encryptedKeys":{},"members":["$pubkey"],"removedMember":"removed"}"""
+            val result = processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify { migrateGroup.handleMigration(any(), pubkey, groupId) }
+        }
 
     @Test
-    fun `process handles key_revocation side effect`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } returns """{"oldPubkey":"$pubkey","newPubkey":"new","reason":"test"}"""
-        // key_revocation is a privileged type — allow non-member
-        val result = processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify { revokeKey.handleRevocation(any(), pubkey, groupId) }
-    }
+    fun `process handles key_revocation side effect`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } returns """{"oldPubkey":"$pubkey","newPubkey":"new","reason":"test"}"""
+            // key_revocation is a privileged type — allow non-member
+            val result = processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify { revokeKey.handleRevocation(any(), pubkey, groupId) }
+        }
 
     @Test
-    fun `process extracts group ID from tags when not provided`() = runBlocking {
-        val result = processor.process(makeEvent(), knownGroupId = null, knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process extracts group ID from tags when not provided`() =
+        runBlocking {
+            val result = processor.process(makeEvent(), knownGroupId = null, knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process returns null group key falls through`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns null
-        val result = processor.process(makeEvent(), knownGroupId = groupId, knownGroupKey = null)
-        assertFalse(result.stored)
-    }
+    fun `process returns null group key falls through`() =
+        runBlocking {
+            coEvery { groupRepo.getGroupKey(groupId) } returns null
+            val result = processor.process(makeEvent(), knownGroupId = groupId, knownGroupKey = null)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process handles decryption failure gracefully`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        // Still stored — decrypted is null but event is kept
-        assertTrue(result.stored)
-    }
+    fun `process handles decryption failure gracefully`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            // Still stored — decrypted is null but event is kept
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process unwraps gift-wrapped events`() = runBlocking {
-        val inner = makeEvent()
-        every { giftWrap.tryUnwrap(any()) } returns Pair(inner, "sender")
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process unwraps gift-wrapped events`() =
+        runBlocking {
+            val inner = makeEvent()
+            every { giftWrap.tryUnwrap(any()) } returns Pair(inner, "sender")
+            val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process rejects event without group tag`() = runBlocking {
-        val noGroupEvent = NostrEvent(
-            id = "evt1", pubkey = pubkey, createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078, tags = listOf(listOf("t", "expense")),
-            content = "enc", sig = "sig"
-        )
-        val result = processor.process(noGroupEvent, knownGroupId = null, knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process rejects event without group tag`() =
+        runBlocking {
+            val noGroupEvent =
+                NostrEvent(
+                    id = "evt1",
+                    pubkey = pubkey,
+                    createdAt = System.currentTimeMillis() / 1000,
+                    kind = 30078,
+                    tags = listOf(listOf("t", "expense")),
+                    content = "enc",
+                    sig = "sig",
+                )
+            val result = processor.process(noGroupEvent, knownGroupId = null, knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     // --- Branch coverage additions ---
 
     @Test
-    fun `process with nonCancellable true runs group_meta side effect`() = runBlocking {
-        val meta = """{"name":"NC","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
-        every { encryption.decrypt(any(), groupKey) } returns meta
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey, nonCancellable = true)
-        assertTrue(result.stored)
-        coVerify { groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), any()) }
-    }
+    fun `process with nonCancellable true runs group_meta side effect`() =
+        runBlocking {
+            val meta = """{"name":"NC","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
+            every { encryption.decrypt(any(), groupKey) } returns meta
+            val result =
+                processor.process(
+                    makeEvent(eventType = "group_meta", expenseUuid = null),
+                    knownGroupKey = groupKey,
+                    nonCancellable = true,
+                )
+            assertTrue(result.stored)
+            coVerify { groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), any()) }
+        }
 
     @Test
-    fun `process group_meta with empty members skips updateFromMeta`() = runBlocking {
-        val meta = """{"name":"Empty","description":"","created_by":"$pubkey","created_at":1000,"members":[],"relays":[]}"""
-        every { encryption.decrypt(any(), groupKey) } returns meta
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
-    }
+    fun `process group_meta with empty members skips updateFromMeta`() =
+        runBlocking {
+            val meta = """{"name":"Empty","description":"","created_by":"$pubkey","created_at":1000,"members":[],"relays":[]}"""
+            every { encryption.decrypt(any(), groupKey) } returns meta
+            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        }
 
     @Test
-    fun `process group_meta exception is caught`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } returns "not-json"
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process group_meta exception is caught`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } returns "not-json"
+            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process group_migrate exception is caught`() = runBlocking {
-        coEvery { migrateGroup.handleMigration(any(), any(), any()) } throws RuntimeException("fail")
-        every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
-        val result = processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process group_migrate exception is caught`() =
+        runBlocking {
+            coEvery { migrateGroup.handleMigration(any(), any(), any()) } throws RuntimeException("fail")
+            every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
+            val result = processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process key_revocation exception is caught`() = runBlocking {
-        coEvery { revokeKey.handleRevocation(any(), any(), any()) } throws RuntimeException("fail")
-        every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
-        val result = processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process key_revocation exception is caught`() =
+        runBlocking {
+            coEvery { revokeKey.handleRevocation(any(), any(), any()) } throws RuntimeException("fail")
+            every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
+            val result = processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process group_meta from non-member is rejected`() = runBlocking {
-        val stranger = "cc".repeat(32)
-        val groupWithStranger = group.copy(members = listOf(pubkey)) // stranger not in members
-        coEvery { groupRepo.getById(groupId) } returns groupWithStranger
-        val result = processor.process(makeEvent(eventType = "group_meta", author = stranger, expenseUuid = null), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process group_meta from non-member is rejected`() =
+        runBlocking {
+            val stranger = "cc".repeat(32)
+            val groupWithStranger = group.copy(members = listOf(pubkey)) // stranger not in members
+            coEvery { groupRepo.getById(groupId) } returns groupWithStranger
+            val result =
+                processor.process(
+                    makeEvent(eventType = "group_meta", author = stranger, expenseUuid = null),
+                    knownGroupKey = groupKey,
+                )
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process expense_delete checks correction author`() = runBlocking {
-        every { EventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns false
-        val result = processor.process(makeEvent(eventType = "expense_delete"), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process expense_delete checks correction author`() =
+        runBlocking {
+            every { EventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns false
+            val result = processor.process(makeEvent(eventType = "expense_delete"), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process expense_correction checks backdating`() = runBlocking {
-        every { EventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
-        val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
-        assertFalse(result.stored)
-    }
+    fun `process expense_correction checks backdating`() =
+        runBlocking {
+            every { EventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
+            val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
+            assertFalse(result.stored)
+        }
 
     @Test
-    fun `process ignores tags with size less than 2`() = runBlocking {
-        val event = NostrEvent(
-            id = "evt1", pubkey = pubkey, createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078, tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("x"), listOf("e", "uuid1")),
-            content = "enc", sig = "sig"
-        )
-        val result = processor.process(event, knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process ignores tags with size less than 2`() =
+        runBlocking {
+            val event =
+                NostrEvent(
+                    id = "evt1",
+                    pubkey = pubkey,
+                    createdAt = System.currentTimeMillis() / 1000,
+                    kind = 30078,
+                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("x"), listOf("e", "uuid1")),
+                    content = "enc",
+                    sig = "sig",
+                )
+            val result = processor.process(event, knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process settlement type skips tombstone and backdating checks`() = runBlocking {
-        val result = processor.process(makeEvent(eventType = "settlement", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
-    }
+    fun `process settlement type skips tombstone and backdating checks`() =
+        runBlocking {
+            val result = processor.process(makeEvent(eventType = "settlement", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
+        }
 
     @Test
-    fun `process with nonCancellable true runs group_migrate`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
-        val result = processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey, nonCancellable = true)
-        assertTrue(result.stored)
-        coVerify { migrateGroup.handleMigration(any(), pubkey, groupId) }
-    }
+    fun `process with nonCancellable true runs group_migrate`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
+            val result =
+                processor.process(
+                    makeEvent(eventType = "group_migrate", expenseUuid = null),
+                    knownGroupKey = groupKey,
+                    nonCancellable = true,
+                )
+            assertTrue(result.stored)
+            coVerify { migrateGroup.handleMigration(any(), pubkey, groupId) }
+        }
 
     @Test
-    fun `process with nonCancellable true runs key_revocation`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
-        val result = processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey, nonCancellable = true)
-        assertTrue(result.stored)
-        coVerify { revokeKey.handleRevocation(any(), pubkey, groupId) }
-    }
+    fun `process with nonCancellable true runs key_revocation`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
+            val result =
+                processor.process(
+                    makeEvent(eventType = "key_revocation", expenseUuid = null),
+                    knownGroupKey = groupKey,
+                    nonCancellable = true,
+                )
+            assertTrue(result.stored)
+            coVerify { revokeKey.handleRevocation(any(), pubkey, groupId) }
+        }
 
     @Test
-    fun `process decrypted null skips side effects`() = runBlocking {
-        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
-        val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
-    }
+    fun `process decrypted null skips side effects`() =
+        runBlocking {
+            every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
+            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        }
 
     @Test
-    fun `process expense with null expenseUuid skips tombstone check`() = runBlocking {
-        val result = processor.process(makeEvent(eventType = "expense", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-        coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
-    }
+    fun `process expense with null expenseUuid skips tombstone check`() =
+        runBlocking {
+            val result = processor.process(makeEvent(eventType = "expense", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+            coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
+        }
 
     @Test
-    fun `process expense_correction with null expenseUuid skips original creator lookup`() = runBlocking {
-        val result = processor.process(makeEvent(eventType = "expense_correction", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process expense_correction with null expenseUuid skips original creator lookup`() =
+        runBlocking {
+            val result = processor.process(makeEvent(eventType = "expense_correction", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process expense_delete with null expenseUuid`() = runBlocking {
-        val result = processor.process(makeEvent(eventType = "expense_delete", expenseUuid = null), knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process expense_delete with null expenseUuid`() =
+        runBlocking {
+            val result = processor.process(makeEvent(eventType = "expense_delete", expenseUuid = null), knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
-    fun `process event with unknown tag key`() = runBlocking {
-        val event = NostrEvent(
-            id = "evt1", pubkey = pubkey, createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078, tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("z", "unknown"), listOf("e", "uuid1")),
-            content = "enc", sig = "sig"
-        )
-        val result = processor.process(event, knownGroupKey = groupKey)
-        assertTrue(result.stored)
-    }
+    fun `process event with unknown tag key`() =
+        runBlocking {
+            val event =
+                NostrEvent(
+                    id = "evt1",
+                    pubkey = pubkey,
+                    createdAt = System.currentTimeMillis() / 1000,
+                    kind = 30078,
+                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("z", "unknown"), listOf("e", "uuid1")),
+                    content = "enc",
+                    sig = "sig",
+                )
+            val result = processor.process(event, knownGroupKey = groupKey)
+            assertTrue(result.stored)
+        }
 
     @Test
     fun `process group_meta CancellationException is rethrown`() {
@@ -394,7 +470,9 @@ class EventProcessorTest {
         try {
             runBlocking { processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey) }
             fail("Expected CancellationException")
-        } catch (_: kotlinx.coroutines.CancellationException) { /* expected */ }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // expected
+        }
     }
 
     @Test
@@ -404,7 +482,9 @@ class EventProcessorTest {
         try {
             runBlocking { processor.process(makeEvent(eventType = "group_migrate", expenseUuid = null), knownGroupKey = groupKey) }
             fail("Expected CancellationException")
-        } catch (_: kotlinx.coroutines.CancellationException) { /* expected */ }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // expected
+        }
     }
 
     @Test
@@ -414,7 +494,9 @@ class EventProcessorTest {
         try {
             runBlocking { processor.process(makeEvent(eventType = "key_revocation", expenseUuid = null), knownGroupKey = groupKey) }
             fail("Expected CancellationException")
-        } catch (_: kotlinx.coroutines.CancellationException) { /* expected */ }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // expected
+        }
     }
 
     @Test

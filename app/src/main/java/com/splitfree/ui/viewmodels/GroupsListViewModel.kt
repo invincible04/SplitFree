@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 
 @HiltViewModel
-class GroupsListViewModel @Inject constructor(
-    groupRepo: GroupRepository
-) : ViewModel() {
-    val groups: Flow<List<Group>> = groupRepo.observeAll()
-}
+class GroupsListViewModel
+    @Inject
+    constructor(
+        groupRepo: GroupRepository,
+    ) : ViewModel() {
+        val groups: Flow<List<Group>> = groupRepo.observeAll()
+    }

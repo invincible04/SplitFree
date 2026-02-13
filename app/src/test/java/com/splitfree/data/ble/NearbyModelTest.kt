@@ -4,7 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NearbyModelTest {
-
     @Test
     fun `NearbyPeer fields`() {
         val peer = NearbyPeer("ep1", "Alice")

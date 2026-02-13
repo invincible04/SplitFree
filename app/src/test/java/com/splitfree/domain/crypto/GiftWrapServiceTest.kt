@@ -9,7 +9,6 @@ import org.junit.Before
 import org.junit.Test
 
 class GiftWrapServiceTest {
-
     private val context = mockk<Context>(relaxed = true)
     private val identity = mockk<IdentityManager>()
     private val prefs = mockk<SharedPreferences>(relaxed = true)
@@ -38,7 +37,9 @@ class GiftWrapServiceTest {
     }
 
     @After
-    fun teardown() { unmockkAll() }
+    fun teardown() {
+        unmockkAll()
+    }
 
     @Test
     fun `enabled getter delegates to prefs`() {

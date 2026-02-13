@@ -11,20 +11,25 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class CreateGroupViewModel @Inject constructor(
-    private val createGroup: CreateGroupUseCase
-) : ViewModel() {
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+class CreateGroupViewModel
+    @Inject
+    constructor(
+        private val createGroup: CreateGroupUseCase,
+    ) : ViewModel() {
+        private val _error = MutableStateFlow<String?>(null)
+        val error: StateFlow<String?> = _error.asStateFlow()
 
-    fun createGroup(name: String, onCreated: (String) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val group = createGroup(name)
-                onCreated(group.id)
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to create group"
+        fun createGroup(
+            name: String,
+            onCreated: (String) -> Unit,
+        ) {
+            viewModelScope.launch {
+                try {
+                    val group = createGroup(name)
+                    onCreated(group.id)
+                } catch (e: Exception) {
+                    _error.value = e.message ?: "Failed to create group"
+                }
             }
         }
     }
-}

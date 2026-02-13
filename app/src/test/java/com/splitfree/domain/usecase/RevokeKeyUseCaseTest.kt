@@ -10,13 +10,12 @@ import com.splitfree.domain.model.Group
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.junit.Assert.*
 import org.junit.After
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 class RevokeKeyUseCaseTest {
-
     private val identity = mockk<IdentityManager>()
     private val groupRepo = mockk<GroupRepository>(relaxed = true)
     private val encryption = mockk<GroupEncryption>()
@@ -62,155 +61,175 @@ class RevokeKeyUseCaseTest {
     // --- invoke ---
 
     @Test
-    fun `invoke returns new pubkey`() = runBlocking {
-        val result = useCase()
-        assertEquals(newPubkey, result)
-    }
+    fun `invoke returns new pubkey`() =
+        runBlocking {
+            val result = useCase()
+            assertEquals(newPubkey, result)
+        }
 
     @Test
-    fun `invoke publishes revocation and meta events per group`() = runBlocking {
-        useCase()
-        // 2 events per group: key_revocation + group_meta
-        verify(exactly = 2) { signer.createSignedEvent(any(), any(), any(), any()) }
-        coVerify(atLeast = 2) { outboxDao.insert(any()) }
-    }
+    fun `invoke publishes revocation and meta events per group`() =
+        runBlocking {
+            useCase()
+            // 2 events per group: key_revocation + group_meta
+            verify(exactly = 2) { signer.createSignedEvent(any(), any(), any(), any()) }
+            coVerify(atLeast = 2) { outboxDao.insert(any()) }
+        }
 
     @Test
-    fun `invoke commits pending key on success`() = runBlocking {
-        useCase()
-        verify { identity.commitPendingKeyPair() }
-        verify(exactly = 0) { identity.discardPendingKeyPair() }
-    }
+    fun `invoke commits pending key on success`() =
+        runBlocking {
+            useCase()
+            verify { identity.commitPendingKeyPair() }
+            verify(exactly = 0) { identity.discardPendingKeyPair() }
+        }
 
     @Test
     fun `invoke discards pending key on failure`() {
         every { encryption.encrypt(any(), any()) } throws RuntimeException("fail")
         try {
             runBlocking { useCase() }
-        } catch (_: RuntimeException) {}
+        } catch (_: RuntimeException) {
+        }
         verify { identity.discardPendingKeyPair() }
         verify(exactly = 0) { identity.commitPendingKeyPair() }
     }
 
     @Test
-    fun `invoke updates member list replacing old pubkey`() = runBlocking {
-        useCase()
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it && oldPubkey !in it }, any()) }
-    }
+    fun `invoke updates member list replacing old pubkey`() =
+        runBlocking {
+            useCase()
+            coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it && oldPubkey !in it }, any()) }
+        }
 
     @Test
-    fun `invoke skips groups without key`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns null
-        val result = useCase()
-        assertEquals(newPubkey, result)
-        verify(exactly = 0) { encryption.encrypt(any(), any()) }
-    }
+    fun `invoke skips groups without key`() =
+        runBlocking {
+            coEvery { groupRepo.getGroupKey(groupId) } returns null
+            val result = useCase()
+            assertEquals(newPubkey, result)
+            verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        }
 
     // --- resumeIfNeeded ---
 
     @Test
-    fun `resumeIfNeeded does nothing without pending key`() = runBlocking {
-        every { identity.hasPendingKeyPair() } returns false
-        useCase.resumeIfNeeded()
-        verify(exactly = 0) { identity.commitPendingKeyPair() }
-    }
+    fun `resumeIfNeeded does nothing without pending key`() =
+        runBlocking {
+            every { identity.hasPendingKeyPair() } returns false
+            useCase.resumeIfNeeded()
+            verify(exactly = 0) { identity.commitPendingKeyPair() }
+        }
 
     @Test
-    fun `resumeIfNeeded commits when outbox is empty`() = runBlocking {
-        every { identity.hasPendingKeyPair() } returns true
-        every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { outboxDao.getAll() } returns emptyList()
-        useCase.resumeIfNeeded()
-        verify { identity.commitPendingKeyPair() }
-    }
+    fun `resumeIfNeeded commits when outbox is empty`() =
+        runBlocking {
+            every { identity.hasPendingKeyPair() } returns true
+            every { identity.getPendingPublicKeyHex() } returns newPubkey
+            coEvery { outboxDao.getAll() } returns emptyList()
+            useCase.resumeIfNeeded()
+            verify { identity.commitPendingKeyPair() }
+        }
 
     @Test
-    fun `resumeIfNeeded waits when outbox has revocation events`() = runBlocking {
-        every { identity.hasPendingKeyPair() } returns true
-        every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { outboxDao.getAll() } returns listOf(
-            OutboxEntity("e1", """{"type":"key_revocation"}""", 1000)
-        )
-        useCase.resumeIfNeeded()
-        verify(exactly = 0) { identity.commitPendingKeyPair() }
-    }
+    fun `resumeIfNeeded waits when outbox has revocation events`() =
+        runBlocking {
+            every { identity.hasPendingKeyPair() } returns true
+            every { identity.getPendingPublicKeyHex() } returns newPubkey
+            coEvery { outboxDao.getAll() } returns
+                listOf(
+                    OutboxEntity("e1", """{"type":"key_revocation"}""", 1000),
+                )
+            useCase.resumeIfNeeded()
+            verify(exactly = 0) { identity.commitPendingKeyPair() }
+        }
 
     // --- handleRevocation ---
 
     @Test
-    fun `handleRevocation replaces old pubkey with new`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returns group
-        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey, "test"))
-        useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it }, any()) }
-    }
+    fun `handleRevocation replaces old pubkey with new`() =
+        runBlocking {
+            coEvery { groupRepo.getById(groupId) } returns group
+            val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey, "test"))
+            useCase.handleRevocation(payload, oldPubkey, groupId)
+            coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it }, any()) }
+        }
 
     @Test
-    fun `handleRevocation rejects if signer does not match oldPubkey`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returns group
-        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
-        useCase.handleRevocation(payload, "wrong-signer", groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
-    }
+    fun `handleRevocation rejects if signer does not match oldPubkey`() =
+        runBlocking {
+            coEvery { groupRepo.getById(groupId) } returns group
+            val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+            useCase.handleRevocation(payload, "wrong-signer", groupId)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        }
 
     @Test
-    fun `handleRevocation ignores invalid JSON`() = runBlocking {
-        useCase.handleRevocation("bad json", oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
-    }
+    fun `handleRevocation ignores invalid JSON`() =
+        runBlocking {
+            useCase.handleRevocation("bad json", oldPubkey, groupId)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        }
 
     @Test
-    fun `handleRevocation removes pubkey when newPubkey is empty`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returns group
-        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, "", "compromised"))
-        useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { oldPubkey !in it }, any()) }
-    }
+    fun `handleRevocation removes pubkey when newPubkey is empty`() =
+        runBlocking {
+            coEvery { groupRepo.getById(groupId) } returns group
+            val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, "", "compromised"))
+            useCase.handleRevocation(payload, oldPubkey, groupId)
+            coVerify { groupRepo.updateFromMeta(groupId, "Test", match { oldPubkey !in it }, any()) }
+        }
 
     @Test
-    fun `invoke preserves createdBy when revoker is not creator`() = runBlocking {
-        val otherCreator = "dd".repeat(32)
-        val nonCreatorGroup = group.copy(createdBy = otherCreator)
-        coEvery { groupRepo.getAll() } returns listOf(nonCreatorGroup)
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        useCase()
-        // createdBy should remain otherCreator, not be replaced
-        coVerify { groupRepo.updateFromMeta(groupId, any(), any(), any()) }
-    }
+    fun `invoke preserves createdBy when revoker is not creator`() =
+        runBlocking {
+            val otherCreator = "dd".repeat(32)
+            val nonCreatorGroup = group.copy(createdBy = otherCreator)
+            coEvery { groupRepo.getAll() } returns listOf(nonCreatorGroup)
+            coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+            useCase()
+            // createdBy should remain otherCreator, not be replaced
+            coVerify { groupRepo.updateFromMeta(groupId, any(), any(), any()) }
+        }
 
     @Test
-    fun `resumeIfNeeded returns when getPendingPublicKeyHex is null`() = runBlocking {
-        every { identity.hasPendingKeyPair() } returns true
-        every { identity.getPendingPublicKeyHex() } returns null
-        useCase.resumeIfNeeded()
-        verify(exactly = 0) { identity.commitPendingKeyPair() }
-    }
+    fun `resumeIfNeeded returns when getPendingPublicKeyHex is null`() =
+        runBlocking {
+            every { identity.hasPendingKeyPair() } returns true
+            every { identity.getPendingPublicKeyHex() } returns null
+            useCase.resumeIfNeeded()
+            verify(exactly = 0) { identity.commitPendingKeyPair() }
+        }
 
     @Test
-    fun `resumeIfNeeded waits when outbox has group_meta events`() = runBlocking {
-        every { identity.hasPendingKeyPair() } returns true
-        every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { outboxDao.getAll() } returns listOf(
-            OutboxEntity("e1", """{"type":"group_meta"}""", 1000)
-        )
-        useCase.resumeIfNeeded()
-        verify(exactly = 0) { identity.commitPendingKeyPair() }
-    }
+    fun `resumeIfNeeded waits when outbox has group_meta events`() =
+        runBlocking {
+            every { identity.hasPendingKeyPair() } returns true
+            every { identity.getPendingPublicKeyHex() } returns newPubkey
+            coEvery { outboxDao.getAll() } returns
+                listOf(
+                    OutboxEntity("e1", """{"type":"group_meta"}""", 1000),
+                )
+            useCase.resumeIfNeeded()
+            verify(exactly = 0) { identity.commitPendingKeyPair() }
+        }
 
     @Test
-    fun `handleRevocation ignores when group not found`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returns null
-        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
-        useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
-    }
+    fun `handleRevocation ignores when group not found`() =
+        runBlocking {
+            coEvery { groupRepo.getById(groupId) } returns null
+            val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+            useCase.handleRevocation(payload, oldPubkey, groupId)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        }
 
     @Test
-    fun `handleRevocation ignores when oldPubkey not in members`() = runBlocking {
-        val groupNoMember = group.copy(members = listOf("cc".repeat(32)))
-        coEvery { groupRepo.getById(groupId) } returns groupNoMember
-        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
-        useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
-    }
+    fun `handleRevocation ignores when oldPubkey not in members`() =
+        runBlocking {
+            val groupNoMember = group.copy(members = listOf("cc".repeat(32)))
+            coEvery { groupRepo.getById(groupId) } returns groupNoMember
+            val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+            useCase.handleRevocation(payload, oldPubkey, groupId)
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        }
 }

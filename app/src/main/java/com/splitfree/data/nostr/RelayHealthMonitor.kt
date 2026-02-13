@@ -10,7 +10,7 @@ data class RelayStatus(
     val url: String,
     val online: Boolean,
     val latencyMs: Long = 0,
-    val checkedAt: Long = System.currentTimeMillis()
+    val checkedAt: Long = System.currentTimeMillis(),
 )
 
 /**
@@ -18,62 +18,62 @@ data class RelayStatus(
  * Tests relays via NIP-11 info document (HTTP GET with Accept: application/nostr+json).
  */
 @Singleton
-class RelayHealthMonitor @Inject constructor() {
+class RelayHealthMonitor
+    @Inject
+    constructor() {
+        private val _statuses = java.util.concurrent.ConcurrentHashMap<String, RelayStatus>()
+        val statuses: Map<String, RelayStatus> get() = _statuses.toMap()
 
-    private val _statuses = java.util.concurrent.ConcurrentHashMap<String, RelayStatus>()
-    val statuses: Map<String, RelayStatus> get() = _statuses.toMap()
-
-    suspend fun checkRelays(relayUrls: List<String>) {
-        coroutineScope {
-            relayUrls.map { url ->
-                async { testRelay(url) }
-            }.forEach { deferred ->
-                val status = deferred.await()
-                _statuses[status.url] = status
+        suspend fun checkRelays(relayUrls: List<String>) {
+            coroutineScope {
+                relayUrls
+                    .map { url ->
+                        async { testRelay(url) }
+                    }.forEach { deferred ->
+                        val status = deferred.await()
+                        _statuses[status.url] = status
+                    }
             }
         }
-    }
 
-    fun getOnlineRelays(relayUrls: List<String>): List<String> {
-        return relayUrls.filter { _statuses[it]?.online != false }
-    }
+        fun getOnlineRelays(relayUrls: List<String>): List<String> = relayUrls.filter { _statuses[it]?.online != false }
 
-    /**
-     * Test relay by requesting NIP-11 info document.
-     * Nostr relays respond to HTTP GET with Accept: application/nostr+json header.
-     */
-    private suspend fun testRelay(url: String): RelayStatus {
-        return try {
-            withTimeout(5000L) {
-                val start = System.currentTimeMillis()
-                val httpUrl = url.replace("wss://", "https://").replace("ws://", "http://")
-                val conn = java.net.URL(httpUrl).openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
-                conn.requestMethod = "GET"
-                conn.setRequestProperty("Accept", "application/nostr+json")
-                try {
-                    conn.connect()
-                    val latency = System.currentTimeMillis() - start
-                    val online = conn.responseCode == 200
-                    RelayStatus(url, online, latency)
-                } finally {
-                    conn.disconnect()
+        /**
+         * Test relay by requesting NIP-11 info document.
+         * Nostr relays respond to HTTP GET with Accept: application/nostr+json header.
+         */
+        private suspend fun testRelay(url: String): RelayStatus =
+            try {
+                withTimeout(5000L) {
+                    val start = System.currentTimeMillis()
+                    val httpUrl = url.replace("wss://", "https://").replace("ws://", "http://")
+                    val conn = java.net.URL(httpUrl).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+                    conn.requestMethod = "GET"
+                    conn.setRequestProperty("Accept", "application/nostr+json")
+                    try {
+                        conn.connect()
+                        val latency = System.currentTimeMillis() - start
+                        val online = conn.responseCode == 200
+                        RelayStatus(url, online, latency)
+                    } finally {
+                        conn.disconnect()
+                    }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay $url offline: ${e.message}")
+                RelayStatus(url, online = false)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Relay $url offline: ${e.message}")
-            RelayStatus(url, online = false)
+
+        companion object {
+            private const val TAG = "RelayHealthMonitor"
+
+            val FALLBACK_RELAYS =
+                listOf(
+                    "wss://relay.nostr.net",
+                    "wss://nostr21.com",
+                    "wss://purplepag.es",
+                )
         }
     }
-
-    companion object {
-        private const val TAG = "RelayHealthMonitor"
-
-        val FALLBACK_RELAYS = listOf(
-            "wss://relay.nostr.net",
-            "wss://nostr21.com",
-            "wss://purplepag.es"
-        )
-    }
-}

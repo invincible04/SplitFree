@@ -12,7 +12,6 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
 class ExpenseNotifierTest {
-
     private val context by lazy { RuntimeEnvironment.getApplication() }
     private val notifManager by lazy { context.getSystemService(NotificationManager::class.java) }
 
@@ -25,7 +24,9 @@ class ExpenseNotifierTest {
     }
 
     @After
-    fun teardown() { notifManager.cancelAll() }
+    fun teardown() {
+        notifManager.cancelAll()
+    }
 
     private val expenseJson = """{"id":"e1","amount":1500,"currency":"USD","description":"Lunch","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"bob","share":750}],"timestamp":1000}"""
     private val settlementJson = """{"id":"s1","from":"alice","to":"bob","amount":2000,"currency":"EUR","method":"cash","timestamp":1000}"""

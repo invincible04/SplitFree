@@ -13,130 +13,142 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import javax.inject.Inject
 
-class JoinGroupUseCase @Inject constructor(
-    private val groupRepo: GroupRepository,
-    private val identity: IdentityManager,
-    private val nostrClient: NostrClient,
-    private val eventDao: EventDao,
-    private val eventProcessor: EventProcessor,
-    private val signer: EventSigner
-) {
+class JoinGroupUseCase
+    @Inject
+    constructor(
+        private val groupRepo: GroupRepository,
+        private val identity: IdentityManager,
+        private val nostrClient: NostrClient,
+        private val eventDao: EventDao,
+        private val eventProcessor: EventProcessor,
+        private val signer: EventSigner,
+    ) {
+        /**
+         * Parse an invite link and join the group.
+         * Format: splitfree://join?g=<base64url(group_id)>&k=<base64url(group_key)>&r=<relays>&n=<name>&exp=<unix_seconds>
+         */
+        suspend operator fun invoke(uri: String): Group {
+            val params = parseUri(uri)
+            require(params.containsKey("g") && params.containsKey("k")) { "Invalid invite link: missing required parameters" }
+            val groupId = String(Base64.decode(params["g"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
+            val groupKey = String(Base64.decode(params["k"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
+            val relays = (params["r"] ?: "").split(",").filter { it.isNotBlank() }
+            val name = URLDecoder.decode(params["n"] ?: "Group", "UTF-8")
 
-    /**
-     * Parse an invite link and join the group.
-     * Format: splitfree://join?g=<base64url(group_id)>&k=<base64url(group_key)>&r=<relays>&n=<name>&exp=<unix_seconds>
-     */
-    suspend operator fun invoke(uri: String): Group {
-        val params = parseUri(uri)
-        require(params.containsKey("g") && params.containsKey("k")) { "Invalid invite link: missing required parameters" }
-        val groupId = String(Base64.decode(params["g"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
-        val groupKey = String(Base64.decode(params["k"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
-        val relays = (params["r"] ?: "").split(",").filter { it.isNotBlank() }
-        val name = URLDecoder.decode(params["n"] ?: "Group", "UTF-8")
-
-        // Validate group ID is a valid UUID
-        try { java.util.UUID.fromString(groupId) } catch (_: Exception) {
-            throw IllegalArgumentException("Invalid group ID format")
-        }
-
-        // Validate relay URLs: must be wss:// scheme, reasonable length, max 10 relays
-        require(relays.size <= MAX_RELAYS) { "Too many relays in invite link (max $MAX_RELAYS)" }
-        for (relay in relays) {
-            require(relay.startsWith("wss://") && relay.length <= MAX_RELAY_URL_LENGTH) {
-                "Invalid relay URL: must use wss:// scheme and be under $MAX_RELAY_URL_LENGTH chars"
-            }
-        }
-
-        check(relays.isNotEmpty()) { "Invite link must contain at least one relay" }
-
-        // Validate invite link expiration
-        val expiry = params["exp"]?.toLongOrNull()
-        if (expiry != null && System.currentTimeMillis() / 1000 > expiry) {
-            throw IllegalStateException("This invite link has expired. Ask the group creator for a new one.")
-        }
-
-        val existing = groupRepo.getById(groupId)
-        if (existing != null) return existing
-
-        val pubkey = identity.getPublicKeyHex()
-        val group = Group(
-            id = groupId,
-            name = name,
-            createdBy = "",
-            createdAt = System.currentTimeMillis() / 1000,
-            members = listOf(pubkey),
-            relays = relays
-        )
-        groupRepo.save(group, groupKey)
-
-        initialSync(group, groupKey)
-
-        return groupRepo.getById(groupId) ?: group
-    }
-
-    /**
-     * Pull all existing events for a newly joined group from relays.
-     */
-    private suspend fun initialSync(group: Group, groupKey: String) {
-        try {
-            val wasConnected = nostrClient.isConnected
-            if (!wasConnected) {
-                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
-                nostrClient.connect(group.relays)
-            }
-            nostrClient.acquireConnection()
+            // Validate group ID is a valid UUID
             try {
-                val events = nostrClient.fetchEvents(group.id, 0)
-                val existingIds = eventDao.getEventIds(group.id).toSet()
-                var count = 0
-                for (event in events) {
-                    if (event.id in existingIds) continue
-                    val result = eventProcessor.process(
-                        rawEvent = event,
-                        knownGroupId = group.id,
-                        knownGroupKey = groupKey,
-                        lenientTimestamp = true
-                    )
-                    if (result.stored) count++
-                }
-                if (count > 0) {
-                    groupRepo.updateLastSync(group.id, System.currentTimeMillis() / 1000)
-                    Log.i(TAG, "Initial sync pulled $count events for group ${group.name}")
-                }
-            } finally {
-                nostrClient.releaseConnection()
+                java.util.UUID.fromString(groupId)
+            } catch (_: Exception) {
+                throw IllegalArgumentException("Invalid group ID format")
             }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Initial sync failed (will retry on next periodic sync): ${e.message}")
-        }
-    }
 
-    private fun parseUri(uri: String): Map<String, String> {
-        val query = uri.substringAfter("?", "")
-        return query.split("&")
-            .filter { it.contains("=") }
-            .associate {
-                val (k, v) = it.split("=", limit = 2)
-                k to v
+            // Validate relay URLs: must be wss:// scheme, reasonable length, max 10 relays
+            require(relays.size <= MAX_RELAYS) { "Too many relays in invite link (max $MAX_RELAYS)" }
+            for (relay in relays) {
+                require(relay.startsWith("wss://") && relay.length <= MAX_RELAY_URL_LENGTH) {
+                    "Invalid relay URL: must use wss:// scheme and be under $MAX_RELAY_URL_LENGTH chars"
+                }
             }
-    }
 
-    companion object {
-        private const val TAG = "JoinGroupUseCase"
+            check(relays.isNotEmpty()) { "Invite link must contain at least one relay" }
 
-        fun createInviteLink(group: Group, groupKey: String): String {
-            val g = Base64.encodeToString(group.id.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-            val k = Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-            val r = group.relays.joinToString(",")
-            val n = URLEncoder.encode(group.name, "UTF-8")
-            val exp = System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS
-            return "splitfree://join?g=$g&k=$k&r=$r&n=$n&exp=$exp"
+            // Validate invite link expiration
+            val expiry = params["exp"]?.toLongOrNull()
+            if (expiry != null && System.currentTimeMillis() / 1000 > expiry) {
+                throw IllegalStateException("This invite link has expired. Ask the group creator for a new one.")
+            }
+
+            val existing = groupRepo.getById(groupId)
+            if (existing != null) return existing
+
+            val pubkey = identity.getPublicKeyHex()
+            val group =
+                Group(
+                    id = groupId,
+                    name = name,
+                    createdBy = "",
+                    createdAt = System.currentTimeMillis() / 1000,
+                    members = listOf(pubkey),
+                    relays = relays,
+                )
+            groupRepo.save(group, groupKey)
+
+            initialSync(group, groupKey)
+
+            return groupRepo.getById(groupId) ?: group
         }
 
-        private const val INVITE_EXPIRY_SECS = 7 * 86400L // 7 days
-        private const val MAX_RELAYS = 10
-        private const val MAX_RELAY_URL_LENGTH = 256
+        /**
+         * Pull all existing events for a newly joined group from relays.
+         */
+        private suspend fun initialSync(
+            group: Group,
+            groupKey: String,
+        ) {
+            try {
+                val wasConnected = nostrClient.isConnected
+                if (!wasConnected) {
+                    nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
+                    nostrClient.connect(group.relays)
+                }
+                nostrClient.acquireConnection()
+                try {
+                    val events = nostrClient.fetchEvents(group.id, 0)
+                    val existingIds = eventDao.getEventIds(group.id).toSet()
+                    var count = 0
+                    for (event in events) {
+                        if (event.id in existingIds) continue
+                        val result =
+                            eventProcessor.process(
+                                rawEvent = event,
+                                knownGroupId = group.id,
+                                knownGroupKey = groupKey,
+                                lenientTimestamp = true,
+                            )
+                        if (result.stored) count++
+                    }
+                    if (count > 0) {
+                        groupRepo.updateLastSync(group.id, System.currentTimeMillis() / 1000)
+                        Log.i(TAG, "Initial sync pulled $count events for group ${group.name}")
+                    }
+                } finally {
+                    nostrClient.releaseConnection()
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Initial sync failed (will retry on next periodic sync): ${e.message}")
+            }
+        }
+
+        private fun parseUri(uri: String): Map<String, String> {
+            val query = uri.substringAfter("?", "")
+            return query
+                .split("&")
+                .filter { it.contains("=") }
+                .associate {
+                    val (k, v) = it.split("=", limit = 2)
+                    k to v
+                }
+        }
+
+        companion object {
+            private const val TAG = "JoinGroupUseCase"
+
+            fun createInviteLink(
+                group: Group,
+                groupKey: String,
+            ): String {
+                val g = Base64.encodeToString(group.id.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+                val k = Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+                val r = group.relays.joinToString(",")
+                val n = URLEncoder.encode(group.name, "UTF-8")
+                val exp = System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS
+                return "splitfree://join?g=$g&k=$k&r=$r&n=$n&exp=$exp"
+            }
+
+            private const val INVITE_EXPIRY_SECS = 7 * 86400L // 7 days
+            private const val MAX_RELAYS = 10
+            private const val MAX_RELAY_URL_LENGTH = 256
+        }
     }
-}

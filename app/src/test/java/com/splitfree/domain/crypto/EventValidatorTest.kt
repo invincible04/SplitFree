@@ -9,7 +9,6 @@ import org.junit.Test
  * content safety, deletion, group meta auth, and backdating checks.
  */
 class EventValidatorTest {
-
     private fun nowSecs() = System.currentTimeMillis() / 1000
 
     @After
@@ -316,7 +315,7 @@ class EventValidatorTest {
 
     @Test
     fun `deeply nested JSON is unsafe`() {
-        val deep = "{".repeat(33) + "}" .repeat(33)
+        val deep = "{".repeat(33) + "}".repeat(33)
         assertFalse(EventValidator.isContentSafe(deep))
     }
 

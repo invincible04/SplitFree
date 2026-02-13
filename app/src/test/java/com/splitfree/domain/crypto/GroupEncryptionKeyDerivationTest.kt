@@ -8,7 +8,6 @@ import java.security.SecureRandom
  * Tests for GroupEncryption key derivation — ensures determinism and isolation.
  */
 class GroupEncryptionKeyDerivationTest {
-
     private val encryption = GroupEncryption()
 
     @Test
@@ -28,7 +27,9 @@ class GroupEncryptionKeyDerivationTest {
         try {
             encryption.decrypt(encrypted, key2)
             fail("Different key should fail decryption")
-        } catch (_: Exception) { /* expected */ }
+        } catch (_: Exception) {
+            // expected
+        }
     }
 
     @Test

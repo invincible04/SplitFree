@@ -4,7 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PowerManagerDutyCycleTest {
-
     @Test
     fun `all power modes return positive scan and pause durations`() {
         for (mode in PowerMode.values()) {

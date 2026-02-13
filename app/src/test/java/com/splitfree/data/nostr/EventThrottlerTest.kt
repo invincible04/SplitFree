@@ -8,23 +8,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EventThrottlerTest {
-
-    private fun makeEvent(id: String) = NostrEvent(
-        id = id, pubkey = "pub", createdAt = 1, kind = 30078,
-        tags = emptyList(), content = "c", sig = "s"
-    )
+    private fun makeEvent(id: String) =
+        NostrEvent(
+            id = id,
+            pubkey = "pub",
+            createdAt = 1,
+            kind = 30078,
+            tags = emptyList(),
+            content = "c",
+            sig = "s",
+        )
 
     @Test
-    fun `enqueue adds event to queue`() = runTest {
-        val client = mockk<NostrClient>(relaxed = true)
-        coEvery { client.publish(any()) } returns true
-        val throttler = EventThrottler(client)
-        throttler.enqueue(makeEvent("e1"))
-        advanceUntilIdle()
-        // Give the IO dispatcher time to process
-        Thread.sleep(200)
-        coVerify(atLeast = 1) { client.publish(match { it.id == "e1" }) }
-    }
+    fun `enqueue adds event to queue`() =
+        runTest {
+            val client = mockk<NostrClient>(relaxed = true)
+            coEvery { client.publish(any()) } returns true
+            val throttler = EventThrottler(client)
+            throttler.enqueue(makeEvent("e1"))
+            advanceUntilIdle()
+            // Give the IO dispatcher time to process
+            Thread.sleep(200)
+            coVerify(atLeast = 1) { client.publish(match { it.id == "e1" }) }
+        }
 
     @Test
     fun `enqueue drops events beyond max queue size`() {

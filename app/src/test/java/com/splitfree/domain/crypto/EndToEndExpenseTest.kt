@@ -12,7 +12,6 @@ import java.security.SecureRandom
  * This is the closest we can get to a real-app test without Android.
  */
 class EndToEndExpenseTest {
-
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
     private val encryption = GroupEncryption()
 
@@ -20,7 +19,11 @@ class EndToEndExpenseTest {
     fun `full expense lifecycle - create, sign, serialize, parse, verify, decrypt`() {
         // 1. Generate identity
         val privKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(privKey)) SecureRandom().nextBytes(privKey)
+        while (!fr.acinq.secp256k1.Secp256k1
+                .secKeyVerify(privKey)
+        ) {
+            SecureRandom().nextBytes(privKey)
+        }
         val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
 
         // 2. Generate group key
@@ -28,39 +31,50 @@ class EndToEndExpenseTest {
         val groupId = "test-group-${System.currentTimeMillis()}"
 
         // 3. Create expense
-        val expense = com.splitfree.domain.model.Expense(
-            id = "exp-001",
-            amount = 50050, // ₹500.50
-            currency = "INR",
-            description = "Dinner at café 🍕",
-            paidBy = pubHex,
-            splitType = com.splitfree.domain.model.SplitType.EQUAL,
-            splitAmong = listOf(
-                com.splitfree.domain.model.SplitEntry(pubHex, 25025),
-                com.splitfree.domain.model.SplitEntry("other-member-pubkey", 25025)
-            ),
-            timestamp = System.currentTimeMillis() / 1000,
-            category = "food"
-        )
+        val expense =
+            com.splitfree.domain.model.Expense(
+                id = "exp-001",
+                amount = 50050, // ₹500.50
+                currency = "INR",
+                description = "Dinner at café 🍕",
+                paidBy = pubHex,
+                splitType = com.splitfree.domain.model.SplitType.EQUAL,
+                splitAmong =
+                    listOf(
+                        com.splitfree.domain.model
+                            .SplitEntry(pubHex, 25025),
+                        com.splitfree.domain.model
+                            .SplitEntry("other-member-pubkey", 25025),
+                    ),
+                timestamp = System.currentTimeMillis() / 1000,
+                category = "food",
+            )
 
         // 4. Serialize and encrypt
-        val plaintext = json.encodeToString(com.splitfree.domain.model.Expense.serializer(), expense)
+        val plaintext =
+            json.encodeToString(
+                com.splitfree.domain.model.Expense
+                    .serializer(),
+                expense,
+            )
         val encrypted = encryption.encrypt(plaintext, groupKey)
 
         // 5. Create and sign Nostr event
         val dTagValue = "$groupId:${expense.id}"
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(
-                listOf("d", dTagValue),
-                listOf("g", groupId),
-                listOf("t", "expense"),
-                listOf("e", expense.id)
-            ),
-            content = encrypted
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags =
+                    listOf(
+                        listOf("d", dTagValue),
+                        listOf("g", groupId),
+                        listOf("t", "expense"),
+                        listOf("e", expense.id),
+                    ),
+                content = encrypted,
+            ).sign(privKey)
 
         // 6. Verify the signed event
         assertTrue("Event must verify", event.verify())
@@ -118,12 +132,20 @@ class EndToEndExpenseTest {
     fun `full gift-wrapped expense lifecycle`() {
         // Sender
         val senderPriv = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(senderPriv)) SecureRandom().nextBytes(senderPriv)
+        while (!fr.acinq.secp256k1.Secp256k1
+                .secKeyVerify(senderPriv)
+        ) {
+            SecureRandom().nextBytes(senderPriv)
+        }
         val senderPub = NostrEvent.pubkeyFromPrivkey(senderPriv)
 
         // Recipient
         val recipientPriv = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(recipientPriv)) SecureRandom().nextBytes(recipientPriv)
+        while (!fr.acinq.secp256k1.Secp256k1
+                .secKeyVerify(recipientPriv)
+        ) {
+            SecureRandom().nextBytes(recipientPriv)
+        }
         val recipientPub = NostrEvent.pubkeyFromPrivkey(recipientPriv).hexToBytes()
 
         // Group key
@@ -132,11 +154,14 @@ class EndToEndExpenseTest {
         // Create expense event
         val expenseJson = """{"id":"e1","amount":1000,"currency":"INR","description":"test","paid_by":"$senderPub","split_type":"equal","split_among":[{"pubkey":"$senderPub","share":500},{"pubkey":"other","share":500}],"timestamp":1}"""
         val encrypted = encryption.encrypt(expenseJson, groupKey)
-        val inner = NostrEvent(
-            pubkey = senderPub, createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078, tags = listOf(listOf("g", "group1"), listOf("t", "expense")),
-            content = encrypted
-        ).sign(senderPriv)
+        val inner =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags = listOf(listOf("g", "group1"), listOf("t", "expense")),
+                content = encrypted,
+            ).sign(senderPriv)
 
         // Gift wrap
         val wrapped = Nip59.giftWrap(inner.copy(sig = ""), senderPriv, recipientPub)
@@ -164,22 +189,40 @@ class EndToEndExpenseTest {
     @Test
     fun `settlement event lifecycle`() {
         val privKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(privKey)) SecureRandom().nextBytes(privKey)
+        while (!fr.acinq.secp256k1.Secp256k1
+                .secKeyVerify(privKey)
+        ) {
+            SecureRandom().nextBytes(privKey)
+        }
         val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
         val groupKey = encryption.generateGroupKey()
 
-        val settlement = com.splitfree.domain.model.Settlement(
-            id = "s1", from = pubHex, to = "creditor-pub",
-            amount = 25000, currency = "INR", method = "upi", timestamp = System.currentTimeMillis() / 1000
-        )
-        val plaintext = json.encodeToString(com.splitfree.domain.model.Settlement.serializer(), settlement)
+        val settlement =
+            com.splitfree.domain.model.Settlement(
+                id = "s1",
+                from = pubHex,
+                to = "creditor-pub",
+                amount = 25000,
+                currency = "INR",
+                method = "upi",
+                timestamp = System.currentTimeMillis() / 1000,
+            )
+        val plaintext =
+            json.encodeToString(
+                com.splitfree.domain.model.Settlement
+                    .serializer(),
+                settlement,
+            )
         val encrypted = encryption.encrypt(plaintext, groupKey)
 
-        val event = NostrEvent(
-            pubkey = pubHex, createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078, tags = listOf(listOf("d", "group:${settlement.id}"), listOf("t", "settlement")),
-            content = encrypted
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags = listOf(listOf("d", "group:${settlement.id}"), listOf("t", "settlement")),
+                content = encrypted,
+            ).sign(privKey)
 
         // Round-trip
         val received = NostrEvent.fromJson(event.toJson())!!

@@ -11,11 +11,13 @@ import org.junit.Test
  * Design doc Section 11.1.
  */
 class BalanceComputationTest {
-
     private val json = Json { ignoreUnknownKeys = true }
 
     // Simulate applyExpense (mirrors ComputeBalancesUseCase.applyExpense)
-    private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>) {
+    private fun applyExpense(
+        expense: Expense,
+        balances: MutableMap<Pair<String, String>, Long>,
+    ) {
         val cur = expense.currency
         for (split in expense.splitAmong) {
             if (split.pubkey != expense.paidBy) {
@@ -25,13 +27,21 @@ class BalanceComputationTest {
         }
     }
 
-    private fun applySettlement(s: Settlement, balances: MutableMap<Pair<String, String>, Long>) {
+    private fun applySettlement(
+        s: Settlement,
+        balances: MutableMap<Pair<String, String>, Long>,
+    ) {
         balances[s.from to s.currency] = (balances[s.from to s.currency] ?: 0L) + s.amount
         balances[s.to to s.currency] = (balances[s.to to s.currency] ?: 0L) - s.amount
     }
 
-    private fun expense(id: String, amount: Long, paidBy: String, splits: List<SplitEntry>, currency: String = "INR") =
-        Expense(id, amount, currency, "test", paidBy, SplitType.EQUAL, splits, 1)
+    private fun expense(
+        id: String,
+        amount: Long,
+        paidBy: String,
+        splits: List<SplitEntry>,
+        currency: String = "INR",
+    ) = Expense(id, amount, currency, "test", paidBy, SplitType.EQUAL, splits, 1)
 
     // --- Basic scenarios ---
 
@@ -58,8 +68,15 @@ class BalanceComputationTest {
     fun `three-person equal split`() {
         val balances = mutableMapOf<Pair<String, String>, Long>()
         // Alice pays 300, split 100 each
-        applyExpense(expense("1", 300, "alice",
-            listOf(SplitEntry("alice", 100), SplitEntry("bob", 100), SplitEntry("charlie", 100))), balances)
+        applyExpense(
+            expense(
+                "1",
+                300,
+                "alice",
+                listOf(SplitEntry("alice", 100), SplitEntry("bob", 100), SplitEntry("charlie", 100)),
+            ),
+            balances,
+        )
         assertEquals(200L, balances["alice" to "INR"]) // owed 100+100 from bob and charlie
         assertEquals(-100L, balances["bob" to "INR"])
         assertEquals(-100L, balances["charlie" to "INR"])
@@ -153,10 +170,24 @@ class BalanceComputationTest {
     @Test
     fun `all balances sum to zero (conservation of money)`() {
         val balances = mutableMapOf<Pair<String, String>, Long>()
-        applyExpense(expense("1", 500, "alice",
-            listOf(SplitEntry("alice", 200), SplitEntry("bob", 150), SplitEntry("charlie", 150))), balances)
-        applyExpense(expense("2", 300, "bob",
-            listOf(SplitEntry("alice", 100), SplitEntry("bob", 100), SplitEntry("charlie", 100))), balances)
+        applyExpense(
+            expense(
+                "1",
+                500,
+                "alice",
+                listOf(SplitEntry("alice", 200), SplitEntry("bob", 150), SplitEntry("charlie", 150)),
+            ),
+            balances,
+        )
+        applyExpense(
+            expense(
+                "2",
+                300,
+                "bob",
+                listOf(SplitEntry("alice", 100), SplitEntry("bob", 100), SplitEntry("charlie", 100)),
+            ),
+            balances,
+        )
         applySettlement(Settlement("s1", "charlie", "alice", 50, "INR", "cash", 3), balances)
 
         val total = balances.values.sum()
@@ -167,8 +198,13 @@ class BalanceComputationTest {
 
     @Test
     fun `expense survives JSON serialization and produces same balance`() {
-        val exp = expense("1", 997, "alice",
-            listOf(SplitEntry("alice", 333), SplitEntry("bob", 332), SplitEntry("charlie", 332)))
+        val exp =
+            expense(
+                "1",
+                997,
+                "alice",
+                listOf(SplitEntry("alice", 333), SplitEntry("bob", 332), SplitEntry("charlie", 332)),
+            )
         val serialized = json.encodeToString(Expense.serializer(), exp)
         val deserialized = json.decodeFromString<Expense>(serialized)
 
@@ -191,9 +227,10 @@ class BalanceComputationTest {
             val amount = ((i + 1) * 100).toLong()
             val perPerson = amount / 20
             val remainder = (amount % 20).toInt()
-            val splits = members.mapIndexed { j, pk ->
-                SplitEntry(pk, perPerson + if (j < remainder) 1 else 0)
-            }
+            val splits =
+                members.mapIndexed { j, pk ->
+                    SplitEntry(pk, perPerson + if (j < remainder) 1 else 0)
+                }
             assertEquals("Splits must sum to amount", amount, splits.sumOf { it.share })
             applyExpense(expense("exp-$i", amount, payer, splits), balances)
         }

@@ -11,7 +11,6 @@ import java.security.SecureRandom
  *   Rumor (unsigned) → Seal (kind 13, sender key) → Gift Wrap (kind 1059, ephemeral key)
  */
 object Nip59 {
-
     private val secureRandom = SecureRandom()
 
     /**
@@ -25,28 +24,30 @@ object Nip59 {
     fun giftWrap(
         rumor: NostrEvent,
         senderPrivKey: ByteArray,
-        recipientPubKey: ByteArray
+        recipientPubKey: ByteArray,
     ): NostrEvent {
         val senderPubHex = NostrEvent.pubkeyFromPrivkey(senderPrivKey)
         val recipientPubHex = recipientPubKey.toHex()
 
         // 1. Rumor: compute ID but do NOT sign (provides deniability)
-        val rumorWithId = rumor.copy(
-            pubkey = senderPubHex,
-            id = rumor.copy(pubkey = senderPubHex).computeId().toHex(),
-            sig = ""
-        )
+        val rumorWithId =
+            rumor.copy(
+                pubkey = senderPubHex,
+                id = rumor.copy(pubkey = senderPubHex).computeId().toHex(),
+                sig = "",
+            )
 
         // 2. Seal (kind 13): encrypt rumor JSON, sign with sender's real key
         val sealConvKey = Nip44.getConversationKey(senderPrivKey, recipientPubKey)
         val sealContent = Nip44.encrypt(rumorWithId.toJson(), sealConvKey)
-        val seal = NostrEvent(
-            pubkey = senderPubHex,
-            createdAt = randomTimestamp(),
-            kind = 13,
-            tags = emptyList(), // MUST be empty per spec
-            content = sealContent
-        ).sign(senderPrivKey)
+        val seal =
+            NostrEvent(
+                pubkey = senderPubHex,
+                createdAt = randomTimestamp(),
+                kind = 13,
+                tags = emptyList(), // MUST be empty per spec
+                content = sealContent,
+            ).sign(senderPrivKey)
 
         // 3. Gift Wrap (kind 1059): encrypt seal JSON with ephemeral key
         val ephemeralPriv = ByteArray(32).also { secureRandom.nextBytes(it) }
@@ -59,19 +60,21 @@ object Nip59 {
         val wrapConvKey = Nip44.getConversationKey(ephemeralPriv, recipientPubKey)
         val wrapContent = Nip44.encrypt(seal.toJson(), wrapConvKey)
         // Route by group ID instead of recipient pubkey to avoid metadata leakage
-        val wrapTags = if (rumor.tags.any { it.size >= 2 && it[0] == "g" }) {
-            val groupId = rumor.tags.first { it.size >= 2 && it[0] == "g" }[1]
-            listOf(listOf("g", groupId))
-        } else {
-            listOf(listOf("p", recipientPubHex))
-        }
-        val wrap = NostrEvent(
-            pubkey = ephemeralPubHex,
-            createdAt = randomTimestamp(),
-            kind = 1059,
-            tags = wrapTags,
-            content = wrapContent
-        ).sign(ephemeralPriv)
+        val wrapTags =
+            if (rumor.tags.any { it.size >= 2 && it[0] == "g" }) {
+                val groupId = rumor.tags.first { it.size >= 2 && it[0] == "g" }[1]
+                listOf(listOf("g", groupId))
+            } else {
+                listOf(listOf("p", recipientPubHex))
+            }
+        val wrap =
+            NostrEvent(
+                pubkey = ephemeralPubHex,
+                createdAt = randomTimestamp(),
+                kind = 1059,
+                tags = wrapTags,
+                content = wrapContent,
+            ).sign(ephemeralPriv)
 
         // Zero out ephemeral key
         ephemeralPriv.fill(0)
@@ -88,14 +91,19 @@ object Nip59 {
      */
     fun unwrap(
         giftWrap: NostrEvent,
-        recipientPrivKey: ByteArray
+        recipientPrivKey: ByteArray,
     ): Pair<NostrEvent, String>? {
         if (giftWrap.kind != 1059) return null
         if (!giftWrap.verify()) return null
 
         // Decrypt gift wrap → seal
         val wrapConvKey = Nip44.getConversationKey(recipientPrivKey, giftWrap.pubkey.hexToBytes())
-        val sealJson = try { Nip44.decrypt(giftWrap.content, wrapConvKey) } catch (_: Exception) { return null }
+        val sealJson =
+            try {
+                Nip44.decrypt(giftWrap.content, wrapConvKey)
+            } catch (_: Exception) {
+                return null
+            }
         val seal = NostrEvent.fromJson(sealJson) ?: return null
 
         // Verify seal
@@ -104,7 +112,12 @@ object Nip59 {
 
         // Decrypt seal → rumor
         val sealConvKey = Nip44.getConversationKey(recipientPrivKey, seal.pubkey.hexToBytes())
-        val rumorJson = try { Nip44.decrypt(seal.content, sealConvKey) } catch (_: Exception) { return null }
+        val rumorJson =
+            try {
+                Nip44.decrypt(seal.content, sealConvKey)
+            } catch (_: Exception) {
+                return null
+            }
         val rumor = NostrEvent.fromJson(rumorJson) ?: return null
 
         // Verify sender consistency: rumor.pubkey must match seal.pubkey (prevents impersonation)

@@ -10,5 +10,5 @@ data class Settlement(
     val amount: Long, // smallest currency unit
     val currency: String,
     val method: String = "cash",
-    val timestamp: Long
+    val timestamp: Long,
 )

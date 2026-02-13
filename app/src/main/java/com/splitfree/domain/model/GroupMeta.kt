@@ -10,5 +10,5 @@ data class GroupMeta(
     @SerialName("created_by") val createdBy: String = "",
     @SerialName("created_at") val createdAt: Long = 0,
     val members: List<String> = emptyList(),
-    val relays: List<String> = emptyList()
+    val relays: List<String> = emptyList(),
 )

@@ -21,5 +21,8 @@ interface OutboxDao {
     suspend fun deleteOlderThan(cutoff: Long)
 
     @Query("UPDATE outbox SET retryCount = retryCount + 1, lastRetryAt = :now WHERE eventId = :eventId")
-    suspend fun incrementRetry(eventId: String, now: Long)
+    suspend fun incrementRetry(
+        eventId: String,
+        now: Long,
+    )
 }

@@ -8,10 +8,10 @@ import java.util.concurrent.ConcurrentHashMap
  * to prevent timestamp manipulation attacks on event ordering.
  */
 object EventValidator {
-    private const val MAX_FUTURE_SECS = 3600L       // 1 hour
-    private const val MAX_AGE_SECS = 30L * 86400L   // 30 days
-    private const val MAX_CONTENT_BYTES = 65_536     // 64 KB — reject oversized event content
-    private const val MAX_JSON_DEPTH = 32            // reject deeply nested JSON (stack overflow DoS)
+    private const val MAX_FUTURE_SECS = 3600L // 1 hour
+    private const val MAX_AGE_SECS = 30L * 86400L // 30 days
+    private const val MAX_CONTENT_BYTES = 65_536 // 64 KB — reject oversized event content
+    private const val MAX_JSON_DEPTH = 32 // reject deeply nested JSON (stack overflow DoS)
 
     /** Max events per pubkey per minute before rate-limiting kicks in. */
     private const val RATE_LIMIT_PER_MINUTE = 30
@@ -23,6 +23,7 @@ object EventValidator {
 
     private class RateEntry {
         @Volatile var count: Int = 0
+
         @Volatile var windowStart: Long = 0L
     }
 
@@ -57,17 +58,26 @@ object EventValidator {
      * @param originalCreatorPubkey pubkey of the original expense creator (from DB), or null if not found
      * @return true if the event is valid, false if it should be rejected
      */
-    fun isCorrectionAuthorValid(eventType: String, eventPubkey: String, originalCreatorPubkey: String?): Boolean {
-        return when (eventType) {
+    fun isCorrectionAuthorValid(
+        eventType: String,
+        eventPubkey: String,
+        originalCreatorPubkey: String?,
+    ): Boolean =
+        when (eventType) {
             "expense_correction", "expense_delete" -> {
                 // Reject corrections/deletions when the original expense hasn't been synced yet.
                 // They will be re-processed on the next sync when the original arrives.
-                if (originalCreatorPubkey == null) false
-                else eventPubkey == originalCreatorPubkey
+                if (originalCreatorPubkey == null) {
+                    false
+                } else {
+                    eventPubkey == originalCreatorPubkey
+                }
             }
-            else -> true
+
+            else -> {
+                true
+            }
         }
-    }
 
     /**
      * Per-pubkey rate limiting. Returns true if the pubkey is within limits.
@@ -126,7 +136,11 @@ object EventValidator {
      * Check if an expense event references a UUID that has been deleted.
      * Prevents replay of deleted expenses by malicious relays.
      */
-    fun isDeletedExpense(eventType: String, expenseUuid: String?, deletedUuids: Set<String>): Boolean {
+    fun isDeletedExpense(
+        eventType: String,
+        expenseUuid: String?,
+        deletedUuids: Set<String>,
+    ): Boolean {
         if (eventType != "expense" || expenseUuid == null) return false
         return expenseUuid in deletedUuids
     }
@@ -136,7 +150,10 @@ object EventValidator {
      * Prevents any group member from rewriting the member list or group name.
      * Returns true if the event should be accepted.
      */
-    fun isGroupMetaAuthorValid(authorPubkey: String, groupCreator: String?): Boolean {
+    fun isGroupMetaAuthorValid(
+        authorPubkey: String,
+        groupCreator: String?,
+    ): Boolean {
         if (groupCreator == null) return true // new group, no creator yet
         return authorPubkey == groupCreator
     }
@@ -146,7 +163,10 @@ object EventValidator {
      * Prevents balance manipulation via strategic timestamp reordering.
      * Returns true if the event timestamp is acceptable.
      */
-    fun isNotBackdatedBeforeSettlement(eventCreatedAt: Long, lastSettlementTimestamp: Long?): Boolean {
+    fun isNotBackdatedBeforeSettlement(
+        eventCreatedAt: Long,
+        lastSettlementTimestamp: Long?,
+    ): Boolean {
         if (lastSettlementTimestamp == null) return true
         return eventCreatedAt >= lastSettlementTimestamp
     }

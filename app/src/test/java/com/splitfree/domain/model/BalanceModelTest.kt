@@ -4,7 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BalanceModelTest {
-
     // --- Balance ---
 
     @Test
@@ -48,11 +47,11 @@ class BalanceModelTest {
     fun `DebtTransaction equality`() {
         assertEquals(
             DebtTransaction("a", "b", 100, "INR"),
-            DebtTransaction("a", "b", 100, "INR")
+            DebtTransaction("a", "b", 100, "INR"),
         )
         assertNotEquals(
             DebtTransaction("a", "b", 100),
-            DebtTransaction("b", "a", 100)
+            DebtTransaction("b", "a", 100),
         )
     }
 

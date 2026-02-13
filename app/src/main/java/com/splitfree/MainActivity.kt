@@ -28,8 +28,8 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-
     @Inject lateinit var identity: IdentityManager
+
     @Inject lateinit var joinGroup: JoinGroupUseCase
 
     private var pendingDeepLink by mutableStateOf<String?>(null)
@@ -44,7 +44,7 @@ class MainActivity : ComponentActivity() {
             SplitFreeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = MaterialTheme.colorScheme.background,
                 ) {
                     val navController = rememberNavController()
                     val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
@@ -90,7 +90,8 @@ class MainActivity : ComponentActivity() {
             if (groupParam.isNullOrBlank()) return
             // Show confirmation dialog — never auto-join from deep links (CVE-2025-4957, USENIX 2017)
             val relay = uri.getQueryParameter("r") ?: uri.getQueryParameter("relay") ?: "default relay"
-            AlertDialog.Builder(this)
+            AlertDialog
+                .Builder(this)
                 .setTitle("Join Group?")
                 .setMessage("An app is requesting you join a group via relay:\n$relay\n\nOnly join if you trust the sender of this link.")
                 .setPositiveButton("Join") { _, _ -> confirmedDeepLink = uriStr }

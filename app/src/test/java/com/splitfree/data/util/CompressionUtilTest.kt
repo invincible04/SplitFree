@@ -9,7 +9,6 @@ import org.junit.Before
 import org.junit.Test
 
 class CompressionUtilTest {
-
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)

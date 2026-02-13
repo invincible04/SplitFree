@@ -5,16 +5,23 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 enum class SplitType {
-    @SerialName("equal") EQUAL,
-    @SerialName("exact") EXACT,
-    @SerialName("percentage") PERCENTAGE,
-    @SerialName("shares") SHARES
+    @SerialName("equal")
+    EQUAL,
+
+    @SerialName("exact")
+    EXACT,
+
+    @SerialName("percentage")
+    PERCENTAGE,
+
+    @SerialName("shares")
+    SHARES,
 }
 
 @Serializable
 data class SplitEntry(
     val pubkey: String,
-    val share: Long // amount in smallest currency unit (paise/cents)
+    val share: Long, // amount in smallest currency unit (paise/cents)
 )
 
 @Serializable
@@ -27,5 +34,5 @@ data class Expense(
     @SerialName("split_type") val splitType: SplitType,
     @SerialName("split_among") val splitAmong: List<SplitEntry>,
     val timestamp: Long,
-    val category: String = ""
+    val category: String = "",
 )

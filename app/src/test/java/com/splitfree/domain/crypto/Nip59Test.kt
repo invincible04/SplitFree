@@ -7,20 +7,20 @@ import org.junit.Test
  * NIP-59 Gift Wrap tests: wrap/unwrap round-trip, layer verification.
  */
 class Nip59Test {
-
     private val senderPriv = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".hexToBytes()
     private val recipientPriv = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".hexToBytes()
     private val senderPub = NostrEvent.pubkeyFromPrivkey(senderPriv)
     private val recipientPub = NostrEvent.pubkeyFromPrivkey(recipientPriv).hexToBytes()
 
-    private fun makeRumor() = NostrEvent(
-        pubkey = senderPub,
-        createdAt = 1700000000L,
-        kind = 30078,
-        tags = listOf(listOf("d", "test-group"), listOf("t", "expense")),
-        content = "encrypted-expense-data",
-        sig = "" // rumor must be unsigned
-    )
+    private fun makeRumor() =
+        NostrEvent(
+            pubkey = senderPub,
+            createdAt = 1700000000L,
+            kind = 30078,
+            tags = listOf(listOf("d", "test-group"), listOf("t", "expense")),
+            content = "encrypted-expense-data",
+            sig = "", // rumor must be unsigned
+        )
 
     @Test
     fun `gift wrap produces kind 1059 event`() {
@@ -72,12 +72,13 @@ class Nip59Test {
 
     @Test
     fun `unwrap rejects non-gift-wrap events`() {
-        val event = NostrEvent(
-            pubkey = senderPub,
-            createdAt = 1L,
-            kind = 1, // not 1059
-            content = "not a gift wrap"
-        ).sign(senderPriv)
+        val event =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = 1L,
+                kind = 1, // not 1059
+                content = "not a gift wrap",
+            ).sign(senderPriv)
         assertNull(Nip59.unwrap(event, recipientPriv))
     }
 
@@ -144,11 +145,15 @@ class Nip59Test {
 
     @Test
     fun `gift wrap uses g tag when rumor has group tag`() {
-        val rumorWithG = NostrEvent(
-            pubkey = senderPub, createdAt = 1700000000L, kind = 30078,
-            tags = listOf(listOf("g", "group-123"), listOf("t", "expense")),
-            content = "data", sig = ""
-        )
+        val rumorWithG =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = 1700000000L,
+                kind = 30078,
+                tags = listOf(listOf("g", "group-123"), listOf("t", "expense")),
+                content = "data",
+                sig = "",
+            )
         val wrapped = Nip59.giftWrap(rumorWithG, senderPriv, recipientPub)
         val gTag = wrapped.tags.find { it[0] == "g" }
         assertNotNull("Must have g tag", gTag)
@@ -163,27 +168,39 @@ class Nip59Test {
         val otherPub = NostrEvent.pubkeyFromPrivkey(otherPriv)
 
         // Build a rumor with a DIFFERENT pubkey than the seal signer
-        val rumor = NostrEvent(
-            pubkey = otherPub, createdAt = 1700000000L, kind = 30078,
-            tags = listOf(listOf("d", "test")), content = "data", sig = ""
-        )
+        val rumor =
+            NostrEvent(
+                pubkey = otherPub,
+                createdAt = 1700000000L,
+                kind = 30078,
+                tags = listOf(listOf("d", "test")),
+                content = "data",
+                sig = "",
+            )
         // Seal is signed by senderPriv, but rumor.pubkey is otherPub → mismatch
         val sealConvKey = Nip44.getConversationKey(senderPriv, recipientPub)
         val sealContent = Nip44.encrypt(rumor.toJson(), sealConvKey)
-        val seal = NostrEvent(
-            pubkey = senderPub, createdAt = 1L, kind = 13,
-            tags = emptyList(), content = sealContent
-        ).sign(senderPriv)
+        val seal =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = 1L,
+                kind = 13,
+                tags = emptyList(),
+                content = sealContent,
+            ).sign(senderPriv)
 
         val ephPriv = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".hexToBytes()
         val ephPub = NostrEvent.pubkeyFromPrivkey(ephPriv)
         val wrapConvKey = Nip44.getConversationKey(ephPriv, recipientPub)
         val wrapContent = Nip44.encrypt(seal.toJson(), wrapConvKey)
-        val wrap = NostrEvent(
-            pubkey = ephPub, createdAt = 1L, kind = 1059,
-            tags = listOf(listOf("p", recipientPub.toHex())),
-            content = wrapContent
-        ).sign(ephPriv)
+        val wrap =
+            NostrEvent(
+                pubkey = ephPub,
+                createdAt = 1L,
+                kind = 1059,
+                tags = listOf(listOf("p", recipientPub.toHex())),
+                content = wrapContent,
+            ).sign(ephPriv)
 
         assertNull("Should reject mismatched pubkeys", Nip59.unwrap(wrap, recipientPriv))
     }
@@ -192,17 +209,24 @@ class Nip59Test {
     fun `unwrap rejects seal with wrong kind`() {
         val ephPriv = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".hexToBytes()
         val ephPub = NostrEvent.pubkeyFromPrivkey(ephPriv)
-        val fakeSeal = NostrEvent(
-            pubkey = senderPub, createdAt = 1L, kind = 1,
-            tags = emptyList(), content = "fake"
-        ).sign(senderPriv)
+        val fakeSeal =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = 1L,
+                kind = 1,
+                tags = emptyList(),
+                content = "fake",
+            ).sign(senderPriv)
         val wrapConvKey = Nip44.getConversationKey(ephPriv, recipientPub)
         val wrapContent = Nip44.encrypt(fakeSeal.toJson(), wrapConvKey)
-        val fakeWrap = NostrEvent(
-            pubkey = ephPub, createdAt = 1L, kind = 1059,
-            tags = listOf(listOf("p", recipientPub.toHex())),
-            content = wrapContent
-        ).sign(ephPriv)
+        val fakeWrap =
+            NostrEvent(
+                pubkey = ephPub,
+                createdAt = 1L,
+                kind = 1059,
+                tags = listOf(listOf("p", recipientPub.toHex())),
+                content = wrapContent,
+            ).sign(ephPriv)
         assertNull("Should reject seal with wrong kind", Nip59.unwrap(fakeWrap, recipientPriv))
     }
 

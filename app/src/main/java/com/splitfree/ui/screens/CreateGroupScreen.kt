@@ -15,7 +15,7 @@ import com.splitfree.ui.viewmodels.CreateGroupViewModel
 fun CreateGroupScreen(
     onGroupCreated: (String) -> Unit,
     onBack: () -> Unit = {},
-    viewModel: CreateGroupViewModel = hiltViewModel()
+    viewModel: CreateGroupViewModel = hiltViewModel(),
 ) {
     var name by remember { mutableStateOf("") }
 
@@ -27,21 +27,22 @@ fun CreateGroupScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
-                }
+                },
             )
-        }
+        },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(24.dp)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            modifier =
+                Modifier
+                    .padding(padding)
+                    .padding(24.dp)
+                    .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Text(
                 "Create a group to start splitting expenses with friends.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             OutlinedTextField(
@@ -51,7 +52,7 @@ fun CreateGroupScreen(
                 placeholder = { Text("e.g., Goa Trip 2026") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                shape = MaterialTheme.shapes.medium
+                shape = MaterialTheme.shapes.medium,
             )
 
             Spacer(Modifier.height(4.dp))
@@ -63,7 +64,7 @@ fun CreateGroupScreen(
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 enabled = name.isNotBlank(),
-                shape = MaterialTheme.shapes.large
+                shape = MaterialTheme.shapes.large,
             ) {
                 Text("Create Group", style = MaterialTheme.typography.titleMedium)
             }

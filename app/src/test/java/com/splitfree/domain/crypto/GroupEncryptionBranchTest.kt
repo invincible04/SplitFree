@@ -4,7 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GroupEncryptionBranchTest {
-
     private val enc = GroupEncryption()
     private val key = enc.generateGroupKey()
 
@@ -15,7 +14,10 @@ class GroupEncryptionBranchTest {
 
     @Test
     fun `decrypt invalid key size rejects`() {
-        val shortKey = java.util.Base64.getEncoder().encodeToString(ByteArray(16))
+        val shortKey =
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(ByteArray(16))
         assertThrows(IllegalArgumentException::class.java) { enc.decrypt("anything", shortKey) }
     }
 

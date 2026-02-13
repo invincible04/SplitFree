@@ -18,7 +18,7 @@ import com.splitfree.ui.viewmodels.OnboardingViewModel
 @Composable
 fun OnboardingScreen(
     onComplete: () -> Unit,
-    viewModel: OnboardingViewModel = hiltViewModel()
+    viewModel: OnboardingViewModel = hiltViewModel(),
 ) {
     var showImport by remember { mutableStateOf(false) }
     var importInput by remember { mutableStateOf("") }
@@ -26,24 +26,25 @@ fun OnboardingScreen(
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(32.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.Center,
         ) {
             // App icon
             Icon(
                 imageVector = Icons.AutoMirrored.Outlined.CallSplit,
                 contentDescription = null,
                 modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(16.dp))
             Text(
                 text = "SplitFree",
                 style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(8.dp))
             Text(
@@ -51,17 +52,17 @@ fun OnboardingScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 24.sp
+                lineHeight = 24.sp,
             )
             Spacer(Modifier.height(12.dp))
             // Feature chips
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 listOf("🔒 Encrypted", "🌐 Decentralized", "💸 Free").forEach { label ->
                     SuggestionChip(
                         onClick = {},
-                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
                     )
                 }
             }
@@ -71,7 +72,7 @@ fun OnboardingScreen(
             AnimatedContent(targetState = showImport, label = "onboarding") { importing ->
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     if (!importing) {
                         Button(
@@ -80,7 +81,7 @@ fun OnboardingScreen(
                                 onComplete()
                             },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = MaterialTheme.shapes.large
+                            shape = MaterialTheme.shapes.large,
                         ) {
                             Text("Get Started", style = MaterialTheme.typography.titleMedium)
                         }
@@ -88,7 +89,7 @@ fun OnboardingScreen(
                         OutlinedButton(
                             onClick = { showImport = true },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = MaterialTheme.shapes.large
+                            shape = MaterialTheme.shapes.large,
                         ) {
                             Text("I have an existing key")
                         }
@@ -105,9 +106,10 @@ fun OnboardingScreen(
                             minLines = 3,
                             maxLines = 5,
                             isError = error != null,
-                            supportingText = error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
-                                ?: { Text("Hex private key or 24 words separated by spaces") },
-                            shape = MaterialTheme.shapes.medium
+                            supportingText =
+                                error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
+                                    ?: { Text("Hex private key or 24 words separated by spaces") },
+                            shape = MaterialTheme.shapes.medium,
                         )
                         Spacer(Modifier.height(16.dp))
                         Button(
@@ -116,7 +118,7 @@ fun OnboardingScreen(
                             },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                             shape = MaterialTheme.shapes.large,
-                            enabled = importInput.isNotBlank()
+                            enabled = importInput.isNotBlank(),
                         ) {
                             Text("Import Key")
                         }

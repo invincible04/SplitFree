@@ -8,20 +8,20 @@ import org.junit.Test
  * Extended relay protocol tests: filter serialization, AUTH message, edge cases.
  */
 class RelayProtocolExtendedTest {
-
     // --- NostrFilter serialization ---
 
     @Test
     fun `filter with all fields serializes correctly`() {
-        val filter = NostrFilter(
-            kinds = listOf(1, 30078),
-            authors = listOf("abc123"),
-            ids = listOf("def456"),
-            tags = mapOf("#d" to listOf("group1"), "#g" to listOf("group2")),
-            since = 1000L,
-            until = 2000L,
-            limit = 50
-        )
+        val filter =
+            NostrFilter(
+                kinds = listOf(1, 30078),
+                authors = listOf("abc123"),
+                ids = listOf("def456"),
+                tags = mapOf("#d" to listOf("group1"), "#g" to listOf("group2")),
+                since = 1000L,
+                until = 2000L,
+                limit = 50,
+            )
         val json = filter.toJson()
         assertTrue(json.contains("\"kinds\""))
         assertTrue(json.contains("30078"))
@@ -51,10 +51,11 @@ class RelayProtocolExtendedTest {
 
     @Test
     fun `filter with multiple tag types`() {
-        val filter = NostrFilter(
-            kinds = listOf(30078),
-            tags = mapOf("#g" to listOf("group1"), "#d" to listOf("group1:exp1"))
-        )
+        val filter =
+            NostrFilter(
+                kinds = listOf(30078),
+                tags = mapOf("#g" to listOf("group1"), "#d" to listOf("group1:exp1")),
+            )
         val json = filter.toJson()
         assertTrue(json.contains("\"#g\""))
         assertTrue(json.contains("\"#d\""))
@@ -64,11 +65,16 @@ class RelayProtocolExtendedTest {
 
     @Test
     fun `AUTH message serialization`() {
-        val event = NostrEvent(
-            id = "auth-id", pubkey = "auth-pub", createdAt = 1, kind = 22242,
-            tags = listOf(listOf("challenge", "ch1"), listOf("relay", "wss://relay.damus.io")),
-            content = "", sig = "auth-sig"
-        )
+        val event =
+            NostrEvent(
+                id = "auth-id",
+                pubkey = "auth-pub",
+                createdAt = 1,
+                kind = 22242,
+                tags = listOf(listOf("challenge", "ch1"), listOf("relay", "wss://relay.damus.io")),
+                content = "",
+                sig = "auth-sig",
+            )
         val json = ClientMessage.Auth(event).toJson()
         assertTrue(json.startsWith("[\"AUTH\",{"))
         assertTrue(json.contains("\"kind\":22242"))
@@ -118,7 +124,10 @@ class RelayProtocolExtendedTest {
 
     @Test
     fun `parse EVENT with empty tags`() {
-        val msg = RelayMessage.parse("""["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":13,"tags":[],"content":"sealed","sig":"s"}]""")
+        val msg =
+            RelayMessage.parse(
+                """["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":13,"tags":[],"content":"sealed","sig":"s"}]""",
+            )
         assertTrue(msg is RelayMessage.EventMsg)
         val event = (msg as RelayMessage.EventMsg).event
         assertEquals(13, event.kind)
@@ -127,7 +136,10 @@ class RelayProtocolExtendedTest {
 
     @Test
     fun `parse EVENT with multi-element tags`() {
-        val msg = RelayMessage.parse("""["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":1,"tags":[["e","id1","wss://relay.example.com","reply"],["p","pk1"]],"content":"hi","sig":"s"}]""")
+        val msg =
+            RelayMessage.parse(
+                """["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":1,"tags":[["e","id1","wss://relay.example.com","reply"],["p","pk1"]],"content":"hi","sig":"s"}]""",
+            )
         val event = (msg as RelayMessage.EventMsg).event
         assertEquals(2, event.tags.size)
         assertEquals(4, event.tags[0].size) // ["e","id1","relay","reply"]

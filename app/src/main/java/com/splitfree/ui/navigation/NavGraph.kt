@@ -10,17 +10,25 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.splitfree.ui.screens.*
 
-sealed class Screen(val route: String) {
+sealed class Screen(
+    val route: String,
+) {
     data object Onboarding : Screen("onboarding")
+
     data object GroupsList : Screen("groups")
+
     data object CreateGroup : Screen("create_group")
+
     data object Settings : Screen("settings")
+
     data object GroupDetail : Screen("group/{groupId}") {
         fun withId(id: String) = "group/$id"
     }
+
     data object AddExpense : Screen("group/{groupId}/add_expense") {
         fun withGroupId(id: String) = "group/$id/add_expense"
     }
+
     data object NearbySync : Screen("group/{groupId}/nearby_sync") {
         fun withGroupId(id: String) = "group/$id/nearby_sync"
     }
@@ -29,7 +37,7 @@ sealed class Screen(val route: String) {
 @Composable
 fun SplitFreeNavGraph(
     navController: NavHostController,
-    startDestination: String
+    startDestination: String,
 ) {
     NavHost(
         navController = navController,
@@ -37,7 +45,7 @@ fun SplitFreeNavGraph(
         enterTransition = { EnterTransition.None },
         exitTransition = { ExitTransition.None },
         popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
+        popExitTransition = { ExitTransition.None },
     ) {
         composable(Screen.Onboarding.route) {
             OnboardingScreen(onComplete = {
@@ -50,7 +58,7 @@ fun SplitFreeNavGraph(
             GroupsListScreen(
                 onGroupClick = { navController.navigate(Screen.GroupDetail.withId(it)) },
                 onCreateGroup = { navController.navigate(Screen.CreateGroup.route) },
-                onSettings = { navController.navigate(Screen.Settings.route) }
+                onSettings = { navController.navigate(Screen.Settings.route) },
             )
         }
         composable(Screen.CreateGroup.route) {
@@ -60,7 +68,7 @@ fun SplitFreeNavGraph(
                         popUpTo(Screen.GroupsList.route)
                     }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Screen.Settings.route) {
@@ -68,7 +76,7 @@ fun SplitFreeNavGraph(
         }
         composable(
             Screen.GroupDetail.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
         ) {
             GroupDetailScreen(
                 onAddExpense = { groupId ->
@@ -82,21 +90,21 @@ fun SplitFreeNavGraph(
                         popUpTo(Screen.GroupsList.route)
                     }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
             )
         }
         composable(
             Screen.AddExpense.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
         ) {
             AddExpenseScreen(
                 onExpenseAdded = { navController.popBackStack() },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
             )
         }
         composable(
             Screen.NearbySync.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
         ) {
             NearbySyncScreen(onBack = { navController.popBackStack() })
         }

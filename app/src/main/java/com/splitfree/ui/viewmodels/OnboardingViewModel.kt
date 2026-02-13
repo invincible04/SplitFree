@@ -8,29 +8,31 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 
 @HiltViewModel
-class OnboardingViewModel @Inject constructor(
-    private val identity: IdentityManager
-) : ViewModel() {
+class OnboardingViewModel
+    @Inject
+    constructor(
+        private val identity: IdentityManager,
+    ) : ViewModel() {
+        private val _error = MutableStateFlow<String?>(null)
+        val error = _error.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error = _error.asStateFlow()
-
-    fun generateIdentity() {
-        if (!identity.hasIdentity()) {
-            identity.generateKeyPair()
+        fun generateIdentity() {
+            if (!identity.hasIdentity()) {
+                identity.generateKeyPair()
+            }
         }
-    }
 
-    fun importKey(input: String): Boolean {
-        return try {
-            identity.importKey(input)
+        fun importKey(input: String): Boolean =
+            try {
+                identity.importKey(input)
+                _error.value = null
+                true
+            } catch (e: Exception) {
+                _error.value = "Invalid key. Enter a hex private key or 24-word seed phrase."
+                false
+            }
+
+        fun clearError() {
             _error.value = null
-            true
-        } catch (e: Exception) {
-            _error.value = "Invalid key. Enter a hex private key or 24-word seed phrase."
-            false
         }
     }
-
-    fun clearError() { _error.value = null }
-}

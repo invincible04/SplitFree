@@ -9,27 +9,28 @@ import org.junit.Test
  * through relays and local storage.
  */
 class ModelSerializationTest {
-
     private val json = Json { ignoreUnknownKeys = true }
 
     // --- Expense ---
 
     @Test
     fun `Expense serialization round-trip`() {
-        val expense = Expense(
-            id = "exp-123",
-            amount = 50000,
-            currency = "INR",
-            description = "Dinner at restaurant",
-            paidBy = "alice-pubkey",
-            splitType = SplitType.EQUAL,
-            splitAmong = listOf(
-                SplitEntry("alice-pubkey", 25000),
-                SplitEntry("bob-pubkey", 25000)
-            ),
-            timestamp = 1700000000,
-            category = "food"
-        )
+        val expense =
+            Expense(
+                id = "exp-123",
+                amount = 50000,
+                currency = "INR",
+                description = "Dinner at restaurant",
+                paidBy = "alice-pubkey",
+                splitType = SplitType.EQUAL,
+                splitAmong =
+                    listOf(
+                        SplitEntry("alice-pubkey", 25000),
+                        SplitEntry("bob-pubkey", 25000),
+                    ),
+                timestamp = 1700000000,
+                category = "food",
+            )
         val serialized = json.encodeToString(Expense.serializer(), expense)
         val deserialized = json.decodeFromString<Expense>(serialized)
         assertEquals(expense, deserialized)
@@ -37,12 +38,17 @@ class ModelSerializationTest {
 
     @Test
     fun `Expense JSON uses snake_case per design doc`() {
-        val expense = Expense(
-            id = "1", amount = 100, currency = "INR", description = "test",
-            paidBy = "alice", splitType = SplitType.EXACT,
-            splitAmong = listOf(SplitEntry("alice", 100)),
-            timestamp = 1
-        )
+        val expense =
+            Expense(
+                id = "1",
+                amount = 100,
+                currency = "INR",
+                description = "test",
+                paidBy = "alice",
+                splitType = SplitType.EXACT,
+                splitAmong = listOf(SplitEntry("alice", 100)),
+                timestamp = 1,
+            )
         val serialized = json.encodeToString(Expense.serializer(), expense)
         assertTrue("Must use paid_by", serialized.contains("\"paid_by\""))
         assertTrue("Must use split_type", serialized.contains("\"split_type\""))
@@ -53,11 +59,17 @@ class ModelSerializationTest {
     @Test
     fun `Expense with all split types serializes correctly`() {
         for (type in SplitType.entries) {
-            val expense = Expense(
-                id = "1", amount = 100, currency = "INR", description = "test",
-                paidBy = "a", splitType = type,
-                splitAmong = listOf(SplitEntry("a", 100)), timestamp = 1
-            )
+            val expense =
+                Expense(
+                    id = "1",
+                    amount = 100,
+                    currency = "INR",
+                    description = "test",
+                    paidBy = "a",
+                    splitType = type,
+                    splitAmong = listOf(SplitEntry("a", 100)),
+                    timestamp = 1,
+                )
             val s = json.encodeToString(Expense.serializer(), expense)
             val d = json.decodeFromString<Expense>(s)
             assertEquals(type, d.splitType)
@@ -73,12 +85,17 @@ class ModelSerializationTest {
 
     @Test
     fun `Expense with unicode description`() {
-        val expense = Expense(
-            id = "1", amount = 500, currency = "INR",
-            description = "Dinner 🍕 at café — ₹500",
-            paidBy = "a", splitType = SplitType.EQUAL,
-            splitAmong = listOf(SplitEntry("a", 500)), timestamp = 1
-        )
+        val expense =
+            Expense(
+                id = "1",
+                amount = 500,
+                currency = "INR",
+                description = "Dinner 🍕 at café — ₹500",
+                paidBy = "a",
+                splitType = SplitType.EQUAL,
+                splitAmong = listOf(SplitEntry("a", 500)),
+                timestamp = 1,
+            )
         val d = json.decodeFromString<Expense>(json.encodeToString(Expense.serializer(), expense))
         assertEquals("Dinner 🍕 at café — ₹500", d.description)
     }
@@ -87,10 +104,16 @@ class ModelSerializationTest {
 
     @Test
     fun `Settlement serialization round-trip`() {
-        val settlement = Settlement(
-            id = "settle-1", from = "bob", to = "alice",
-            amount = 25000, currency = "INR", method = "upi", timestamp = 1700000000
-        )
+        val settlement =
+            Settlement(
+                id = "settle-1",
+                from = "bob",
+                to = "alice",
+                amount = 25000,
+                currency = "INR",
+                method = "upi",
+                timestamp = 1700000000,
+            )
         val s = json.encodeToString(Settlement.serializer(), settlement)
         val d = json.decodeFromString<Settlement>(s)
         assertEquals(settlement, d)
@@ -107,14 +130,15 @@ class ModelSerializationTest {
 
     @Test
     fun `GroupMeta serialization round-trip`() {
-        val meta = GroupMeta(
-            name = "Goa Trip 2026",
-            description = "February trip expenses",
-            createdBy = "alice-pubkey",
-            createdAt = 1700000000,
-            members = listOf("alice-pubkey", "bob-pubkey", "charlie-pubkey"),
-            relays = listOf("wss://relay.damus.io", "wss://nos.lol")
-        )
+        val meta =
+            GroupMeta(
+                name = "Goa Trip 2026",
+                description = "February trip expenses",
+                createdBy = "alice-pubkey",
+                createdAt = 1700000000,
+                members = listOf("alice-pubkey", "bob-pubkey", "charlie-pubkey"),
+                relays = listOf("wss://relay.damus.io", "wss://nos.lol"),
+            )
         val s = json.encodeToString(GroupMeta.serializer(), meta)
         val d = json.decodeFromString<GroupMeta>(s)
         assertEquals(meta, d)
@@ -160,15 +184,22 @@ class ModelSerializationTest {
 
     @Test
     fun `Expense survives serialize-encrypt-decrypt-deserialize`() {
-        val encryption = com.splitfree.domain.crypto.GroupEncryption()
+        val encryption =
+            com.splitfree.domain.crypto
+                .GroupEncryption()
         val key = encryption.generateGroupKey()
-        val expense = Expense(
-            id = "cross-layer-test", amount = 99999, currency = "USD",
-            description = "Cross-layer test with special chars: \"quotes\" & \\backslash",
-            paidBy = "alice", splitType = SplitType.PERCENTAGE,
-            splitAmong = listOf(SplitEntry("alice", 33333), SplitEntry("bob", 33333), SplitEntry("charlie", 33333)),
-            timestamp = 1700000000, category = "test"
-        )
+        val expense =
+            Expense(
+                id = "cross-layer-test",
+                amount = 99999,
+                currency = "USD",
+                description = "Cross-layer test with special chars: \"quotes\" & \\backslash",
+                paidBy = "alice",
+                splitType = SplitType.PERCENTAGE,
+                splitAmong = listOf(SplitEntry("alice", 33333), SplitEntry("bob", 33333), SplitEntry("charlie", 33333)),
+                timestamp = 1700000000,
+                category = "test",
+            )
         val plaintext = json.encodeToString(Expense.serializer(), expense)
         val encrypted = encryption.encrypt(plaintext, key)
         val decrypted = encryption.decrypt(encrypted, key)

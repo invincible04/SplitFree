@@ -8,11 +8,14 @@ import java.security.SecureRandom
  * Extended NIP-59 tests: edge cases, multi-recipient, content preservation.
  */
 class Nip59ExtendedTest {
-
     private fun randomKey(): ByteArray {
         val key = ByteArray(32)
         SecureRandom().nextBytes(key)
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key)) SecureRandom().nextBytes(key)
+        while (!fr.acinq.secp256k1.Secp256k1
+                .secKeyVerify(key)
+        ) {
+            SecureRandom().nextBytes(key)
+        }
         return key
     }
 
@@ -22,11 +25,14 @@ class Nip59ExtendedTest {
         val recipient = randomKey()
         val recipientPub = NostrEvent.pubkeyFromPrivkey(recipient).hexToBytes()
 
-        val rumor = NostrEvent(
-            pubkey = "", createdAt = 1700000000L, kind = 30078,
-            tags = listOf(listOf("d", "group:uuid"), listOf("g", "mygroup"), listOf("t", "expense"), listOf("e", "exp-123")),
-            content = "encrypted-expense-data-here"
-        )
+        val rumor =
+            NostrEvent(
+                pubkey = "",
+                createdAt = 1700000000L,
+                kind = 30078,
+                tags = listOf(listOf("d", "group:uuid"), listOf("g", "mygroup"), listOf("t", "expense"), listOf("e", "exp-123")),
+                content = "encrypted-expense-data-here",
+            )
         val wrapped = Nip59.giftWrap(rumor, sender, recipientPub)
         val (recovered, senderPub) = Nip59.unwrap(wrapped, recipient)!!
 
@@ -80,10 +86,13 @@ class Nip59ExtendedTest {
     fun `unwrap rejects event with kind != 1059`() {
         val sender = randomKey()
         val recipient = randomKey()
-        val event = NostrEvent(
-            pubkey = NostrEvent.pubkeyFromPrivkey(sender),
-            createdAt = 1, kind = 1, content = "not a gift wrap"
-        ).sign(sender)
+        val event =
+            NostrEvent(
+                pubkey = NostrEvent.pubkeyFromPrivkey(sender),
+                createdAt = 1,
+                kind = 1,
+                content = "not a gift wrap",
+            ).sign(sender)
         assertNull(Nip59.unwrap(event, recipient))
     }
 
@@ -111,11 +120,14 @@ class Nip59ExtendedTest {
         val expenseJson = """{"id":"uuid","amount":50000,"currency":"INR","description":"Dinner at restaurant","paid_by":"abc","split_type":"equal","split_among":[{"pubkey":"abc","share":25000},{"pubkey":"def","share":25000}],"timestamp":1700000000}"""
         val encrypted = Nip44.encrypt(expenseJson, convKey)
 
-        val rumor = NostrEvent(
-            pubkey = "", createdAt = 1700000000L, kind = 30078,
-            tags = listOf(listOf("d", "group:uuid"), listOf("t", "expense")),
-            content = encrypted
-        )
+        val rumor =
+            NostrEvent(
+                pubkey = "",
+                createdAt = 1700000000L,
+                kind = 30078,
+                tags = listOf(listOf("d", "group:uuid"), listOf("t", "expense")),
+                content = encrypted,
+            )
         val wrapped = Nip59.giftWrap(rumor, sender, recipientPub)
         val (recovered, _) = Nip59.unwrap(wrapped, recipient)!!
 

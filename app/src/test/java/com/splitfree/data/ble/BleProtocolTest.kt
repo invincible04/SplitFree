@@ -9,7 +9,6 @@ import org.junit.Test
  * Design doc Section 10.3.
  */
 class BleProtocolTest {
-
     private val json = Json { ignoreUnknownKeys = true }
 
     // --- BleHandshake ---
@@ -54,8 +53,9 @@ class BleProtocolTest {
     @Test
     fun `handshake message framing`() {
         val hs = BleHandshake(pubkey = "abc", groups = listOf("g1"))
-        val payload = byteArrayOf(BleTransfer.MSG_HANDSHAKE) +
-            json.encodeToString(BleHandshake.serializer(), hs).toByteArray()
+        val payload =
+            byteArrayOf(BleTransfer.MSG_HANDSHAKE) +
+                json.encodeToString(BleHandshake.serializer(), hs).toByteArray()
         assertEquals(BleTransfer.MSG_HANDSHAKE, payload[0])
         val body = String(payload.copyOfRange(1, payload.size))
         val parsed = json.decodeFromString<BleHandshake>(body)
@@ -65,8 +65,9 @@ class BleProtocolTest {
     @Test
     fun `sync request message framing`() {
         val req = BleSyncRequest(groupId = "g1", eventIds = listOf("e1"))
-        val payload = byteArrayOf(BleTransfer.MSG_SYNC_REQ) +
-            json.encodeToString(BleSyncRequest.serializer(), req).toByteArray()
+        val payload =
+            byteArrayOf(BleTransfer.MSG_SYNC_REQ) +
+                json.encodeToString(BleSyncRequest.serializer(), req).toByteArray()
         assertEquals(BleTransfer.MSG_SYNC_REQ, payload[0])
     }
 
@@ -76,7 +77,9 @@ class BleProtocolTest {
         val payload = byteArrayOf(BleTransfer.MSG_EVENT) + eventJson.toByteArray()
         assertEquals(BleTransfer.MSG_EVENT, payload[0])
         val body = String(payload.copyOfRange(1, payload.size))
-        val event = com.splitfree.domain.crypto.NostrEvent.fromJson(body)
+        val event =
+            com.splitfree.domain.crypto.NostrEvent
+                .fromJson(body)
         assertNotNull(event)
         assertEquals("abc", event!!.id)
     }

@@ -9,7 +9,6 @@ import org.junit.Test
  * Design doc Section 6.5.
  */
 class CompressionAndEncryptionTest {
-
     private val encryption = GroupEncryption()
 
     // --- CompressionUtil ---
@@ -64,10 +63,13 @@ class CompressionAndEncryptionTest {
     @Test
     fun `decompress rejects compression bomb`() {
         // Craft a header claiming 1GB original size from 10 bytes of data
-        val bomb = java.nio.ByteBuffer.allocate(14).order(java.nio.ByteOrder.BIG_ENDIAN)
-            .putInt(1_000_000_000) // 1GB claimed
-            .put(ByteArray(10))
-            .array()
+        val bomb =
+            java.nio.ByteBuffer
+                .allocate(14)
+                .order(java.nio.ByteOrder.BIG_ENDIAN)
+                .putInt(1_000_000_000) // 1GB claimed
+                .put(ByteArray(10))
+                .array()
         // CompressionUtil.decompress calls android.util.Log which isn't available in JVM tests.
         // The bomb protection check happens before decompression, so it returns null.
         try {
@@ -85,9 +87,11 @@ class CompressionAndEncryptionTest {
     fun `encrypt-decrypt round-trip with compressible content`() {
         val key = encryption.generateGroupKey()
         // Large repetitive JSON that will trigger compression
-        val plaintext = """{"expenses":[""" + (1..50).joinToString(",") {
-            """{"id":"$it","amount":${it * 100},"description":"Expense $it"}"""
-        } + "]}"
+        val plaintext =
+            """{"expenses":[""" +
+                (1..50).joinToString(",") {
+                    """{"id":"$it","amount":${it * 100},"description":"Expense $it"}"""
+                } + "]}"
         assertTrue("Test data should be compressible", plaintext.length > 100)
 
         val encrypted = encryption.encrypt(plaintext, key)
@@ -139,7 +143,10 @@ class CompressionAndEncryptionTest {
     @Test
     fun `group key is 32 bytes`() {
         val key = encryption.generateGroupKey()
-        val decoded = java.util.Base64.getDecoder().decode(key)
+        val decoded =
+            java.util.Base64
+                .getDecoder()
+                .decode(key)
         assertEquals(32, decoded.size)
     }
 

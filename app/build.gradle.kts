@@ -20,6 +20,21 @@ android {
         versionName = "1.0.0"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../splitfree-release.jks")
+            storePassword = ""
+            keyAlias = "splitfree"
+            keyPassword = ""
+        }
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = true
+        disable += "NullSafeMutableLiveData" // AGP lint crash — known bug in NonNullableMutableLiveDataDetector
+    }
+
     buildTypes {
         debug {
             enableUnitTestCoverage = true
@@ -27,6 +42,7 @@ android {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

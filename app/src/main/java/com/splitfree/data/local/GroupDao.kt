@@ -25,19 +25,38 @@ interface GroupDao {
     fun observeById(groupId: String): Flow<GroupEntity?>
 
     @Query("UPDATE `groups` SET lastSyncTimestamp = :timestamp WHERE groupId = :groupId")
-    suspend fun updateLastSync(groupId: String, timestamp: Long)
+    suspend fun updateLastSync(
+        groupId: String,
+        timestamp: Long,
+    )
 
-    @Query("UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp")
-    suspend fun updateMetaIfNewer(groupId: String, name: String, members: String, relays: String, eventTimestamp: Long): Int
+    @Query(
+        "UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp",
+    )
+    suspend fun updateMetaIfNewer(
+        groupId: String,
+        name: String,
+        members: String,
+        relays: String,
+        eventTimestamp: Long,
+    ): Int
 
     @Query("UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId")
-    suspend fun updateMeta(groupId: String, name: String, members: String, relays: String)
+    suspend fun updateMeta(
+        groupId: String,
+        name: String,
+        members: String,
+        relays: String,
+    )
 
     @Query("UPDATE `groups` SET groupKey = '' WHERE groupId = :groupId")
     suspend fun clearGroupKey(groupId: String)
 
     @Query("UPDATE `groups` SET lastMetaTimestamp = :timestamp WHERE groupId = :groupId")
-    suspend fun updateLastMetaTimestamp(groupId: String, timestamp: Long)
+    suspend fun updateLastMetaTimestamp(
+        groupId: String,
+        timestamp: Long,
+    )
 
     @Delete
     suspend fun delete(group: GroupEntity)

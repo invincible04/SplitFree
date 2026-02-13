@@ -17,7 +17,6 @@ import javax.crypto.spec.SecretKeySpec
  * Wire format: base64(0x02 || nonce32 || ciphertext || hmac32)
  */
 object Nip44 {
-
     private val secureRandom = SecureRandom()
 
     // --- Conversation Key (long-term, per user pair) ---
@@ -29,7 +28,10 @@ object Nip44 {
      * @param privateKey 32-byte secret key
      * @param publicKey 32-byte x-only pubkey (will be converted to 33-byte compressed)
      */
-    fun getConversationKey(privateKey: ByteArray, publicKey: ByteArray): ByteArray {
+    fun getConversationKey(
+        privateKey: ByteArray,
+        publicKey: ByteArray,
+    ): ByteArray {
         // Convert 32-byte x-only to 33-byte compressed (02 prefix — even y)
         val pubkey33 = if (publicKey.size == 32) byteArrayOf(0x02) + publicKey else publicKey
         // ECDH: scalar multiplication → raw uncompressed point (65 bytes: 04||x||y)
@@ -43,7 +45,10 @@ object Nip44 {
 
     // --- Encrypt ---
 
-    fun encrypt(plaintext: String, conversationKey: ByteArray): String {
+    fun encrypt(
+        plaintext: String,
+        conversationKey: ByteArray,
+    ): String {
         val nonce = ByteArray(32).also { secureRandom.nextBytes(it) }
         return encrypt(plaintext, conversationKey, nonce)
     }
@@ -51,7 +56,11 @@ object Nip44 {
     /**
      * Encrypt with explicit nonce (for testing with test vectors).
      */
-    fun encrypt(plaintext: String, conversationKey: ByteArray, nonce: ByteArray): String {
+    fun encrypt(
+        plaintext: String,
+        conversationKey: ByteArray,
+        nonce: ByteArray,
+    ): String {
         val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
         require(plaintextBytes.size in 1..65535) { "plaintext length out of range" }
 
@@ -73,17 +82,25 @@ object Nip44 {
 
         // Wire: base64(0x02 || nonce || ciphertext || mac)
         val payload = byteArrayOf(0x02) + nonce + ciphertext + mac
-        return java.util.Base64.getEncoder().encodeToString(payload)
+        return java.util.Base64
+            .getEncoder()
+            .encodeToString(payload)
     }
 
     // --- Decrypt ---
 
-    fun decrypt(payload: String, conversationKey: ByteArray): String {
+    fun decrypt(
+        payload: String,
+        conversationKey: ByteArray,
+    ): String {
         // Validate base64 length range: 132..87472
         require(payload.isNotEmpty() && payload[0] != '#') { "unsupported encryption version" }
         require(payload.length in 132..87472) { "invalid payload size" }
 
-        val data = java.util.Base64.getDecoder().decode(payload)
+        val data =
+            java.util.Base64
+                .getDecoder()
+                .decode(payload)
         // Validate decoded length: 99..65603
         require(data.size in 99..65603) { "invalid data size" }
         require(data[0] == 0x02.toByte()) { "unsupported NIP-44 version: ${data[0]}" }
@@ -137,7 +154,11 @@ object Nip44 {
 
     // --- Primitives ---
 
-    private fun chacha20(key: ByteArray, nonce: ByteArray, data: ByteArray): ByteArray {
+    private fun chacha20(
+        key: ByteArray,
+        nonce: ByteArray,
+        data: ByteArray,
+    ): ByteArray {
         val engine = ChaCha7539Engine()
         engine.init(true, ParametersWithIV(KeyParameter(key), nonce))
         val output = ByteArray(data.size)
@@ -145,17 +166,27 @@ object Nip44 {
         return output
     }
 
-    private fun hmacSha256(key: ByteArray, message: ByteArray): ByteArray {
+    private fun hmacSha256(
+        key: ByteArray,
+        message: ByteArray,
+    ): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))
         return mac.doFinal(message)
     }
 
     /** HKDF-Extract (RFC 5869): PRK = HMAC-SHA256(salt, IKM) */
-    fun hkdfExtract(salt: ByteArray, ikm: ByteArray): ByteArray = hmacSha256(salt, ikm)
+    fun hkdfExtract(
+        salt: ByteArray,
+        ikm: ByteArray,
+    ): ByteArray = hmacSha256(salt, ikm)
 
     /** HKDF-Expand (RFC 5869): OKM = T(1) || T(2) || ... */
-    fun hkdfExpand(prk: ByteArray, info: ByteArray, length: Int): ByteArray {
+    fun hkdfExpand(
+        prk: ByteArray,
+        info: ByteArray,
+        length: Int,
+    ): ByteArray {
         require(length <= 255 * 32)
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(prk, "HmacSHA256"))

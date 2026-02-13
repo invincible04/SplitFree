@@ -8,7 +8,6 @@ import org.junit.Test
  * Relay protocol message parsing and serialization tests.
  */
 class RelayProtocolTest {
-
     @Test
     fun `parse EVENT message`() {
         val json = """["EVENT","sub1",{"id":"abc","pubkey":"def","created_at":123,"kind":1,"tags":[["e","xyz"]],"content":"hello","sig":"sig1"}]"""
@@ -79,10 +78,16 @@ class RelayProtocolTest {
 
     @Test
     fun `ClientMessage Event serialization`() {
-        val event = NostrEvent(
-            id = "abc", pubkey = "def", createdAt = 1, kind = 1,
-            tags = emptyList(), content = "hi", sig = "sig"
-        )
+        val event =
+            NostrEvent(
+                id = "abc",
+                pubkey = "def",
+                createdAt = 1,
+                kind = 1,
+                tags = emptyList(),
+                content = "hi",
+                sig = "sig",
+            )
         val json = ClientMessage.Event(event).toJson()
         assertTrue(json.startsWith("[\"EVENT\",{"))
         assertTrue(json.contains("\"id\":\"abc\""))
@@ -104,13 +109,14 @@ class RelayProtocolTest {
 
     @Test
     fun `NostrFilter with all fields`() {
-        val filter = NostrFilter(
-            kinds = listOf(1, 30078),
-            authors = listOf("abc"),
-            since = 1000L,
-            until = 2000L,
-            limit = 50
-        )
+        val filter =
+            NostrFilter(
+                kinds = listOf(1, 30078),
+                authors = listOf("abc"),
+                since = 1000L,
+                until = 2000L,
+                limit = 50,
+            )
         val json = filter.toJson()
         assertTrue(json.contains("\"kinds\""))
         assertTrue(json.contains("\"authors\""))

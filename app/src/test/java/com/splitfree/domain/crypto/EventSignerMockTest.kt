@@ -1,13 +1,12 @@
 package com.splitfree.domain.crypto
 
 import io.mockk.*
-import org.junit.Assert.*
 import org.junit.After
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 class EventSignerMockTest {
-
     private val identity = mockk<IdentityManager>()
     private lateinit var signer: EventSigner
 

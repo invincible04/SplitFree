@@ -11,12 +11,11 @@ import org.junit.Test
  * Mirrors all require() checks from AddExpenseUseCase.invoke().
  */
 class AddExpenseValidationTest {
-
     // Mirror the full validation logic from AddExpenseUseCase
     private fun validate(
         amount: Long,
         currency: String,
-        splitAmong: List<SplitEntry>
+        splitAmong: List<SplitEntry>,
     ) {
         require(amount > 0) { "Amount must be positive" }
         require(amount <= 10_000_000_000_00L) { "Amount exceeds maximum (\$10B)" }
@@ -32,8 +31,10 @@ class AddExpenseValidationTest {
         }
     }
 
-    private fun validate(amount: Long, splitAmong: List<SplitEntry>) =
-        validate(amount, "INR", splitAmong)
+    private fun validate(
+        amount: Long,
+        splitAmong: List<SplitEntry>,
+    ) = validate(amount, "INR", splitAmong)
 
     @Test
     fun `valid expense passes validation`() {
@@ -136,12 +137,17 @@ class AddExpenseValidationTest {
 
     @Test
     fun `Expense amount stored as smallest currency unit`() {
-        val expense = Expense(
-            id = "1", amount = 50050, currency = "INR", description = "test",
-            paidBy = "a", splitType = SplitType.EQUAL,
-            splitAmong = listOf(SplitEntry("a", 25025), SplitEntry("b", 25025)),
-            timestamp = 1
-        )
+        val expense =
+            Expense(
+                id = "1",
+                amount = 50050,
+                currency = "INR",
+                description = "test",
+                paidBy = "a",
+                splitType = SplitType.EQUAL,
+                splitAmong = listOf(SplitEntry("a", 25025), SplitEntry("b", 25025)),
+                timestamp = 1,
+            )
         assertEquals(50050L, expense.amount)
         assertEquals(50050L, expense.splitAmong.sumOf { it.share })
     }

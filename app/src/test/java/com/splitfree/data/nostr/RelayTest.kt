@@ -2,13 +2,12 @@ package com.splitfree.data.nostr
 
 import com.splitfree.domain.crypto.NostrEvent
 import io.mockk.*
-import org.junit.Assert.*
 import org.junit.After
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 class RelayTest {
-
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)

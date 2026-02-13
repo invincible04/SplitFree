@@ -9,7 +9,6 @@ import org.junit.Test
  * the NostrEvent-level behavior that EventSigner delegates to.
  */
 class EventSignerTest {
-
     private val privKey = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a".hexToBytes()
     private val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
 
@@ -21,18 +20,20 @@ class EventSignerTest {
         val expenseUuid = "exp-uuid-456"
         val dTagValue = "$groupId:$expenseUuid"
 
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(
-                listOf("d", dTagValue),
-                listOf("g", groupId),
-                listOf("t", "expense"),
-                listOf("e", expenseUuid)
-            ),
-            content = "encrypted"
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags =
+                    listOf(
+                        listOf("d", dTagValue),
+                        listOf("g", groupId),
+                        listOf("t", "expense"),
+                        listOf("e", expenseUuid),
+                    ),
+                content = "encrypted",
+            ).sign(privKey)
 
         assertTrue(event.verify())
         // d-tag must be unique per event (groupId:uuid)
@@ -60,13 +61,14 @@ class EventSignerTest {
     @Test
     fun `kind 5 deletion event has correct structure`() {
         val eventIds = listOf("abc123", "def456", "ghi789")
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 5,
-            tags = eventIds.map { listOf("e", it) },
-            content = "spam"
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 5,
+                tags = eventIds.map { listOf("e", it) },
+                content = "spam",
+            ).sign(privKey)
 
         assertTrue(event.verify())
         assertEquals(5, event.kind)
@@ -81,13 +83,14 @@ class EventSignerTest {
 
     @Test
     fun `kind 5 deletion with empty reason`() {
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 5,
-            tags = listOf(listOf("e", "target-event-id")),
-            content = ""
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 5,
+                tags = listOf(listOf("e", "target-event-id")),
+                content = "",
+            ).sign(privKey)
 
         assertTrue(event.verify())
         assertEquals("", event.content)
@@ -99,13 +102,14 @@ class EventSignerTest {
     fun `kind 22242 AUTH event has challenge and relay tags`() {
         val challenge = "random-challenge-string"
         val relayUrl = "wss://relay.damus.io"
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 22242,
-            tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
-            content = ""
-        ).sign(privKey)
+        val event =
+            NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 22242,
+                tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
+                content = "",
+            ).sign(privKey)
 
         assertTrue(event.verify())
         assertEquals(22242, event.kind)

@@ -1,13 +1,12 @@
 package com.splitfree.data.nostr
 
 import io.mockk.*
-import org.junit.Assert.*
 import org.junit.After
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 class NostrClientTest {
-
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)

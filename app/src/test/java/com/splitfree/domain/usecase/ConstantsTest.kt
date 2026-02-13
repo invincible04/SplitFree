@@ -5,7 +5,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConstantsTest {
-
     @Test
     fun `default relays are all wss`() {
         for (relay in CreateGroupUseCase.DEFAULT_RELAYS) {

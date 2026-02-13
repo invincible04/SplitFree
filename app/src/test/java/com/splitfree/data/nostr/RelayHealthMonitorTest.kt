@@ -8,7 +8,6 @@ import org.junit.Before
 import org.junit.Test
 
 class RelayHealthMonitorTest {
-
     private val monitor = RelayHealthMonitor()
 
     @Before
@@ -18,7 +17,9 @@ class RelayHealthMonitorTest {
     }
 
     @After
-    fun teardown() { unmockkAll() }
+    fun teardown() {
+        unmockkAll()
+    }
 
     @Test
     fun `statuses initially empty`() {
@@ -44,27 +45,30 @@ class RelayHealthMonitorTest {
     }
 
     @Test
-    fun `checkRelays stores offline status for unreachable relay`() = runBlocking {
-        monitor.checkRelays(listOf("wss://localhost:1"))
-        val status = monitor.statuses["wss://localhost:1"]
-        assertNotNull(status)
-        assertEquals("wss://localhost:1", status!!.url)
-        assertFalse(status.online)
-    }
+    fun `checkRelays stores offline status for unreachable relay`() =
+        runBlocking {
+            monitor.checkRelays(listOf("wss://localhost:1"))
+            val status = monitor.statuses["wss://localhost:1"]
+            assertNotNull(status)
+            assertEquals("wss://localhost:1", status!!.url)
+            assertFalse(status.online)
+        }
 
     @Test
-    fun `checkRelays handles multiple relays`() = runBlocking {
-        monitor.checkRelays(listOf("wss://localhost:1", "wss://localhost:2"))
-        assertEquals(2, monitor.statuses.size)
-        assertFalse(monitor.statuses["wss://localhost:1"]!!.online)
-        assertFalse(monitor.statuses["wss://localhost:2"]!!.online)
-    }
+    fun `checkRelays handles multiple relays`() =
+        runBlocking {
+            monitor.checkRelays(listOf("wss://localhost:1", "wss://localhost:2"))
+            assertEquals(2, monitor.statuses.size)
+            assertFalse(monitor.statuses["wss://localhost:1"]!!.online)
+            assertFalse(monitor.statuses["wss://localhost:2"]!!.online)
+        }
 
     @Test
-    fun `checkRelays with empty list does nothing`() = runBlocking {
-        monitor.checkRelays(emptyList())
-        assertTrue(monitor.statuses.isEmpty())
-    }
+    fun `checkRelays with empty list does nothing`() =
+        runBlocking {
+            monitor.checkRelays(emptyList())
+            assertTrue(monitor.statuses.isEmpty())
+        }
 
     @Test
     fun `FALLBACK_RELAYS are all wss`() {
