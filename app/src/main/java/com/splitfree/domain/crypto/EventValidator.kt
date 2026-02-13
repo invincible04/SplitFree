@@ -117,6 +117,16 @@ object EventValidator {
     }
 
     /**
+     * Reject expense events backdated before the last settlement.
+     * Prevents balance manipulation via strategic timestamp reordering.
+     * Returns true if the event timestamp is acceptable.
+     */
+    fun isNotBackdatedBeforeSettlement(eventCreatedAt: Long, lastSettlementTimestamp: Long?): Boolean {
+        if (lastSettlementTimestamp == null) return true
+        return eventCreatedAt >= lastSettlementTimestamp
+    }
+
+    /**
      * Validate event content before deserialization.
      * Rejects oversized content (OOM) and deeply nested JSON (stack overflow).
      * Must be called before any Json.decodeFromString on untrusted event content.

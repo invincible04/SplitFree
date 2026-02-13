@@ -32,6 +32,8 @@ class Relay(
     private val okCallbacks = ConcurrentHashMap<String, CompletableDeferred<RelayMessage.OkMsg>>()
     // Active subscriptions for re-send on reconnect
     private val activeSubs = ConcurrentHashMap<String, List<NostrFilter>>()
+    // Track last-seen event timestamp per subscription for reconnect gap prevention
+    private val lastEventTimestamp = ConcurrentHashMap<String, Long>()
     // Reconnect
     private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
@@ -45,9 +47,13 @@ class Relay(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 _state.value = State.CONNECTED
                 reconnectAttempt = 0
-                // Re-send active subscriptions
+                // Re-send active subscriptions with updated since to cover reconnect gap
                 activeSubs.forEach { (subId, filters) ->
-                    webSocket.send(ClientMessage.Req(subId, filters).toJson())
+                    val lastSeen = lastEventTimestamp[subId]
+                    val updatedFilters = if (lastSeen != null) {
+                        filters.map { f -> f.copy(since = lastSeen - 60) } // 60s buffer
+                    } else filters
+                    webSocket.send(ClientMessage.Req(subId, updatedFilters).toJson())
                 }
                 Log.d(TAG, "Connected to $url")
             }
@@ -57,7 +63,14 @@ class Relay(
                 when (msg) {
                     is RelayMessage.OkMsg -> okCallbacks.remove(msg.eventId)?.complete(msg)
                     is RelayMessage.AuthMsg -> handleAuth(msg.challenge)
-                    else -> _messages.tryEmit(msg)
+                    else -> {
+                        // Track last-seen event timestamp per subscription for reconnect
+                        if (msg is RelayMessage.EventMsg) {
+                            val ts = msg.event.createdAt
+                            lastEventTimestamp.merge(msg.subId, ts) { old, new -> maxOf(old, new) }
+                        }
+                        _messages.tryEmit(msg)
+                    }
                 }
             }
 
@@ -113,6 +126,7 @@ class Relay(
         reconnectJob?.cancel()
         okCallbacks.forEach { (_, d) -> d.cancel() }
         okCallbacks.clear()
+        lastEventTimestamp.clear()
         ws?.close(1000, "disconnect")
         ws = null
         _state.value = State.DISCONNECTED

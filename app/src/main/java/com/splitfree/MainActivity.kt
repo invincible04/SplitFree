@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        sanitizeIntent(intent)
         handleDeepLink(intent)
         setContent {
             SplitFreeTheme {
@@ -69,7 +70,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        sanitizeIntent(intent)
         handleDeepLink(intent)
+    }
+
+    /** Strip Jetpack Navigation internal extras from external intents (PT-2024-35 defense). */
+    private fun sanitizeIntent(intent: Intent?) {
+        intent ?: return
+        intent.removeExtra("android-support-nav:controller:deepLinkIds")
+        intent.removeExtra("android-support-nav:controller:deepLinkArgs")
     }
 
     private fun handleDeepLink(intent: Intent?) {

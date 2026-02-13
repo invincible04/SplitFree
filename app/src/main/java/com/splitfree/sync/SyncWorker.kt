@@ -195,6 +195,15 @@ class SyncWorker @AssistedInject constructor(
                 }
             }
 
+            // Reject expense events backdated before the last settlement (timestamp manipulation defense)
+            if (eventType == "expense" || eventType == "expense_correction") {
+                val lastSettlement = eventDao.getLatestEventByType(groupId, "settlement")
+                if (!EventValidator.isNotBackdatedBeforeSettlement(inner.createdAt, lastSettlement?.createdAt)) {
+                    Log.w(TAG, "Rejecting backdated event ${inner.id}: before last settlement")
+                    return false
+                }
+            }
+
             if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
                 return false

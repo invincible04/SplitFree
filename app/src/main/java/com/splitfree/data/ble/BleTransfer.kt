@@ -98,7 +98,7 @@ class BleTransfer @Inject constructor(
         }
     }
 
-    fun isAuthenticated(endpointId: String): Boolean = endpointId in authenticatedPeers
+    fun isAuthenticated(endpointId: String): Boolean = authenticatedPeers.containsKey(endpointId)
 
     fun clearPeer(endpointId: String) {
         pendingChallenges.remove(endpointId)

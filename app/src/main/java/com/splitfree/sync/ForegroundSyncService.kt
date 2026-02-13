@@ -168,6 +168,15 @@ class ForegroundSyncService : Service() {
                 }
             }
 
+            // Reject expense events backdated before the last settlement (timestamp manipulation defense)
+            if (eventType == "expense" || eventType == "expense_correction") {
+                val lastSettlement = eventDao.getLatestEventByType(groupId, "settlement")
+                if (!EventValidator.isNotBackdatedBeforeSettlement(inner.createdAt, lastSettlement?.createdAt)) {
+                    Log.w(TAG, "Rejecting backdated event ${inner.id}: before last settlement")
+                    return
+                }
+            }
+
             // Atomic insert — prevents TOCTOU race with concurrent sync paths
             if (!eventDao.insertIfNew(
                 EventEntity(

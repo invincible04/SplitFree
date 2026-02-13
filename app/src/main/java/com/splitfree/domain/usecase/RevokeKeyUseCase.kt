@@ -11,6 +11,8 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -45,65 +47,69 @@ class RevokeKeyUseCase @Inject constructor(
      * @return the new public key hex
      */
     suspend operator fun invoke(): String {
-        val oldPubkey = identity.getPublicKeyHex()
-        val groups = groupRepo.getAll()
+        // NonCancellable: key revocation must complete atomically even if the
+        // calling coroutine scope is cancelled (screen rotation, back press)
+        return withContext(NonCancellable) {
+            val oldPubkey = identity.getPublicKeyHex()
+            val groups = groupRepo.getAll()
 
-        // 1. Generate new keypair alongside old (does NOT overwrite)
-        val (_, newPubkey) = identity.generatePendingKeyPair()
+            // 1. Generate new keypair alongside old (does NOT overwrite)
+            val (_, newPubkey) = identity.generatePendingKeyPair()
 
-        try {
-            // 2. Publish revocation to each group with OLD key
-            for (group in groups) {
-                val groupKey = groupRepo.getGroupKey(group.id) ?: continue
-                val payload = json.encodeToString(
-                    KeyRevocation.serializer(),
-                    KeyRevocation(oldPubkey = oldPubkey, newPubkey = newPubkey, reason = "Key compromised")
-                )
-                val encrypted = encryption.encrypt(payload, groupKey)
-                val event = signer.createSignedEvent(
-                    groupId = group.id,
-                    eventType = "key_revocation",
-                    encryptedContent = encrypted
-                )
-                saveAndPublish(event, group.id, encrypted, payload, "key_revocation")
-            }
-
-            // 3. Publish updated group_meta with new pubkey (still signed by OLD key)
-            for (group in groups) {
-                val groupKey = groupRepo.getGroupKey(group.id) ?: continue
-                val updatedMembers = group.members.map { if (it == oldPubkey) newPubkey else it }
-                groupRepo.updateFromMeta(group.id, group.name, updatedMembers, group.relays)
-
-                val metaPayload = json.encodeToString(
-                    com.splitfree.domain.model.GroupMeta.serializer(),
-                    com.splitfree.domain.model.GroupMeta(
-                        name = group.name,
-                        description = group.description,
-                        createdBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy,
-                        createdAt = group.createdAt,
-                        members = updatedMembers,
-                        relays = group.relays
+            try {
+                // 2. Publish revocation to each group with OLD key
+                for (group in groups) {
+                    val groupKey = groupRepo.getGroupKey(group.id) ?: continue
+                    val payload = json.encodeToString(
+                        KeyRevocation.serializer(),
+                        KeyRevocation(oldPubkey = oldPubkey, newPubkey = newPubkey, reason = "Key compromised")
                     )
-                )
-                val metaEncrypted = encryption.encrypt(metaPayload, groupKey)
-                val metaEvent = signer.createSignedEvent(
-                    groupId = group.id,
-                    eventType = "group_meta",
-                    encryptedContent = metaEncrypted
-                )
-                saveAndPublish(metaEvent, group.id, metaEncrypted, metaPayload, "group_meta")
+                    val encrypted = encryption.encrypt(payload, groupKey)
+                    val event = signer.createSignedEvent(
+                        groupId = group.id,
+                        eventType = "key_revocation",
+                        encryptedContent = encrypted
+                    )
+                    saveAndPublish(event, group.id, encrypted, payload, "key_revocation")
+                }
+
+                // 3. Publish updated group_meta with new pubkey (still signed by OLD key)
+                for (group in groups) {
+                    val groupKey = groupRepo.getGroupKey(group.id) ?: continue
+                    val updatedMembers = group.members.map { if (it == oldPubkey) newPubkey else it }
+                    groupRepo.updateFromMeta(group.id, group.name, updatedMembers, group.relays)
+
+                    val metaPayload = json.encodeToString(
+                        com.splitfree.domain.model.GroupMeta.serializer(),
+                        com.splitfree.domain.model.GroupMeta(
+                            name = group.name,
+                            description = group.description,
+                            createdBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy,
+                            createdAt = group.createdAt,
+                            members = updatedMembers,
+                            relays = group.relays
+                        )
+                    )
+                    val metaEncrypted = encryption.encrypt(metaPayload, groupKey)
+                    val metaEvent = signer.createSignedEvent(
+                        groupId = group.id,
+                        eventType = "group_meta",
+                        encryptedContent = metaEncrypted
+                    )
+                    saveAndPublish(metaEvent, group.id, metaEncrypted, metaPayload, "group_meta")
+                }
+
+                // 4. All publishes succeeded — now promote the pending key
+                identity.commitPendingKeyPair()
+            } catch (e: Exception) {
+                // Revocation failed — discard pending key, old key is still active
+                identity.discardPendingKeyPair()
+                throw e
             }
 
-            // 4. All publishes succeeded — now promote the pending key
-            identity.commitPendingKeyPair()
-        } catch (e: Exception) {
-            // Revocation failed — discard pending key, old key is still active
-            identity.discardPendingKeyPair()
-            throw e
+            Log.i(TAG, "Key revoked. Old: ${oldPubkey.take(8)}… New: ${newPubkey.take(8)}…")
+            newPubkey
         }
-
-        Log.i(TAG, "Key revoked. Old: ${oldPubkey.take(8)}… New: ${newPubkey.take(8)}…")
-        return newPubkey
     }
 
     /**

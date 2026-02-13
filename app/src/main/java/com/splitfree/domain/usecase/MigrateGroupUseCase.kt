@@ -14,6 +14,8 @@ import com.splitfree.domain.crypto.Nip44
 import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.model.Group
 import com.splitfree.domain.model.GroupMeta
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -48,8 +50,11 @@ class MigrateGroupUseCase @Inject constructor(
      * @throws IllegalStateException if caller is not the group creator or member not found
      */
     suspend operator fun invoke(oldGroupId: String, removePubkey: String): Group {
-        val oldGroup = groupRepo.getById(oldGroupId)
-            ?: error("Group $oldGroupId not found")
+        // NonCancellable: group migration must complete atomically even if the
+        // calling coroutine scope is cancelled (screen rotation, back press)
+        return withContext(NonCancellable) {
+            val oldGroup = groupRepo.getById(oldGroupId)
+                ?: error("Group $oldGroupId not found")
         val myPubkey = identity.getPublicKeyHex()
         check(oldGroup.createdBy == myPubkey) { "Only the group creator can remove members" }
         check(removePubkey in oldGroup.members) { "Member not in group" }
@@ -129,7 +134,8 @@ class MigrateGroupUseCase @Inject constructor(
         saveAndPublish(metaEvent, newGroup.id, metaEncrypted, metaJson, "group_meta")
 
         Log.i(TAG, "Migrated group ${oldGroup.name}: removed $removePubkey, new group ${newGroup.id}")
-        return newGroup
+            newGroup
+        }
     }
 
     /**
