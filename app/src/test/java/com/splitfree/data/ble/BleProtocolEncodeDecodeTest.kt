@@ -185,4 +185,23 @@ class BleProtocolEncodeDecodeTest {
         }
         // Not complete yet — no result
     }
+
+    @Test
+    fun `encode with incompressible large payload`() {
+        // Random data doesn't compress well
+        val random = java.security.SecureRandom()
+        val payload = ByteArray(200).also { random.nextBytes(it) }
+        val encoded = BleProtocol.encode(MessageType.EXPENSE, payload, "aa".repeat(32))
+        val decoded = BleProtocol.decode(encoded)
+        assertNotNull(decoded)
+        assertArrayEquals(payload, decoded!!.payload)
+    }
+
+    @Test
+    fun `decode returns null for truncated payload`() {
+        val encoded = BleProtocol.encode(MessageType.EXPENSE, "test".toByteArray(), "aa".repeat(32))
+        // Truncate the encoded data to cut off the payload
+        val truncated = encoded.copyOf(encoded.size - 2)
+        assertNull(BleProtocol.decode(truncated))
+    }
 }

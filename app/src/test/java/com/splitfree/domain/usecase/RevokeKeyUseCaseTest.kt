@@ -166,4 +166,51 @@ class RevokeKeyUseCaseTest {
         useCase.handleRevocation(payload, oldPubkey, groupId)
         coVerify { groupRepo.updateFromMeta(groupId, "Test", match { oldPubkey !in it }, any()) }
     }
+
+    @Test
+    fun `invoke preserves createdBy when revoker is not creator`() = runBlocking {
+        val otherCreator = "dd".repeat(32)
+        val nonCreatorGroup = group.copy(createdBy = otherCreator)
+        coEvery { groupRepo.getAll() } returns listOf(nonCreatorGroup)
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        useCase()
+        // createdBy should remain otherCreator, not be replaced
+        coVerify { groupRepo.updateFromMeta(groupId, any(), any(), any()) }
+    }
+
+    @Test
+    fun `resumeIfNeeded returns when getPendingPublicKeyHex is null`() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns true
+        every { identity.getPendingPublicKeyHex() } returns null
+        useCase.resumeIfNeeded()
+        verify(exactly = 0) { identity.commitPendingKeyPair() }
+    }
+
+    @Test
+    fun `resumeIfNeeded waits when outbox has group_meta events`() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns true
+        every { identity.getPendingPublicKeyHex() } returns newPubkey
+        coEvery { outboxDao.getAll() } returns listOf(
+            OutboxEntity("e1", """{"type":"group_meta"}""", 1000)
+        )
+        useCase.resumeIfNeeded()
+        verify(exactly = 0) { identity.commitPendingKeyPair() }
+    }
+
+    @Test
+    fun `handleRevocation ignores when group not found`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns null
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleRevocation ignores when oldPubkey not in members`() = runBlocking {
+        val groupNoMember = group.copy(members = listOf("cc".repeat(32)))
+        coEvery { groupRepo.getById(groupId) } returns groupNoMember
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+    }
 }
