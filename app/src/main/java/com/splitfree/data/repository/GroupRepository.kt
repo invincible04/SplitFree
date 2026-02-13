@@ -92,19 +92,16 @@ class GroupRepository @Inject constructor(
             Log.w("GroupRepository", "Rejecting group_meta with ${members.size} members (max ${CreateGroupUseCase.MAX_GROUP_MEMBERS})")
             return
         }
-        // Reject stale group_meta events
+        val membersJson = json.encodeToString(stringListSerializer, members)
+        val relaysJson = json.encodeToString(stringListSerializer, relays)
         if (eventTimestamp > 0) {
-            val existing = groupDao.getById(groupId)
-            if (existing != null && eventTimestamp <= existing.lastMetaTimestamp) return
-        }
-        groupDao.updateMeta(
-            groupId,
-            name,
-            json.encodeToString(stringListSerializer, members),
-            json.encodeToString(stringListSerializer, relays)
-        )
-        if (eventTimestamp > 0) {
-            groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)
+            // Atomic update — only applies if eventTimestamp is newer than stored lastMetaTimestamp
+            val updated = groupDao.updateMetaIfNewer(groupId, name, membersJson, relaysJson, eventTimestamp)
+            if (updated > 0) {
+                groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)
+            }
+        } else {
+            groupDao.updateMeta(groupId, name, membersJson, relaysJson)
         }
     }
 

@@ -112,7 +112,7 @@ object Nip44 {
     // --- Padding (custom power-of-two, per NIP-44 spec) ---
 
     fun calcPaddedLen(unpaddedLen: Int): Int {
-        require(unpaddedLen in 1..65536)
+        require(unpaddedLen in 1..65535)
         if (unpaddedLen <= 32) return 32
         val nextPower = Integer.highestOneBit(unpaddedLen - 1) shl 1
         val chunk = if (nextPower <= 256) 32 else nextPower / 8

@@ -10,10 +10,6 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             // Only start sync service if user has set up identity
             val hasIdentity = try {
-                context.getSharedPreferences(
-                    "splitfree_identity", Context.MODE_PRIVATE
-                ).contains("nsec").not() // EncryptedSharedPreferences wraps the key name,
-                // so check the actual encrypted prefs file exists
                 java.io.File(context.filesDir.parent, "shared_prefs/splitfree_identity.xml").exists()
             } catch (_: Exception) { false }
             if (!hasIdentity) return

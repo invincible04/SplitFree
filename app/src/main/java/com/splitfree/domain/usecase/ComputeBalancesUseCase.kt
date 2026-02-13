@@ -41,7 +41,7 @@ class ComputeBalancesUseCase @Inject constructor(
                     if (snap.event_hashes.isNotEmpty()) {
                         val localHashes = localIds.mapTo(HashSet()) { sha256Hex(it) }
                         val matchCount = snap.event_hashes.count { it in localHashes }
-                        if (matchCount.toDouble() / snap.event_hashes.size < 0.8) {
+                        if (snap.event_hashes.size < 10 || matchCount.toDouble() / snap.event_hashes.size < 0.8) {
                             Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
                         } else {
                             for (b in snap.balances) {

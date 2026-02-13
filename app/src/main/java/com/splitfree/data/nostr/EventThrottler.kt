@@ -2,6 +2,7 @@ package com.splitfree.data.nostr
 
 import com.splitfree.domain.crypto.NostrEvent
 import kotlinx.coroutines.*
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -18,6 +19,7 @@ class EventThrottler @Inject constructor(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val publishing = AtomicBoolean(false)
     private val intervalMs = 500L
+    private val secureRandom = SecureRandom()
     private val queueSize = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun enqueue(event: NostrEvent) {
@@ -35,7 +37,7 @@ class EventThrottler @Inject constructor(
                     val event = queue.poll() ?: break
                     queueSize.decrementAndGet()
                     nostrClient.publish(event)
-                    delay(intervalMs + (100L..900L).random())
+                    delay(intervalMs + secureRandom.nextLong(100, 900))
                 }
             } finally {
                 publishing.set(false)

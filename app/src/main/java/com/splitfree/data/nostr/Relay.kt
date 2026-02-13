@@ -150,6 +150,10 @@ class Relay(
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
         val attempt = reconnectAttempt++
+        if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "Max reconnect attempts reached for $url — marking dead")
+            return
+        }
         // After 20 consecutive failures (~20 min), back off to 5-minute intervals
         val delayMs = if (attempt >= 20) {
             300_000L
@@ -164,6 +168,7 @@ class Relay(
 
     companion object {
         private const val TAG = "Relay"
+        private const val MAX_RECONNECT_ATTEMPTS = 50
         val sharedClient: OkHttpClient = OkHttpClient.Builder()
             .pingInterval(30, TimeUnit.SECONDS)
             .connectTimeout(10, TimeUnit.SECONDS)

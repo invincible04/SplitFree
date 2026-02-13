@@ -202,7 +202,7 @@ class ForegroundSyncService : Service() {
                     expenseUuid = expenseUuid,
                     sig = inner.sig,
                     receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = inner.toJson()
+                    originalEventJson = if (unwrapResult != null) event.toJson() else inner.toJson()
                 )
             )) return // already existed — skip post-processing
 

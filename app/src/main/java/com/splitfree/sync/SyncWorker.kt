@@ -244,7 +244,7 @@ class SyncWorker @AssistedInject constructor(
                     expenseUuid = expenseUuid,
                     sig = inner.sig,
                     receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = inner.toJson()
+                    originalEventJson = if (unwrapResult != null) event.toJson() else inner.toJson()
                 )
             )) return false // already existed
 

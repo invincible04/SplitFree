@@ -138,6 +138,7 @@ class NearbySyncViewModel @Inject constructor(
     }
 
     fun startScan() {
+        dutyCycleJob?.cancel()
         _uiState.value = _uiState.value.copy(scanning = true, peers = emptyList(), status = "Scanning…")
         dutyCycleJob = viewModelScope.launch {
             while (true) {

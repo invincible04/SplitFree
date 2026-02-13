@@ -18,9 +18,6 @@ fun CreateGroupScreen(
     viewModel: CreateGroupViewModel = hiltViewModel()
 ) {
     var name by remember { mutableStateOf("") }
-    var currency by remember { mutableStateOf("INR") }
-    var currencyExpanded by remember { mutableStateOf(false) }
-    val currencies = listOf("INR", "USD", "EUR", "GBP", "JPY", "AUD", "CAD")
 
     Scaffold(
         topBar = {
@@ -56,36 +53,6 @@ fun CreateGroupScreen(
                 singleLine = true,
                 shape = MaterialTheme.shapes.medium
             )
-
-            // Currency picker
-            ExposedDropdownMenuBox(
-                expanded = currencyExpanded,
-                onExpandedChange = { currencyExpanded = it }
-            ) {
-                OutlinedTextField(
-                    value = currency,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Default currency") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = currencyExpanded) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-                    shape = MaterialTheme.shapes.medium
-                )
-                ExposedDropdownMenu(
-                    expanded = currencyExpanded,
-                    onDismissRequest = { currencyExpanded = false }
-                ) {
-                    currencies.forEach { c ->
-                        DropdownMenuItem(
-                            text = { Text(c) },
-                            onClick = {
-                                currency = c
-                                currencyExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
 
             Spacer(Modifier.height(4.dp))
             Button(

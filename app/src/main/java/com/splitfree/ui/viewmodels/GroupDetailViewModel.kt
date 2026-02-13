@@ -91,6 +91,7 @@ class GroupDetailViewModel @Inject constructor(
         return inviteLinkCache
     }
 
+    @Volatile
     private var inviteLinkCache: String? = null
 
     private fun loadInviteLink() {

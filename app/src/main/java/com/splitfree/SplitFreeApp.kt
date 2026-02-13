@@ -9,7 +9,8 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.*
 import com.splitfree.sync.PowerManager
 import dagger.hilt.android.HiltAndroidApp
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -42,7 +43,7 @@ class SplitFreeApp : Application(), Configuration.Provider {
         scheduleMidnightSync()
         registerBatteryStateReceiver()
         // Check relay health on startup (design doc Section 5.5)
-        CoroutineScope(Dispatchers.IO).launch {
+        ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
             relayHealthMonitor.checkRelays(com.splitfree.sync.SyncWorker.DEFAULT_RELAYS)
             // Resume incomplete key revocation if app was killed mid-revocation (V8 fix)
             revokeKeyUseCase.resumeIfNeeded()

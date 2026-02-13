@@ -82,7 +82,7 @@ object ExpenseNotifier {
     private fun formatAmount(amountSmallest: Long, currency: String): String {
         val major = amountSmallest / 100.0
         return when (currency.uppercase()) {
-            "INR" -> "₹${"%.0f".format(major)}"
+            "INR" -> "₹${"%.2f".format(major)}"
             "USD" -> "${"$"}${"%.2f".format(major)}"
             "EUR" -> "€${"%.2f".format(major)}"
             "GBP" -> "£${"%.2f".format(major)}"

@@ -152,7 +152,8 @@ class ExpenseRepository @Inject constructor(
             // The EventThrottler adds 500ms between publishes, providing temporal spread.
             // NIP-59 already randomizes timestamps 0–48h in the past per spec.
             val members = groupRepo.getMembers(groupId)
-            for (memberPubHex in members.shuffled()) {
+            val myPubkey = identity.getPublicKeyHex()
+            for (memberPubHex in members.filter { it != myPubkey }.shuffled()) {
                 val wrapped = giftWrap.wrapIfEnabled(event, memberPubHex)
                 if (outboxDao.count() < MAX_OUTBOX_SIZE) {
                     outboxDao.insert(

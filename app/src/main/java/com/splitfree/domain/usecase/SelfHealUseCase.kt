@@ -25,7 +25,9 @@ class SelfHealUseCase @Inject constructor(
 
         // Fetch what the relay has for this group using BOTH old (#d) and new (#g) tag formats
         // so we don't needlessly re-publish events that are already there under the old format
-        val remoteByGroup = nostrClient.fetchEvents(groupId, 0)
+        val oldestLocal = localEvents.minOfOrNull { it.createdAt } ?: 0L
+        val since = if (oldestLocal > 0) oldestLocal - 86400 else 0L // 1 day buffer
+        val remoteByGroup = nostrClient.fetchEvents(groupId, since)
         val remoteIds = remoteByGroup.map { it.id }.toMutableSet()
 
         var republished = 0

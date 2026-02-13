@@ -60,6 +60,11 @@ class NearbySync @Inject constructor(
         client.stopDiscovery()
     }
 
+    fun disconnect(endpointId: String) {
+        client.disconnectFromEndpoint(endpointId)
+        connectedEndpoints.remove(endpointId)
+    }
+
     fun stop() {
         client.stopAdvertising()
         client.stopDiscovery()

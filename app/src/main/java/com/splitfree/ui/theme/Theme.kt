@@ -72,9 +72,14 @@ fun SplitFreeTheme(
 ) {
     val colorScheme = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            // Dynamic color on Android 12+ but tinted with our green
-            if (darkTheme) dynamicDarkColorScheme(LocalContext.current)
+            val dynamic = if (darkTheme) dynamicDarkColorScheme(LocalContext.current)
             else dynamicLightColorScheme(LocalContext.current)
+            dynamic.copy(
+                primary = if (darkTheme) Green80 else Green40,
+                primaryContainer = if (darkTheme) Green40 else Green90,
+                onPrimaryContainer = if (darkTheme) Green90 else GreenDark,
+                secondary = if (darkTheme) Teal80 else Teal40
+            )
         }
         darkTheme -> DarkColors
         else -> LightColors

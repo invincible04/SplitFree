@@ -27,6 +27,9 @@ interface GroupDao {
     @Query("UPDATE `groups` SET lastSyncTimestamp = :timestamp WHERE groupId = :groupId")
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 
+    @Query("UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp")
+    suspend fun updateMetaIfNewer(groupId: String, name: String, members: String, relays: String, eventTimestamp: Long): Int
+
     @Query("UPDATE `groups` SET name = :name, members = :members, relays = :relays WHERE groupId = :groupId")
     suspend fun updateMeta(groupId: String, name: String, members: String, relays: String)
 

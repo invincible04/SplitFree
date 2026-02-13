@@ -55,85 +55,85 @@ class MigrateGroupUseCase @Inject constructor(
         return withContext(NonCancellable) {
             val oldGroup = groupRepo.getById(oldGroupId)
                 ?: error("Group $oldGroupId not found")
-        val myPubkey = identity.getPublicKeyHex()
-        check(oldGroup.createdBy == myPubkey) { "Only the group creator can remove members" }
-        check(removePubkey in oldGroup.members) { "Member not in group" }
-        check(removePubkey != myPubkey) { "Cannot remove yourself" }
+            val myPubkey = identity.getPublicKeyHex()
+            check(oldGroup.createdBy == myPubkey) { "Only the group creator can remove members" }
+            check(removePubkey in oldGroup.members) { "Member not in group" }
+            check(removePubkey != myPubkey) { "Cannot remove yourself" }
 
-        val remainingMembers = oldGroup.members - removePubkey
-        val newGroupKey = encryption.generateGroupKey()
-        val newGroup = Group(
-            id = UUID.randomUUID().toString(),
-            name = oldGroup.name,
-            description = oldGroup.description,
-            createdBy = myPubkey,
-            createdAt = System.currentTimeMillis() / 1000,
-            members = remainingMembers,
-            relays = oldGroup.relays
-        )
-
-        // Encrypt the new group key individually for each remaining member
-        // using NIP-44 direct encryption (creator privkey → member pubkey).
-        // The removed member cannot decrypt these even if they decrypt the outer event.
-        val privKey = identity.getPrivateKeyBytes()
-        val encryptedKeys = mutableMapOf<String, String>()
-        try {
-            for (memberPubHex in remainingMembers) {
-                val memberPubBytes = memberPubHex.hexToBytes()
-                val convKey = Nip44.getConversationKey(privKey, memberPubBytes)
-                encryptedKeys[memberPubHex] = Nip44.encrypt(newGroupKey, convKey)
-            }
-        } finally {
-            privKey.fill(0)
-        }
-
-        // 1. Publish group_migrate to OLD group so remaining members auto-migrate
-        val oldGroupKey = groupRepo.getGroupKey(oldGroupId)
-            ?: error("Old group key not found")
-        val migratePayload = json.encodeToString(
-            GroupMigration.serializer(),
-            GroupMigration(
-                newGroupId = newGroup.id,
-                encryptedKeys = encryptedKeys,
+            val remainingMembers = oldGroup.members - removePubkey
+            val newGroupKey = encryption.generateGroupKey()
+            val newGroup = Group(
+                id = UUID.randomUUID().toString(),
+                name = oldGroup.name,
+                description = oldGroup.description,
+                createdBy = myPubkey,
+                createdAt = System.currentTimeMillis() / 1000,
                 members = remainingMembers,
-                removedMember = removePubkey
+                relays = oldGroup.relays
             )
-        )
-        val migrateEncrypted = encryption.encrypt(migratePayload, oldGroupKey)
-        val migrateEvent = signer.createSignedEvent(
-            groupId = oldGroupId,
-            eventType = "group_migrate",
-            encryptedContent = migrateEncrypted
-        )
-        saveAndPublish(migrateEvent, oldGroupId, migrateEncrypted, migratePayload, "group_migrate")
 
-        // 2. Save new group locally
-        groupRepo.save(newGroup, newGroupKey)
+            // Encrypt the new group key individually for each remaining member
+            // using NIP-44 direct encryption (creator privkey → member pubkey).
+            // The removed member cannot decrypt these even if they decrypt the outer event.
+            val privKey = identity.getPrivateKeyBytes()
+            val encryptedKeys = mutableMapOf<String, String>()
+            try {
+                for (memberPubHex in remainingMembers) {
+                    val memberPubBytes = memberPubHex.hexToBytes()
+                    val convKey = Nip44.getConversationKey(privKey, memberPubBytes)
+                    encryptedKeys[memberPubHex] = Nip44.encrypt(newGroupKey, convKey)
+                }
+            } finally {
+                privKey.fill(0)
+            }
 
-        // 3. Delete old group key — forward secrecy: removed member must not benefit from key lingering
-        groupRepo.deleteGroupKey(oldGroupId)
-
-        // 4. Publish group_meta to NEW group
-        val metaJson = json.encodeToString(
-            GroupMeta.serializer(),
-            GroupMeta(
-                name = newGroup.name,
-                description = newGroup.description,
-                createdBy = newGroup.createdBy,
-                createdAt = newGroup.createdAt,
-                members = newGroup.members,
-                relays = newGroup.relays
+            // 1. Publish group_migrate to OLD group so remaining members auto-migrate
+            val oldGroupKey = groupRepo.getGroupKey(oldGroupId)
+                ?: error("Old group key not found")
+            val migratePayload = json.encodeToString(
+                GroupMigration.serializer(),
+                GroupMigration(
+                    newGroupId = newGroup.id,
+                    encryptedKeys = encryptedKeys,
+                    members = remainingMembers,
+                    removedMember = removePubkey
+                )
             )
-        )
-        val metaEncrypted = encryption.encrypt(metaJson, newGroupKey)
-        val metaEvent = signer.createSignedEvent(
-            groupId = newGroup.id,
-            eventType = "group_meta",
-            encryptedContent = metaEncrypted
-        )
-        saveAndPublish(metaEvent, newGroup.id, metaEncrypted, metaJson, "group_meta")
+            val migrateEncrypted = encryption.encrypt(migratePayload, oldGroupKey)
+            val migrateEvent = signer.createSignedEvent(
+                groupId = oldGroupId,
+                eventType = "group_migrate",
+                encryptedContent = migrateEncrypted
+            )
+            saveAndPublish(migrateEvent, oldGroupId, migrateEncrypted, migratePayload, "group_migrate")
 
-        Log.i(TAG, "Migrated group ${oldGroup.name}: removed $removePubkey, new group ${newGroup.id}")
+            // 2. Save new group locally
+            groupRepo.save(newGroup, newGroupKey)
+
+            // 3. Delete old group key — forward secrecy: removed member must not benefit from key lingering
+            groupRepo.deleteGroupKey(oldGroupId)
+
+            // 4. Publish group_meta to NEW group
+            val metaJson = json.encodeToString(
+                GroupMeta.serializer(),
+                GroupMeta(
+                    name = newGroup.name,
+                    description = newGroup.description,
+                    createdBy = newGroup.createdBy,
+                    createdAt = newGroup.createdAt,
+                    members = newGroup.members,
+                    relays = newGroup.relays
+                )
+            )
+            val metaEncrypted = encryption.encrypt(metaJson, newGroupKey)
+            val metaEvent = signer.createSignedEvent(
+                groupId = newGroup.id,
+                eventType = "group_meta",
+                encryptedContent = metaEncrypted
+            )
+            saveAndPublish(metaEvent, newGroup.id, metaEncrypted, metaJson, "group_meta")
+
+            Log.i(TAG, "Migrated group ${oldGroup.name}: removed $removePubkey, new group ${newGroup.id}")
             newGroup
         }
     }

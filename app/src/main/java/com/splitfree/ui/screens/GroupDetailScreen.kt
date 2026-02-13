@@ -116,7 +116,7 @@ fun GroupDetailScreen(
                 }
 
                 when (selectedTab) {
-                    0 -> BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), onSettle = { showSettleDialog = it })
+                    0 -> BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), myPubkey = uiState.myPubkey, onSettle = { showSettleDialog = it })
                     1 -> ExpensesTab(uiState.expenses)
                     2 -> MembersTab(
                         members = uiState.members,
@@ -245,7 +245,7 @@ fun GroupDetailScreen(
 }
 
 @Composable
-private fun BalancesTab(debts: List<DebtTransaction>, hasExpenses: Boolean, onSettle: (DebtTransaction) -> Unit) {
+private fun BalancesTab(debts: List<DebtTransaction>, hasExpenses: Boolean, myPubkey: String = "", onSettle: (DebtTransaction) -> Unit) {
     if (debts.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize().padding(48.dp),
@@ -279,7 +279,7 @@ private fun BalancesTab(debts: List<DebtTransaction>, hasExpenses: Boolean, onSe
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(debts) { debt ->
-                DebtCard(debt, onSettle = { onSettle(debt) })
+                DebtCard(debt, showSettle = debt.from == myPubkey || debt.to == myPubkey, onSettle = { onSettle(debt) })
             }
             item { Spacer(Modifier.height(80.dp)) }
         }
@@ -327,7 +327,7 @@ private fun ExpensesTab(expenses: List<Expense>) {
 }
 
 @Composable
-private fun DebtCard(debt: DebtTransaction, onSettle: () -> Unit) {
+private fun DebtCard(debt: DebtTransaction, showSettle: Boolean = true, onSettle: () -> Unit) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(16.dp).fillMaxWidth(),
@@ -349,8 +349,10 @@ private fun DebtCard(debt: DebtTransaction, onSettle: () -> Unit) {
                     color = MaterialTheme.colorScheme.error
                 )
             }
-            FilledTonalButton(onClick = onSettle) {
-                Text("Settle")
+            if (showSettle) {
+                FilledTonalButton(onClick = onSettle) {
+                    Text("Settle")
+                }
             }
         }
     }

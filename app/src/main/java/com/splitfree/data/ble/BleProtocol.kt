@@ -9,7 +9,7 @@ import java.util.UUID
  * Compact binary protocol for BLE transfers.
  * Replaces JSON-over-BLE for ~60% bandwidth savings.
  *
- * Header (13 bytes):
+ * Header (14 bytes):
  * ┌─────────┬──────┬─────┬───────────┬───────┬──────────────┐
  * │ Version │ Type │ TTL │ Timestamp │ Flags │ PayloadLength│
  * │ 1 byte  │1 byte│1 byte│  8 bytes │1 byte │   2 bytes    │
@@ -60,7 +60,7 @@ object BleProtocol {
         buf.put(ttl)
         buf.putLong(System.currentTimeMillis())
         buf.put(flags.toByte())
-        buf.putShort(data.size.toShort())
+        buf.putShort((data.size and 0xFFFF).toShort())
 
         // SenderID: first 8 bytes of hex pubkey decoded
         buf.put(senderPubkey.take(16).hexToBytes8())
@@ -256,6 +256,7 @@ object FragmentManager {
         return null
     }
 
+    @Synchronized
     fun clear() {
         pending.clear()
         totalCounts.clear()

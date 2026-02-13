@@ -101,8 +101,10 @@ class AddExpenseViewModel @Inject constructor(
             require(totalPct == 100L) { "Percentages must sum to 100" }
             var allocated = 0L
             members.mapIndexed { i, pk ->
-                val share = if (i == members.lastIndex) amount - allocated
-                else amount * (inputs[pk] ?: 0L) / 100
+                val pct = inputs[pk] ?: 0L
+                val share = if (pct == 0L) 0L
+                else if (i == members.lastIndex) amount - allocated
+                else amount * pct / 100
                 allocated += share
                 SplitEntry(pk, share)
             }
@@ -112,8 +114,10 @@ class AddExpenseViewModel @Inject constructor(
             require(totalUnits > 0) { "Total shares must be positive" }
             var allocated = 0L
             members.mapIndexed { i, pk ->
-                val share = if (i == members.lastIndex) amount - allocated
-                else amount * (inputs[pk] ?: 0L) / totalUnits
+                val units = inputs[pk] ?: 0L
+                val share = if (units == 0L) 0L
+                else if (i == members.lastIndex) amount - allocated
+                else amount * units / totalUnits
                 allocated += share
                 SplitEntry(pk, share)
             }

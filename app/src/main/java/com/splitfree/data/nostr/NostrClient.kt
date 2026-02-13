@@ -76,6 +76,9 @@ class NostrClient @Inject constructor() {
             if (safeUrls.isEmpty() && relayUrls.isNotEmpty()) {
                 Log.w(TAG, "All relay URLs rejected — only wss:// is allowed")
             }
+            // Remove stale relays no longer in the new list
+            val stale = relays.keys - safeUrls.toSet()
+            stale.forEach { url -> relays.remove(url)?.disconnect() }
             currentRelays = safeUrls
             safeUrls.forEach { url ->
                 if (!relays.containsKey(url)) {
