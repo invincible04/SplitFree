@@ -23,37 +23,46 @@ class GroupEncryption @Inject constructor() {
     }
 
     fun encrypt(plaintext: String, groupKeyBase64: String): String {
+        require(plaintext.isNotEmpty()) { "Cannot encrypt empty plaintext" }
         val conversationKey = deriveConversationKey(groupKeyBase64)
-        val raw = plaintext.toByteArray()
-        val payload = if (CompressionUtil.shouldCompress(raw)) {
-            val compressed = CompressionUtil.compress(raw)
-            if (compressed != null) {
-                COMPRESSED_PREFIX + java.util.Base64.getEncoder().encodeToString(compressed)
+        try {
+            val raw = plaintext.toByteArray()
+            val payload = if (CompressionUtil.shouldCompress(raw)) {
+                val compressed = CompressionUtil.compress(raw)
+                if (compressed != null) {
+                    COMPRESSED_PREFIX + java.util.Base64.getEncoder().encodeToString(compressed)
+                } else plaintext
             } else plaintext
-        } else plaintext
-        return Nip44.encrypt(payload, conversationKey)
+            return Nip44.encrypt(payload, conversationKey)
+        } finally {
+            conversationKey.fill(0)
+        }
     }
 
     fun decrypt(encrypted: String, groupKeyBase64: String): String {
         val conversationKey = deriveConversationKey(groupKeyBase64)
-        val decoded = Nip44.decrypt(encrypted, conversationKey)
-        if (decoded.startsWith(COMPRESSED_PREFIX)) {
-            val b64 = decoded.removePrefix(COMPRESSED_PREFIX)
-            val compressed = java.util.Base64.getDecoder().decode(b64)
-            val decompressed = CompressionUtil.decompress(compressed)
-            if (decompressed != null) return String(decompressed)
-        }
-        // Legacy format support
-        return try {
-            val payload = java.util.Base64.getDecoder().decode(decoded)
-            if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
-                val decompressed = CompressionUtil.decompress(payload.copyOfRange(1, payload.size))
-                decompressed?.let { String(it) } ?: decoded
-            } else if (payload.isNotEmpty() && payload[0] == 0x00.toByte()) {
-                String(payload, 1, payload.size - 1)
-            } else decoded
-        } catch (_: Exception) {
-            decoded
+        try {
+            val decoded = Nip44.decrypt(encrypted, conversationKey)
+            if (decoded.startsWith(COMPRESSED_PREFIX)) {
+                val b64 = decoded.removePrefix(COMPRESSED_PREFIX)
+                val compressed = java.util.Base64.getDecoder().decode(b64)
+                val decompressed = CompressionUtil.decompress(compressed)
+                if (decompressed != null) return String(decompressed)
+            }
+            // Legacy format support
+            return try {
+                val payload = java.util.Base64.getDecoder().decode(decoded)
+                if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
+                    val decompressed = CompressionUtil.decompress(payload.copyOfRange(1, payload.size))
+                    decompressed?.let { String(it) } ?: decoded
+                } else if (payload.isNotEmpty() && payload[0] == 0x00.toByte()) {
+                    String(payload, 1, payload.size - 1)
+                } else decoded
+            } catch (_: Exception) {
+                decoded
+            }
+        } finally {
+            conversationKey.fill(0)
         }
     }
 

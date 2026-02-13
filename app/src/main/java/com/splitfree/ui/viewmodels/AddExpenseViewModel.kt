@@ -34,6 +34,8 @@ class AddExpenseViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(AddExpenseUiState())
     val uiState: StateFlow<AddExpenseUiState> = _uiState.asStateFlow()
 
+    private var submitting = false
+
     init {
         viewModelScope.launch {
             val group = groupRepo.getById(groupId) ?: return@launch
@@ -52,10 +54,14 @@ class AddExpenseViewModel @Inject constructor(
         splitType: SplitType,
         memberInputs: Map<String, Long> // pubkey -> raw input per split type
     ) {
+        if (submitting) return
+        submitting = true
         viewModelScope.launch {
             try {
                 val members = _uiState.value.members
-                val splits = computeSplits(amountCents, splitType, members, memberInputs)
+                // Sort for deterministic remainder allocation across devices
+                val sortedMembers = members.sorted()
+                val splits = computeSplits(amountCents, splitType, sortedMembers, memberInputs)
                 addExpense(
                     groupId = groupId,
                     amount = amountCents,
@@ -68,6 +74,8 @@ class AddExpenseViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(error = null, saved = true)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(error = e.message)
+            } finally {
+                submitting = false
             }
         }
     }

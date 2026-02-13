@@ -2,11 +2,13 @@ package com.splitfree.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.splitfree.data.local.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.domain.model.Group
+import com.splitfree.domain.usecase.CreateGroupUseCase
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -96,6 +98,10 @@ class GroupRepository @Inject constructor(
     }
 
     suspend fun updateFromMeta(groupId: String, name: String, members: List<String>, relays: List<String>) {
+        if (members.size > CreateGroupUseCase.MAX_GROUP_MEMBERS) {
+            Log.w("GroupRepository", "Rejecting group_meta with ${members.size} members (max ${CreateGroupUseCase.MAX_GROUP_MEMBERS})")
+            return
+        }
         groupDao.updateMeta(
             groupId,
             name,

@@ -95,19 +95,27 @@ class ImportGroupUseCase @Inject constructor(
         val groupKey = groupRepo.getGroupKey(groupId)
             ?: throw IllegalStateException("No key for group $groupId — join the group first")
 
-        // Verify HMAC integrity if present — constant-time comparison to prevent timing attacks (CVE-2019-10071, NOS-01-004)
-        if (export.hmac.isNotEmpty()) {
-            val eventsJson = Json.encodeToString(export.events)
-            val expectedHmac = computeHmacBytes(eventsJson, groupKey)
-            val providedHmac = hexToBytes(export.hmac) ?: throw IllegalArgumentException("Invalid HMAC hex")
-            require(MessageDigest.isEqual(providedHmac, expectedHmac)) { "Export file integrity check failed — file may have been tampered with" }
-        }
+        // HMAC is mandatory — reject exports with missing integrity check
+        require(export.hmac.isNotEmpty()) { "Export file missing integrity check (HMAC)" }
+        // Verify HMAC integrity — constant-time comparison to prevent timing attacks (CVE-2019-10071, NOS-01-004)
+        val eventsJson = Json.encodeToString(export.events)
+        val expectedHmac = computeHmacBytes(eventsJson, groupKey)
+        val providedHmac = hexToBytes(export.hmac) ?: throw IllegalArgumentException("Invalid HMAC hex")
+        require(MessageDigest.isEqual(providedHmac, expectedHmac)) { "Export file integrity check failed — file may have been tampered with" }
 
         val existingIds = eventDao.getEventIds(groupId).toSet()
         var imported = 0
 
+        val group = groupRepo.getById(groupId)
+
         for (event in export.events) {
             if (event.eventId in existingIds) continue
+
+            // Skip events from non-members
+            if (group != null && event.pubkey !in group.members
+                && event.eventType !in setOf("group_meta", "group_migrate", "key_revocation")) {
+                continue
+            }
 
             // Verify Nostr signature if original event JSON is available
             val originalJson = event.originalEventJson

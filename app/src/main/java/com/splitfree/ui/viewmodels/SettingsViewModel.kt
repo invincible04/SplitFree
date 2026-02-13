@@ -34,6 +34,14 @@ class SettingsViewModel @Inject constructor(
     private val _revokeState = MutableStateFlow<RevokeState>(RevokeState.Idle)
     val revokeState: StateFlow<RevokeState> = _revokeState
 
+    init {
+        viewModelScope.launch {
+            if (identity.hasPendingKeyPair()) {
+                _revokeState.value = RevokeState.InProgress
+            }
+        }
+    }
+
     fun revealPrivateKey() {
         if (identity.hasIdentity()) _nsec.value = identity.getPrivateKeyHex()
     }

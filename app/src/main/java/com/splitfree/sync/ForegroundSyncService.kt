@@ -118,25 +118,36 @@ class ForegroundSyncService : Service() {
 
             val authorHex = inner.pubkey
             val group = groupRepo.getById(groupId)
-            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
+
+            if (group == null) {
+                Log.w(TAG, "Rejecting event for unknown group $groupId")
+                return
+            }
+
+            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
                 return
             }
 
             // group_meta requires membership; group_migrate/key_revocation validated downstream
-            if (eventType == "group_meta" && group != null && authorHex !in group.members) {
+            if (eventType == "group_meta" && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting group_meta from non-member $authorHex in group $groupId")
                 return
             }
 
             // Only the group creator can publish group_meta updates
-            if (eventType == "group_meta" && group != null && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
+            if (eventType == "group_meta" && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
                 Log.w(TAG, "Rejecting group_meta from non-creator $authorHex in group $groupId")
                 return
             }
 
             if (!EventValidator.isWithinRateLimit(authorHex)) {
                 Log.w(TAG, "Rate-limiting events from $authorHex")
+                return
+            }
+
+            if (!EventValidator.isWithinGroupRateLimit(groupId)) {
+                Log.w(TAG, "Rate-limiting events for group $groupId")
                 return
             }
 
@@ -195,21 +206,34 @@ class ForegroundSyncService : Service() {
                 )
             )) return // already existed — skip post-processing
 
+            // Ensure metadata updates complete even if scope is cancelled
             if (eventType == "group_meta" && decrypted != null) {
                 try {
-                    val meta = json.decodeFromString<GroupMeta>(decrypted)
-                    if (meta.members.isNotEmpty()) {
-                        groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays)
+                    withContext(NonCancellable) {
+                        val meta = json.decodeFromString<GroupMeta>(decrypted)
+                        if (meta.members.isNotEmpty()) {
+                            groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays)
+                        }
                     }
-                } catch (_: Exception) {}
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to process group_meta for $groupId: ${e.message}", e)
+                }
             }
 
             if (eventType == "group_migrate" && decrypted != null) {
-                try { migrateGroup.handleMigration(decrypted, authorHex, groupId) } catch (_: Exception) {}
+                try {
+                    withContext(NonCancellable) { migrateGroup.handleMigration(decrypted, authorHex, groupId) }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { Log.e(TAG, "Failed to process group_migrate for $groupId: ${e.message}", e) }
             }
 
             if (eventType == "key_revocation" && decrypted != null) {
-                try { revokeKey.handleRevocation(decrypted, authorHex, groupId) } catch (_: Exception) {}
+                try {
+                    withContext(NonCancellable) { revokeKey.handleRevocation(decrypted, authorHex, groupId) }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { Log.e(TAG, "Failed to process key_revocation for $groupId: ${e.message}", e) }
             }
 
             ExpenseNotifier.notifyIfNeeded(

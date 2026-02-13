@@ -165,7 +165,11 @@ class JoinGroupUseCase @Inject constructor(
                                 if (meta.members.isNotEmpty()) {
                                     groupRepo.updateFromMeta(group.id, meta.name, meta.members, meta.relays)
                                 }
-                            } catch (_: Exception) {}
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to process group_meta: ${e.message}")
+                            }
                         }
 
                         count++

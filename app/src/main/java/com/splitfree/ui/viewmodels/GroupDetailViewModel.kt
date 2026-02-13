@@ -88,7 +88,6 @@ class GroupDetailViewModel @Inject constructor(
     }
 
     fun getInviteLink(): String? {
-        // Cache the invite link since group data doesn't change frequently
         return inviteLinkCache
     }
 

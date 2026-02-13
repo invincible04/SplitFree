@@ -73,5 +73,6 @@ class CreateGroupUseCase @Inject constructor(
             "wss://relay.snort.social",
             "wss://nostr.wine"
         )
+        const val MAX_GROUP_MEMBERS = 50
     }
 }

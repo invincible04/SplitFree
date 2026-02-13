@@ -58,11 +58,18 @@ object Nip59 {
 
         val wrapConvKey = Nip44.getConversationKey(ephemeralPriv, recipientPubKey)
         val wrapContent = Nip44.encrypt(seal.toJson(), wrapConvKey)
+        // Route by group ID instead of recipient pubkey to avoid metadata leakage
+        val wrapTags = if (rumor.tags.any { it.size >= 2 && it[0] == "g" }) {
+            val groupId = rumor.tags.first { it.size >= 2 && it[0] == "g" }[1]
+            listOf(listOf("g", groupId))
+        } else {
+            listOf(listOf("p", recipientPubHex))
+        }
         val wrap = NostrEvent(
             pubkey = ephemeralPubHex,
             createdAt = randomTimestamp(),
             kind = 1059,
-            tags = listOf(listOf("p", recipientPubHex)),
+            tags = wrapTags,
             content = wrapContent
         ).sign(ephemeralPriv)
 

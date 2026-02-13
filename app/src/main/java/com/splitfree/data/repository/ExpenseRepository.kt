@@ -46,6 +46,13 @@ class ExpenseRepository @Inject constructor(
     }
 
     suspend fun addSettlement(settlement: Settlement, groupId: String) {
+        val myPubkey = identity.getPublicKeyHex()
+        require(settlement.from == myPubkey || settlement.to == myPubkey) {
+            "You can only record settlements you're involved in"
+        }
+        require(settlement.amount > 0) { "Settlement amount must be positive" }
+        require(settlement.amount <= 10_000_000_000_00L) { "Settlement amount exceeds maximum" }
+
         val groupKey = groupRepo.getGroupKey(groupId)
             ?: error("Group $groupId not found")
         val plaintext = json.encodeToString(Settlement.serializer(), settlement)

@@ -24,14 +24,15 @@ class ComputeBalancesUseCase @Inject constructor(
         val balances = mutableMapOf<Pair<String, String>, Long>()
         val deleted = mutableSetOf<String>()
         val latestCorrection = mutableMapOf<String, String>()
+        val seenSettlementIds = mutableSetOf<String>()
 
         val snapshotEvent = eventDao.getLatestEventByType(groupId, "snapshot")
         var snapshotTimestamp = 0L
         if (snapshotEvent?.contentDecrypted != null) {
             try {
-                // Only trust snapshots from group members
+                // Only the group creator can publish trusted snapshots
                 val group = groupRepo.getById(groupId)
-                if (group != null && snapshotEvent.pubkey in group.members) {
+                if (group != null && snapshotEvent.pubkey == group.createdBy) {
                     val snap = json.decodeFromString<BalanceSnapshot>(snapshotEvent.contentDecrypted!!)
                     for (b in snap.balances) {
                         balances[b.pubkey to b.currency] = b.net
@@ -69,6 +70,9 @@ class ComputeBalancesUseCase @Inject constructor(
                 }
                 "settlement" -> {
                     val s = json.decodeFromString<Settlement>(content)
+                    // Only the payer can authorize a settlement
+                    if (e.pubkey != s.from) continue
+                    if (!seenSettlementIds.add(s.id)) continue
                     val cur = s.currency
                     balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
                     balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)

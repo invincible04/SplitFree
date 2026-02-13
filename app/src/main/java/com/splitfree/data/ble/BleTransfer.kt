@@ -11,6 +11,8 @@ import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.crypto.toHex
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,16 +50,29 @@ class BleTransfer @Inject constructor(
     private val pendingChallenges = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** Peers that have been authenticated (proved pubkey ownership). */
     private val authenticatedPeers = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val handshakeTimeouts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private companion object {
+        const val TAG = "BleTransfer"
+        const val MSG_HANDSHAKE: Byte = 0x01
+        const val MSG_SYNC_REQ: Byte = 0x02
+        const val MSG_EVENT: Byte = 0x03
+        const val MSG_GROUP_IDS: Byte = 0x04
+        const val HANDSHAKE_TIMEOUT_MS = 10_000L
+    }
 
     /**
      * Send initial handshake with a random challenge for the peer to sign.
+     * Group IDs are withheld until after mutual authentication.
      */
     fun sendHandshake(endpointId: String, pubkey: String, groupIds: List<String>) {
         val challengeBytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
         val challenge = challengeBytes.toHex()
         pendingChallenges[endpointId] = challenge
-        val hs = json.encodeToString(BleHandshake.serializer(), BleHandshake(pubkey, groupIds, challenge = challenge))
+        // Send empty groups list — real group IDs sent after authentication
+        val hs = json.encodeToString(BleHandshake.serializer(), BleHandshake(pubkey, emptyList(), challenge = challenge))
         nearbySync.sendPayload(endpointId, byteArrayOf(MSG_HANDSHAKE) + hs.toByteArray())
+        // Schedule handshake timeout
+        handshakeTimeouts[endpointId] = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
     }
 
     /**
@@ -75,7 +90,7 @@ class BleTransfer @Inject constructor(
         } finally {
             privKey.fill(0)
         }
-        val hs = json.encodeToString(BleHandshake.serializer(), BleHandshake(pubkey, groupIds, challengeResponse = signature))
+        val hs = json.encodeToString(BleHandshake.serializer(), BleHandshake(pubkey, emptyList(), challengeResponse = signature))
         nearbySync.sendPayload(endpointId, byteArrayOf(MSG_HANDSHAKE) + hs.toByteArray())
     }
 
@@ -100,9 +115,27 @@ class BleTransfer @Inject constructor(
 
     fun isAuthenticated(endpointId: String): Boolean = authenticatedPeers.containsKey(endpointId)
 
+    /**
+     * Send group IDs to an authenticated peer for sync discovery.
+     */
+    fun sendGroupIds(endpointId: String, groupIds: List<String>) {
+        if (!isAuthenticated(endpointId)) {
+            Log.w(TAG, "Refusing to send group IDs to unauthenticated peer $endpointId")
+            return
+        }
+        val payload = json.encodeToString(ListSerializer(String.serializer()), groupIds)
+        nearbySync.sendPayload(endpointId, byteArrayOf(MSG_GROUP_IDS) + payload.toByteArray())
+    }
+
+    fun isHandshakeTimedOut(endpointId: String): Boolean {
+        val deadline = handshakeTimeouts[endpointId] ?: return false
+        return System.currentTimeMillis() > deadline
+    }
+
     fun clearPeer(endpointId: String) {
         pendingChallenges.remove(endpointId)
         authenticatedPeers.remove(endpointId)
+        handshakeTimeouts.remove(endpointId)
     }
 
     fun sendSyncRequest(endpointId: String, groupId: String, localEventIds: List<String>) {
@@ -149,6 +182,13 @@ class BleTransfer @Inject constructor(
                 }
                 storeReceivedEvent(String(body))
             }
+            MSG_GROUP_IDS -> {
+                if (!isAuthenticated(endpointId)) {
+                    Log.w(TAG, "Rejecting group IDs from unauthenticated peer $endpointId")
+                    return null
+                }
+                json.decodeFromString(ListSerializer(String.serializer()), String(body))
+            }
             else -> null
         }
     }
@@ -180,25 +220,36 @@ class BleTransfer @Inject constructor(
 
             val authorHex = event.pubkey
             val group = groupRepo.getById(groupId)
-            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
+
+            if (group == null) {
+                Log.w(TAG, "Rejecting BLE event for unknown group $groupId")
+                return false
+            }
+
+            if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting BLE event from non-member $authorHex in group $groupId")
                 return false
             }
 
             // group_meta requires membership; group_migrate/key_revocation validated downstream
-            if (eventType == "group_meta" && group != null && authorHex !in group.members) {
+            if (eventType == "group_meta" && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting BLE group_meta from non-member $authorHex in group $groupId")
                 return false
             }
 
             // Only the group creator can publish group_meta updates
-            if (eventType == "group_meta" && group != null && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
+            if (eventType == "group_meta" && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
                 Log.w(TAG, "Rejecting BLE group_meta from non-creator $authorHex in group $groupId")
                 return false
             }
 
             if (!EventValidator.isWithinRateLimit(authorHex)) {
                 Log.w(TAG, "Rate-limiting BLE events from $authorHex")
+                return false
+            }
+
+            if (!EventValidator.isWithinGroupRateLimit(groupId)) {
+                Log.w(TAG, "Rate-limiting BLE events for group $groupId")
                 return false
             }
 
@@ -287,7 +338,7 @@ class BleTransfer @Inject constructor(
             return packet
         }
         // Try as fragment
-        val assembled = FragmentManager.addFragment(data)
+        val assembled = FragmentManager.addFragment(endpointId, data)
         if (assembled != null) {
             val fullPacket = BleProtocol.decode(assembled)
             if (fullPacket != null) {
@@ -298,10 +349,4 @@ class BleTransfer @Inject constructor(
         return null
     }
 
-    companion object {
-        private const val TAG = "BleTransfer"
-        const val MSG_HANDSHAKE: Byte = 0x01
-        const val MSG_SYNC_REQ: Byte = 0x02
-        const val MSG_EVENT: Byte = 0x03
-    }
 }

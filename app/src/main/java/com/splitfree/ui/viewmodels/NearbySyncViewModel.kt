@@ -65,25 +65,37 @@ class NearbySyncViewModel @Inject constructor(
                     }
                     is BleEvent.PayloadReceived -> {
                         val result = bleTransfer.processPayload(event.endpointId, event.data)
-                        if (result is BleHandshake) {
-                            peerHandshakes[event.endpointId] = result
+                        when (result) {
+                            is BleHandshake -> {
+                                peerHandshakes[event.endpointId] = result
 
-                            if (result.challengeResponse.isNotEmpty()) {
-                                // This is a response — verify their signature
-                                if (bleTransfer.verifyHandshake(event.endpointId, result)) {
-                                    // Peer authenticated. If we're also authenticated on their side, sync.
-                                    startSyncIfReady(event.endpointId, result)
-                                } else {
-                                    _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                if (result.challengeResponse.isNotEmpty()) {
+                                    // This is a response — verify their signature
+                                    if (bleTransfer.verifyHandshake(event.endpointId, result)) {
+                                        // Peer authenticated — send our group IDs
+                                        startSyncIfReady(event.endpointId, result)
+                                    } else {
+                                        _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                    }
+                                } else if (result.challenge.isNotEmpty()) {
+                                    if (bleTransfer.isHandshakeTimedOut(event.endpointId)) {
+                                        bleTransfer.clearPeer(event.endpointId)
+                                        _uiState.value = _uiState.value.copy(status = "Handshake timed out")
+                                    } else {
+                                        // Initial handshake with challenge — send our response
+                                        val groups = groupRepo.getAll().map { it.id }
+                                        bleTransfer.sendHandshakeResponse(
+                                            event.endpointId, identity.getPublicKeyHex(), groups, result.challenge
+                                        )
+                                    }
                                 }
-                            } else if (result.challenge.isNotEmpty()) {
-                                // Initial handshake with challenge — send our response + our own challenge
-                                val groups = groupRepo.getAll().map { it.id }
-                                bleTransfer.sendHandshakeResponse(
-                                    event.endpointId, identity.getPublicKeyHex(), groups, result.challenge
-                                )
+                                _uiState.value = _uiState.value.copy(status = "Authenticating peer…")
                             }
-                            _uiState.value = _uiState.value.copy(status = "Authenticating peer…")
+                            is List<*> -> {
+                                // Received group IDs from authenticated peer
+                                @Suppress("UNCHECKED_CAST")
+                                onGroupIdsReceived(event.endpointId, result as List<String>)
+                            }
                         }
                     }
                     is BleEvent.Disconnected -> {
@@ -98,7 +110,16 @@ class NearbySyncViewModel @Inject constructor(
 
     private fun startSyncIfReady(endpointId: String, handshake: BleHandshake) {
         if (!bleTransfer.isAuthenticated(endpointId)) return
-        if (groupId in handshake.groups) {
+        // Send our group IDs now that peer is authenticated
+        viewModelScope.launch {
+            val groups = groupRepo.getAll().map { it.id }
+            bleTransfer.sendGroupIds(endpointId, groups)
+        }
+    }
+
+    private fun onGroupIdsReceived(endpointId: String, groupIds: List<String>) {
+        if (!bleTransfer.isAuthenticated(endpointId)) return
+        if (groupId in groupIds) {
             viewModelScope.launch {
                 val localIds = eventDao.getEventIds(groupId)
                 bleTransfer.sendSyncRequest(endpointId, groupId, localIds)

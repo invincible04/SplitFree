@@ -16,8 +16,10 @@ object EventValidator {
     /** Max events per pubkey per minute before rate-limiting kicks in. */
     private const val RATE_LIMIT_PER_MINUTE = 30
     private const val RATE_WINDOW_MS = 60_000L
+    private const val GROUP_RATE_LIMIT_PER_MINUTE = 60
 
     private val rateCounts = ConcurrentHashMap<String, RateEntry>()
+    private val groupRateCounts = ConcurrentHashMap<String, RateEntry>()
 
     private class RateEntry {
         @Volatile var count: Int = 0
@@ -95,6 +97,29 @@ object EventValidator {
     /** Clear rate limit state (for testing). */
     fun resetRateLimits() {
         rateCounts.clear()
+        groupRateCounts.clear()
+    }
+
+    /**
+     * Per-group rate limiting. Returns true if the group is within limits.
+     */
+    fun isWithinGroupRateLimit(groupId: String): Boolean {
+        val now = System.currentTimeMillis()
+        if (groupRateCounts.size > 100) {
+            groupRateCounts.entries.removeIf { entry ->
+                synchronized(entry.value) { now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
+            }
+        }
+        val entry = groupRateCounts.getOrPut(groupId) { RateEntry() }
+        synchronized(entry) {
+            if (now - entry.windowStart > RATE_WINDOW_MS) {
+                entry.count = 1
+                entry.windowStart = now
+                return true
+            }
+            entry.count++
+            return entry.count <= GROUP_RATE_LIMIT_PER_MINUTE
+        }
     }
 
     /**

@@ -173,6 +173,7 @@ data class BlePacket(
 
 /**
  * Fragments large messages into BLE_MTU-sized chunks and reassembles them.
+ * Fragments are keyed by (endpointId, UUID) to isolate reassembly per peer.
  */
 object FragmentManager {
     private const val FRAGMENT_HEADER_SIZE = 20 // 16 (UUID) + 2 (index) + 2 (total)
@@ -201,15 +202,15 @@ object FragmentManager {
         }
     }
 
-    private val pending = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, MutableMap<Int, ByteArray>>()
-    private val totalCounts = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, Int>()
-    private val timestamps = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, Long>()
+    private val pending = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, MutableMap<Int, ByteArray>>()
+    private val totalCounts = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Int>()
+    private val timestamps = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Long>()
     private const val MAX_PENDING = 20
     private const val TIMEOUT_MS = 30_000L
     private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB — matches relay max_event_bytes
 
     @Synchronized
-    fun addFragment(fragment: ByteArray): ByteArray? {
+    fun addFragment(endpointId: String, fragment: ByteArray): ByteArray? {
         if (fragment.size < FRAGMENT_HEADER_SIZE) return null
 
         // Evict stale entries
@@ -225,7 +226,7 @@ object FragmentManager {
         val buf = ByteBuffer.wrap(fragment).order(ByteOrder.BIG_ENDIAN)
         val msb = buf.getLong()
         val lsb = buf.getLong()
-        val key = msb to lsb // Use full UUID pair to prevent collisions (was: msb xor lsb)
+        val key = Triple(endpointId, msb, lsb)
         val index = buf.getShort().toInt() and 0xFFFF
         val total = buf.getShort().toInt() and 0xFFFF
         if (total == 0 || total > 256) return null // sanity bound on fragment count
@@ -254,6 +255,10 @@ object FragmentManager {
         }
         return null
     }
+
+    /** Legacy overload without endpointId — uses empty string as default. */
+    @Synchronized
+    fun addFragment(fragment: ByteArray): ByteArray? = addFragment("", fragment)
 
     fun clear() {
         pending.clear()
