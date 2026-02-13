@@ -5,6 +5,7 @@ import com.splitfree.data.local.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.crypto.toHex
 import com.splitfree.sync.EventProcessor
@@ -193,7 +194,7 @@ class BleTransfer @Inject constructor(
 
     private suspend fun storeReceivedEvent(eventJson: String): Boolean {
         return try {
-            val event = com.splitfree.domain.crypto.NostrEvent.fromJson(eventJson) ?: return false
+            val event = NostrEvent.fromJson(eventJson) ?: return false
             val result = eventProcessor.process(rawEvent = event)
             result.stored
         } catch (e: Exception) {

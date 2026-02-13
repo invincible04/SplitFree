@@ -7,7 +7,11 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.*
+import com.splitfree.data.nostr.RelayHealthMonitor
+import com.splitfree.domain.usecase.RevokeKeyUseCase
+import com.splitfree.sync.MidnightSyncWorker
 import com.splitfree.sync.PowerManager
+import com.splitfree.sync.SyncWorker
 import dagger.hilt.android.HiltAndroidApp
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
@@ -23,8 +27,8 @@ class SplitFreeApp : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var powerManager: PowerManager
-    @Inject lateinit var relayHealthMonitor: com.splitfree.data.nostr.RelayHealthMonitor
-    @Inject lateinit var revokeKeyUseCase: com.splitfree.domain.usecase.RevokeKeyUseCase
+    @Inject lateinit var relayHealthMonitor: RelayHealthMonitor
+    @Inject lateinit var revokeKeyUseCase: RevokeKeyUseCase
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -44,14 +48,14 @@ class SplitFreeApp : Application(), Configuration.Provider {
         registerBatteryStateReceiver()
         // Check relay health on startup (design doc Section 5.5)
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
-            relayHealthMonitor.checkRelays(com.splitfree.sync.SyncWorker.DEFAULT_RELAYS)
+            relayHealthMonitor.checkRelays(SyncWorker.DEFAULT_RELAYS)
             // Resume incomplete key revocation if app was killed mid-revocation (V8 fix)
             revokeKeyUseCase.resumeIfNeeded()
         }
     }
 
     private fun schedulePeriodicSync() {
-        val syncRequest = PeriodicWorkRequestBuilder<com.splitfree.sync.SyncWorker>(
+        val syncRequest = PeriodicWorkRequestBuilder<SyncWorker>(
             powerManager.syncIntervalHours(), TimeUnit.HOURS
         )
             .setConstraints(
@@ -78,7 +82,7 @@ class SplitFreeApp : Application(), Configuration.Provider {
             if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
         }
         val delay = midnight.timeInMillis - now.timeInMillis
-        val request = OneTimeWorkRequestBuilder<com.splitfree.sync.MidnightSyncWorker>()
+        val request = OneTimeWorkRequestBuilder<MidnightSyncWorker>()
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
             .setConstraints(
                 Constraints.Builder()
@@ -87,7 +91,7 @@ class SplitFreeApp : Application(), Configuration.Provider {
             )
             .build()
         WorkManager.getInstance(this).enqueueUniqueWork(
-            com.splitfree.sync.MidnightSyncWorker.WORK_NAME,
+            MidnightSyncWorker.WORK_NAME,
             ExistingWorkPolicy.KEEP,
             request
         )

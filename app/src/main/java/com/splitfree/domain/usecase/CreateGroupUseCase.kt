@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase
 
 import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
+import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
@@ -20,7 +21,7 @@ class CreateGroupUseCase @Inject constructor(
     private val identity: IdentityManager,
     private val signer: EventSigner,
     private val outboxDao: OutboxDao,
-    private val throttler: com.splitfree.data.nostr.EventThrottler
+    private val throttler: EventThrottler
 ) {
     suspend operator fun invoke(name: String, relays: List<String> = DEFAULT_RELAYS): Group {
         require(name.isNotBlank() && name.length <= 100) { "Group name must be 1-100 characters" }

@@ -9,6 +9,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
 import kotlinx.serialization.json.Json
@@ -121,7 +122,7 @@ class ExpenseRepository @Inject constructor(
     }
 
     private suspend fun saveEventAndQueue(
-        event: com.splitfree.domain.crypto.NostrEvent,
+        event: NostrEvent,
         groupId: String,
         encrypted: String,
         plaintext: String,

@@ -5,6 +5,7 @@ import android.util.Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.Group
 import com.splitfree.sync.EventProcessor
@@ -18,7 +19,7 @@ class JoinGroupUseCase @Inject constructor(
     private val nostrClient: NostrClient,
     private val eventDao: EventDao,
     private val eventProcessor: EventProcessor,
-    private val signer: com.splitfree.domain.crypto.EventSigner
+    private val signer: EventSigner
 ) {
 
     /**

@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.Nip44
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.model.Group
 import com.splitfree.domain.model.GroupMeta
@@ -218,7 +219,7 @@ class MigrateGroupUseCase @Inject constructor(
     }
 
     private suspend fun saveAndPublish(
-        event: com.splitfree.domain.crypto.NostrEvent,
+        event: NostrEvent,
         groupId: String,
         encrypted: String,
         plaintext: String,

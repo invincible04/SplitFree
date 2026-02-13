@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.GroupMeta
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -80,8 +81,8 @@ class RevokeKeyUseCase @Inject constructor(
                     groupRepo.updateFromMeta(group.id, group.name, updatedMembers, group.relays)
 
                     val metaPayload = json.encodeToString(
-                        com.splitfree.domain.model.GroupMeta.serializer(),
-                        com.splitfree.domain.model.GroupMeta(
+                        GroupMeta.serializer(),
+                        GroupMeta(
                             name = group.name,
                             description = group.description,
                             createdBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy,

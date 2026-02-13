@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase
 
 import android.util.Log
 import com.splitfree.data.local.EventDao
+import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.model.Balance
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
@@ -16,7 +17,7 @@ data class BalanceResult(
 
 class ComputeBalancesUseCase @Inject constructor(
     private val eventDao: EventDao,
-    private val groupRepo: com.splitfree.data.repository.GroupRepository
+    private val groupRepo: GroupRepository
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 

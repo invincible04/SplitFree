@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.domain.crypto.QrGenerator
 import com.splitfree.domain.model.DebtTransaction
 import com.splitfree.domain.model.Expense
 import com.splitfree.ui.viewmodels.GroupDetailViewModel
@@ -166,7 +167,7 @@ fun GroupDetailScreen(
     if (showQrDialog) {
         val link = viewModel.getInviteLink()
         if (link != null) {
-            val qrBitmap = remember(link) { com.splitfree.domain.crypto.QrGenerator.encode(link) }
+            val qrBitmap = remember(link) { QrGenerator.encode(link) }
             AlertDialog(
                 onDismissRequest = { showQrDialog = false },
                 title = { Text("Invite QR Code") },

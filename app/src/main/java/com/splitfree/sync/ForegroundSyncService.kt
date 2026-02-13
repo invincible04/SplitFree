@@ -10,6 +10,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -22,7 +23,7 @@ class ForegroundSyncService : Service() {
     @Inject lateinit var groupRepo: GroupRepository
     @Inject lateinit var identity: IdentityManager
     @Inject lateinit var eventProcessor: EventProcessor
-    @Inject lateinit var signer: com.splitfree.domain.crypto.EventSigner
+    @Inject lateinit var signer: EventSigner
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false

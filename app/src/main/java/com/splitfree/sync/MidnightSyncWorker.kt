@@ -8,6 +8,7 @@ import com.splitfree.data.local.EventDao
 import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.SelfHealUseCase
@@ -32,7 +33,7 @@ class MidnightSyncWorker @AssistedInject constructor(
     private val createSnapshot: CreateSnapshotUseCase,
     private val selfHeal: SelfHealUseCase,
     private val eventProcessor: EventProcessor,
-    private val signer: com.splitfree.domain.crypto.EventSigner
+    private val signer: EventSigner
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
