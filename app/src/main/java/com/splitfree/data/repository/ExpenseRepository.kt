@@ -141,28 +141,39 @@ class ExpenseRepository @Inject constructor(
 
         if (giftWrap.enabled) {
             // NIP-59: wrap individually for each group member
+            // Shuffle member order to break correlation patterns.
+            // The EventThrottler adds 500ms between publishes, providing temporal spread.
+            // NIP-59 already randomizes timestamps 0–48h in the past per spec.
             val members = groupRepo.getMembers(groupId)
-            for (memberPubHex in members) {
+            for (memberPubHex in members.shuffled()) {
                 val wrapped = giftWrap.wrapIfEnabled(event, memberPubHex)
-                outboxDao.insert(
-                    OutboxEntity(
-                        eventId = wrapped.id,
-                        eventJson = wrapped.toJson(),
-                        createdAt = wrapped.createdAt
+                if (outboxDao.count() < MAX_OUTBOX_SIZE) {
+                    outboxDao.insert(
+                        OutboxEntity(
+                            eventId = wrapped.id,
+                            eventJson = wrapped.toJson(),
+                            createdAt = wrapped.createdAt
+                        )
                     )
-                )
+                }
                 throttler.enqueue(wrapped)
             }
         } else {
             // No gift wrap — publish the signed event directly
-            outboxDao.insert(
-                OutboxEntity(
-                    eventId = event.id,
-                    eventJson = eventJson,
-                    createdAt = event.createdAt
+            if (outboxDao.count() < MAX_OUTBOX_SIZE) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = event.id,
+                        eventJson = eventJson,
+                        createdAt = event.createdAt
+                    )
                 )
-            )
+            }
             throttler.enqueue(event)
         }
+    }
+
+    companion object {
+        private const val MAX_OUTBOX_SIZE = 5000
     }
 }

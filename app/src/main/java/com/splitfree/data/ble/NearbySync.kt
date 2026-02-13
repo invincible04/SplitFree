@@ -80,12 +80,14 @@ class NearbySync @Inject constructor(
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            // Only accept connections from devices advertising our service ID
-            // The service ID check happens at discovery level, but we also verify
-            // the endpoint name starts with a hex prefix (our pubkey format)
-            if (info.endpointName.length >= 8 && info.endpointName.all { it in "0123456789abcdef" }) {
+            // Accept connection to allow handshake — actual authentication happens
+            // via Schnorr challenge-response in BleTransfer after connection.
+            // Validate endpoint name is a plausible hex pubkey prefix.
+            val name = info.endpointName
+            if (name.length == 8 && name.all { it in "0123456789abcdef" }) {
                 client.acceptConnection(endpointId, payloadCallback)
             } else {
+                Log.w(TAG, "Rejecting connection from endpoint with invalid name: $name")
                 client.rejectConnection(endpointId)
             }
         }

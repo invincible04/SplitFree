@@ -122,7 +122,7 @@ fun SettingsScreen(
                     }
                 )
                 TextButton(
-                    onClick = { showKey = false },
+                    onClick = { showKey = false; viewModel.hidePrivateKey() },
                     modifier = Modifier.padding(start = 16.dp)
                 ) {
                     Text("Hide Key")
@@ -139,7 +139,7 @@ fun SettingsScreen(
                         mod
                     },
                     trailingContent = {
-                        FilledTonalButton(onClick = { showKey = true }) {
+                        FilledTonalButton(onClick = { showKey = true; viewModel.revealPrivateKey() }) {
                             Text("Reveal")
                         }
                     }
@@ -177,7 +177,7 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { showSeedPhrase = false }) {
+                        TextButton(onClick = { showSeedPhrase = false; viewModel.hideSeedPhrase() }) {
                             Text("Hide")
                         }
                         FilledTonalButton(onClick = { showCopySeedWarning = true }) {
@@ -193,7 +193,7 @@ fun SettingsScreen(
                         Icon(Icons.Outlined.GridView, contentDescription = null)
                     },
                     trailingContent = {
-                        FilledTonalButton(onClick = { showSeedPhrase = true }) {
+                        FilledTonalButton(onClick = { showSeedPhrase = true; viewModel.revealSeedPhrase() }) {
                             Text("Reveal")
                         }
                     }

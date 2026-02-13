@@ -50,6 +50,7 @@ fun GroupDetailScreen(
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var showQrDialog by remember { mutableStateOf(false) }
+    var showShareWarning by remember { mutableStateOf(false) }
 
     var showRemoveDialog by remember { mutableStateOf<String?>(null) }
 
@@ -88,16 +89,7 @@ fun GroupDetailScreen(
                     }) {
                         Icon(Icons.Outlined.FileDownload, "Export")
                     }
-                    IconButton(onClick = {
-                        val link = viewModel.getInviteLink()
-                        if (link != null) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "Join my SplitFree group: $link")
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share invite"))
-                        }
-                    }) {
+                    IconButton(onClick = { showShareWarning = true }) {
                         Icon(Icons.Default.Share, "Share invite")
                     }
                 }
@@ -138,22 +130,37 @@ fun GroupDetailScreen(
 
             // Invite button at bottom-left
             SmallFloatingActionButton(
-                    onClick = {
-                        val link = viewModel.getInviteLink()
-                        if (link != null) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "Join my SplitFree group: $link")
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share invite"))
-                        }
-                    },
+                    onClick = { showShareWarning = true },
                     modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
                     containerColor = MaterialTheme.colorScheme.secondaryContainer
                 ) {
                     Icon(Icons.Outlined.PersonAdd, contentDescription = "Invite members")
                 }
         }
+    }
+
+    if (showShareWarning) {
+        AlertDialog(
+            onDismissRequest = { showShareWarning = false },
+            title = { Text("Share invite link?") },
+            text = { Text("This link contains the group encryption key. Anyone with this link can join and read all expenses. Share only via private messages — avoid public channels or group chats where bots may preview the URL.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showShareWarning = false
+                    val link = viewModel.getInviteLink()
+                    if (link != null) {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "Join my SplitFree group: $link")
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Share invite"))
+                    }
+                }) { Text("Share") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShareWarning = false }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showQrDialog) {

@@ -136,7 +136,12 @@ class Relay(
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
         val attempt = reconnectAttempt++
-        val delayMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
+        // After 20 consecutive failures (~20 min), back off to 5-minute intervals
+        val delayMs = if (attempt >= 20) {
+            300_000L
+        } else {
+            minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
+        }
         reconnectJob = scope.launch {
             delay(delayMs)
             if (_state.value == State.DISCONNECTED) connect()

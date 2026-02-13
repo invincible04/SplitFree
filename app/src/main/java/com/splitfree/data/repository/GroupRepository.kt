@@ -65,11 +65,13 @@ class GroupRepository @Inject constructor(
     suspend fun getMembers(groupId: String): List<String> =
         getById(groupId)?.members ?: emptyList()
 
+    /** Remove a group key from encrypted storage (e.g., after migration). */
+    fun deleteGroupKey(groupId: String) {
+        keyStore.edit().remove(groupId).apply()
+    }
+
     suspend fun getGroupEntity(groupId: String): GroupEntity? {
-        val entity = groupDao.getById(groupId) ?: return null
-        // Return entity with the key from encrypted store for callers that need it
-        val key = getGroupKey(entity.groupId) ?: ""
-        return entity.copy(groupKey = key)
+        return groupDao.getById(groupId)
     }
 
     suspend fun save(group: Group, groupKey: String) {

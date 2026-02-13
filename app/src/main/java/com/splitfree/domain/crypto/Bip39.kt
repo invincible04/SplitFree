@@ -44,10 +44,10 @@ object Bip39 {
         return entropy
     }
 
-    /** Check if a string looks like a mnemonic (12+ space-separated words from the wordlist). */
+    /** Check if a string looks like a 24-word BIP-39 mnemonic (the only size we support). */
     fun isMnemonic(input: String): Boolean {
         val w = input.trim().split("\\s+".toRegex())
-        return w.size in listOf(12, 15, 18, 21, 24) && w.all { it.lowercase() in WORD_INDEX }
+        return w.size == 24 && w.all { it.lowercase() in WORD_INDEX }
     }
 
     private fun sha256(data: ByteArray): ByteArray =

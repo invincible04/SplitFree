@@ -21,9 +21,12 @@ class AddExpenseUseCase @Inject constructor(
         category: String = ""
     ) {
         require(amount > 0) { "Amount must be positive" }
+        require(amount <= 10_000_000_000_00L) { "Amount exceeds maximum ($10B)" }
         require(splitAmong.isNotEmpty()) { "Must split among at least one person" }
-        require(splitAmong.sumOf { it.share } == amount) {
-            "Split shares (${splitAmong.sumOf { it.share }}) must equal total amount ($amount)"
+        // Use Math.addExact to detect overflow in share summation (CWE-190)
+        val shareSum = splitAmong.fold(0L) { acc, entry -> Math.addExact(acc, entry.share) }
+        require(shareSum == amount) {
+            "Split shares ($shareSum) must equal total amount ($amount)"
         }
 
         val expense = Expense(

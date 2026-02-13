@@ -13,7 +13,8 @@ data class BalanceResult(
 )
 
 class ComputeBalancesUseCase @Inject constructor(
-    private val eventDao: EventDao
+    private val eventDao: EventDao,
+    private val groupRepo: com.splitfree.data.repository.GroupRepository
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -28,11 +29,15 @@ class ComputeBalancesUseCase @Inject constructor(
         var snapshotTimestamp = 0L
         if (snapshotEvent?.contentDecrypted != null) {
             try {
-                val snap = json.decodeFromString<BalanceSnapshot>(snapshotEvent.contentDecrypted!!)
-                for (b in snap.balances) {
-                    balances[b.pubkey to b.currency] = b.net
+                // Only trust snapshots from group members
+                val group = groupRepo.getById(groupId)
+                if (group != null && snapshotEvent.pubkey in group.members) {
+                    val snap = json.decodeFromString<BalanceSnapshot>(snapshotEvent.contentDecrypted!!)
+                    for (b in snap.balances) {
+                        balances[b.pubkey to b.currency] = b.net
+                    }
+                    snapshotTimestamp = snap.as_of_timestamp
                 }
-                snapshotTimestamp = snap.as_of_timestamp
             } catch (_: Exception) {}
         }
 
@@ -65,8 +70,8 @@ class ComputeBalancesUseCase @Inject constructor(
                 "settlement" -> {
                     val s = json.decodeFromString<Settlement>(content)
                     val cur = s.currency
-                    balances[s.from to cur] = (balances[s.from to cur] ?: 0L) + s.amount
-                    balances[s.to to cur] = (balances[s.to to cur] ?: 0L) - s.amount
+                    balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
+                    balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)
                 }
             }
         }
@@ -87,8 +92,8 @@ class ComputeBalancesUseCase @Inject constructor(
             if (split.pubkey != expense.paidBy) {
                 val payerKey = expense.paidBy to cur
                 val debtorKey = split.pubkey to cur
-                balances[payerKey] = (balances[payerKey] ?: 0L) + split.share
-                balances[debtorKey] = (balances[debtorKey] ?: 0L) - split.share
+                balances[payerKey] = Math.addExact(balances[payerKey] ?: 0L, split.share)
+                balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
             }
         }
     }

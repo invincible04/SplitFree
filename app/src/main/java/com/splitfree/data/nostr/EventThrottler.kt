@@ -18,9 +18,12 @@ class EventThrottler @Inject constructor(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val publishing = AtomicBoolean(false)
     private val intervalMs = 500L
+    private val queueSize = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun enqueue(event: NostrEvent) {
+        if (queueSize.get() >= MAX_QUEUE_SIZE) return // drop overflow
         queue.offer(event)
+        queueSize.incrementAndGet()
         processIfNeeded()
     }
 
@@ -30,6 +33,7 @@ class EventThrottler @Inject constructor(
             try {
                 while (queue.isNotEmpty()) {
                     val event = queue.poll() ?: break
+                    queueSize.decrementAndGet()
                     nostrClient.publish(event)
                     delay(intervalMs)
                 }
@@ -38,5 +42,9 @@ class EventThrottler @Inject constructor(
                 if (queue.isNotEmpty()) processIfNeeded()
             }
         }
+    }
+
+    companion object {
+        private const val MAX_QUEUE_SIZE = 500
     }
 }

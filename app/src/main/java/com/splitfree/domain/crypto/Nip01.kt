@@ -131,14 +131,15 @@ data class NostrEvent(
  */
 private fun escapeJson(s: String): String = buildString(s.length) {
     for (c in s) {
-        when (c) {
-            '\n' -> append("\\n")
-            '\r' -> append("\\r")
-            '\t' -> append("\\t")
-            '\b' -> append("\\b")
-            '\u000C' -> append("\\f")
-            '"' -> append("\\\"")
-            '\\' -> append("\\\\")
+        when {
+            c == '\n' -> append("\\n")
+            c == '\r' -> append("\\r")
+            c == '\t' -> append("\\t")
+            c == '\b' -> append("\\b")
+            c == '\u000C' -> append("\\f")
+            c == '"' -> append("\\\"")
+            c == '\\' -> append("\\\\")
+            c.code in 0..0x1F -> append("\\u%04x".format(c.code))
             else -> append(c)
         }
     }

@@ -1,6 +1,8 @@
 package com.splitfree
 
+import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -31,6 +33,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var joinGroup: JoinGroupUseCase
 
     private var pendingDeepLink by mutableStateOf<String?>(null)
+    private var confirmedDeepLink by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,11 +49,11 @@ class MainActivity : ComponentActivity() {
                     val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
                     SplitFreeNavGraph(navController = navController, startDestination = start)
 
-                    // Process pending deep link once nav is ready
-                    val deepLink = pendingDeepLink
+                    // Process confirmed deep link once nav is ready
+                    val deepLink = confirmedDeepLink
                     LaunchedEffect(deepLink) {
                         if (deepLink != null && identity.hasIdentity()) {
-                            pendingDeepLink = null
+                            confirmedDeepLink = null
                             try {
                                 val group = joinGroup(deepLink)
                                 navController.navigate(Screen.GroupDetail.withId(group.id))
@@ -70,9 +73,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleDeepLink(intent: Intent?) {
-        val uri = intent?.data?.toString() ?: return
-        if (uri.startsWith("splitfree://join")) {
-            pendingDeepLink = uri
+        val uri = intent?.data ?: return
+        val uriStr = uri.toString()
+        if (uriStr.startsWith("splitfree://join")) {
+            // Validate deep link parameters before showing dialog
+            val groupParam = uri.getQueryParameter("g") ?: uri.getQueryParameter("group")
+            if (groupParam.isNullOrBlank()) return
+            // Show confirmation dialog — never auto-join from deep links (CVE-2025-4957, USENIX 2017)
+            val relay = uri.getQueryParameter("r") ?: uri.getQueryParameter("relay") ?: "default relay"
+            AlertDialog.Builder(this)
+                .setTitle("Join Group?")
+                .setMessage("An app is requesting you join a group via relay:\n$relay\n\nOnly join if you trust the sender of this link.")
+                .setPositiveButton("Join") { _, _ -> confirmedDeepLink = uriStr }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
     }
 }

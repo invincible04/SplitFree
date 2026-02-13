@@ -119,10 +119,11 @@ class SyncWorker @AssistedInject constructor(
             val existingIds = eventDao.getEventIds(group.id).toSet()
             var newCount = 0
 
+            val groupKey = groupRepo.getGroupKey(group.id) ?: continue
             for (event in events) {
                 val eventId = event.id
                 if (eventId in existingIds) continue
-                if (!verifyAndStore(event, group.id, groupEntity.groupKey)) continue
+                if (!verifyAndStore(event, group.id, groupKey)) continue
                 newCount++
             }
 
@@ -151,6 +152,11 @@ class SyncWorker @AssistedInject constructor(
             val authorHex = inner.pubkey
             val group = groupRepo.getById(groupId)
 
+            if (!EventValidator.isWithinRateLimit(authorHex)) {
+                Log.w(TAG, "Rate-limiting events from $authorHex")
+                return false
+            }
+
             val encrypted = inner.content
             val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
 
@@ -165,13 +171,43 @@ class SyncWorker @AssistedInject constructor(
                 }
             }
 
+            // Validate corrections/deletions come from the original expense creator
+            if (eventType == "expense_correction" || eventType == "expense_delete") {
+                val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
+                if (!EventValidator.isCorrectionAuthorValid(eventType, authorHex, originalCreator)) {
+                    Log.w(TAG, "Rejecting ${eventType} ${inner.id}: author $authorHex is not the original creator")
+                    return false
+                }
+            }
+
+            // Reject replayed expenses that were previously deleted (tombstone check)
+            if (eventType == "expense" && expenseUuid != null) {
+                val deletedUuids = eventDao.getDeletedExpenseUuids(groupId).toSet()
+                if (EventValidator.isDeletedExpense(eventType, expenseUuid, deletedUuids)) {
+                    Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
+                    return false
+                }
+            }
+
             if (eventType != "group_meta" && eventType != "group_migrate" && eventType != "key_revocation" && group != null && authorHex !in group.members) {
                 Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
                 return false
             }
 
-            eventDao.insert(
-                EventEntity(
+            // group_meta requires membership; group_migrate/key_revocation validated downstream
+            if (eventType == "group_meta" && group != null && authorHex !in group.members) {
+                Log.w(TAG, "Rejecting group_meta from non-member $authorHex in group $groupId")
+                return false
+            }
+
+            // Only the group creator can publish group_meta updates
+            if (eventType == "group_meta" && group != null && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
+                Log.w(TAG, "Rejecting group_meta from non-creator $authorHex in group $groupId")
+                return false
+            }
+
+            // Atomic insert — prevents TOCTOU race with concurrent sync paths
+            if (!eventDao.insertIfNew(EventEntity(
                     eventId = inner.id,
                     groupId = groupId,
                     pubkey = authorHex,
@@ -185,7 +221,7 @@ class SyncWorker @AssistedInject constructor(
                     receivedAt = System.currentTimeMillis() / 1000,
                     originalEventJson = inner.toJson()
                 )
-            )
+            )) return false // already existed
 
             if (eventType == "group_meta" && decrypted != null) {
                 try {

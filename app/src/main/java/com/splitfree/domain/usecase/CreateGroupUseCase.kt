@@ -23,6 +23,7 @@ class CreateGroupUseCase @Inject constructor(
     private val throttler: com.splitfree.data.nostr.EventThrottler
 ) {
     suspend operator fun invoke(name: String, relays: List<String> = DEFAULT_RELAYS): Group {
+        require(name.isNotBlank() && name.length <= 100) { "Group name must be 1-100 characters" }
         val groupKey = encryption.generateGroupKey()
         val pubkey = identity.getPublicKeyHex()
         val group = Group(

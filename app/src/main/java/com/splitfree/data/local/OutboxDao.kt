@@ -8,6 +8,9 @@ interface OutboxDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(event: OutboxEntity)
 
+    @Query("SELECT COUNT(*) FROM outbox")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM outbox ORDER BY createdAt ASC")
     suspend fun getAll(): List<OutboxEntity>
 

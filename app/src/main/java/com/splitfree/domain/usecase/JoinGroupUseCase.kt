@@ -29,16 +29,36 @@ class JoinGroupUseCase @Inject constructor(
 
     /**
      * Parse an invite link and join the group.
-     * Format: splitfree://join?g=<base64url(group_id)>&k=<base64url(group_key)>&r=<relays>&n=<name>
+     * Format: splitfree://join?g=<base64url(group_id)>&k=<base64url(group_key)>&r=<relays>&n=<name>&exp=<unix_seconds>
      */
     suspend operator fun invoke(uri: String): Group {
         val params = parseUri(uri)
+        require(params.containsKey("g") && params.containsKey("k")) { "Invalid invite link: missing required parameters" }
         val groupId = String(Base64.decode(params["g"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
         val groupKey = String(Base64.decode(params["k"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
         val relays = (params["r"] ?: "").split(",").filter { it.isNotBlank() }
         val name = URLDecoder.decode(params["n"] ?: "Group", "UTF-8")
 
+        // Validate group ID is a valid UUID
+        try { java.util.UUID.fromString(groupId) } catch (_: Exception) {
+            throw IllegalArgumentException("Invalid group ID format")
+        }
+
+        // Validate relay URLs: must be wss:// scheme, reasonable length, max 10 relays
+        require(relays.size <= MAX_RELAYS) { "Too many relays in invite link (max $MAX_RELAYS)" }
+        for (relay in relays) {
+            require(relay.startsWith("wss://") && relay.length <= MAX_RELAY_URL_LENGTH) {
+                "Invalid relay URL: must use wss:// scheme and be under $MAX_RELAY_URL_LENGTH chars"
+            }
+        }
+
         check(relays.isNotEmpty()) { "Invite link must contain at least one relay" }
+
+        // Validate invite link expiration
+        val expiry = params["exp"]?.toLongOrNull()
+        if (expiry != null && System.currentTimeMillis() / 1000 > expiry) {
+            throw IllegalStateException("This invite link has expired. Ask the group creator for a new one.")
+        }
 
         val existing = groupRepo.getById(groupId)
         if (existing != null) return existing
@@ -106,6 +126,20 @@ class JoinGroupUseCase @Inject constructor(
                                 "e" -> expenseUuid = tag[1]
                             }
                         }
+
+                        if (!EventValidator.isWithinRateLimit(event.pubkey)) {
+                            Log.w(TAG, "Rate-limiting events from ${event.pubkey}")
+                            continue
+                        }
+
+                        if (eventType == "expense_correction" || eventType == "expense_delete") {
+                            val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
+                            if (!EventValidator.isCorrectionAuthorValid(eventType, event.pubkey, originalCreator)) {
+                                Log.w(TAG, "Rejecting ${eventType} $eventId: author is not the original creator")
+                                continue
+                            }
+                        }
+
                         eventDao.insert(EventEntity(
                             eventId = eventId, groupId = group.id,
                             pubkey = event.pubkey,
@@ -162,7 +196,12 @@ class JoinGroupUseCase @Inject constructor(
             val k = Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
             val r = group.relays.joinToString(",")
             val n = URLEncoder.encode(group.name, "UTF-8")
-            return "splitfree://join?g=$g&k=$k&r=$r&n=$n"
+            val exp = System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS
+            return "splitfree://join?g=$g&k=$k&r=$r&n=$n&exp=$exp"
         }
+
+        private const val INVITE_EXPIRY_SECS = 7 * 86400L // 7 days
+        private const val MAX_RELAYS = 10
+        private const val MAX_RELAY_URL_LENGTH = 256
     }
 }

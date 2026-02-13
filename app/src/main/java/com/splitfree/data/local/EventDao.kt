@@ -29,4 +29,20 @@ interface EventDao {
 
     @Query("SELECT * FROM events WHERE expenseUuid = :uuid AND eventType = 'expense' LIMIT 1")
     suspend fun getExpenseByUuid(uuid: String): EventEntity?
+
+    /** Get event IDs that have been deleted (expense_delete events reference the original via expenseUuid). */
+    @Query("SELECT expenseUuid FROM events WHERE groupId = :groupId AND eventType = 'expense_delete' AND expenseUuid IS NOT NULL")
+    suspend fun getDeletedExpenseUuids(groupId: String): List<String>
+
+    /**
+     * Atomically check-then-insert: returns true if the event was new and inserted.
+     * Prevents TOCTOU race conditions across concurrent sync paths.
+     */
+    @Transaction
+    suspend fun insertIfNew(event: EventEntity): Boolean {
+        val existing = getEvent(event.eventId)
+        if (existing != null) return false
+        insert(event)
+        return true
+    }
 }

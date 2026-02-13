@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.Nip44
+import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.model.Group
 import com.splitfree.domain.model.GroupMeta
 import kotlinx.serialization.Serializable
@@ -73,7 +74,7 @@ class MigrateGroupUseCase @Inject constructor(
         val encryptedKeys = mutableMapOf<String, String>()
         try {
             for (memberPubHex in remainingMembers) {
-                val memberPubBytes = memberPubHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val memberPubBytes = memberPubHex.hexToBytes()
                 val convKey = Nip44.getConversationKey(privKey, memberPubBytes)
                 encryptedKeys[memberPubHex] = Nip44.encrypt(newGroupKey, convKey)
             }
@@ -104,7 +105,10 @@ class MigrateGroupUseCase @Inject constructor(
         // 2. Save new group locally
         groupRepo.save(newGroup, newGroupKey)
 
-        // 3. Publish group_meta to NEW group
+        // 3. Delete old group key — forward secrecy: removed member must not benefit from key lingering
+        groupRepo.deleteGroupKey(oldGroupId)
+
+        // 4. Publish group_meta to NEW group
         val metaJson = json.encodeToString(
             GroupMeta.serializer(),
             GroupMeta(
@@ -149,10 +153,29 @@ class MigrateGroupUseCase @Inject constructor(
         // Don't re-create if we already have the new group
         if (groupRepo.getById(migration.newGroupId) != null) return
 
+        // Validate new group ID is a valid UUID format
+        try {
+            java.util.UUID.fromString(migration.newGroupId)
+        } catch (_: Exception) {
+            Log.w(TAG, "Invalid newGroupId format in group_migrate: ${migration.newGroupId}")
+            return
+        }
+
         val oldGroup = groupRepo.getById(oldGroupId) ?: return
         // Only trust migration from the group creator
         if (authorPubkey != oldGroup.createdBy) {
             Log.w(TAG, "Ignoring group_migrate from non-creator $authorPubkey")
+            return
+        }
+
+        // Validate that new member list is a subset of old members minus the removed member
+        val expectedMembers = oldGroup.members.toSet() - migration.removedMember
+        if (!expectedMembers.containsAll(migration.members.toSet())) {
+            Log.w(TAG, "group_migrate contains members not in original group — rejecting")
+            return
+        }
+        if (migration.removedMember !in oldGroup.members) {
+            Log.w(TAG, "group_migrate claims to remove non-member ${migration.removedMember}")
             return
         }
 
@@ -165,7 +188,7 @@ class MigrateGroupUseCase @Inject constructor(
         val privKey = identity.getPrivateKeyBytes()
         val newGroupKey: String
         try {
-            val creatorPubBytes = authorPubkey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val creatorPubBytes = authorPubkey.hexToBytes()
             val convKey = Nip44.getConversationKey(privKey, creatorPubBytes)
             newGroupKey = Nip44.decrypt(myEncryptedKey, convKey)
         } catch (e: Exception) {

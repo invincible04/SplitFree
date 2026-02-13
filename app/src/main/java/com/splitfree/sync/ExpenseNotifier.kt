@@ -60,7 +60,9 @@ object ExpenseNotifier {
         return try {
             val expense = json.decodeFromString<Expense>(content)
             val amount = formatAmount(expense.amount, expense.currency)
-            "New expense in $groupName" to "$amount for ${expense.description}"
+            val safeDesc = sanitize(expense.description)
+            val safeName = sanitize(groupName)
+            "New expense in $safeName" to "$amount for $safeDesc"
         } catch (_: Exception) { null }
     }
 
@@ -68,9 +70,14 @@ object ExpenseNotifier {
         return try {
             val settlement = json.decodeFromString<Settlement>(content)
             val amount = formatAmount(settlement.amount, settlement.currency)
-            "Settlement in $groupName" to "$amount settled"
+            val safeName = sanitize(groupName)
+            "Settlement in $safeName" to "$amount settled"
         } catch (_: Exception) { null }
     }
+
+    /** Truncate and strip control characters from untrusted strings for notification display. */
+    private fun sanitize(input: String): String =
+        input.take(100).replace(Regex("[\\p{Cntrl}]"), "")
 
     private fun formatAmount(amountSmallest: Long, currency: String): String {
         val major = amountSmallest / 100.0

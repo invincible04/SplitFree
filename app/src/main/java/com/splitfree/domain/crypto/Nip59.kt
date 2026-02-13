@@ -109,6 +109,9 @@ object Nip59 {
     /** Random timestamp within the past 2 days (some relays reject future timestamps). */
     private fun randomTimestamp(): Long {
         val now = System.currentTimeMillis() / 1000
-        return now - (secureRandom.nextLong().ushr(1) % (2 * 86400))
+        val offset = secureRandom.nextLong().ushr(1) % (2 * 86400)
+        val ts = now - offset
+        // Ensure timestamp is not before Unix epoch
+        return if (ts > 0) ts else now
     }
 }

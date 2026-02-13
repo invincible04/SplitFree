@@ -201,29 +201,49 @@ object FragmentManager {
         }
     }
 
-    private val pending = java.util.concurrent.ConcurrentHashMap<Long, MutableMap<Int, ByteArray>>()
-    private val totalCounts = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+    private val pending = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, MutableMap<Int, ByteArray>>()
+    private val totalCounts = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, Int>()
+    private val timestamps = java.util.concurrent.ConcurrentHashMap<Pair<Long, Long>, Long>()
+    private const val MAX_PENDING = 20
+    private const val TIMEOUT_MS = 30_000L
+    private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB — matches relay max_event_bytes
 
     @Synchronized
     fun addFragment(fragment: ByteArray): ByteArray? {
         if (fragment.size < FRAGMENT_HEADER_SIZE) return null
+
+        // Evict stale entries
+        val now = System.currentTimeMillis()
+        if (pending.size > MAX_PENDING) {
+            pending.keys.forEach { k ->
+                if (now - (timestamps[k] ?: 0) > TIMEOUT_MS) {
+                    pending.remove(k); totalCounts.remove(k); timestamps.remove(k)
+                }
+            }
+        }
+
         val buf = ByteBuffer.wrap(fragment).order(ByteOrder.BIG_ENDIAN)
         val msb = buf.getLong()
         val lsb = buf.getLong()
-        val key = msb xor lsb
+        val key = msb to lsb // Use full UUID pair to prevent collisions (was: msb xor lsb)
         val index = buf.getShort().toInt() and 0xFFFF
         val total = buf.getShort().toInt() and 0xFFFF
+        if (total == 0 || total > 256) return null // sanity bound on fragment count
         val chunk = ByteArray(fragment.size - FRAGMENT_HEADER_SIZE)
         buf.get(chunk)
 
         val frags = pending.getOrPut(key) { mutableMapOf() }
         totalCounts[key] = total
+        timestamps[key] = System.currentTimeMillis()
         frags[index] = chunk
 
         if (frags.size == total) {
             pending.remove(key)
             totalCounts.remove(key)
-            val assembled = ByteArray(frags.values.sumOf { it.size })
+            timestamps.remove(key)
+            val totalSize = frags.values.sumOf { it.size }
+            if (totalSize > MAX_REASSEMBLED_SIZE) return null // reject oversized payloads
+            val assembled = ByteArray(totalSize)
             var offset = 0
             for (i in 0 until total) {
                 val part = frags[i] ?: return null
@@ -238,5 +258,6 @@ object FragmentManager {
     fun clear() {
         pending.clear()
         totalCounts.clear()
+        timestamps.clear()
     }
 }

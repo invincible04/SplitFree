@@ -2,6 +2,8 @@ package com.splitfree.domain.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -16,12 +18,21 @@ class GiftWrapService @Inject constructor(
     private val identityManager: IdentityManager
 ) {
     private val prefs: SharedPreferences by lazy {
-        context.getSharedPreferences("splitfree_settings", Context.MODE_PRIVATE)
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "splitfree_settings",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
     }
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_GIFT_WRAP, false)
-        set(value) { prefs.edit().putBoolean(KEY_GIFT_WRAP, value).commit() }
+        set(value) { prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply() }
 
     /**
      * Wrap a NostrEvent in NIP-59 gift wrap for a recipient.

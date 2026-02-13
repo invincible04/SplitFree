@@ -27,7 +27,7 @@ class EventSigner @Inject constructor(
             // Kind 30078 is ADDRESSABLE (NIP-01): relays keep only the latest event
             // per (pubkey, kind, d-tag). We MUST make d unique per event, otherwise
             // each new expense overwrites the previous one on the relay.
-            val dTagValue = if (expenseUuid != null) "$groupId:$expenseUuid" else "$groupId:${System.nanoTime()}"
+            val dTagValue = if (expenseUuid != null) "$groupId:$expenseUuid" else "$groupId:${java.util.UUID.randomUUID()}"
             val tags = buildList {
                 add(listOf("d", dTagValue))
                 add(listOf("g", groupId))  // group membership tag for filtering

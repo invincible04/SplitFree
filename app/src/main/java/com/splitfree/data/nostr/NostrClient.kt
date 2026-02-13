@@ -27,15 +27,21 @@ class NostrClient @Inject constructor() {
     private val connectionMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val subIdCounter = AtomicLong(0)
-    // Bounded dedup set — evicts oldest entries beyond 10K to prevent memory leak
-    private val seenEventIds = object : LinkedHashSet<String>() {
-        override fun add(element: String): Boolean {
-            val added = super.add(element)
-            if (size > 10_000) iterator().let { it.next(); it.remove() }
+    // Bounded dedup set — evicts oldest entries beyond 10K to prevent memory leak.
+    // All access MUST go through seenLock.
+    private val seenEventIds = LinkedHashSet<String>()
+    private val seenLock = Any()
+
+    /** Add an event ID to the dedup set. Returns true if it was new. */
+    private fun addSeen(eventId: String): Boolean {
+        synchronized(seenLock) {
+            val added = seenEventIds.add(eventId)
+            if (seenEventIds.size > 10_000) {
+                seenEventIds.iterator().let { it.next(); it.remove() }
+            }
             return added
         }
     }
-    private val seenLock = Any()
 
     private val _incomingEvents = MutableSharedFlow<NostrEvent>(extraBufferCapacity = 64)
     val incomingEvents: SharedFlow<NostrEvent> = _incomingEvents
@@ -62,12 +68,16 @@ class NostrClient @Inject constructor() {
 
     /**
      * Connect to relay URLs. No SDK keys needed — signing is handled by our Nip01 layer.
-     * Accepts unused Keys parameter for backward compat during migration.
+     * Only wss:// URLs are accepted to prevent unencrypted relay connections.
      */
     suspend fun connect(relayUrls: List<String>) {
         connectionMutex.withLock {
-            currentRelays = relayUrls
-            relayUrls.forEach { url ->
+            val safeUrls = relayUrls.filter { it.startsWith("wss://") }
+            if (safeUrls.isEmpty() && relayUrls.isNotEmpty()) {
+                Log.w(TAG, "All relay URLs rejected — only wss:// is allowed")
+            }
+            currentRelays = safeUrls
+            safeUrls.forEach { url ->
                 if (!relays.containsKey(url)) {
                     val relay = Relay(url, scope, authSigner = authSigner)
                     relays[url] = relay
@@ -77,7 +87,7 @@ class NostrClient @Inject constructor() {
                             when (msg) {
                                 is RelayMessage.EventMsg -> {
                                     if (msg.event.verify() &&
-                                        synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                                        addSeen(msg.event.id)) {
                                         _incomingEvents.emit(msg.event)
                                     }
                                 }
@@ -92,7 +102,7 @@ class NostrClient @Inject constructor() {
                     relay.connect()
                 }
             }
-            Log.i(TAG, "Connected to ${relayUrls.size} relays")
+            Log.i(TAG, "Connected to ${safeUrls.size} relays")
         }
     }
 
@@ -168,7 +178,7 @@ class NostrClient @Inject constructor() {
                         when (msg) {
                             is RelayMessage.EventMsg -> {
                                 if (msg.subId == subId && msg.event.verify() &&
-                                    synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                                    addSeen(msg.event.id)) {
                                     synchronized(events) { events.add(msg.event) }
                                 }
                             }
@@ -200,13 +210,17 @@ class NostrClient @Inject constructor() {
     }
 
     fun addRelay(url: String) {
+        if (!url.startsWith("wss://")) {
+            Log.w(TAG, "Rejecting non-wss:// relay URL: $url")
+            return
+        }
         if (relays.containsKey(url)) return
         val relay = Relay(url, scope, authSigner = authSigner)
         relays[url] = relay
         scope.launch {
             relay.messages.collect { msg ->
                 if (msg is RelayMessage.EventMsg && msg.event.verify() &&
-                    synchronized(seenLock) { seenEventIds.add(msg.event.id) }) {
+                    addSeen(msg.event.id)) {
                     _incomingEvents.emit(msg.event)
                 }
             }

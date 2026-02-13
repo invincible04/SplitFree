@@ -23,6 +23,7 @@ class SplitFreeApp : Application(), Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var powerManager: PowerManager
     @Inject lateinit var relayHealthMonitor: com.splitfree.data.nostr.RelayHealthMonitor
+    @Inject lateinit var revokeKeyUseCase: com.splitfree.domain.usecase.RevokeKeyUseCase
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -43,6 +44,8 @@ class SplitFreeApp : Application(), Configuration.Provider {
         // Check relay health on startup (design doc Section 5.5)
         CoroutineScope(Dispatchers.IO).launch {
             relayHealthMonitor.checkRelays(com.splitfree.sync.SyncWorker.DEFAULT_RELAYS)
+            // Resume incomplete key revocation if app was killed mid-revocation (V8 fix)
+            revokeKeyUseCase.resumeIfNeeded()
         }
     }
 

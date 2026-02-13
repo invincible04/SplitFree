@@ -8,7 +8,8 @@ import java.nio.ByteOrder
 object CompressionUtil {
     private const val TAG = "CompressionUtil"
     private const val THRESHOLD = 100
-    private const val MAX_RATIO = 50_000.0
+    private const val MAX_RATIO = 1_000.0
+    private const val MAX_OUTPUT_SIZE = 100_000 // 100KB — expense data should never exceed this
     private val factory = LZ4Factory.fastestInstance()
 
     fun shouldCompress(data: ByteArray): Boolean = data.size >= THRESHOLD
@@ -35,7 +36,7 @@ object CompressionUtil {
         if (compressed.size < 4) return null
         return try {
             val originalSize = ByteBuffer.wrap(compressed, 0, 4).order(ByteOrder.BIG_ENDIAN).int
-            if (originalSize <= 0) return null
+            if (originalSize <= 0 || originalSize > MAX_OUTPUT_SIZE) return null
             val ratio = originalSize.toDouble() / (compressed.size - 4).toDouble()
             if (ratio > MAX_RATIO) {
                 Log.w(TAG, "Suspicious ratio ${ratio}:1 — possible bomb")

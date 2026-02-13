@@ -63,12 +63,16 @@ sealed class ClientMessage {
     data class Req(val subId: String, val filters: List<NostrFilter>) : ClientMessage() {
         override fun toJson(): String {
             val f = filters.joinToString(",") { it.toJson() }
-            return """["REQ","$subId",$f]"""
+            val escaped = subId.replace("\\", "\\\\").replace("\"", "\\\"")
+            return """["REQ","$escaped",$f]"""
         }
     }
 
     data class Close(val subId: String) : ClientMessage() {
-        override fun toJson() = """["CLOSE","$subId"]"""
+        override fun toJson(): String {
+            val escaped = subId.replace("\\", "\\\\").replace("\"", "\\\"")
+            return """["CLOSE","$escaped"]"""
+        }
     }
 
     data class Auth(val event: NostrEvent) : ClientMessage() {

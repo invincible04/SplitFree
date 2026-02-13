@@ -96,9 +96,9 @@ class GroupDetailViewModel @Inject constructor(
 
     private fun loadInviteLink() {
         viewModelScope.launch {
-            val entity = groupRepo.getGroupEntity(groupId) ?: return@launch
             val domainGroup = groupRepo.getById(groupId) ?: return@launch
-            inviteLinkCache = JoinGroupUseCase.createInviteLink(domainGroup, entity.groupKey)
+            val groupKey = groupRepo.getGroupKey(groupId) ?: return@launch
+            inviteLinkCache = JoinGroupUseCase.createInviteLink(domainGroup, groupKey)
         }
     }
 

@@ -123,11 +123,47 @@ class ForegroundSyncService : Service() {
                 return
             }
 
+            // group_meta requires membership; group_migrate/key_revocation validated downstream
+            if (eventType == "group_meta" && group != null && authorHex !in group.members) {
+                Log.w(TAG, "Rejecting group_meta from non-member $authorHex in group $groupId")
+                return
+            }
+
+            // Only the group creator can publish group_meta updates
+            if (eventType == "group_meta" && group != null && !EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
+                Log.w(TAG, "Rejecting group_meta from non-creator $authorHex in group $groupId")
+                return
+            }
+
+            if (!EventValidator.isWithinRateLimit(authorHex)) {
+                Log.w(TAG, "Rate-limiting events from $authorHex")
+                return
+            }
+
             val groupKey = groupRepo.getGroupKey(groupId) ?: return
             val encrypted = inner.content
             val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
 
-            eventDao.insert(
+            // Validate corrections/deletions come from the original expense creator
+            if (eventType == "expense_correction" || eventType == "expense_delete") {
+                val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
+                if (!EventValidator.isCorrectionAuthorValid(eventType, authorHex, originalCreator)) {
+                    Log.w(TAG, "Rejecting ${eventType} ${inner.id}: author $authorHex is not the original creator")
+                    return
+                }
+            }
+
+            // Reject replayed expenses that were previously deleted (tombstone check)
+            if (eventType == "expense" && expenseUuid != null) {
+                val deletedUuids = eventDao.getDeletedExpenseUuids(groupId).toSet()
+                if (EventValidator.isDeletedExpense(eventType, expenseUuid, deletedUuids)) {
+                    Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
+                    return
+                }
+            }
+
+            // Atomic insert — prevents TOCTOU race with concurrent sync paths
+            if (!eventDao.insertIfNew(
                 EventEntity(
                     eventId = eventId,
                     groupId = groupId,
@@ -142,7 +178,7 @@ class ForegroundSyncService : Service() {
                     receivedAt = System.currentTimeMillis() / 1000,
                     originalEventJson = inner.toJson()
                 )
-            )
+            )) return // already existed — skip post-processing
 
             if (eventType == "group_meta" && decrypted != null) {
                 try {
