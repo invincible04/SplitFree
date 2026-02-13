@@ -13,6 +13,10 @@ class ComputeBalancesUseCaseTest {
 
     private fun eventDao() = mockk<EventDao>(relaxed = true)
     private fun groupRepo() = mockk<GroupRepository>(relaxed = true)
+    private fun group(creator: String = "alice") = Group(
+        id = "g1", name = "Test", createdBy = creator, createdAt = 0,
+        relays = emptyList(), members = emptyList()
+    )
 
     private fun makeEvent(
         id: String, groupId: String = "g1", pubkey: String = "alice",
@@ -186,5 +190,148 @@ class ComputeBalancesUseCaseTest {
         val aliceUsd = balances.find { it.pubkey == "alice" && it.currency == "USD" }
         assertEquals(50L, aliceInr?.net)
         assertEquals(100L, aliceUsd?.net)
+    }
+
+    // --- Snapshot tests ---
+
+    @Test
+    fun `snapshot from creator with empty hashes applies balances`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.getById("g1") } returns group("alice")
+        val snapContent = """{"id":"snap1","as_of_event_count":1,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":50,"currency":"INR"},{"pubkey":"bob","net":-50,"currency":"INR"}],"event_hashes":[]}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        // Post-snapshot expense
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = "u2", createdAt = 200, content = """{"id":"u2","amount":200,"currency":"INR","description":"t","paid_by":"bob","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":200}""")
+        )
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        // Snapshot: alice=50, bob=-50. Post-snapshot: alice owes bob 100 → alice net = 50-100=-50, bob net = -50+100=50
+        val alice = balances.find { it.pubkey == "alice" }
+        val bob = balances.find { it.pubkey == "bob" }
+        assertEquals(-50L, alice?.net)
+        assertEquals(50L, bob?.net)
+    }
+
+    @Test
+    fun `snapshot from non-creator is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.getById("g1") } returns group("alice")
+        val snapContent = """{"id":"snap1","as_of_event_count":1,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":9999}],"event_hashes":[]}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "mallory", content = snapContent)
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `snapshot with valid hash match applies balances`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        coEvery { repo.getById("g1") } returns group("alice")
+        // Generate 10 event IDs and their hashes
+        val eventIds = (1..10).map { "event_$it" }
+        val hashes = eventIds.map { com.splitfree.data.util.HashUtil.sha256Hex(it) }
+        val snapContent = """{"id":"snap1","as_of_event_count":10,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":500,"currency":"INR"}],"event_hashes":${hashes.joinToString(",","[","]") { "\"$it\"" }}}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        coEvery { dao.getEventIds("g1") } returns eventIds
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        val alice = balances.find { it.pubkey == "alice" }
+        assertEquals(500L, alice?.net)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `snapshot with hash mismatch is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        coEvery { repo.getById("g1") } returns group("alice")
+        val fakeHashes = (1..10).map { "fakehash_$it" }
+        val snapContent = """{"id":"snap1","as_of_event_count":10,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":9999}],"event_hashes":${fakeHashes.joinToString(",","[","]") { "\"$it\"" }}}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        coEvery { dao.getEventIds("g1") } returns listOf("unrelated_1")
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue("Hash mismatch should ignore snapshot", balances.isEmpty() || balances.all { it.net == 0L })
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `snapshot with fewer than 10 hashes and low match is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        coEvery { repo.getById("g1") } returns group("alice")
+        val hashes = (1..5).map { "hash_$it" }
+        val snapContent = """{"id":"snap1","as_of_event_count":5,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":9999}],"event_hashes":${hashes.joinToString(",","[","]") { "\"$it\"" }}}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        coEvery { dao.getEventIds("g1") } returns listOf("other")
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue("Few hashes with no match should ignore snapshot", balances.isEmpty() || balances.all { it.net == 0L })
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `snapshot with null group is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.getById("g1") } returns null
+        val snapContent = """{"id":"snap1","as_of_event_count":1,"as_of_timestamp":100,"balances":[{"pubkey":"alice","net":9999}],"event_hashes":[]}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `snapshot with malformed JSON is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.getById("g1") } returns group("alice")
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("s1", type = "snapshot", pubkey = "alice", content = "not json")
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `snapshot with null decryptedContent is ignored`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns EventEntity("s1", "g1", "alice", 1, 30078, "enc", null, "snapshot", null, "s", receivedAt = 1)
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `deleted correction is excluded`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = "u1", content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}"""),
+            makeEvent("e2", type = "expense_correction", uuid = "u1", content = """{"id":"u1c","amount":200,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":2}"""),
+            makeEvent("e3", type = "expense_delete", uuid = "u1", content = "{}")
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+        val useCase = ComputeBalancesUseCase(dao, repo)
+        val balances = useCase("g1")
+        assertTrue("Deleted correction should zero out", balances.isEmpty() || balances.all { it.net == 0L })
     }
 }
