@@ -154,6 +154,14 @@ class GroupRepositoryTest {
     }
 
     @Test
+    fun `updateFromMeta with timestamp skips lastMetaTimestamp when not newer`() = runBlocking {
+        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any()) } returns 0
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), 500) }
+        coVerify(exactly = 0) { groupDao.updateLastMetaTimestamp(any(), any()) }
+    }
+
+    @Test
     fun `getGroupEntity delegates to dao`() = runBlocking {
         coEvery { groupDao.getById("g1") } returns groupEntity
         val entity = repo.getGroupEntity("g1")

@@ -150,4 +150,26 @@ class Nip44ExtendedTest {
         val b = Nip44.hkdfExpand(prk, "info".toByteArray(), 76)
         assertArrayEquals(a, b)
     }
+
+    @Test
+    fun `getConversationKey accepts 33-byte compressed pubkey`() {
+        val pub33 = byteArrayOf(0x02) + pubB
+        val key32 = Nip44.getConversationKey(privA, pubB)
+        val key33 = Nip44.getConversationKey(privA, pub33)
+        assertArrayEquals(key32, key33)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `decrypt rejects too-short decoded payload`() {
+        val convKey = Nip44.getConversationKey(privA, pubB)
+        // Create a valid base64 that decodes to < 99 bytes but passes length check
+        val tooShort = java.util.Base64.getEncoder().encodeToString(ByteArray(98) { 0x02 })
+        Nip44.decrypt(tooShort, convKey)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `decrypt rejects empty payload`() {
+        val convKey = Nip44.getConversationKey(privA, pubB)
+        Nip44.decrypt("", convKey)
+    }
 }

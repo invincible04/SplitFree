@@ -201,4 +201,87 @@ class MigrateGroupUseCaseTest {
         useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
         coVerify(exactly = 0) { groupRepo.save(any(), any()) }
     }
+
+    @Test(expected = IllegalStateException::class)
+    fun `invoke fails if old group key not found`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(oldGroupId) } returns null
+        useCase(oldGroupId, removePubkey)
+        Unit
+    }
+
+    @Test
+    fun `handleMigration rejects members not in original group`() = runBlocking {
+        val newId = java.util.UUID.randomUUID().toString()
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        coEvery { groupRepo.getById(newId) } returns null
+        coEvery { groupRepo.getById(oldGroupId) } returns oldGroup
+        val migration = GroupMigration(
+            newGroupId = newId, encryptedKeys = mapOf(memberPubkey to "k"),
+            members = listOf(myPubkey, memberPubkey, "dd".repeat(32)), // dd not in old group
+            removedMember = removePubkey
+        )
+        useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
+
+    @Test
+    fun `handleMigration rejects removing non-member`() = runBlocking {
+        val newId = java.util.UUID.randomUUID().toString()
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        coEvery { groupRepo.getById(newId) } returns null
+        coEvery { groupRepo.getById(oldGroupId) } returns oldGroup
+        val migration = GroupMigration(
+            newGroupId = newId, encryptedKeys = mapOf(memberPubkey to "k"),
+            members = listOf(myPubkey, memberPubkey),
+            removedMember = "dd".repeat(32) // not in old group
+        )
+        useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
+
+    @Test
+    fun `handleMigration rejects when no encrypted key for me`() = runBlocking {
+        val newId = java.util.UUID.randomUUID().toString()
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        coEvery { groupRepo.getById(newId) } returns null
+        coEvery { groupRepo.getById(oldGroupId) } returns oldGroup
+        val migration = GroupMigration(
+            newGroupId = newId, encryptedKeys = mapOf(myPubkey to "k"), // no key for memberPubkey
+            members = listOf(myPubkey, memberPubkey),
+            removedMember = removePubkey
+        )
+        useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
+
+    @Test
+    fun `handleMigration handles decrypt failure`() = runBlocking {
+        val newId = java.util.UUID.randomUUID().toString()
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        coEvery { groupRepo.getById(newId) } returns null
+        coEvery { groupRepo.getById(oldGroupId) } returns oldGroup
+        every { Nip44.decrypt(any<String>(), any()) } throws RuntimeException("decrypt fail")
+        val migration = GroupMigration(
+            newGroupId = newId, encryptedKeys = mapOf(memberPubkey to "encKey"),
+            members = listOf(myPubkey, memberPubkey),
+            removedMember = removePubkey
+        )
+        useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
+
+    @Test
+    fun `handleMigration rejects when old group not found`() = runBlocking {
+        val newId = java.util.UUID.randomUUID().toString()
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        coEvery { groupRepo.getById(newId) } returns null
+        coEvery { groupRepo.getById(oldGroupId) } returns null
+        val migration = GroupMigration(
+            newGroupId = newId, encryptedKeys = mapOf(memberPubkey to "k"),
+            members = listOf(myPubkey, memberPubkey),
+            removedMember = removePubkey
+        )
+        useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
 }

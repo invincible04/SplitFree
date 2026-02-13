@@ -144,4 +144,73 @@ class JoinGroupUseCaseTest {
         assertTrue(link.contains("n="))
         assertTrue(link.contains("exp="))
     }
+
+    // --- initialSync branches ---
+
+    @Test
+    fun `invoke runs initial sync and stores fetched events`() = runBlocking {
+        val groupId = java.util.UUID.randomUUID().toString()
+        every { nostrClient.isConnected } returns false
+        val fakeEvent = com.splitfree.domain.crypto.NostrEvent(
+            id = "evt1", pubkey = pubkey, createdAt = 1000, kind = 30078,
+            tags = listOf(listOf("g", groupId)), content = "enc", sig = "sig"
+        )
+        coEvery { nostrClient.fetchEvents(groupId, 0) } returns listOf(fakeEvent)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), lenientTimestamp = true) } returns
+            EventProcessor.ProcessResult(stored = true)
+
+        useCase(buildUri(groupId = groupId))
+        coVerify { eventProcessor.process(fakeEvent, groupId, any(), lenientTimestamp = true) }
+        coVerify { groupRepo.updateLastSync(groupId, any()) }
+    }
+
+    @Test
+    fun `invoke skips already-existing events during initial sync`() = runBlocking {
+        val groupId = java.util.UUID.randomUUID().toString()
+        every { nostrClient.isConnected } returns true
+        val fakeEvent = com.splitfree.domain.crypto.NostrEvent(
+            id = "existing-evt", pubkey = pubkey, createdAt = 1000, kind = 30078,
+            tags = listOf(listOf("g", groupId)), content = "enc", sig = "sig"
+        )
+        coEvery { nostrClient.fetchEvents(groupId, 0) } returns listOf(fakeEvent)
+        coEvery { eventDao.getEventIds(groupId) } returns listOf("existing-evt")
+
+        useCase(buildUri(groupId = groupId))
+        coVerify(exactly = 0) { eventProcessor.process(any(), any(), any(), lenientTimestamp = any()) }
+    }
+
+    @Test
+    fun `invoke handles initial sync failure gracefully`() = runBlocking {
+        val groupId = java.util.UUID.randomUUID().toString()
+        every { nostrClient.isConnected } returns false
+        coEvery { nostrClient.acquireConnection() } throws RuntimeException("connection failed")
+
+        val group = useCase(buildUri(groupId = groupId))
+        // Should not throw — sync failure is caught
+        assertNotNull(group)
+    }
+
+    @Test
+    fun `invoke with non-expired link succeeds`() = runBlocking {
+        val future = System.currentTimeMillis() / 1000 + 3600
+        val group = useCase(buildUri(exp = future))
+        assertNotNull(group)
+    }
+
+    @Test
+    fun `invoke with no exp parameter succeeds`() = runBlocking {
+        val group = useCase(buildUri())
+        assertNotNull(group)
+    }
+
+    @Test
+    fun `invoke with no name defaults to Group`() = runBlocking {
+        val groupId = java.util.UUID.randomUUID().toString()
+        val g = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(groupId.toByteArray())
+        val k = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("key".toByteArray())
+        val uri = "splitfree://join?g=$g&k=$k&r=wss://relay.test"
+        val group = useCase(uri)
+        assertEquals("Group", group.name)
+    }
 }

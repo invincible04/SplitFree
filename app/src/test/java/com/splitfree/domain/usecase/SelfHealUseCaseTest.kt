@@ -79,6 +79,28 @@ class SelfHealUseCaseTest {
     }
 
     @Test
+    fun `skips events already on relay`() = runBlocking {
+        val local = listOf(entity("evt1"), entity("evt2"))
+        coEvery { eventDao.getEventsByGroup(groupId) } returns local
+        val remoteEvt1 = com.splitfree.domain.crypto.NostrEvent("evt1", "pub", 1700000000, 30078, emptyList(), "enc", "sig")
+        coEvery { nostrClient.fetchEvents(groupId, any()) } returns listOf(remoteEvt1)
+        coEvery { nostrClient.publishJson(any()) } returns true
+        assertEquals(1, useCase(groupId))
+        coVerify(exactly = 1) { nostrClient.publishJson(any()) }
+    }
+
+    @Test
+    fun `caps republishing at MAX_REPUBLISH_PER_RUN`() = runBlocking {
+        // Create more events than the cap (200)
+        val local = (1..210).map { entity("evt$it") }
+        coEvery { eventDao.getEventsByGroup(groupId) } returns local
+        coEvery { nostrClient.fetchEvents(groupId, any()) } returns emptyList()
+        coEvery { nostrClient.publishJson(any()) } returns true
+        val result = useCase(groupId)
+        assertEquals(200, result)
+    }
+
+    @Test
     fun teardown() {
         unmockkStatic(android.util.Log::class)
     }

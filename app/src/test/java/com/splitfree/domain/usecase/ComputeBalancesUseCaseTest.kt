@@ -334,4 +334,69 @@ class ComputeBalancesUseCaseTest {
         val balances = useCase("g1")
         assertTrue("Deleted correction should zero out", balances.isEmpty() || balances.all { it.net == 0L })
     }
+
+    @Test
+    fun `expense_delete with null uuid is ignored`() = runTest {
+        val dao = eventDao(); val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = "u1", content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}"""),
+            makeEvent("e2", type = "expense_delete", uuid = null, content = "{}")
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+        val balances = ComputeBalancesUseCase(dao, repo)("g1")
+        assertTrue(balances.isNotEmpty()) // expense not deleted since delete had null uuid
+    }
+
+    @Test
+    fun `expense with null uuid is skipped`() = runTest {
+        val dao = eventDao(); val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = null, content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}""")
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+        val balances = ComputeBalancesUseCase(dao, repo)("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `expense_correction with null uuid is skipped`() = runTest {
+        val dao = eventDao(); val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense_correction", uuid = null, content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}""")
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+        val balances = ComputeBalancesUseCase(dao, repo)("g1")
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `expense_correction for deleted expense is skipped`() = runTest {
+        val dao = eventDao(); val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = "u1", content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}"""),
+            makeEvent("e2", type = "expense_delete", uuid = "u1", content = "{}"),
+            makeEvent("e3", type = "expense_correction", uuid = "u1", content = """{"id":"u1c","amount":200,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":2}""")
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+        val balances = ComputeBalancesUseCase(dao, repo)("g1")
+        assertTrue("Correction of deleted expense should be ignored", balances.isEmpty() || balances.all { it.net == 0L })
+    }
+
+    @Test
+    fun `snapshot filters events after snapshot timestamp`() = runTest {
+        val dao = eventDao(); val repo = groupRepo()
+        coEvery { repo.getById("g1") } returns group("alice")
+        val snapshotContent = """{"as_of_timestamp":100,"balances":[{"pubkey":"alice","currency":"INR","net":50}],"event_hashes":[]}"""
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent("snap", type = "snapshot", content = snapshotContent, pubkey = "alice", createdAt = 101)
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            makeEvent("e1", type = "expense", uuid = "u1", createdAt = 50, content = """{"id":"u1","amount":100,"currency":"INR","description":"t","paid_by":"alice","split_type":"equal","split_among":[{"pubkey":"alice","share":50},{"pubkey":"bob","share":50}],"timestamp":1}"""),
+            makeEvent("e2", type = "expense", uuid = "u2", createdAt = 200, content = """{"id":"u2","amount":200,"currency":"INR","description":"t","paid_by":"bob","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":2}""")
+        )
+        val balances = ComputeBalancesUseCase(dao, repo)("g1")
+        // Snapshot gives alice +50, then e2 (after snapshot) gives bob paid 200, split 100 each
+        // alice: 50 + (-100) = -50, bob: 0 + 100 = 100
+        val aliceInr = balances.find { it.pubkey == "alice" && it.currency == "INR" }
+        assertNotNull(aliceInr)
+        assertEquals(-50L, aliceInr!!.net)
+    }
 }

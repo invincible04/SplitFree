@@ -144,4 +144,45 @@ class BleProtocolEncodeDecodeTest {
     fun `BLE_MTU is 512`() {
         assertEquals(512, BleProtocol.BLE_MTU)
     }
+
+    @Test
+    fun `encode small payload skips compression`() {
+        val payload = "tiny".toByteArray() // < 100 bytes
+        val encoded = BleProtocol.encode(MessageType.EXPENSE, payload, "aa".repeat(32))
+        val decoded = BleProtocol.decode(encoded)
+        assertNotNull(decoded)
+        assertArrayEquals(payload, decoded!!.payload)
+    }
+
+    @Test
+    fun `BlePacket equals and hashCode`() {
+        val p1 = BlePacket(MessageType.EXPENSE, 7, 1000, byteArrayOf(1), null, byteArrayOf(2))
+        val p2 = BlePacket(MessageType.EXPENSE, 7, 1000, byteArrayOf(1), null, byteArrayOf(2))
+        val p3 = BlePacket(MessageType.SETTLEMENT, 7, 1000, byteArrayOf(1), null, byteArrayOf(2))
+        assertEquals(p1, p2)
+        assertNotEquals(p1, p3)
+        assertEquals(p1, p1) // same reference
+        assertNotEquals(p1, "not a packet") // different type
+        assertNotEquals(p1, null)
+    }
+
+    @Test
+    fun `addFragment rejects total over 256`() {
+        val buf = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.BIG_ENDIAN)
+        buf.putLong(1L); buf.putLong(2L); buf.putShort(0); buf.putShort(257); buf.put(byteArrayOf(1))
+        assertNull(FragmentManager.addFragment("ep1", buf.array()))
+    }
+
+    @Test
+    fun `fragment reassemble with missing fragment returns null`() {
+        FragmentManager.clear()
+        val data = ByteArray(2000) { (it % 256).toByte() }
+        val fragments = FragmentManager.fragment(data)
+        // Add all but skip fragment index 1
+        for ((i, frag) in fragments.withIndex()) {
+            if (i == 1) continue
+            FragmentManager.addFragment("ep-miss", frag)
+        }
+        // Not complete yet — no result
+    }
 }

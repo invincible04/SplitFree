@@ -232,6 +232,22 @@ class EventValidatorTest {
         assertFalse(EventValidator.isDeletedExpense("expense", "uuid-1", emptySet()))
     }
 
+    // --- Rate limit eviction ---
+
+    @Test
+    fun `rate limit evicts stale entries when over 100`() {
+        // Fill 101 unique pubkeys to trigger eviction
+        repeat(101) { EventValidator.isWithinRateLimit("evict-pubkey-$it") }
+        // Next call should still work (eviction doesn't break functionality)
+        assertTrue(EventValidator.isWithinRateLimit("evict-pubkey-new"))
+    }
+
+    @Test
+    fun `group rate limit evicts stale entries when over 100`() {
+        repeat(101) { EventValidator.isWithinGroupRateLimit("evict-group-$it") }
+        assertTrue(EventValidator.isWithinGroupRateLimit("evict-group-new"))
+    }
+
     // --- isGroupMetaAuthorValid ---
 
     @Test

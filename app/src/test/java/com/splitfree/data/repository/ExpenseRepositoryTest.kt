@@ -158,4 +158,58 @@ class ExpenseRepositoryTest {
         verify(exactly = 2) { giftWrap.wrapIfEnabled(any(), any()) }
         verify(exactly = 2) { throttler.enqueue(any()) }
     }
+
+    @Test
+    fun `addSettlement accepts when to is myPubkey`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        val settlement = Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1)
+        repo().addSettlement(settlement, "g1")
+        coVerify { eventDao.insert(match { it.eventType == "settlement" }) }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `addSettlement rejects negative amount`() = runTest {
+        every { identity.getPublicKeyHex() } returns "bob"
+        repo().addSettlement(Settlement("s1", "bob", "alice", -1, "INR", timestamp = 1), "g1")
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `correctExpense throws when no group key`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        coEvery { eventDao.getExpenseByUuid("u1") } returns EventEntity(
+            "e1", "g1", "alice", 1, 30078, "enc", "dec", "expense", "u1", "sig", receivedAt = 1
+        )
+        coEvery { groupRepo.getGroupKey("g1") } returns null
+        repo().correctExpense("u1", mockk(), "g1")
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `correctExpense throws when expense not found`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1") } returns null
+        repo().correctExpense("u1", mockk(), "g1")
+    }
+
+    @Test
+    fun `addExpense skips outbox when full`() = runTest {
+        coEvery { outboxDao.count() } returns 10_000
+        val expense = Expense("u1", 100, "INR", "t", "a", SplitType.EQUAL,
+            listOf(SplitEntry("a", 100)), 1)
+        repo().addExpense(expense, "g1")
+        coVerify(exactly = 0) { outboxDao.insert(any()) }
+        verify { throttler.enqueue(testEvent) }
+    }
+
+    @Test
+    fun `addExpense with gift wrap skips outbox when full`() = runTest {
+        every { giftWrap.enabled } returns true
+        every { identity.getPublicKeyHex() } returns "alice"
+        coEvery { groupRepo.getMembers("g1") } returns listOf("alice", "bob")
+        every { giftWrap.wrapIfEnabled(any(), any()) } returns testEvent
+        coEvery { outboxDao.count() } returns 10_000
+
+        val expense = Expense("u1", 100, "INR", "t", "alice", SplitType.EQUAL,
+            listOf(SplitEntry("alice", 50), SplitEntry("bob", 50)), 1)
+        repo().addExpense(expense, "g1")
+        coVerify(exactly = 0) { outboxDao.insert(any()) }
+    }
 }

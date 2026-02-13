@@ -188,4 +188,75 @@ class ExportImportUseCaseTest {
         importUseCase(Json.encodeToString(SplitFreeExport.serializer(), export))
         Unit
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `import rejects invalid HMAC hex`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        val badJson = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
+        ImportGroupUseCase(eventDao, groupRepo, encryption)(badJson)
+        Unit
+    }
+
+    @Test
+    fun `import skips event with invalid original JSON signature`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        mockkObject(EventValidator)
+        every { EventValidator.isWithinRateLimit(any()) } returns true
+
+        val events = listOf(ExportedEvent("evt1", "pub1", 1700000000, 30078, "enc", "expense", "uuid1", "sig1",
+            originalEventJson = """{"id":"bad","pubkey":"pub1","created_at":1,"kind":1,"tags":[],"content":"x","sig":"badsig"}"""))
+        val count = ImportGroupUseCase(eventDao, groupRepo, encryption)(buildExportJson(events))
+        assertEquals(0, count)
+        unmockkObject(EventValidator)
+    }
+
+    @Test
+    fun `import skips correction from wrong author`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        coEvery { eventDao.getExpenseByUuid("uuid1") } returns sampleEntity.copy(pubkey = "other-pub")
+        mockkObject(EventValidator)
+        every { EventValidator.isWithinRateLimit(any()) } returns true
+        every { EventValidator.isCorrectionAuthorValid("expense_correction", "pub1", "other-pub") } returns false
+
+        val events = listOf(ExportedEvent("evt2", "pub1", 1700000000, 30078, "enc", "expense_correction", "uuid1", "sig1"))
+        val count = ImportGroupUseCase(eventDao, groupRepo, encryption)(buildExportJson(events))
+        assertEquals(0, count)
+        unmockkObject(EventValidator)
+    }
+
+    @Test
+    fun `import handles decryption failure gracefully`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        every { encryption.decrypt(any(), any()) } throws RuntimeException("bad")
+        coEvery { eventDao.insert(any<EventEntity>()) } just Runs
+        mockkObject(EventValidator)
+        every { EventValidator.isWithinRateLimit(any()) } returns true
+
+        val events = listOf(ExportedEvent("evt1", "pub1", 1700000000, 30078, "enc", "expense", "uuid1", "sig1"))
+        val count = ImportGroupUseCase(eventDao, groupRepo, encryption)(buildExportJson(events))
+        assertEquals(1, count) // still imported, decrypted is null
+        unmockkObject(EventValidator)
+    }
+
+    @Test
+    fun `import with null group still imports member events`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns null
+        every { encryption.decrypt(any(), any()) } returns "dec"
+        coEvery { eventDao.insert(any<EventEntity>()) } just Runs
+        mockkObject(EventValidator)
+        every { EventValidator.isWithinRateLimit(any()) } returns true
+
+        val events = listOf(ExportedEvent("evt1", "pub1", 1700000000, 30078, "enc", "expense", "uuid1", "sig1"))
+        val count = ImportGroupUseCase(eventDao, groupRepo, encryption)(buildExportJson(events))
+        assertEquals(1, count)
+        unmockkObject(EventValidator)
+    }
 }
