@@ -7,8 +7,6 @@ class PowerManagerDutyCycleTest {
 
     @Test
     fun `all power modes return positive scan and pause durations`() {
-        // We can't instantiate PowerManager (needs Context), but we can test the logic
-        // by verifying the enum values and expected duty cycle patterns
         for (mode in PowerMode.values()) {
             assertNotNull(mode.name)
         }
@@ -22,5 +20,23 @@ class PowerManagerDutyCycleTest {
         assertEquals(PowerMode.BALANCED, modes[1])
         assertEquals(PowerMode.POWER_SAVER, modes[2])
         assertEquals(PowerMode.ULTRA_LOW_POWER, modes[3])
+    }
+
+    @Test
+    fun `power mode enum has exactly 4 values`() {
+        assertEquals(4, PowerMode.entries.size)
+    }
+
+    @Test
+    fun `power mode names are distinct`() {
+        val names = PowerMode.entries.map { it.name }
+        assertEquals(names.size, names.toSet().size)
+    }
+
+    @Test
+    fun `power mode ordinals are sequential`() {
+        PowerMode.entries.forEachIndexed { i, mode ->
+            assertEquals(i, mode.ordinal)
+        }
     }
 }

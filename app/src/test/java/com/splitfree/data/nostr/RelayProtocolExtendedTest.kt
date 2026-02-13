@@ -148,6 +148,57 @@ class RelayProtocolExtendedTest {
         assertNull(RelayMessage.parse(""))
     }
 
+    // --- ClientMessage.Req with special characters ---
+
+    @Test
+    fun `REQ escapes backslash in subId`() {
+        val json = ClientMessage.Req("sub\\1", listOf(NostrFilter())).toJson()
+        assertTrue(json.contains("sub\\\\1"))
+    }
+
+    @Test
+    fun `REQ escapes quotes in subId`() {
+        val json = ClientMessage.Req("sub\"1", listOf(NostrFilter())).toJson()
+        assertTrue(json.contains("sub\\\"1"))
+    }
+
+    @Test
+    fun `CLOSE escapes special chars in subId`() {
+        val json = ClientMessage.Close("sub\\\"1").toJson()
+        assertTrue(json.contains("sub\\\\\\\"1"))
+    }
+
+    @Test
+    fun `REQ with empty filter list`() {
+        val json = ClientMessage.Req("sub1", emptyList()).toJson()
+        assertTrue(json.startsWith("[\"REQ\",\"sub1\""))
+    }
+
+    // --- NostrFilter edge cases ---
+
+    @Test
+    fun `filter with only since`() {
+        val filter = NostrFilter(since = 1000L)
+        val json = filter.toJson()
+        assertTrue(json.contains("\"since\":1000"))
+        assertFalse(json.contains("\"kinds\""))
+    }
+
+    @Test
+    fun `filter with only limit`() {
+        val filter = NostrFilter(limit = 10)
+        val json = filter.toJson()
+        assertTrue(json.contains("\"limit\":10"))
+    }
+
+    @Test
+    fun `filter with ids`() {
+        val filter = NostrFilter(ids = listOf("id1", "id2"))
+        val json = filter.toJson()
+        assertTrue(json.contains("\"ids\""))
+        assertTrue(json.contains("\"id1\""))
+    }
+
     // --- Reconnect backoff calculation ---
 
     @Test

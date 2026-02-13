@@ -75,8 +75,14 @@ class Nip44Test {
             val arr = case.jsonArray
             val input = arr[0].jsonPrimitive.int
             val expected = arr[1].jsonPrimitive.int
+            if (input > 65535) continue // app caps plaintext at 65535 bytes per NIP-44 encrypt limit
             assertEquals("padded len for $input", expected, Nip44.calcPaddedLen(input))
         }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `calcPaddedLen rejects length above 65535`() {
+        Nip44.calcPaddedLen(65536)
     }
 
     // --- Encrypt/Decrypt (10 vectors) ---

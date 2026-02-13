@@ -162,9 +162,9 @@ class Bip39Test {
     }
 
     @Test
-    fun `isMnemonic accepts 12 words if all valid`() {
-        // 12 is a valid BIP-39 length
-        assertTrue(Bip39.isMnemonic(List(12) { "abandon" }.joinToString(" ")))
+    fun `isMnemonic rejects 12 words - only 24-word phrases supported`() {
+        // App only supports 24-word (256-bit entropy) mnemonics
+        assertFalse(Bip39.isMnemonic(List(12) { "abandon" }.joinToString(" ")))
     }
 
     // --- BIP-39 official test vectors (256-bit entropy) ---
