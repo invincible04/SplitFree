@@ -210,7 +210,7 @@ class MidnightSyncWorker @AssistedInject constructor(
                 try {
                     val meta = json.decodeFromString<GroupMeta>(decrypted)
                     if (meta.members.isNotEmpty()) {
-                        groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays)
+                        groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays, inner.createdAt)
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e

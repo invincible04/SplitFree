@@ -62,6 +62,15 @@ class NearbySyncViewModel @Inject constructor(
                     is BleEvent.Connected -> {
                         val groups = groupRepo.getAll().map { it.id }
                         bleTransfer.sendHandshake(event.endpointId, identity.getPublicKeyHex(), groups)
+                        // Enforce handshake timeout
+                        viewModelScope.launch {
+                            delay(BleTransfer.HANDSHAKE_TIMEOUT_MS)
+                            if (!bleTransfer.isAuthenticated(event.endpointId)) {
+                                bleTransfer.clearPeer(event.endpointId)
+                                nearbySync.disconnect(event.endpointId)
+                                _uiState.value = _uiState.value.copy(status = "Handshake timed out")
+                            }
+                        }
                     }
                     is BleEvent.PayloadReceived -> {
                         val result = bleTransfer.processPayload(event.endpointId, event.data)

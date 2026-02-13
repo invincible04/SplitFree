@@ -10,7 +10,7 @@ import com.splitfree.data.local.entities.OutboxEntity
 
 @Database(
     entities = [EventEntity::class, GroupEntity::class, OutboxEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -29,6 +29,12 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("UPDATE `groups` SET groupKey = '' WHERE groupKey != ''")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `groups` ADD COLUMN lastMetaTimestamp INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

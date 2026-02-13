@@ -49,18 +49,7 @@ class GroupEncryption @Inject constructor() {
                 val decompressed = CompressionUtil.decompress(compressed)
                 if (decompressed != null) return String(decompressed)
             }
-            // Legacy format support
-            return try {
-                val payload = java.util.Base64.getDecoder().decode(decoded)
-                if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
-                    val decompressed = CompressionUtil.decompress(payload.copyOfRange(1, payload.size))
-                    decompressed?.let { String(it) } ?: decoded
-                } else if (payload.isNotEmpty() && payload[0] == 0x00.toByte()) {
-                    String(payload, 1, payload.size - 1)
-                } else decoded
-            } catch (_: Exception) {
-                decoded
-            }
+            return decoded
         } finally {
             conversationKey.fill(0)
         }

@@ -113,7 +113,7 @@ class NostrClient @Inject constructor() {
         val subId = "${subIdCounter.incrementAndGet()}:$groupId"
         activeSubscriptions[groupId] = subId
         val filter = NostrFilter(
-            kinds = listOf(30078),
+            kinds = listOf(30078, 1059),
             tags = mapOf("#g" to listOf(groupId)),
             since = if (since > 0) since else null
         )
@@ -158,12 +158,12 @@ class NostrClient @Inject constructor() {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
         // Query both new #g tag and old #d tag format for backward compatibility
         val filterNew = NostrFilter(
-            kinds = listOf(30078),
+            kinds = listOf(30078, 1059),
             tags = mapOf("#g" to listOf(groupId)),
             since = if (since > 0) since else null
         )
         val filterOld = NostrFilter(
-            kinds = listOf(30078),
+            kinds = listOf(30078, 1059),
             tags = mapOf("#d" to listOf(groupId)),
             since = if (since > 0) since else null
         )

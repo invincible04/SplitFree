@@ -1,10 +1,12 @@
 package com.splitfree.domain.usecase
 
+import android.util.Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.domain.model.Balance
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
 import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 import javax.inject.Inject
 
 data class BalanceResult(
@@ -34,10 +36,25 @@ class ComputeBalancesUseCase @Inject constructor(
                 val group = groupRepo.getById(groupId)
                 if (group != null && snapshotEvent.pubkey == group.createdBy) {
                     val snap = json.decodeFromString<BalanceSnapshot>(snapshotEvent.contentDecrypted!!)
-                    for (b in snap.balances) {
-                        balances[b.pubkey to b.currency] = b.net
+                    // Verify snapshot hashes match local events (forgery detection)
+                    val localIds = eventDao.getEventIds(groupId).toSet()
+                    if (snap.event_hashes.isNotEmpty()) {
+                        val localHashes = localIds.mapTo(HashSet()) { sha256Hex(it) }
+                        val matchCount = snap.event_hashes.count { it in localHashes }
+                        if (matchCount.toDouble() / snap.event_hashes.size < 0.8) {
+                            Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
+                        } else {
+                            for (b in snap.balances) {
+                                balances[b.pubkey to b.currency] = b.net
+                            }
+                            snapshotTimestamp = snap.as_of_timestamp
+                        }
+                    } else {
+                        for (b in snap.balances) {
+                            balances[b.pubkey to b.currency] = b.net
+                        }
+                        snapshotTimestamp = snap.as_of_timestamp
                     }
-                    snapshotTimestamp = snap.as_of_timestamp
                 }
             } catch (_: Exception) {}
         }
@@ -70,10 +87,10 @@ class ComputeBalancesUseCase @Inject constructor(
                 }
                 "settlement" -> {
                     val s = json.decodeFromString<Settlement>(content)
-                    // Only the payer can authorize a settlement
-                    if (e.pubkey != s.from) continue
+                    // Either party (payer or payee) can record a settlement
+                    if (e.pubkey != s.from && e.pubkey != s.to) continue
                     if (!seenSettlementIds.add(s.id)) continue
-                    val cur = s.currency
+                    val cur = s.currency.uppercase().trim()
                     balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
                     balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)
                 }
@@ -91,7 +108,8 @@ class ComputeBalancesUseCase @Inject constructor(
         computeWithExclusions(groupId).balances
 
     private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>) {
-        val cur = expense.currency
+        val cur = expense.currency.uppercase().trim()
+        if (expense.splitAmong.any { it.share < 0 }) return
         for (split in expense.splitAmong) {
             if (split.pubkey != expense.paidBy) {
                 val payerKey = expense.paidBy to cur
@@ -100,5 +118,10 @@ class ComputeBalancesUseCase @Inject constructor(
                 balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
             }
         }
+    }
+
+    private fun sha256Hex(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 }

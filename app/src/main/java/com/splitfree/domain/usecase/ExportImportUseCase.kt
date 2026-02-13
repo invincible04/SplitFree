@@ -62,7 +62,7 @@ class ExportGroupUseCase @Inject constructor(
 
     private fun computeHmac(data: String, key: String): String {
         val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        mac.init(SecretKeySpec(java.util.Base64.getDecoder().decode(key), "HmacSHA256"))
         return mac.doFinal(data.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
@@ -95,13 +95,13 @@ class ImportGroupUseCase @Inject constructor(
         val groupKey = groupRepo.getGroupKey(groupId)
             ?: throw IllegalStateException("No key for group $groupId — join the group first")
 
-        // HMAC is mandatory — reject exports with missing integrity check
         require(export.hmac.isNotEmpty()) { "Export file missing integrity check (HMAC)" }
-        // Verify HMAC integrity — constant-time comparison to prevent timing attacks (CVE-2019-10071, NOS-01-004)
         val eventsJson = Json.encodeToString(export.events)
-        val expectedHmac = computeHmacBytes(eventsJson, groupKey)
         val providedHmac = hexToBytes(export.hmac) ?: throw IllegalArgumentException("Invalid HMAC hex")
-        require(MessageDigest.isEqual(providedHmac, expectedHmac)) { "Export file integrity check failed — file may have been tampered with" }
+        val expectedHmac = computeHmacBytes(eventsJson, groupKey)
+        require(MessageDigest.isEqual(providedHmac, expectedHmac)) {
+            "Export file integrity check failed — file may have been tampered with"
+        }
 
         val existingIds = eventDao.getEventIds(groupId).toSet()
         var imported = 0
@@ -158,7 +158,7 @@ class ImportGroupUseCase @Inject constructor(
 
     private fun computeHmacBytes(data: String, key: String): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        mac.init(SecretKeySpec(java.util.Base64.getDecoder().decode(key), "HmacSHA256"))
         return mac.doFinal(data.toByteArray(Charsets.UTF_8))
     }
 

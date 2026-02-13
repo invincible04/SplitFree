@@ -51,17 +51,7 @@ class GroupRepository @Inject constructor(
     fun observeById(groupId: String): Flow<Group?> = groupDao.observeById(groupId).map { it?.toDomain() }
 
     suspend fun getGroupKey(groupId: String): String? {
-        // Try encrypted store first, fall back to Room for migration
-        val fromStore = keyStore.getString(groupId, null)
-        if (fromStore != null) return fromStore
-        // Migrate: read from Room, move to encrypted store, clear from Room
-        val entity = groupDao.getById(groupId) ?: return null
-        if (entity.groupKey.isNotBlank()) {
-            keyStore.edit().putString(groupId, entity.groupKey).apply()
-            groupDao.clearGroupKey(groupId)
-            return entity.groupKey
-        }
-        return null
+        return keyStore.getString(groupId, null)
     }
 
     suspend fun getMembers(groupId: String): List<String> =
@@ -97,10 +87,15 @@ class GroupRepository @Inject constructor(
         groupDao.updateLastSync(groupId, timestamp)
     }
 
-    suspend fun updateFromMeta(groupId: String, name: String, members: List<String>, relays: List<String>) {
+    suspend fun updateFromMeta(groupId: String, name: String, members: List<String>, relays: List<String>, eventTimestamp: Long = 0) {
         if (members.size > CreateGroupUseCase.MAX_GROUP_MEMBERS) {
             Log.w("GroupRepository", "Rejecting group_meta with ${members.size} members (max ${CreateGroupUseCase.MAX_GROUP_MEMBERS})")
             return
+        }
+        // Reject stale group_meta events
+        if (eventTimestamp > 0) {
+            val existing = groupDao.getById(groupId)
+            if (existing != null && eventTimestamp <= existing.lastMetaTimestamp) return
         }
         groupDao.updateMeta(
             groupId,
@@ -108,6 +103,9 @@ class GroupRepository @Inject constructor(
             json.encodeToString(stringListSerializer, members),
             json.encodeToString(stringListSerializer, relays)
         )
+        if (eventTimestamp > 0) {
+            groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)
+        }
     }
 
     private fun GroupEntity.toDomain() = Group(

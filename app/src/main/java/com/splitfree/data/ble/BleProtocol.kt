@@ -256,10 +256,6 @@ object FragmentManager {
         return null
     }
 
-    /** Legacy overload without endpointId — uses empty string as default. */
-    @Synchronized
-    fun addFragment(fragment: ByteArray): ByteArray? = addFragment("", fragment)
-
     fun clear() {
         pending.clear()
         totalCounts.clear()

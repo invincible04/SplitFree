@@ -95,24 +95,32 @@ class GroupDetailViewModel @Inject constructor(
 
     private fun loadInviteLink() {
         viewModelScope.launch {
-            val domainGroup = groupRepo.getById(groupId) ?: return@launch
-            val groupKey = groupRepo.getGroupKey(groupId) ?: return@launch
-            inviteLinkCache = JoinGroupUseCase.createInviteLink(domainGroup, groupKey)
+            val group = groupRepo.observeById(groupId).filterNotNull().first()
+            val key = groupRepo.getGroupKey(groupId)
+            if (key != null) inviteLinkCache = JoinGroupUseCase.createInviteLink(group, key)
         }
     }
 
+    private var settlingInProgress = false
+
     fun recordSettlement(debt: DebtTransaction) {
+        if (settlingInProgress) return
+        settlingInProgress = true
         viewModelScope.launch {
-            val group = groupRepo.getById(groupId) ?: return@launch
-            val settlement = Settlement(
-                id = UUID.randomUUID().toString(),
-                from = debt.from,
-                to = debt.to,
-                amount = debt.amount,
-                currency = debt.currency,
-                timestamp = System.currentTimeMillis() / 1000
-            )
-            expenseRepo.addSettlement(settlement, groupId)
+            try {
+                val group = groupRepo.getById(groupId) ?: return@launch
+                val settlement = Settlement(
+                    id = UUID.randomUUID().toString(),
+                    from = debt.from,
+                    to = debt.to,
+                    amount = debt.amount,
+                    currency = debt.currency,
+                    timestamp = System.currentTimeMillis() / 1000
+                )
+                expenseRepo.addSettlement(settlement, groupId)
+            } finally {
+                settlingInProgress = false
+            }
         }
     }
 

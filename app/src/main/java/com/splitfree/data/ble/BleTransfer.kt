@@ -51,8 +51,8 @@ class BleTransfer @Inject constructor(
     /** Peers that have been authenticated (proved pubkey ownership). */
     private val authenticatedPeers = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val handshakeTimeouts = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    private companion object {
-        const val TAG = "BleTransfer"
+    companion object {
+        private const val TAG = "BleTransfer"
         const val MSG_HANDSHAKE: Byte = 0x01
         const val MSG_SYNC_REQ: Byte = 0x02
         const val MSG_EVENT: Byte = 0x03
@@ -204,7 +204,6 @@ class BleTransfer @Inject constructor(
             }
 
             val eventId = event.id
-            if (eventDao.getEvent(eventId) != null) return false
 
             var groupId: String? = null
             var eventType = "unknown"
@@ -275,7 +274,7 @@ class BleTransfer @Inject constructor(
                 }
             }
 
-            eventDao.insert(EventEntity(
+            if (!eventDao.insertIfNew(EventEntity(
                 eventId = eventId, groupId = groupId,
                 pubkey = authorHex,
                 createdAt = event.createdAt,
@@ -284,7 +283,7 @@ class BleTransfer @Inject constructor(
                 expenseUuid = expenseUuid, sig = event.sig,
                 receivedAt = System.currentTimeMillis() / 1000,
                 originalEventJson = eventJson
-            ))
+            ))) return false
             true
         } catch (e: Exception) {
             Log.w(TAG, "Failed to store BLE event: ${e.message}")

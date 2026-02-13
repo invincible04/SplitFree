@@ -163,7 +163,7 @@ class JoinGroupUseCase @Inject constructor(
                             try {
                                 val meta = json.decodeFromString<GroupMeta>(decrypted)
                                 if (meta.members.isNotEmpty()) {
-                                    groupRepo.updateFromMeta(group.id, meta.name, meta.members, meta.relays)
+                                    groupRepo.updateFromMeta(group.id, meta.name, meta.members, meta.relays, event.createdAt)
                                 }
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
@@ -184,6 +184,8 @@ class JoinGroupUseCase @Inject constructor(
             } finally {
                 nostrClient.releaseConnection()
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Initial sync failed (will retry on next periodic sync): ${e.message}")
         }
