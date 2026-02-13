@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -22,10 +24,13 @@ android {
 
     signingConfigs {
         create("release") {
+            val localProps = rootProject.file("local.properties")
+            val props = Properties()
+            if (localProps.exists()) localProps.inputStream().use { props.load(it) }
             storeFile = file("../splitfree-release.jks")
-            storePassword = ""
-            keyAlias = "splitfree"
-            keyPassword = ""
+            storePassword = props.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias = props.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword = props.getProperty("RELEASE_KEY_PASSWORD", "")
         }
     }
 

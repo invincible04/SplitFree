@@ -11,6 +11,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.RelayHealthMonitor
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.SelfHealUseCase
@@ -33,6 +34,7 @@ class SyncWorker
         private val eventProcessor: EventProcessor,
         private val relayHealthMonitor: RelayHealthMonitor,
         private val signer: EventSigner,
+        private val giftWrap: GiftWrapService,
     ) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             var acquiredConnection = false
@@ -53,12 +55,17 @@ class SyncWorker
         private suspend fun ensureConnected(): Boolean {
             if (!nostrClient.isConnected) {
                 nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
+                val customRelays = giftWrap.getCustomRelays()
                 val allRelays =
-                    groupRepo
-                        .getAll()
-                        .flatMap { it.relays }
-                        .distinct()
-                        .ifEmpty { DEFAULT_RELAYS }
+                    if (customRelays.isNotEmpty()) {
+                        customRelays
+                    } else {
+                        groupRepo
+                            .getAll()
+                            .flatMap { it.relays }
+                            .distinct()
+                            .ifEmpty { DEFAULT_RELAYS }
+                    }
                 val onlineRelays =
                     relayHealthMonitor
                         .getOnlineRelays(allRelays)

@@ -29,11 +29,19 @@ class SettingsViewModel
         private val _seedPhrase = MutableStateFlow<List<String>>(emptyList())
         val seedPhrase: StateFlow<List<String>> = _seedPhrase
 
+        private val _customRelays = MutableStateFlow(giftWrap.getCustomRelays())
+        val customRelays: StateFlow<List<String>> = _customRelays
+
         var giftWrapEnabled: Boolean
             get() = giftWrap.enabled
             set(value) {
                 giftWrap.enabled = value
             }
+
+        fun setCustomRelays(relays: List<String>) {
+            giftWrap.setCustomRelays(relays)
+            _customRelays.value = giftWrap.getCustomRelays()
+        }
 
         private val _revokeState = MutableStateFlow<RevokeState>(RevokeState.Idle)
         val revokeState: StateFlow<RevokeState> = _revokeState

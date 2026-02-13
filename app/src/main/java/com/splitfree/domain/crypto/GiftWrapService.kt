@@ -49,7 +49,7 @@ class GiftWrapService
         }
 
         var enabled: Boolean
-            get() = prefs.getBoolean(KEY_GIFT_WRAP, false)
+            get() = prefs.getBoolean(KEY_GIFT_WRAP, true)
             set(value) {
                 prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply()
             }
@@ -88,7 +88,18 @@ class GiftWrapService
             }
         }
 
+        fun getCustomRelays(): List<String> {
+            val raw = prefs.getString(KEY_CUSTOM_RELAYS, null) ?: return emptyList()
+            return raw.split(",").filter { it.startsWith("wss://") }
+        }
+
+        fun setCustomRelays(relays: List<String>) {
+            val safe = relays.filter { it.startsWith("wss://") }
+            prefs.edit().putString(KEY_CUSTOM_RELAYS, safe.joinToString(",")).apply()
+        }
+
         companion object {
             private const val KEY_GIFT_WRAP = "gift_wrap_enabled"
+            private const val KEY_CUSTOM_RELAYS = "custom_relays"
         }
     }

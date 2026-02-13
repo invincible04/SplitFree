@@ -55,6 +55,9 @@ fun SettingsScreen(
     var giftWrapEnabled by remember { mutableStateOf(viewModel.giftWrapEnabled) }
     var showRevokeDialog by remember { mutableStateOf(false) }
     val revokeState by viewModel.revokeState.collectAsStateWithLifecycle()
+    val customRelays by viewModel.customRelays.collectAsStateWithLifecycle()
+    var showRelayEditor by remember { mutableStateOf(false) }
+    var relayInput by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -250,6 +253,25 @@ fun SettingsScreen(
                 },
             )
 
+            ListItem(
+                headlineContent = { Text("Custom Relays") },
+                supportingContent = {
+                    if (customRelays.isEmpty()) {
+                        Text("Using default public relays. Tap to configure your own.")
+                    } else {
+                        Text("${customRelays.size} custom relay(s) configured")
+                    }
+                },
+                trailingContent = {
+                    FilledTonalButton(onClick = {
+                        relayInput = customRelays.joinToString("\n")
+                        showRelayEditor = true
+                    }) {
+                        Text("Edit")
+                    }
+                },
+            )
+
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
             // Danger zone
@@ -367,6 +389,40 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showRevokeDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showRelayEditor) {
+        AlertDialog(
+            onDismissRequest = { showRelayEditor = false },
+            title = { Text("Custom Relays") },
+            text = {
+                Column {
+                    Text(
+                        "Enter one wss:// relay URL per line. Leave empty to use defaults.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = relayInput,
+                        onValueChange = { relayInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("wss://relay.example.com") },
+                        minLines = 3,
+                        maxLines = 6,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val relays = relayInput.lines().map { it.trim() }.filter { it.startsWith("wss://") }
+                    viewModel.setCustomRelays(relays)
+                    showRelayEditor = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRelayEditor = false }) { Text("Cancel") }
             },
         )
     }
