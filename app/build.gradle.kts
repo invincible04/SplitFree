@@ -32,7 +32,6 @@ android {
     lint {
         abortOnError = false
         checkReleaseBuilds = true
-        disable += "NullSafeMutableLiveData" // AGP lint crash — known bug in NonNullableMutableLiveDataDetector
     }
 
     buildTypes {
