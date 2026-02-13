@@ -2,10 +2,12 @@ package com.splitfree.domain.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.acinq.secp256k1.Secp256k1
+import java.io.File
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,10 +21,24 @@ class IdentityManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val prefs: SharedPreferences by lazy {
+        try {
+            createEncryptedPrefs()
+        } catch (e: Exception) {
+            // Keystore master key invalidated (biometric change, backup restore, OS upgrade).
+            // Delete corrupted prefs file and recreate — user must recover via seed phrase.
+            Log.e("IdentityManager", "EncryptedSharedPreferences failed, resetting: ${e.message}")
+            try {
+                File(context.filesDir.parent, "shared_prefs/splitfree_identity.xml").delete()
+            } catch (_: Exception) {}
+            createEncryptedPrefs()
+        }
+    }
+
+    private fun createEncryptedPrefs(): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             "splitfree_identity",
             masterKey,

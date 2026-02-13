@@ -86,7 +86,10 @@ class NostrClient @Inject constructor() {
                         relay.messages.collect { msg ->
                             when (msg) {
                                 is RelayMessage.EventMsg -> {
-                                    if (msg.event.verify() &&
+                                    // Validate event kind matches expected kind (relay filter bypass defense)
+                                    if (msg.event.kind != 30078 && msg.event.kind != 1059) {
+                                        Log.w(TAG, "Rejecting unexpected event kind ${msg.event.kind} from ${relay.url}")
+                                    } else if (msg.event.verify() &&
                                         addSeen(msg.event.id)) {
                                         _incomingEvents.emit(msg.event)
                                     }
@@ -219,7 +222,9 @@ class NostrClient @Inject constructor() {
         relays[url] = relay
         scope.launch {
             relay.messages.collect { msg ->
-                if (msg is RelayMessage.EventMsg && msg.event.verify() &&
+                if (msg is RelayMessage.EventMsg &&
+                    (msg.event.kind == 30078 || msg.event.kind == 1059) &&
+                    msg.event.verify() &&
                     addSeen(msg.event.id)) {
                     _incomingEvents.emit(msg.event)
                 }

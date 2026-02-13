@@ -20,7 +20,7 @@ secp256k1 = "0.22.0"
 bouncycastle = "1.83"
 playServicesNearby = "19.3.0"
 zxing = "3.5.4"
-lz4 = "1.8.0"
+lz4 = "1.8.1"
 junit = "4.13.2"
 json = "20240303"
 

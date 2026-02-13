@@ -160,6 +160,12 @@ class SyncWorker @AssistedInject constructor(
             val encrypted = inner.content
             val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
 
+            // Reject oversized or deeply nested content before deserialization (DoS prevention)
+            if (decrypted != null && !EventValidator.isContentSafe(decrypted)) {
+                Log.w(TAG, "Rejecting event with unsafe content: ${inner.id}")
+                return false
+            }
+
             var eventType = "unknown"
             var expenseUuid: String? = null
             for (tag in inner.tags) {

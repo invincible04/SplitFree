@@ -10,6 +10,8 @@ import java.util.concurrent.ConcurrentHashMap
 object EventValidator {
     private const val MAX_FUTURE_SECS = 3600L       // 1 hour
     private const val MAX_AGE_SECS = 30L * 86400L   // 30 days
+    private const val MAX_CONTENT_BYTES = 65_536     // 64 KB — reject oversized event content
+    private const val MAX_JSON_DEPTH = 32            // reject deeply nested JSON (stack overflow DoS)
 
     /** Max events per pubkey per minute before rate-limiting kicks in. */
     private const val RATE_LIMIT_PER_MINUTE = 30
@@ -112,5 +114,23 @@ object EventValidator {
     fun isGroupMetaAuthorValid(authorPubkey: String, groupCreator: String?): Boolean {
         if (groupCreator == null) return true // new group, no creator yet
         return authorPubkey == groupCreator
+    }
+
+    /**
+     * Validate event content before deserialization.
+     * Rejects oversized content (OOM) and deeply nested JSON (stack overflow).
+     * Must be called before any Json.decodeFromString on untrusted event content.
+     */
+    fun isContentSafe(content: String?): Boolean {
+        if (content == null) return false
+        if (content.length > MAX_CONTENT_BYTES) return false
+        var depth = 0
+        for (c in content) {
+            when (c) {
+                '{', '[' -> if (++depth > MAX_JSON_DEPTH) return false
+                '}', ']' -> depth--
+            }
+        }
+        return true
     }
 }

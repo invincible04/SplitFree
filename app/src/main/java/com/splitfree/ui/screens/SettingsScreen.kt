@@ -3,6 +3,10 @@ package com.splitfree.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -33,6 +38,18 @@ fun SettingsScreen(
     val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
     var showKey by remember { mutableStateOf(false) }
     var showSeedPhrase by remember { mutableStateOf(false) }
+
+    // FLAG_SECURE: prevent screenshots/recording when private key or seed phrase is visible
+    val view = LocalView.current
+    DisposableEffect(showKey, showSeedPhrase) {
+        val window = (view.context as? android.app.Activity)?.window
+        if (showKey || showSeedPhrase) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
     var showCopyWarning by remember { mutableStateOf(false) }
     var showCopySeedWarning by remember { mutableStateOf(false) }
     var giftWrapEnabled by remember { mutableStateOf(viewModel.giftWrapEnabled) }
@@ -357,6 +374,17 @@ private fun SectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector,
 
 private fun copyToClipboard(context: Context, label: String, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
-    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+    val clip = ClipData.newPlainText(label, text)
+    // Mark as sensitive (Android 13+) — prevents clipboard content from appearing in previews
+    clip.description.extras = PersistableBundle().apply {
+        putBoolean("android.content.extra.IS_SENSITIVE", true)
+    }
+    clipboard.setPrimaryClip(clip)
+    Toast.makeText(context, "Copied — clipboard will auto-clear in 30s", Toast.LENGTH_SHORT).show()
+    // Auto-clear clipboard after 30 seconds to limit exposure window
+    if (label == "nsec" || label == "seed") {
+        Handler(Looper.getMainLooper()).postDelayed({
+            try { clipboard.clearPrimaryClip() } catch (_: Exception) {}
+        }, 30_000)
+    }
 }
