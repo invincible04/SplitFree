@@ -37,7 +37,7 @@ class EventThrottler @Inject constructor(
                     val event = queue.poll() ?: break
                     queueSize.decrementAndGet()
                     nostrClient.publish(event)
-                    delay(intervalMs + secureRandom.nextLong(100, 900))
+                    delay(intervalMs + (secureRandom.nextLong().ushr(1) % 800) + 100)
                 }
             } finally {
                 publishing.set(false)

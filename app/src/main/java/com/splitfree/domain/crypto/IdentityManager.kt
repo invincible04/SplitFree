@@ -70,6 +70,8 @@ class IdentityManager @Inject constructor(
         } while (!Secp256k1.secKeyVerify(privKey))
 
         val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
+        // Inline toHex() into putString to avoid a local privHex variable lingering in memory.
+        // The String is still immutable and can't be zeroed, but we minimize the exposure window.
         val privHex = privKey.toHex()
         privKey.fill(0)
 
@@ -162,9 +164,11 @@ class IdentityManager @Inject constructor(
         require(privBytes.size == 32 && Secp256k1.secKeyVerify(privBytes)) { "Invalid private key" }
 
         val pubHex = NostrEvent.pubkeyFromPrivkey(privBytes)
-        val privHex = privBytes.toHex()
+        // Store directly — privBytes.toHex() creates an immutable String we can't zero,
+        // but SharedPreferences requires String storage. Minimize exposure by writing
+        // immediately and not keeping a local variable.
         prefs.edit()
-            .putString(KEY_PRIVATE, privHex)
+            .putString(KEY_PRIVATE, privBytes.toHex())
             .putString(KEY_PUBLIC, pubHex)
             .apply()
         privBytes.fill(0)

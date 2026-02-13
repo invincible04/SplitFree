@@ -3,16 +3,11 @@ package com.splitfree.domain.usecase
 import android.util.Base64
 import android.util.Log
 import com.splitfree.data.local.EventDao
-import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.EventSigner
-import com.splitfree.domain.crypto.EventValidator
-import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.Group
-import com.splitfree.domain.model.GroupMeta
-import kotlinx.serialization.json.Json
+import com.splitfree.sync.EventProcessor
 import java.net.URLDecoder
 import java.net.URLEncoder
 import javax.inject.Inject
@@ -22,10 +17,8 @@ class JoinGroupUseCase @Inject constructor(
     private val identity: IdentityManager,
     private val nostrClient: NostrClient,
     private val eventDao: EventDao,
-    private val encryption: GroupEncryption,
-    private val signer: EventSigner
+    private val eventProcessor: EventProcessor
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
 
     /**
      * Parse an invite link and join the group.
@@ -106,76 +99,14 @@ class JoinGroupUseCase @Inject constructor(
                 val existingIds = eventDao.getEventIds(group.id).toSet()
                 var count = 0
                 for (event in events) {
-                    val eventId = event.id
-                    if (eventId in existingIds) continue
-                    try {
-                        if (!signer.verify(event)) continue
-
-                        if (!EventValidator.isTimestampValidLenient(event.createdAt)) {
-                            Log.w(TAG, "Rejecting event with invalid timestamp: $eventId")
-                            continue
-                        }
-
-                        val encrypted = event.content
-                        val decrypted = try { encryption.decrypt(encrypted, groupKey) } catch (_: Exception) { null }
-
-                        // Reject oversized or deeply nested content before deserialization (DoS prevention)
-                        if (decrypted != null && !EventValidator.isContentSafe(decrypted)) {
-                            Log.w(TAG, "Rejecting event with unsafe content: $eventId")
-                            continue
-                        }
-
-                        var eventType = "unknown"
-                        var expenseUuid: String? = null
-                        for (tag in event.tags) {
-                            if (tag.size >= 2) when (tag[0]) {
-                                "t" -> eventType = tag[1]
-                                "e" -> expenseUuid = tag[1]
-                            }
-                        }
-
-                        if (!EventValidator.isWithinRateLimit(event.pubkey)) {
-                            Log.w(TAG, "Rate-limiting events from ${event.pubkey}")
-                            continue
-                        }
-
-                        if (eventType == "expense_correction" || eventType == "expense_delete") {
-                            val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
-                            if (!EventValidator.isCorrectionAuthorValid(eventType, event.pubkey, originalCreator)) {
-                                Log.w(TAG, "Rejecting ${eventType} $eventId: author is not the original creator")
-                                continue
-                            }
-                        }
-
-                        eventDao.insert(EventEntity(
-                            eventId = eventId, groupId = group.id,
-                            pubkey = event.pubkey,
-                            createdAt = event.createdAt,
-                            kind = 30078, contentEncrypted = encrypted,
-                            contentDecrypted = decrypted, eventType = eventType,
-                            expenseUuid = expenseUuid, sig = event.sig,
-                            receivedAt = System.currentTimeMillis() / 1000,
-                            originalEventJson = event.toJson()
-                        ))
-
-                        // Update local group from group_meta events (ISSUE-12)
-                        if (eventType == "group_meta" && decrypted != null) {
-                            try {
-                                val meta = json.decodeFromString<GroupMeta>(decrypted)
-                                if (meta.members.isNotEmpty()) {
-                                    groupRepo.updateFromMeta(group.id, meta.name, meta.members, meta.relays, event.createdAt)
-                                }
-                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to process group_meta: ${e.message}")
-                            }
-                        }
-
-                        count++
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to process event during initial sync: ${e.message}")
-                    }
+                    if (event.id in existingIds) continue
+                    val result = eventProcessor.process(
+                        rawEvent = event,
+                        knownGroupId = group.id,
+                        knownGroupKey = groupKey,
+                        lenientTimestamp = true
+                    )
+                    if (result.stored) count++
                 }
                 if (count > 0) {
                     groupRepo.updateLastSync(group.id, System.currentTimeMillis() / 1000)

@@ -102,4 +102,9 @@ class SplitFreeApp : Application(), Configuration.Provider {
         }
         registerReceiver(batteryStateReceiver, filter)
     }
+
+    override fun onTerminate() {
+        try { unregisterReceiver(batteryStateReceiver) } catch (_: Exception) {}
+        super.onTerminate()
+    }
 }
