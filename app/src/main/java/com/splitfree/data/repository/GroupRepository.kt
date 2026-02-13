@@ -28,10 +28,22 @@ class GroupRepository @Inject constructor(
 
     /** Encrypted storage for group keys — never stored in plaintext Room DB. */
     private val keyStore: SharedPreferences by lazy {
+        try {
+            createKeyStore()
+        } catch (e: Exception) {
+            Log.e("GroupRepository", "EncryptedSharedPreferences failed, resetting: ${e.message}")
+            try {
+                java.io.File(context.filesDir.parent, "shared_prefs/splitfree_group_keys.xml").delete()
+            } catch (_: Exception) {}
+            createKeyStore()
+        }
+    }
+
+    private fun createKeyStore(): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             "splitfree_group_keys",
             masterKey,

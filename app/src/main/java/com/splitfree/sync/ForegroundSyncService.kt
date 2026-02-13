@@ -11,7 +11,6 @@ import androidx.core.app.NotificationCompat
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.IdentityManager
-import com.splitfree.domain.crypto.NostrEvent
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -23,6 +22,7 @@ class ForegroundSyncService : Service() {
     @Inject lateinit var groupRepo: GroupRepository
     @Inject lateinit var identity: IdentityManager
     @Inject lateinit var eventProcessor: EventProcessor
+    @Inject lateinit var signer: com.splitfree.domain.crypto.EventSigner
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false
@@ -53,7 +53,7 @@ class ForegroundSyncService : Service() {
             if (allRelays.isEmpty()) return@launch
 
             try {
-                nostrClient.authSigner = { challenge, relayUrl -> createAuthEvent(challenge, relayUrl) }
+                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
                 nostrClient.connect(allRelays)
                 nostrClient.acquireConnection()
                 connectionAcquired = true
@@ -62,9 +62,24 @@ class ForegroundSyncService : Service() {
                 return@launch
             }
 
+            val subscribedGroups = mutableSetOf<String>()
             val now = System.currentTimeMillis() / 1000
             for (group in groups) {
                 nostrClient.subscribe(group.id, now - 3600)
+                subscribedGroups.add(group.id)
+            }
+
+            // Observe group list for newly joined groups
+            scope.launch {
+                groupRepo.observeAll().collect { currentGroups ->
+                    val currentNow = System.currentTimeMillis() / 1000
+                    for (group in currentGroups) {
+                        if (subscribedGroups.add(group.id)) {
+                            nostrClient.subscribe(group.id, currentNow - 3600)
+                            Log.i(TAG, "Subscribed to new group: ${group.name}")
+                        }
+                    }
+                }
             }
 
             nostrClient.startListening()
@@ -101,21 +116,6 @@ class ForegroundSyncService : Service() {
             .setSmallIcon(android.R.drawable.ic_popup_sync)
             .setOngoing(true)
             .build()
-
-    private fun createAuthEvent(challenge: String, relayUrl: String): NostrEvent {
-        val privKey = identity.getPrivateKeyBytes()
-        try {
-            return NostrEvent(
-                pubkey = identity.getPublicKeyHex(),
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 22242,
-                tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
-                content = ""
-            ).sign(privKey)
-        } finally {
-            privKey.fill(0)
-        }
-    }
 
     companion object {
         private const val TAG = "ForegroundSyncService"

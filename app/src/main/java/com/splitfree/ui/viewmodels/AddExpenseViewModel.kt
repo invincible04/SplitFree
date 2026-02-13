@@ -94,16 +94,19 @@ class AddExpenseViewModel @Inject constructor(
             }
         }
         SplitType.EXACT -> {
-            members.map { pk -> SplitEntry(pk, inputs[pk] ?: 0L) }
+            members.mapNotNull { pk ->
+                val v = inputs[pk] ?: 0L
+                if (v > 0) SplitEntry(pk, v) else null
+            }
         }
         SplitType.PERCENTAGE -> {
             val totalPct = inputs.values.sum()
             require(totalPct == 100L) { "Percentages must sum to 100" }
+            val active = members.filter { (inputs[it] ?: 0L) > 0 }
             var allocated = 0L
-            members.mapIndexed { i, pk ->
-                val pct = inputs[pk] ?: 0L
-                val share = if (pct == 0L) 0L
-                else if (i == members.lastIndex) amount - allocated
+            active.mapIndexed { i, pk ->
+                val pct = inputs[pk]!!
+                val share = if (i == active.lastIndex) amount - allocated
                 else amount * pct / 100
                 allocated += share
                 SplitEntry(pk, share)
@@ -112,11 +115,11 @@ class AddExpenseViewModel @Inject constructor(
         SplitType.SHARES -> {
             val totalUnits = inputs.values.sum()
             require(totalUnits > 0) { "Total shares must be positive" }
+            val active = members.filter { (inputs[it] ?: 0L) > 0 }
             var allocated = 0L
-            members.mapIndexed { i, pk ->
-                val units = inputs[pk] ?: 0L
-                val share = if (units == 0L) 0L
-                else if (i == members.lastIndex) amount - allocated
+            active.mapIndexed { i, pk ->
+                val units = inputs[pk]!!
+                val share = if (i == active.lastIndex) amount - allocated
                 else amount * units / totalUnits
                 allocated += share
                 SplitEntry(pk, share)

@@ -5,8 +5,8 @@ import com.splitfree.data.local.EventDao
 import com.splitfree.domain.model.Balance
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
+import com.splitfree.data.util.HashUtil
 import kotlinx.serialization.json.Json
-import java.security.MessageDigest
 import javax.inject.Inject
 
 data class BalanceResult(
@@ -39,7 +39,7 @@ class ComputeBalancesUseCase @Inject constructor(
                     // Verify snapshot hashes match local events (forgery detection)
                     val localIds = eventDao.getEventIds(groupId).toSet()
                     if (snap.event_hashes.isNotEmpty()) {
-                        val localHashes = localIds.mapTo(HashSet()) { sha256Hex(it) }
+                        val localHashes = localIds.mapTo(HashSet()) { HashUtil.sha256Hex(it) }
                         val matchCount = snap.event_hashes.count { it in localHashes }
                         if (snap.event_hashes.size < 10 || matchCount.toDouble() / snap.event_hashes.size < 0.8) {
                             Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
@@ -118,10 +118,5 @@ class ComputeBalancesUseCase @Inject constructor(
                 balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
             }
         }
-    }
-
-    private fun sha256Hex(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
     }
 }

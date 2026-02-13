@@ -17,7 +17,8 @@ class JoinGroupUseCase @Inject constructor(
     private val identity: IdentityManager,
     private val nostrClient: NostrClient,
     private val eventDao: EventDao,
-    private val eventProcessor: EventProcessor
+    private val eventProcessor: EventProcessor,
+    private val signer: com.splitfree.domain.crypto.EventSigner
 ) {
 
     /**
@@ -79,18 +80,7 @@ class JoinGroupUseCase @Inject constructor(
         try {
             val wasConnected = nostrClient.isConnected
             if (!wasConnected) {
-                nostrClient.authSigner = { challenge, relayUrl ->
-                    val privKey = identity.getPrivateKeyBytes()
-                    try {
-                        com.splitfree.domain.crypto.NostrEvent(
-                            pubkey = identity.getPublicKeyHex(),
-                            createdAt = System.currentTimeMillis() / 1000,
-                            kind = 22242,
-                            tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
-                            content = ""
-                        ).sign(privKey)
-                    } finally { privKey.fill(0) }
-                }
+                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
                 nostrClient.connect(group.relays)
             }
             nostrClient.acquireConnection()

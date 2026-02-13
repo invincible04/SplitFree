@@ -7,12 +7,12 @@ import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.data.util.HashUtil
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.Balance
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
 
@@ -67,7 +67,7 @@ class CreateSnapshotUseCase @Inject constructor(
 
             val balances = computeBalances(groupId)
             val eventIds = eventDao.getEventIds(groupId)
-            val eventHashes = eventIds.map { sha256Hex(it) }
+            val eventHashes = eventIds.map { HashUtil.sha256Hex(it) }
 
             val snapshot = BalanceSnapshot(
                 id = UUID.randomUUID().toString(),
@@ -113,10 +113,5 @@ class CreateSnapshotUseCase @Inject constructor(
             )
             true
         }
-    }
-
-    private fun sha256Hex(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
     }
 }

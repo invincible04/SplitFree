@@ -2,6 +2,7 @@ package com.splitfree.domain.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -18,10 +19,22 @@ class GiftWrapService @Inject constructor(
     private val identityManager: IdentityManager
 ) {
     private val prefs: SharedPreferences by lazy {
+        try {
+            createEncryptedPrefs()
+        } catch (e: Exception) {
+            Log.e("GiftWrapService", "EncryptedSharedPreferences failed, resetting: ${e.message}")
+            try {
+                java.io.File(context.filesDir.parent, "shared_prefs/splitfree_settings.xml").delete()
+            } catch (_: Exception) {}
+            createEncryptedPrefs()
+        }
+    }
+
+    private fun createEncryptedPrefs(): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             "splitfree_settings",
             masterKey,

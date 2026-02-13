@@ -20,7 +20,7 @@ data class RelayStatus(
 @Singleton
 class RelayHealthMonitor @Inject constructor() {
 
-    private val _statuses = mutableMapOf<String, RelayStatus>()
+    private val _statuses = java.util.concurrent.ConcurrentHashMap<String, RelayStatus>()
     val statuses: Map<String, RelayStatus> get() = _statuses.toMap()
 
     suspend fun checkRelays(relayUrls: List<String>) {

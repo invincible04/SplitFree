@@ -9,7 +9,6 @@ import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.IdentityManager
-import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.usecase.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.SelfHealUseCase
 import dagger.assisted.Assisted
@@ -32,7 +31,8 @@ class MidnightSyncWorker @AssistedInject constructor(
     private val identity: IdentityManager,
     private val createSnapshot: CreateSnapshotUseCase,
     private val selfHeal: SelfHealUseCase,
-    private val eventProcessor: EventProcessor
+    private val eventProcessor: EventProcessor,
+    private val signer: com.splitfree.domain.crypto.EventSigner
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
@@ -54,28 +54,13 @@ class MidnightSyncWorker @AssistedInject constructor(
 
     private suspend fun ensureConnected(): Boolean {
         if (!nostrClient.isConnected) {
-            nostrClient.authSigner = { challenge, relayUrl -> createAuthEvent(challenge, relayUrl) }
+            nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
             val relays = groupRepo.getAll().flatMap { it.relays }.distinct()
                 .ifEmpty { SyncWorker.DEFAULT_RELAYS }
             nostrClient.connect(relays)
         }
         nostrClient.acquireConnection()
         return true
-    }
-
-    private fun createAuthEvent(challenge: String, relayUrl: String): NostrEvent {
-        val privKey = identity.getPrivateKeyBytes()
-        try {
-            return NostrEvent(
-                pubkey = identity.getPublicKeyHex(),
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 22242,
-                tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
-                content = ""
-            ).sign(privKey)
-        } finally {
-            privKey.fill(0)
-        }
     }
 
     private suspend fun flushOutbox() {

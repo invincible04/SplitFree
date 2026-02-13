@@ -51,6 +51,24 @@ class EventSigner @Inject constructor(
     fun verify(event: NostrEvent): Boolean = event.verify()
 
     /**
+     * NIP-42: Create a signed AUTH event for relay authentication.
+     */
+    fun createAuthEvent(challenge: String, relayUrl: String): NostrEvent {
+        val privKey = identityManager.getPrivateKeyBytes()
+        try {
+            return NostrEvent(
+                pubkey = identityManager.getPublicKeyHex(),
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 22242,
+                tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
+                content = ""
+            ).sign(privKey)
+        } finally {
+            privKey.fill(0)
+        }
+    }
+
+    /**
      * NIP-09: Create a kind 5 deletion event requesting relays delete the given event IDs.
      */
     fun createDeletionEvent(eventIds: List<String>, reason: String = ""): NostrEvent {
