@@ -1,7 +1,7 @@
 package com.splitfree.sync
 
 import android.content.Context
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -81,6 +81,7 @@ class SyncWorker
             outboxDao.deleteOlderThan(sevenDaysAgo)
 
             val pending = outboxDao.getAll()
+            if (pending.isNotEmpty()) Log.i(TAG, "Publishing ${pending.size} outbox events")
             for (event in pending) {
                 val success = nostrClient.publishJson(event.eventJson)
                 if (success) {
@@ -144,9 +145,9 @@ class SyncWorker
                 listOf(
                     "wss://relay.damus.io",
                     "wss://nos.lol",
-                    "wss://relay.nostr.band",
+                    "wss://relay.primal.net",
                     "wss://relay.snort.social",
-                    "wss://nostr.wine",
+                    "wss://relay.nostr.net",
                 )
         }
     }

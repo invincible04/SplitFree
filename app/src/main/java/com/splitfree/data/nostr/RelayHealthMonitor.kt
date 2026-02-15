@@ -1,6 +1,6 @@
 package com.splitfree.data.nostr
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import kotlinx.coroutines.*
 import java.net.URI
 import javax.inject.Inject
@@ -71,7 +71,7 @@ class RelayHealthMonitor
 
             val FALLBACK_RELAYS =
                 listOf(
-                    "wss://relay.nostr.net",
+                    "wss://nostr.mutinywallet.com",
                     "wss://nostr21.com",
                     "wss://purplepag.es",
                 )

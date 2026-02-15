@@ -67,7 +67,6 @@ class EventProcessorTest {
         every { EventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns true
         every { EventValidator.isDeletedExpense(any(), any(), any()) } returns false
         every { EventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns true
-        every { EventValidator.isGroupMetaAuthorValid(any(), any()) } returns true
 
         every { giftWrap.tryUnwrap(any()) } returns null
         every { signer.verify(any()) } returns true
@@ -194,17 +193,57 @@ class EventProcessorTest {
         runBlocking {
             val meta = """{"name":"Updated","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
             every { encryption.decrypt(any(), groupKey) } returns meta
-            every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns true
             val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
             assertTrue(result.stored)
             coVerify { groupRepo.updateFromMeta(groupId, "Updated", listOf(pubkey), listOf("wss://r"), any()) }
         }
 
     @Test
-    fun `process rejects group_meta from non-creator`() =
+    fun `process rejects group_meta from non-member non-creator`() =
         runBlocking {
-            every { EventValidator.isGroupMetaAuthorValid(pubkey, pubkey) } returns false
-            val result = processor.process(makeEvent(eventType = "group_meta", expenseUuid = null), knownGroupKey = groupKey)
+            val stranger = "cc".repeat(32)
+            val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
+            coEvery { groupRepo.getById(groupId) } returns creatorGroup
+            // stranger is not member, not creator, and decrypt returns meta without stranger as only-added member
+            every { encryption.decrypt(any(), groupKey) } returns
+                """{"name":"Test","members":["$pubkey","dd${"dd".repeat(31)}"],"relays":["wss://r"]}"""
+            val result = processor.process(
+                makeEvent(eventType = "group_meta", author = stranger, expenseUuid = null),
+                knownGroupKey = groupKey,
+            )
+            assertFalse(result.stored)
+        }
+
+    @Test
+    fun `process accepts group_meta self-join announcement`() =
+        runBlocking {
+            val joiner = "cc".repeat(32)
+            val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
+            coEvery { groupRepo.getById(groupId) } returns creatorGroup
+            // joiner adds only themselves — valid self-join
+            val meta = """{"name":"Test","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+            every { encryption.decrypt(any(), groupKey) } returns meta
+            val result = processor.process(
+                makeEvent(eventType = "group_meta", author = joiner, expenseUuid = null),
+                knownGroupKey = groupKey,
+            )
+            assertTrue(result.stored)
+        }
+
+    @Test
+    fun `process rejects group_meta self-join that removes members`() =
+        runBlocking {
+            val joiner = "cc".repeat(32)
+            val otherMember = "dd".repeat(32)
+            val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, otherMember))
+            coEvery { groupRepo.getById(groupId) } returns creatorGroup
+            // joiner adds themselves but removes otherMember — invalid
+            val meta = """{"name":"Test","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+            every { encryption.decrypt(any(), groupKey) } returns meta
+            val result = processor.process(
+                makeEvent(eventType = "group_meta", author = joiner, expenseUuid = null),
+                knownGroupKey = groupKey,
+            )
             assertFalse(result.stored)
         }
 
@@ -335,8 +374,10 @@ class EventProcessorTest {
     fun `process group_meta from non-member is rejected`() =
         runBlocking {
             val stranger = "cc".repeat(32)
-            val groupWithStranger = group.copy(members = listOf(pubkey)) // stranger not in members
-            coEvery { groupRepo.getById(groupId) } returns groupWithStranger
+            val groupWithCreator = group.copy(createdBy = pubkey, members = listOf(pubkey))
+            coEvery { groupRepo.getById(groupId) } returns groupWithCreator
+            // decrypt fails — can't verify self-join, so reject
+            every { encryption.decrypt(any(), any<String>()) } throws RuntimeException("decrypt failed")
             val result =
                 processor.process(
                     makeEvent(eventType = "group_meta", author = stranger, expenseUuid = null),

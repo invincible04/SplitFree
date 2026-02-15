@@ -1,6 +1,6 @@
 package com.splitfree.data.nostr
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.domain.crypto.NostrEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -138,13 +138,16 @@ class Relay(
         okCallbacks[event.id] = deferred
         if (!send(ClientMessage.Event(event).toJson())) {
             okCallbacks.remove(event.id)
+            Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: send failed (not connected?)")
             return false
         }
         return try {
             val ok = withTimeout(timeoutMs) { deferred.await() }
+            if (!ok.accepted) Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: rejected: ${ok.message}")
             ok.accepted
         } catch (_: Exception) {
             okCallbacks.remove(event.id)
+            Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: timeout after ${timeoutMs}ms")
             false
         }
     }
@@ -173,7 +176,10 @@ class Relay(
     }
 
     /** NIP-42: respond to relay AUTH challenge. */
+    private var authAttempts = 0
+
     private fun handleAuth(challenge: String) {
+        if (authAttempts++ >= 3) return // give up after 3 failed attempts
         val signer =
             authSigner ?: run {
                 Log.w(TAG, "AUTH required by $url but no signer configured")
@@ -182,7 +188,13 @@ class Relay(
         try {
             val authEvent = signer(challenge, url)
             send(ClientMessage.Auth(authEvent).toJson())
-            Log.d(TAG, "Sent AUTH response to $url")
+            Log.d(TAG, "Sent AUTH response to $url (attempt $authAttempts)")
+            // Re-send subscriptions once after first AUTH
+            if (authAttempts == 1) {
+                activeSubs.forEach { (subId, filters) ->
+                    send(ClientMessage.Req(subId, filters).toJson())
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "AUTH failed for $url: ${e.message}")
         }
@@ -192,16 +204,11 @@ class Relay(
         reconnectJob?.cancel()
         val attempt = reconnectAttempt++
         if (attempt >= MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Max reconnect attempts reached for $url — marking dead")
+            Log.w(TAG, "Giving up on $url after $MAX_RECONNECT_ATTEMPTS attempts")
             return
         }
-        // After 20 consecutive failures (~20 min), back off to 5-minute intervals
-        val delayMs =
-            if (attempt >= 20) {
-                300_000L
-            } else {
-                minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
-            }
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s, then stay at 60s
+        val delayMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
         reconnectJob =
             scope.launch {
                 delay(delayMs)
@@ -211,7 +218,7 @@ class Relay(
 
     companion object {
         private const val TAG = "Relay"
-        private const val MAX_RECONNECT_ATTEMPTS = 50
+        private const val MAX_RECONNECT_ATTEMPTS = 10
         val sharedClient: OkHttpClient =
             OkHttpClient
                 .Builder()

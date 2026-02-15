@@ -50,6 +50,14 @@ class SettingsViewModel
             viewModelScope.launch {
                 if (identity.hasPendingKeyPair()) {
                     _revokeState.value = RevokeState.InProgress
+                    // Resume and wait for completion
+                    try {
+                        revokeKeyUseCase.resumeIfNeeded()
+                        _npub.value = identity.getPublicKeyHex()
+                        _revokeState.value = RevokeState.Idle
+                    } catch (_: Exception) {
+                        _revokeState.value = RevokeState.Idle
+                    }
                 }
             }
         }
@@ -76,8 +84,6 @@ class SettingsViewModel
                 try {
                     val newPub = revokeKeyUseCase()
                     _npub.value = newPub
-                    _nsec.value = ""
-                    _seedPhrase.value = emptyList()
                     _revokeState.value = RevokeState.Done(newPub)
                 } catch (e: Exception) {
                     _revokeState.value = RevokeState.Error(e.message ?: "Revocation failed")

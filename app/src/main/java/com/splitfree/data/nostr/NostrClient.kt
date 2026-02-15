@@ -1,10 +1,13 @@
 package com.splitfree.data.nostr
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.domain.crypto.NostrEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -64,6 +67,14 @@ class NostrClient
 
         val isConnected: Boolean get() = relays.values.any { it.state.value == Relay.State.CONNECTED }
 
+        /** Reactive connection state — emits whenever any relay connects/disconnects. */
+        private val _connectionState = MutableStateFlow(false)
+        val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
+
+        private fun refreshConnectionState() {
+            _connectionState.value = relays.values.any { it.state.value == Relay.State.CONNECTED }
+        }
+
         fun acquireConnection() {
             activeUsers.incrementAndGet()
         }
@@ -88,6 +99,7 @@ class NostrClient
                 // Remove stale relays no longer in the new list
                 val stale = relays.keys - safeUrls.toSet()
                 stale.forEach { url -> relays.remove(url)?.disconnect() }
+                if (stale.isNotEmpty()) refreshConnectionState()
                 currentRelays = safeUrls
                 safeUrls.forEach { url ->
                     if (!relays.containsKey(url)) {
@@ -125,6 +137,8 @@ class NostrClient
                             }
                         }
                         relay.connect()
+                        // Track relay state changes for live connection indicator
+                        scope.launch { relay.state.collect { refreshConnectionState() } }
                     }
                 }
                 Log.i(TAG, "Connected to ${safeUrls.size} relays")
@@ -162,17 +176,23 @@ class NostrClient
         fun startListening() { /* messages already flowing via relay.messages collectors */ }
 
         suspend fun publish(event: NostrEvent): Boolean {
+            if (relays.isEmpty()) {
+                Log.w(TAG, "publish: no relays connected, event ${event.id.take(8)} will be lost")
+                return false
+            }
             var anySuccess = false
             relays.values
                 .map { relay ->
                     scope.async {
                         try {
                             relay.sendEvent(event)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            Log.w(TAG, "publish to ${relay.url} failed: ${e.message}")
                             false
                         }
                     }
                 }.forEach { if (it.await()) anySuccess = true }
+            Log.i(TAG, "publish event ${event.id.take(8)}: ${if (anySuccess) "OK" else "FAILED"} (${relays.size} relays)")
             return anySuccess
         }
 
@@ -283,6 +303,7 @@ class NostrClient
             relays.values.forEach { it.disconnect() }
             relays.clear()
             synchronized(seenLock) { seenEventIds.clear() }
+            refreshConnectionState()
         }
 
         companion object {

@@ -178,7 +178,7 @@ fun GroupDetailScreen(
                         val intent =
                             Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "Join my SplitFree group: $link")
+                                putExtra(Intent.EXTRA_TEXT, link)
                             }
                         context.startActivity(Intent.createChooser(intent, "Share invite"))
                     }

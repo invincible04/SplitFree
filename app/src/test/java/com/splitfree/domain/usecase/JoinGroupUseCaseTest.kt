@@ -2,9 +2,12 @@ package com.splitfree.domain.usecase
 
 import android.util.Base64
 import com.splitfree.data.local.EventDao
+import com.splitfree.data.local.OutboxDao
+import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.Group
 import com.splitfree.sync.EventProcessor
@@ -22,6 +25,9 @@ class JoinGroupUseCaseTest {
     private val eventDao = mockk<EventDao>(relaxed = true)
     private val eventProcessor = mockk<EventProcessor>(relaxed = true)
     private val signer = mockk<EventSigner>(relaxed = true)
+    private val encryption = mockk<GroupEncryption>(relaxed = true)
+    private val outboxDao = mockk<OutboxDao>(relaxed = true)
+    private val throttler = mockk<EventThrottler>(relaxed = true)
 
     private lateinit var useCase: JoinGroupUseCase
     private val pubkey = "aa".repeat(32)
@@ -31,6 +37,10 @@ class JoinGroupUseCaseTest {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.d(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
+        every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
 
         mockkStatic(Base64::class)
         every { Base64.decode(any<String>(), any()) } answers {
@@ -48,7 +58,7 @@ class JoinGroupUseCaseTest {
         every { identity.getPublicKeyHex() } returns pubkey
         coEvery { groupRepo.getById(any()) } returns null
 
-        useCase = JoinGroupUseCase(groupRepo, identity, nostrClient, eventDao, eventProcessor, signer)
+        useCase = JoinGroupUseCase(groupRepo, identity, nostrClient, eventDao, eventProcessor, signer, encryption, outboxDao, throttler)
     }
 
     @After
@@ -165,15 +175,16 @@ class JoinGroupUseCaseTest {
     // --- createInviteLink ---
 
     @Test
-    fun `createInviteLink produces valid URI`() {
-        val group = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
+    fun `createInviteLink produces valid v2 URI`() {
+        val group = Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io", "wss://nos.lol"))
         val link = JoinGroupUseCase.createInviteLink(group, "key123")
-        assertTrue(link.startsWith("splitfree://join?"))
-        assertTrue(link.contains("g="))
-        assertTrue(link.contains("k="))
-        assertTrue(link.contains("r="))
-        assertTrue(link.contains("n="))
-        assertTrue(link.contains("exp="))
+        assertTrue(link.startsWith("splitfree://join?d="))
+        // Should be compact — under 150 chars with known relays
+        assertTrue("Link too long: ${link.length}", link.length < 150)
+        // Payload should be valid base64url (no +, /, or = padding issues)
+        val payload = link.substringAfter("d=")
+        assertFalse(payload.contains("+"))
+        assertFalse(payload.contains("/"))
     }
 
     // --- initialSync branches ---
@@ -200,6 +211,8 @@ class JoinGroupUseCaseTest {
             coEvery { eventDao.getEventIds(groupId) } returns emptyList()
             coEvery { eventProcessor.process(any(), any(), any(), lenientTimestamp = true) } returns
                 EventProcessor.ProcessResult(stored = true)
+            coEvery { nostrClient.publish(any()) } returns true
+            coEvery { outboxDao.delete(any<String>()) } just Runs
 
             useCase(buildUri(groupId = groupId))
             coVerify { eventProcessor.process(fakeEvent, groupId, any(), lenientTimestamp = true) }
@@ -226,6 +239,8 @@ class JoinGroupUseCaseTest {
                 )
             coEvery { nostrClient.fetchEvents(groupId, 0) } returns listOf(fakeEvent)
             coEvery { eventDao.getEventIds(groupId) } returns listOf("existing-evt")
+            coEvery { nostrClient.publish(any()) } returns true
+            coEvery { outboxDao.delete(any<String>()) } just Runs
 
             useCase(buildUri(groupId = groupId))
             coVerify(exactly = 0) { eventProcessor.process(any(), any(), any(), lenientTimestamp = any()) }

@@ -4,10 +4,20 @@ import com.splitfree.domain.crypto.NostrEvent
 import io.mockk.*
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.AfterClass
 import org.junit.Assert.*
+import org.junit.BeforeClass
 import org.junit.Test
 
 class EventThrottlerTest {
+    companion object {
+        @JvmStatic @BeforeClass fun setupLog() {
+            mockkStatic(android.util.Log::class)
+            every { android.util.Log.d(any<String>(), any<String>()) } returns 0
+            every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        }
+        @JvmStatic @AfterClass fun teardownLog() { unmockkStatic(android.util.Log::class) }
+    }
     private fun makeEvent(id: String) =
         NostrEvent(
             id = id,

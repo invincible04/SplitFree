@@ -1,6 +1,7 @@
 package com.splitfree.domain.usecase
 
 import com.splitfree.data.local.OutboxDao
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.GroupRepository
@@ -42,6 +43,7 @@ class CreateGroupUseCase
                     relays = relays,
                 )
             groupRepo.save(group, groupKey)
+            Log.i(TAG, "Created group: ${group.id} name=$name creator=${pubkey.take(8)}")
 
             // Publish group_meta event so other members can discover it from relays
             val metaJson =
@@ -70,18 +72,20 @@ class CreateGroupUseCase
             )
             // Publish immediately so the group is available when invite link is shared
             throttler.enqueue(event)
+            Log.i(TAG, "Enqueued group_meta publish for ${group.id}")
 
             return group
         }
 
         companion object {
+            private const val TAG = "CreateGroupUseCase"
             val DEFAULT_RELAYS =
                 listOf(
                     "wss://relay.damus.io",
                     "wss://nos.lol",
-                    "wss://relay.nostr.band",
+                    "wss://relay.primal.net",
                     "wss://relay.snort.social",
-                    "wss://nostr.wine",
+                    "wss://relay.nostr.net",
                 )
             const val MAX_GROUP_MEMBERS = 50
         }

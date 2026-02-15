@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.Group
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -40,11 +41,22 @@ class CreateGroupUseCaseTest {
 
     @Before
     fun setup() {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.i(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.d(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>()) } returns 0
+
         every { encryption.generateGroupKey() } returns fakeGroupKey
         every { identity.getPublicKeyHex() } returns fakePubkey
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
         useCase = CreateGroupUseCase(groupRepo, encryption, identity, signer, outboxDao, throttler)
+    }
+
+    @After
+    fun teardown() {
+        unmockkStatic(android.util.Log::class)
     }
 
     @Test

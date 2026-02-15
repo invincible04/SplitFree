@@ -1,8 +1,10 @@
 package com.splitfree
 
 import android.app.AlertDialog
+import com.splitfree.util.DebugLog as Log
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -11,7 +13,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -23,6 +24,8 @@ import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph
 import com.splitfree.ui.theme.SplitFreeTheme
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -32,38 +35,73 @@ class MainActivity : ComponentActivity() {
 
     @Inject lateinit var joinGroup: JoinGroupUseCase
 
-    private var pendingDeepLink by mutableStateOf<String?>(null)
-    private var confirmedDeepLink by mutableStateOf<String?>(null)
+    private var isJoining by mutableStateOf(false)
+    private var navController: androidx.navigation.NavHostController? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         sanitizeIntent(intent)
         handleDeepLink(intent)
+
+        // Start real-time sync service when identity becomes available
+        lifecycleScope.launch {
+            while (!identity.hasIdentity()) delay(1000)
+            val serviceIntent = Intent(this@MainActivity, com.splitfree.sync.ForegroundSyncService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        }
+
         setContent {
             SplitFreeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    val navController = rememberNavController()
+                    val nav = rememberNavController()
+                    navController = nav
                     val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
-                    SplitFreeNavGraph(navController = navController, startDestination = start)
+                    SplitFreeNavGraph(
+                        navController = nav,
+                        startDestination = start,
+                        onScanResult = { scannedUrl ->
+                            handleDeepLink(Intent(Intent.ACTION_VIEW, Uri.parse(scannedUrl)))
+                        },
+                    )
 
-                    // Process confirmed deep link once nav is ready
-                    val deepLink = confirmedDeepLink
-                    LaunchedEffect(deepLink) {
-                        if (deepLink != null && identity.hasIdentity()) {
-                            confirmedDeepLink = null
-                            try {
-                                val group = joinGroup(deepLink)
-                                navController.navigate(Screen.GroupDetail.withId(group.id))
-                            } catch (e: Exception) {
-                                Toast.makeText(this@MainActivity, "Invalid invite link", Toast.LENGTH_SHORT).show()
-                            }
+                    if (isJoining) {
+                        androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = androidx.compose.ui.Alignment.Center,
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator()
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun processJoin(link: String) {
+        isJoining = true
+        lifecycleScope.launch {
+            val group = try {
+                joinGroup(link)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Join failed: ${e.message}", e)
+                Toast.makeText(this@MainActivity, "Join failed: ${e.message}", Toast.LENGTH_LONG).show()
+                null
+            } finally {
+                isJoining = false
+            }
+            if (group != null) {
+                Log.i("MainActivity", "Joined group: ${group.id} (${group.name})")
+                navController?.navigate(Screen.GroupDetail.withId(group.id))
             }
         }
     }
@@ -84,17 +122,18 @@ class MainActivity : ComponentActivity() {
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
         val uriStr = uri.toString()
-        if (uriStr.startsWith("splitfree://join")) {
-            // Validate deep link parameters before showing dialog
-            val groupParam = uri.getQueryParameter("g") ?: uri.getQueryParameter("group")
-            if (groupParam.isNullOrBlank()) return
+        Log.i("MainActivity", "handleDeepLink: $uriStr")
+        if (uriStr.startsWith("splitfree://join") ||
+            uriStr.startsWith("https://splitfree.app/join")) {
+            // v2 compact links use fragment (#), v1 uses query params (?)
+            val hasParams = uri.getQueryParameter("d") != null || uri.getQueryParameter("g") != null || uri.fragment?.isNotEmpty() == true
+            if (!hasParams) return
             // Show confirmation dialog — never auto-join from deep links (CVE-2025-4957, USENIX 2017)
-            val relay = uri.getQueryParameter("r") ?: uri.getQueryParameter("relay") ?: "default relay"
             AlertDialog
                 .Builder(this)
                 .setTitle("Join Group?")
-                .setMessage("An app is requesting you join a group via relay:\n$relay\n\nOnly join if you trust the sender of this link.")
-                .setPositiveButton("Join") { _, _ -> confirmedDeepLink = uriStr }
+                .setMessage("Join this SplitFree group?\n\nOnly join if you trust the sender of this link.")
+                .setPositiveButton("Join") { _, _ -> processJoin(uriStr) }
                 .setNegativeButton("Cancel", null)
                 .show()
         }

@@ -1,6 +1,6 @@
 package com.splitfree.data.util
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import net.jpountz.lz4.LZ4Factory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder

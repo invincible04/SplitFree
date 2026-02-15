@@ -1,6 +1,6 @@
 package com.splitfree.ui.viewmodels
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope

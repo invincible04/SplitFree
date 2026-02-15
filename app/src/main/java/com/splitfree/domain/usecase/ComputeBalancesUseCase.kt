@@ -1,6 +1,6 @@
 package com.splitfree.domain.usecase
 
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.data.util.HashUtil

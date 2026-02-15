@@ -30,6 +30,7 @@ import com.splitfree.ui.viewmodels.SettingsViewModel
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onDebugLog: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -55,6 +56,13 @@ fun SettingsScreen(
     var giftWrapEnabled by remember { mutableStateOf(viewModel.giftWrapEnabled) }
     var showRevokeDialog by remember { mutableStateOf(false) }
     val revokeState by viewModel.revokeState.collectAsStateWithLifecycle()
+    // Refresh revealed secrets after key revocation (keep visible, show new key)
+    LaunchedEffect(revokeState) {
+        if (revokeState is RevokeState.Done) {
+            if (showKey) viewModel.revealPrivateKey()
+            if (showSeedPhrase) viewModel.revealSeedPhrase()
+        }
+    }
     val customRelays by viewModel.customRelays.collectAsStateWithLifecycle()
     var showRelayEditor by remember { mutableStateOf(false) }
     var relayInput by remember { mutableStateOf("") }
@@ -287,7 +295,8 @@ fun SettingsScreen(
                         onClick = { showRevokeDialog = true },
                         colors =
                             ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
                             ),
                         enabled = revokeState !is RevokeState.InProgress,
                     ) {
@@ -312,6 +321,15 @@ fun SettingsScreen(
             ListItem(
                 headlineContent = { Text("SplitFree v1.0.0") },
                 supportingContent = { Text("Decentralized expense splitting over Nostr") },
+            )
+
+            ListItem(
+                headlineContent = { Text("Debug Logs") },
+                supportingContent = { Text("View live app logs for troubleshooting") },
+                leadingContent = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                trailingContent = {
+                    FilledTonalButton(onClick = onDebugLog) { Text("Open") }
+                },
             )
 
             Spacer(Modifier.height(32.dp))

@@ -1,7 +1,7 @@
 package com.splitfree.sync
 
 import android.content.Context
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.repository.GroupRepository
@@ -106,13 +106,27 @@ class EventProcessor
                 return ProcessResult(false)
             }
             if (eventType == "group_meta") {
-                if (authorHex !in group.members) {
-                    Log.w(TAG, "Rejecting group_meta from non-member $authorHex in group $groupId")
-                    return ProcessResult(false)
-                }
-                if (!EventValidator.isGroupMetaAuthorValid(authorHex, group.createdBy)) {
-                    Log.w(TAG, "Rejecting group_meta from non-creator $authorHex in group $groupId")
-                    return ProcessResult(false)
+                // Allow group_meta from the creator OR from a pubkey that's adding itself
+                // (new member announcing their join). The creator check is still enforced
+                // for meta changes that don't involve self-addition.
+                val isCreator = group.createdBy.isEmpty() || authorHex == group.createdBy
+                val isMember = authorHex in group.members
+                if (!isMember && !isCreator) {
+                    // Check if this is a self-join announcement: the only change is adding the author
+                    val isSelfJoin = try {
+                        val meta = json.decodeFromString<GroupMeta>(
+                            encryption.decrypt(inner.content, knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: "")
+                        )
+                        val currentMembers = group.members.toSet()
+                        val newMembers = meta.members.toSet()
+                        val added = newMembers - currentMembers
+                        val removed = currentMembers - newMembers
+                        added.size == 1 && added.first() == authorHex && removed.isEmpty()
+                    } catch (_: Exception) { false }
+                    if (!isSelfJoin) {
+                        Log.w(TAG, "Rejecting group_meta from non-member $authorHex in group $groupId")
+                        return ProcessResult(false)
+                    }
                 }
             }
 
@@ -192,6 +206,7 @@ class EventProcessor
             // Post-processing side effects
             handleSideEffects(eventType, decrypted, authorHex, groupId, inner.createdAt, nonCancellable)
 
+            Log.i(TAG, "Stored $eventType from ${authorHex.take(8)} in group ${group.name} (${inner.id.take(8)})")
             return ProcessResult(
                 stored = true,
                 groupName = group.name,
@@ -220,6 +235,7 @@ class EventProcessor
                         maybeNonCancellable {
                             val meta = json.decodeFromString<GroupMeta>(decrypted)
                             if (meta.members.isNotEmpty()) {
+                                Log.i(TAG, "Applying group_meta for $groupId: ${meta.members.size} members, name=${meta.name}")
                                 groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays, createdAt)
                             }
                         }

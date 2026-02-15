@@ -1,7 +1,7 @@
 package com.splitfree.data.ble
 
 import android.content.Context
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import com.splitfree.domain.crypto.IdentityManager

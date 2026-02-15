@@ -6,7 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import androidx.core.app.NotificationCompat
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
@@ -14,6 +14,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -51,12 +52,24 @@ class ForegroundSyncService : Service() {
 
     private fun startRealtimeSync() {
         scope.launch {
-            if (!identity.hasIdentity()) return@launch
-            val groups = groupRepo.getAll()
+            if (!identity.hasIdentity()) {
+                Log.w(TAG, "No identity — skipping sync")
+                return@launch
+            }
+
+            // Wait until at least one group exists (handles fresh install)
+            val groups = groupRepo.getAll().ifEmpty {
+                Log.i(TAG, "No groups yet — waiting for first group")
+                groupRepo.observeAll().first { it.isNotEmpty() }
+            }
             val allRelays = groups.flatMap { it.relays }.distinct()
-            if (allRelays.isEmpty()) return@launch
+            if (allRelays.isEmpty()) {
+                Log.w(TAG, "No relays to connect — ${groups.size} groups loaded")
+                return@launch
+            }
 
             try {
+                Log.i(TAG, "Connecting to ${allRelays.size} relays: ${allRelays.joinToString()}")
                 nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
                 nostrClient.connect(allRelays)
                 nostrClient.acquireConnection()
@@ -87,7 +100,9 @@ class ForegroundSyncService : Service() {
             }
 
             nostrClient.startListening()
+            Log.i(TAG, "Listening for incoming events...")
             nostrClient.incomingEvents.collect { event ->
+                Log.d(TAG, "Received event ${event.id.take(8)} kind=${event.kind} from=${event.pubkey.take(8)}")
                 try {
                     val result =
                         eventProcessor.process(
@@ -95,6 +110,7 @@ class ForegroundSyncService : Service() {
                             nonCancellable = true,
                         )
                     if (result.stored) {
+                        Log.i(TAG, "Processed: ${result.eventType} from ${result.authorHex?.take(8)} in ${result.groupName}")
                         ExpenseNotifier.notifyIfNeeded(
                             this@ForegroundSyncService,
                             result.eventType!!,

@@ -1,6 +1,7 @@
 package com.splitfree.data.nostr
 
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.util.DebugLog as Log
 import kotlinx.coroutines.*
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -27,9 +28,13 @@ class EventThrottler
                 .AtomicInteger(0)
 
         fun enqueue(event: NostrEvent) {
-            if (queueSize.get() >= MAX_QUEUE_SIZE) return // drop overflow
+            if (queueSize.get() >= MAX_QUEUE_SIZE) {
+                Log.w("EventThrottler", "Queue full, dropping event ${event.id.take(8)}")
+                return
+            }
             queue.offer(event)
             queueSize.incrementAndGet()
+            Log.d("EventThrottler", "Enqueued event ${event.id.take(8)}, queue size=${queueSize.get()}")
             processIfNeeded()
         }
 

@@ -32,12 +32,15 @@ sealed class Screen(
     data object NearbySync : Screen("group/{groupId}/nearby_sync") {
         fun withGroupId(id: String) = "group/$id/nearby_sync"
     }
+
+    data object DebugLog : Screen("debug_log")
 }
 
 @Composable
 fun SplitFreeNavGraph(
     navController: NavHostController,
     startDestination: String,
+    onScanResult: (String) -> Unit = {},
 ) {
     NavHost(
         navController = navController,
@@ -59,6 +62,7 @@ fun SplitFreeNavGraph(
                 onGroupClick = { navController.navigate(Screen.GroupDetail.withId(it)) },
                 onCreateGroup = { navController.navigate(Screen.CreateGroup.route) },
                 onSettings = { navController.navigate(Screen.Settings.route) },
+                onScanResult = onScanResult,
             )
         }
         composable(Screen.CreateGroup.route) {
@@ -72,7 +76,10 @@ fun SplitFreeNavGraph(
             )
         }
         composable(Screen.Settings.route) {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onDebugLog = { navController.navigate(Screen.DebugLog.route) },
+            )
         }
         composable(
             Screen.GroupDetail.route,
@@ -107,6 +114,9 @@ fun SplitFreeNavGraph(
             arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
         ) {
             NearbySyncScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Screen.DebugLog.route) {
+            DebugLogScreen(onBack = { navController.popBackStack() })
         }
     }
 }

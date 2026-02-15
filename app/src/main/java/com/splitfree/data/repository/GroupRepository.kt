@@ -2,7 +2,7 @@ package com.splitfree.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.splitfree.data.local.GroupDao

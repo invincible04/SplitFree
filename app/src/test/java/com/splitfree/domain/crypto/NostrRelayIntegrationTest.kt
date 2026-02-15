@@ -25,7 +25,7 @@ class NostrRelayIntegrationTest {
         listOf(
             "wss://relay.damus.io",
             "wss://nos.lol",
-            "wss://relay.nostr.band",
+            "wss://relay.primal.net",
         )
 
     private val privKey = ByteArray(32).also { SecureRandom().nextBytes(it) }

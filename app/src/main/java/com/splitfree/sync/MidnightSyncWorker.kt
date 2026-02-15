@@ -1,7 +1,7 @@
 package com.splitfree.sync
 
 import android.content.Context
-import android.util.Log
+import com.splitfree.util.DebugLog as Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.splitfree.data.local.EventDao

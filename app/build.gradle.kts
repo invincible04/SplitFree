@@ -111,6 +111,7 @@ dependencies {
 
     // QR Code
     implementation(libs.zxing.core)
+    implementation(libs.play.services.code.scanner)
 
     // Hilt DI
     implementation(libs.hilt.android)
