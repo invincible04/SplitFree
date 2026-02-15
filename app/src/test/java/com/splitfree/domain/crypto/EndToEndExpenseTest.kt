@@ -71,7 +71,7 @@ class EndToEndExpenseTest {
                         listOf("d", dTagValue),
                         listOf("g", groupId),
                         listOf("t", "expense"),
-                        listOf("e", expense.id),
+                        listOf("x", expense.id),
                     ),
                 content = encrypted,
             ).sign(privKey)
@@ -92,7 +92,7 @@ class EndToEndExpenseTest {
         // 9. Extract tags
         val gTag = received.tags.find { it[0] == "g" }!![1]
         val tTag = received.tags.find { it[0] == "t" }!![1]
-        val eTag = received.tags.find { it[0] == "e" }!![1]
+        val eTag = received.tags.find { it[0] == "x" }!![1]
         assertEquals(groupId, gTag)
         assertEquals("expense", tTag)
         assertEquals("exp-001", eTag)

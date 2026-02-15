@@ -40,7 +40,7 @@ class EventSignerMockTest {
         val event = signer.createSignedEvent("group1", "expense", "enc", "uuid1")
         val gTag = event.tags.find { it[0] == "g" }
         val tTag = event.tags.find { it[0] == "t" }
-        val eTag = event.tags.find { it[0] == "e" }
+        val eTag = event.tags.find { it[0] == "x" }
         val dTag = event.tags.find { it[0] == "d" }
         assertEquals("group1", gTag!![1])
         assertEquals("expense", tTag!![1])
@@ -53,7 +53,7 @@ class EventSignerMockTest {
         val event = signer.createSignedEvent("group1", "expense", "enc")
         val dTag = event.tags.find { it[0] == "d" }!!
         assertTrue(dTag[1].startsWith("group1:"))
-        assertNull(event.tags.find { it[0] == "e" })
+        assertNull(event.tags.find { it[0] == "x" })
     }
 
     @Test

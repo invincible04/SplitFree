@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -231,12 +232,22 @@ class NostrClient
                     .AtomicInteger(0)
             val allEose = CompletableDeferred<Unit>()
 
-            // Collect events from all relays for this subscription
+            // Collect events from all relays for this subscription.
+            // Use a latch to ensure all collectors are active before sending REQ,
+            // preventing a race where the relay responds before we're listening.
+            val collectorsReady = CompletableDeferred<Unit>()
+            val readyCount = java.util.concurrent.atomic.AtomicInteger(0)
             val collectJob =
                 scope.launch {
                     relays.values.forEach { relay ->
                         launch {
-                            relay.messages.collect { msg ->
+                            relay.messages
+                                .onSubscription {
+                                    if (readyCount.incrementAndGet() >= relayCount) {
+                                        collectorsReady.complete(Unit)
+                                    }
+                                }
+                                .collect { msg ->
                                 when (msg) {
                                     is RelayMessage.EventMsg -> {
                                         if (msg.subId == subId && msg.event.verify() &&
@@ -259,12 +270,16 @@ class NostrClient
                     }
                 }
 
-            // Subscribe on all relays with both filters (OR'd per NIP-01)
+            // Wait for collectors to be ready, then subscribe
+            withTimeout(5_000) { collectorsReady.await() }
             relays.values.forEach { it.subscribe(subId, listOf(filterNew, filterOld)) }
 
             // Wait for EOSE or timeout
             try {
                 withTimeout(15_000) { allEose.await() }
+                // Brief grace period for events arriving just after EOSE
+                // (e.g. relay re-sends events after NIP-42 AUTH completes)
+                delay(500)
             } catch (_: Exception) {
                 // timeout — return what we have
             }

@@ -65,7 +65,7 @@ class Nip01ExtendedTest {
                         listOf("d", "group:uuid"),
                         listOf("g", "group-id"),
                         listOf("t", "expense"),
-                        listOf("e", "expense-uuid"),
+                        listOf("x", "expense-uuid"),
                     ),
                 content = "encrypted content here",
                 sig = "a".repeat(128),

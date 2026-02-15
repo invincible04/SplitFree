@@ -30,7 +30,7 @@ class Nip59ExtendedTest {
                 pubkey = "",
                 createdAt = 1700000000L,
                 kind = 30078,
-                tags = listOf(listOf("d", "group:uuid"), listOf("g", "mygroup"), listOf("t", "expense"), listOf("e", "exp-123")),
+                tags = listOf(listOf("d", "group:uuid"), listOf("g", "mygroup"), listOf("t", "expense"), listOf("x", "exp-123")),
                 content = "encrypted-expense-data-here",
             )
         val wrapped = Nip59.giftWrap(rumor, sender, recipientPub)

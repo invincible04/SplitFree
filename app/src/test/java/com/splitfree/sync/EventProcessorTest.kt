@@ -44,7 +44,7 @@ class EventProcessorTest {
             buildList {
                 add(listOf("g", groupId))
                 add(listOf("t", eventType))
-                expenseUuid?.let { add(listOf("e", it)) }
+                expenseUuid?.let { add(listOf("x", it)) }
             },
         content = content,
         sig = "sig",
@@ -411,7 +411,7 @@ class EventProcessorTest {
                     pubkey = pubkey,
                     createdAt = System.currentTimeMillis() / 1000,
                     kind = 30078,
-                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("x"), listOf("e", "uuid1")),
+                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("x"), listOf("x", "uuid1")),
                     content = "enc",
                     sig = "sig",
                 )
@@ -495,7 +495,7 @@ class EventProcessorTest {
                     pubkey = pubkey,
                     createdAt = System.currentTimeMillis() / 1000,
                     kind = 30078,
-                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("z", "unknown"), listOf("e", "uuid1")),
+                    tags = listOf(listOf("g", groupId), listOf("t", "expense"), listOf("z", "unknown"), listOf("x", "uuid1")),
                     content = "enc",
                     sig = "sig",
                 )

@@ -86,7 +86,7 @@ class EventProcessor
                     when (tag[0]) {
                         "g" -> if (groupId == null) groupId = tag[1]
                         "t" -> eventType = tag[1]
-                        "e" -> expenseUuid = tag[1]
+                        "x" -> expenseUuid = tag[1]
                     }
                 }
             }

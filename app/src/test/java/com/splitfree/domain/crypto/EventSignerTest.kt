@@ -30,7 +30,7 @@ class EventSignerTest {
                         listOf("d", dTagValue),
                         listOf("g", groupId),
                         listOf("t", "expense"),
-                        listOf("e", expenseUuid),
+                        listOf("x", expenseUuid),
                     ),
                 content = "encrypted",
             ).sign(privKey)
@@ -44,8 +44,8 @@ class EventSignerTest {
         assertEquals(groupId, event.tags.find { it[0] == "g" }!![1])
         // t-tag for event type
         assertEquals("expense", event.tags.find { it[0] == "t" }!![1])
-        // e-tag for expense UUID
-        assertEquals(expenseUuid, event.tags.find { it[0] == "e" }!![1])
+        // x-tag for expense UUID
+        assertEquals(expenseUuid, event.tags.find { it[0] == "x" }!![1])
     }
 
     @Test

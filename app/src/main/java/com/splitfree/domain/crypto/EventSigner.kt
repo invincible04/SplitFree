@@ -35,7 +35,7 @@ class EventSigner
                         add(listOf("d", dTagValue))
                         add(listOf("g", groupId)) // group membership tag for filtering
                         add(listOf("t", eventType))
-                        expenseUuid?.let { add(listOf("e", it)) }
+                        expenseUuid?.let { add(listOf("x", it)) }
                     }
 
                 return NostrEvent(
