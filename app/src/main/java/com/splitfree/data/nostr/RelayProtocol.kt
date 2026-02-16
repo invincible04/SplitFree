@@ -120,7 +120,7 @@ data class NostrFilter(
     val kinds: List<Int>? = null,
     val authors: List<String>? = null,
     val ids: List<String>? = null,
-    val tags: Map<String, List<String>>? = null, // "#d" -> ["value"]
+    val tags: Map<String, List<String>>? = null, // "#g" -> ["value"]
     val since: Long? = null,
     val until: Long? = null,
     val limit: Int? = null,

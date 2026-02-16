@@ -58,6 +58,7 @@ class RealRelayIntegrationTest {
     private val phone2Outbox = mockk<OutboxDao>(relaxed = true)
     private val phone1Throttler = mockk<EventThrottler>(relaxed = true)
     private val phone2Throttler = mockk<EventThrottler>(relaxed = true)
+    private val phone2SelfHeal = mockk<SelfHealUseCase>(relaxed = true)
     private val phone2EventProcessor = mockk<EventProcessor>(relaxed = true)
 
     // Real signers backed by real keys
@@ -257,7 +258,7 @@ class RealRelayIntegrationTest {
         // Create JoinGroupUseCase with Phone 2's REAL client and crypto
         val joinUseCase = JoinGroupUseCase(
             phone2Repo, phone2Identity, phone2Client, phone2EventDao,
-            phone2EventProcessor, phone2Signer, phone2Encryption, phone2Outbox, phone2Throttler,
+            phone2EventProcessor, phone2Signer, phone2Encryption, phone2Outbox, phone2Throttler, phone2SelfHeal,
         )
 
         val joinedGroup = joinUseCase(inviteLink)

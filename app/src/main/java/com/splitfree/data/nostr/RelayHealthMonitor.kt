@@ -68,12 +68,5 @@ class RelayHealthMonitor
 
         companion object {
             private const val TAG = "RelayHealthMonitor"
-
-            val FALLBACK_RELAYS =
-                listOf(
-                    "wss://nostr.mutinywallet.com",
-                    "wss://nostr21.com",
-                    "wss://purplepag.es",
-                )
         }
     }

@@ -9,8 +9,8 @@ import android.os.IBinder
 import com.splitfree.util.DebugLog as Log
 import androidx.core.app.NotificationCompat
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.data.nostr.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -27,10 +27,11 @@ class ForegroundSyncService : Service() {
 
     @Inject lateinit var eventProcessor: EventProcessor
 
-    @Inject lateinit var signer: EventSigner
+    @Inject lateinit var relayConnectionManager: RelayConnectionManager
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false
+    private var connectedRelaySet = emptySet<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -62,18 +63,11 @@ class ForegroundSyncService : Service() {
                 Log.i(TAG, "No groups yet — waiting for first group")
                 groupRepo.observeAll().first { it.isNotEmpty() }
             }
-            val allRelays = groups.flatMap { it.relays }.distinct()
-            if (allRelays.isEmpty()) {
-                Log.w(TAG, "No relays to connect — ${groups.size} groups loaded")
-                return@launch
-            }
 
             try {
-                Log.i(TAG, "Connecting to ${allRelays.size} relays: ${allRelays.joinToString()}")
-                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
-                nostrClient.connect(allRelays)
-                nostrClient.acquireConnection()
+                val relays = relayConnectionManager.ensureConnected()
                 connectionAcquired = true
+                connectedRelaySet = relays.toSet()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to connect: ${e.message}")
                 return@launch
@@ -81,18 +75,36 @@ class ForegroundSyncService : Service() {
 
             val subscribedGroups = mutableSetOf<String>()
             val now = System.currentTimeMillis() / 1000
+            val myPubkey = identity.getPublicKeyHex()
             for (group in groups) {
-                nostrClient.subscribe(group.id, now - 3600)
+                nostrClient.subscribe(group.id, now - 3600, myPubkey)
                 subscribedGroups.add(group.id)
             }
 
-            // Observe group list for newly joined groups
+            // Observe group list for newly joined groups AND relay changes
             scope.launch {
                 groupRepo.observeAll().collect { currentGroups ->
                     val currentNow = System.currentTimeMillis() / 1000
+
+                    // Check if relay set has changed
+                    val currentRelaySet = currentGroups.flatMap { it.relays }.toSet()
+                    if (currentRelaySet != connectedRelaySet - com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS.toSet()) {
+                        Log.i(TAG, "Relay set changed, reconnecting...")
+                        try {
+                            relayConnectionManager.ensureConnected(forceReconnect = true)
+                            connectedRelaySet = nostrClient.currentRelayUrls().toSet()
+                            // Re-subscribe all groups on new connections
+                            for (group in currentGroups) {
+                                nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Reconnect failed: ${e.message}")
+                        }
+                    }
+
                     for (group in currentGroups) {
                         if (subscribedGroups.add(group.id)) {
-                            nostrClient.subscribe(group.id, currentNow - 3600)
+                            nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
                             Log.i(TAG, "Subscribed to new group: ${group.name}")
                         }
                     }

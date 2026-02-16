@@ -204,10 +204,10 @@ class Relay(
         reconnectJob?.cancel()
         val attempt = reconnectAttempt++
         if (attempt >= MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Giving up on $url after $MAX_RECONNECT_ATTEMPTS attempts")
+            Log.w(TAG, "Pausing reconnect to $url after $MAX_RECONNECT_ATTEMPTS attempts")
             return
         }
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s, then stay at 60s
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s cap
         val delayMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
         reconnectJob =
             scope.launch {
@@ -216,9 +216,14 @@ class Relay(
             }
     }
 
+    /** Reset reconnect counter. Called when a new sync cycle re-adds this relay. */
+    fun resetReconnect() {
+        reconnectAttempt = 0
+    }
+
     companion object {
         private const val TAG = "Relay"
-        private const val MAX_RECONNECT_ATTEMPTS = 10
+        private const val MAX_RECONNECT_ATTEMPTS = 20
         val sharedClient: OkHttpClient =
             OkHttpClient
                 .Builder()

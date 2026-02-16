@@ -68,6 +68,8 @@ class NostrClient
 
         val isConnected: Boolean get() = relays.values.any { it.state.value == Relay.State.CONNECTED }
 
+    fun currentRelayUrls(): List<String> = currentRelays.toList()
+
         /** Reactive connection state — emits whenever any relay connects/disconnects. */
         private val _connectionState = MutableStateFlow(false)
         val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
@@ -103,7 +105,12 @@ class NostrClient
                 if (stale.isNotEmpty()) refreshConnectionState()
                 currentRelays = safeUrls
                 safeUrls.forEach { url ->
-                    if (!relays.containsKey(url)) {
+                    val existing = relays[url]
+                    if (existing != null) {
+                        // Reset reconnect counter so paused relays get another chance
+                        existing.resetReconnect()
+                        if (existing.state.value == Relay.State.DISCONNECTED) existing.connect()
+                    } else {
                         val relay = Relay(url, scope, authSigner = authSigner)
                         relays[url] = relay
                         // Collect messages from this relay, verify signatures, and deduplicate
@@ -118,10 +125,14 @@ class NostrClient
                                             addSeen(msg.event.id)
                                         ) {
                                             _incomingEvents.emit(msg.event)
+                                        } else {
+                                            Log.d(TAG, "Skipped event ${msg.event.id.take(8)} kind=${msg.event.kind} verify=${msg.event.verify()} seen=${!addSeen(msg.event.id)}")
                                         }
                                     }
 
-                                    is RelayMessage.EoseMsg -> { /* subscription EOSE — no action needed */ }
+                                    is RelayMessage.EoseMsg -> {
+                                        Log.d(TAG, "EOSE for sub ${msg.subId} from ${relay.url}")
+                                    }
 
                                     is RelayMessage.ClosedMsg -> {
                                         Log.w(TAG, "Sub ${msg.subId} closed by $url: ${msg.message}")
@@ -149,16 +160,28 @@ class NostrClient
         suspend fun subscribe(
             groupId: String,
             since: Long,
+            myPubkey: String? = null,
         ) {
             val subId = "${subIdCounter.incrementAndGet()}:$groupId"
             activeSubscriptions[groupId] = subId
-            val filter =
-                NostrFilter(
-                    kinds = listOf(30078, 1059),
-                    tags = mapOf("#g" to listOf(groupId)),
-                    since = if (since > 0) since else null,
-                )
-            relays.values.forEach { it.subscribe(subId, listOf(filter)) }
+            val sinceVal = if (since > 0) since else null
+            // Filter 1: kind 30078 (direct) + kind 1059 (gift wrap) by #g tag
+            val filterByGroup = NostrFilter(
+                kinds = listOf(30078, 1059),
+                tags = mapOf("#g" to listOf(groupId)),
+                since = sinceVal,
+            )
+            val filters = mutableListOf(filterByGroup)
+            // Filter 2: kind 1059 by #p tag — NIP-59 relays route gift wraps by recipient
+            if (myPubkey != null) {
+                filters.add(NostrFilter(
+                    kinds = listOf(1059),
+                    tags = mapOf("#p" to listOf(myPubkey)),
+                    since = sinceVal,
+                ))
+            }
+            relays.values.forEach { it.subscribe(subId, filters) }
+            Log.d(TAG, "subscribe($subId): ${filters.size} filters, since=$sinceVal, relays=${relays.size}")
         }
 
         suspend fun unsubscribe(groupId: String) {
@@ -210,20 +233,15 @@ class NostrClient
             groupId: String,
             since: Long,
         ): List<NostrEvent> {
+            if (relays.isEmpty()) return emptyList()
+
             val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
-            // Query both new #g tag and old #d tag format for backward compatibility
-            val filterNew =
-                NostrFilter(
-                    kinds = listOf(30078, 1059),
-                    tags = mapOf("#g" to listOf(groupId)),
-                    since = if (since > 0) since else null,
-                )
-            val filterOld =
-                NostrFilter(
-                    kinds = listOf(30078, 1059),
-                    tags = mapOf("#d" to listOf(groupId)),
-                    since = if (since > 0) since else null,
-                )
+            val sinceVal = if (since > 0) since else null
+            val filter = NostrFilter(
+                kinds = listOf(30078, 1059),
+                tags = mapOf("#g" to listOf(groupId)),
+                since = sinceVal,
+            )
 
             val events = mutableListOf<NostrEvent>()
             val relayCount = relays.size.coerceAtLeast(1)
@@ -272,7 +290,7 @@ class NostrClient
 
             // Wait for collectors to be ready, then subscribe
             withTimeout(5_000) { collectorsReady.await() }
-            relays.values.forEach { it.subscribe(subId, listOf(filterNew, filterOld)) }
+            relays.values.forEach { it.subscribe(subId, listOf(filter)) }
 
             // Wait for EOSE or timeout
             try {

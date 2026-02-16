@@ -40,6 +40,8 @@ class SelfHealUseCaseTest {
     fun setup() {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.d(any<String>(), any<String>()) } returns 0
+        every { nostrClient.isConnected } returns true
         useCase = SelfHealUseCase(eventDao, nostrClient, signer, identity)
     }
 
@@ -108,15 +110,26 @@ class SelfHealUseCaseTest {
         }
 
     @Test
-    fun `caps republishing at MAX_REPUBLISH_PER_RUN`() =
+    fun `publishes all events in batches instead of capping at 200`() =
         runBlocking {
-            // Create more events than the cap (200)
+            // Create 210 events — old behavior capped at 200, new behavior publishes all
             val local = (1..210).map { entity("evt$it") }
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any()) } returns emptyList()
             coEvery { nostrClient.publishJson(any()) } returns true
             val result = useCase(groupId)
-            assertEquals(200, result)
+            assertEquals(210, result)
+        }
+
+    @Test
+    fun `caps at ABSOLUTE_CAP for safety`() =
+        runBlocking {
+            val local = (1..SelfHealUseCase.ABSOLUTE_CAP + 50).map { entity("evt$it") }
+            coEvery { eventDao.getEventsByGroup(groupId) } returns local
+            coEvery { nostrClient.fetchEvents(groupId, any()) } returns emptyList()
+            coEvery { nostrClient.publishJson(any()) } returns true
+            val result = useCase(groupId)
+            assertEquals(SelfHealUseCase.ABSOLUTE_CAP, result)
         }
 
     @Test

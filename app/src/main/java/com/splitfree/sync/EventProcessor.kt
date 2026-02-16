@@ -9,7 +9,9 @@ import com.splitfree.domain.crypto.*
 import com.splitfree.domain.model.GroupMeta
 import com.splitfree.domain.usecase.MigrateGroupUseCase
 import com.splitfree.domain.usecase.RevokeKeyUseCase
+import com.splitfree.domain.usecase.SelfHealUseCase
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -31,6 +33,7 @@ class EventProcessor
         private val giftWrap: GiftWrapService,
         private val migrateGroup: MigrateGroupUseCase,
         private val revokeKey: RevokeKeyUseCase,
+        private val selfHeal: SelfHealUseCase,
     ) {
         private val json = Json { ignoreUnknownKeys = true }
 
@@ -235,8 +238,22 @@ class EventProcessor
                         maybeNonCancellable {
                             val meta = json.decodeFromString<GroupMeta>(decrypted)
                             if (meta.members.isNotEmpty()) {
+                                // Check if relays changed before updating
+                                val currentGroup = groupRepo.getById(groupId)
+                                val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != meta.relays.toSet()
+
                                 Log.i(TAG, "Applying group_meta for $groupId: ${meta.members.size} members, name=${meta.name}")
                                 groupRepo.updateFromMeta(groupId, meta.name, meta.members, meta.relays, createdAt)
+
+                                // Trigger eager self-heal when relays change
+                                if (relaysChanged) {
+                                    Log.i(TAG, "Relays changed for $groupId — triggering eager self-heal")
+                                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                        try { selfHeal(groupId) } catch (e: Exception) {
+                                            Log.w(TAG, "Eager self-heal failed for $groupId: ${e.message}")
+                                        }
+                                    }
+                                }
                             }
                         }
                     } catch (

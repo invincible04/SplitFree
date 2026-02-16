@@ -7,6 +7,7 @@ import com.splitfree.domain.crypto.*
 import com.splitfree.domain.model.Group
 import com.splitfree.domain.usecase.MigrateGroupUseCase
 import com.splitfree.domain.usecase.RevokeKeyUseCase
+import com.splitfree.domain.usecase.SelfHealUseCase
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -22,6 +23,7 @@ class EventProcessorTest {
     private val giftWrap = mockk<GiftWrapService>()
     private val migrateGroup = mockk<MigrateGroupUseCase>(relaxed = true)
     private val revokeKey = mockk<RevokeKeyUseCase>(relaxed = true)
+    private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
 
     private lateinit var processor: EventProcessor
 
@@ -78,7 +80,7 @@ class EventProcessorTest {
         coEvery { eventDao.getLatestEventByType(any(), any()) } returns null
         coEvery { eventDao.getExpenseByUuid(any()) } returns null
 
-        processor = EventProcessor(eventDao, groupRepo, encryption, signer, identity, giftWrap, migrateGroup, revokeKey)
+        processor = EventProcessor(eventDao, groupRepo, encryption, signer, identity, giftWrap, migrateGroup, revokeKey, selfHeal)
     }
 
     @Test

@@ -72,8 +72,8 @@ class RelayHealthMonitorTest {
 
     @Test
     fun `FALLBACK_RELAYS are all wss`() {
-        assertTrue(RelayHealthMonitor.FALLBACK_RELAYS.all { it.startsWith("wss://") })
-        assertTrue(RelayHealthMonitor.FALLBACK_RELAYS.isNotEmpty())
+        assertTrue(RelayConfig.FALLBACK_RELAYS.all { it.startsWith("wss://") })
+        assertTrue(RelayConfig.FALLBACK_RELAYS.isNotEmpty())
     }
 
     @Test

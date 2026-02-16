@@ -7,8 +7,8 @@ import androidx.work.*
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.data.nostr.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.SelfHealUseCase
@@ -35,15 +35,17 @@ class MidnightSyncWorker
         private val createSnapshot: CreateSnapshotUseCase,
         private val selfHeal: SelfHealUseCase,
         private val eventProcessor: EventProcessor,
-        private val signer: EventSigner,
+        private val relayConnectionManager: RelayConnectionManager,
     ) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             var acquired = false
             return try {
                 if (!identity.hasIdentity()) return Result.success()
-                acquired = ensureConnected()
+                relayConnectionManager.ensureConnected(forceReconnect = true)
+                acquired = true
                 flushOutbox()
                 fullSync()
+                cleanupOutbox()
                 reschedule()
                 Result.success()
             } catch (e: Exception) {
@@ -54,27 +56,25 @@ class MidnightSyncWorker
             }
         }
 
-        private suspend fun ensureConnected(): Boolean {
-            if (!nostrClient.isConnected) {
-                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
-                val relays =
-                    groupRepo
-                        .getAll()
-                        .flatMap { it.relays }
-                        .distinct()
-                        .ifEmpty { SyncWorker.DEFAULT_RELAYS }
-                nostrClient.connect(relays)
-            }
-            nostrClient.acquireConnection()
-            return true
-        }
-
         private suspend fun flushOutbox() {
-            for (event in outboxDao.getAll()) {
+            val pending = outboxDao.getAll()
+            if (pending.isNotEmpty()) Log.i(TAG, "Flushing ${pending.size} outbox events")
+            for (event in pending) {
                 if (nostrClient.publishJson(event.eventJson)) {
                     outboxDao.delete(event.eventId)
+                } else {
+                    outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
                 }
             }
+        }
+
+        /** Clean up outbox entries that have been successfully published (already deleted above)
+         *  and very old entries that self-heal has already covered. */
+        private suspend fun cleanupOutbox() {
+            // Only delete outbox entries older than 30 days — by then self-heal has
+            // republished them from EventEntity.originalEventJson many times over.
+            val thirtyDaysAgo = System.currentTimeMillis() / 1000 - 30 * 86400
+            outboxDao.deleteOlderThan(thirtyDaysAgo)
         }
 
         private suspend fun fullSync() {

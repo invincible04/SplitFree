@@ -8,6 +8,8 @@ import androidx.work.WorkerParameters
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.data.nostr.RelayConfig
+import com.splitfree.data.nostr.RelayConnectionManager
 import com.splitfree.data.nostr.RelayHealthMonitor
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
@@ -32,15 +34,14 @@ class SyncWorker
         private val createSnapshot: CreateSnapshotUseCase,
         private val selfHeal: SelfHealUseCase,
         private val eventProcessor: EventProcessor,
-        private val relayHealthMonitor: RelayHealthMonitor,
-        private val signer: EventSigner,
-        private val giftWrap: GiftWrapService,
+        private val relayConnectionManager: RelayConnectionManager,
     ) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             var acquiredConnection = false
             return try {
                 if (!identity.hasIdentity()) return Result.success()
-                acquiredConnection = ensureConnected()
+                relayConnectionManager.ensureConnected()
+                acquiredConnection = true
                 publishOutbox()
                 pullFromRelays()
                 Result.success()
@@ -52,34 +53,9 @@ class SyncWorker
             }
         }
 
-        private suspend fun ensureConnected(): Boolean {
-            if (!nostrClient.isConnected) {
-                nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
-                val customRelays = giftWrap.getCustomRelays()
-                val allRelays =
-                    if (customRelays.isNotEmpty()) {
-                        customRelays
-                    } else {
-                        groupRepo
-                            .getAll()
-                            .flatMap { it.relays }
-                            .distinct()
-                            .ifEmpty { DEFAULT_RELAYS }
-                    }
-                val onlineRelays =
-                    relayHealthMonitor
-                        .getOnlineRelays(allRelays)
-                        .ifEmpty { allRelays }
-                nostrClient.connect(onlineRelays)
-            }
-            nostrClient.acquireConnection()
-            return true
-        }
-
         private suspend fun publishOutbox() {
-            val sevenDaysAgo = System.currentTimeMillis() / 1000 - 7 * 86400
-            outboxDao.deleteOlderThan(sevenDaysAgo)
-
+            // Only delete events older than 7 days that have been successfully published.
+            // Never delete by age alone — unsent events must survive until self-heal picks them up.
             val pending = outboxDao.getAll()
             if (pending.isNotEmpty()) Log.i(TAG, "Publishing ${pending.size} outbox events")
             for (event in pending) {
@@ -87,11 +63,11 @@ class SyncWorker
                 if (success) {
                     outboxDao.delete(event.eventId)
                 } else {
-                    if (event.retryCount >= MAX_RETRIES) {
-                        Log.w(TAG, "Dropping event ${event.eventId} after $MAX_RETRIES retries")
-                        outboxDao.delete(event.eventId)
-                    } else {
-                        outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
+                    outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
+                    // Never drop events — self-heal is the safety net.
+                    // Just log if retries are high so we know something is wrong.
+                    if (event.retryCount >= WARN_RETRY_THRESHOLD) {
+                        Log.w(TAG, "Event ${event.eventId} has failed ${event.retryCount} retries")
                     }
                 }
             }
@@ -101,7 +77,7 @@ class SyncWorker
             val groups = groupRepo.getAll()
             for (group in groups) {
                 val groupEntity = groupRepo.getGroupEntity(group.id) ?: continue
-                val since = groupEntity.lastSyncTimestamp - 3600
+                val since = if (groupEntity.lastSyncTimestamp > 0) groupEntity.lastSyncTimestamp - 3600 else 0L
 
                 val events = nostrClient.fetchEvents(group.id, since)
                 val existingIds = eventDao.getEventIds(group.id).toSet()
@@ -134,20 +110,13 @@ class SyncWorker
                     Log.i(TAG, "Pulled $newCount new events for group ${group.name}")
                 }
 
+                selfHeal(group.id)
                 createSnapshot(group.id)
             }
         }
 
         companion object {
             private const val TAG = "SyncWorker"
-            private const val MAX_RETRIES = 5
-            val DEFAULT_RELAYS =
-                listOf(
-                    "wss://relay.damus.io",
-                    "wss://nos.lol",
-                    "wss://relay.primal.net",
-                    "wss://relay.snort.social",
-                    "wss://relay.nostr.net",
-                )
+            private const val WARN_RETRY_THRESHOLD = 10
         }
     }

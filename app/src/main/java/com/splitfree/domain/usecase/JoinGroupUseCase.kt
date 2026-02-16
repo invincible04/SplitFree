@@ -32,6 +32,7 @@ class JoinGroupUseCase
         private val encryption: GroupEncryption,
         private val outboxDao: OutboxDao,
         private val throttler: EventThrottler,
+        private val selfHeal: SelfHealUseCase,
     ) {
         /**
          * Parse an invite link and join the group.
@@ -93,6 +94,7 @@ class JoinGroupUseCase
             try {
                 ensureConnected(group.relays)
                 initialSync(group, groupKey)
+                selfHeal(groupId)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -223,13 +225,7 @@ class JoinGroupUseCase
 
             // Well-known relays — index-based encoding to keep invite links short.
             // Order must never change (append-only). Index 0-based.
-            private val KNOWN_RELAYS = listOf(
-                "wss://relay.damus.io",
-                "wss://nos.lol",
-                "wss://relay.primal.net",
-                "wss://relay.snort.social",
-                "wss://relay.nostr.net",
-            )
+            private val KNOWN_RELAYS = com.splitfree.data.nostr.RelayConfig.KNOWN_RELAYS
 
             /**
              * Creates a compact invite link. Format v2:

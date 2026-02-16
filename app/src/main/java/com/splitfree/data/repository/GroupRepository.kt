@@ -8,7 +8,7 @@ import androidx.security.crypto.MasterKey
 import com.splitfree.data.local.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.domain.model.Group
-import com.splitfree.domain.usecase.CreateGroupUseCase
+import com.splitfree.data.nostr.RelayConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -113,8 +113,8 @@ class GroupRepository
             relays: List<String>,
             eventTimestamp: Long = 0,
         ) {
-            if (members.size > CreateGroupUseCase.MAX_GROUP_MEMBERS) {
-                Log.w("GroupRepository", "Rejecting group_meta with ${members.size} members (max ${CreateGroupUseCase.MAX_GROUP_MEMBERS})")
+            if (members.size > RelayConfig.MAX_GROUP_MEMBERS) {
+                Log.w("GroupRepository", "Rejecting group_meta with ${members.size} members (max ${RelayConfig.MAX_GROUP_MEMBERS})")
                 return
             }
             val membersJson = json.encodeToString(stringListSerializer, members)

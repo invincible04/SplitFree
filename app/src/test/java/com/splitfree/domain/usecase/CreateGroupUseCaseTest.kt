@@ -1,6 +1,7 @@
 package com.splitfree.domain.usecase
 
 import com.splitfree.data.local.OutboxDao
+import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.GroupRepository
@@ -66,7 +67,7 @@ class CreateGroupUseCaseTest {
             assertEquals("Trip to Goa", group.name)
             assertEquals(fakePubkey, group.createdBy)
             assertEquals(listOf(fakePubkey), group.members)
-            assertEquals(CreateGroupUseCase.DEFAULT_RELAYS, group.relays)
+            assertEquals(RelayConfig.DEFAULT_RELAYS, group.relays)
         }
 
     @Test
@@ -117,12 +118,12 @@ class CreateGroupUseCaseTest {
 
     @Test
     fun `DEFAULT_RELAYS contains expected relay URLs`() {
-        assertTrue(CreateGroupUseCase.DEFAULT_RELAYS.all { it.startsWith("wss://") })
-        assertTrue(CreateGroupUseCase.DEFAULT_RELAYS.size >= 3)
+        assertTrue(RelayConfig.DEFAULT_RELAYS.all { it.startsWith("wss://") })
+        assertTrue(RelayConfig.DEFAULT_RELAYS.size >= 3)
     }
 
     @Test
     fun `MAX_GROUP_MEMBERS is 50`() {
-        assertEquals(50, CreateGroupUseCase.MAX_GROUP_MEMBERS)
+        assertEquals(50, RelayConfig.MAX_GROUP_MEMBERS)
     }
 }

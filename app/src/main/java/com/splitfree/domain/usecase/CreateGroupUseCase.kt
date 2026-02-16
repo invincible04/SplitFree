@@ -4,6 +4,7 @@ import com.splitfree.data.local.OutboxDao
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
@@ -28,7 +29,7 @@ class CreateGroupUseCase
     ) {
         suspend operator fun invoke(
             name: String,
-            relays: List<String> = DEFAULT_RELAYS,
+            relays: List<String> = RelayConfig.DEFAULT_RELAYS,
         ): Group {
             require(name.isNotBlank() && name.length <= 100) { "Group name must be 1-100 characters" }
             val groupKey = encryption.generateGroupKey()
@@ -79,14 +80,5 @@ class CreateGroupUseCase
 
         companion object {
             private const val TAG = "CreateGroupUseCase"
-            val DEFAULT_RELAYS =
-                listOf(
-                    "wss://relay.damus.io",
-                    "wss://nos.lol",
-                    "wss://relay.primal.net",
-                    "wss://relay.snort.social",
-                    "wss://relay.nostr.net",
-                )
-            const val MAX_GROUP_MEMBERS = 50
         }
     }

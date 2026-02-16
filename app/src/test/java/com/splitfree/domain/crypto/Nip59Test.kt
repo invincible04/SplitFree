@@ -158,7 +158,7 @@ class Nip59Test {
         val gTag = wrapped.tags.find { it[0] == "g" }
         assertNotNull("Must have g tag", gTag)
         assertEquals("group-123", gTag!![1])
-        assertNull("Must NOT have p tag", wrapped.tags.find { it[0] == "p" })
+        assertNotNull("Must have p tag for relay routing", wrapped.tags.find { it[0] == "p" })
     }
 
     @Test

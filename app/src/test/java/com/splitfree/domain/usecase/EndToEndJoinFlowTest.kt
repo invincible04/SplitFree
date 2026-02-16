@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase
 
 import android.util.Base64
 import com.splitfree.data.local.EventDao
+import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
@@ -48,6 +49,7 @@ class EndToEndJoinFlowTest {
     private val phone2Encryption = mockk<GroupEncryption>(relaxed = true)
     private val phone2Outbox = mockk<OutboxDao>(relaxed = true)
     private val phone2Throttler = mockk<EventThrottler>(relaxed = true)
+    private val phone2SelfHeal = mockk<SelfHealUseCase>(relaxed = true)
 
     private val phone1Pubkey = "aa".repeat(32) // Phone 1's identity
     private val phone2Pubkey = "bb".repeat(32) // Phone 2's identity
@@ -116,7 +118,7 @@ class EndToEndJoinFlowTest {
 
         joinGroupUseCase = JoinGroupUseCase(
             phone2Repo, phone2Identity, phone2NostrClient, phone2EventDao,
-            phone2EventProcessor, phone2Signer, phone2Encryption, phone2Outbox, phone2Throttler
+            phone2EventProcessor, phone2Signer, phone2Encryption, phone2Outbox, phone2Throttler, phone2SelfHeal
         )
     }
 
@@ -135,7 +137,7 @@ class EndToEndJoinFlowTest {
         assertEquals("Weekend Trip", phone1Group.name)
         assertEquals(phone1Pubkey, phone1Group.createdBy)
         assertEquals(listOf(phone1Pubkey), phone1Group.members)
-        assertEquals(CreateGroupUseCase.DEFAULT_RELAYS, phone1Group.relays)
+        assertEquals(RelayConfig.DEFAULT_RELAYS, phone1Group.relays)
         assertTrue(savedGroups.containsKey(phone1Group.id))
         assertEquals(fakeGroupKey, savedKeys[phone1Group.id])
 
@@ -188,7 +190,7 @@ class EndToEndJoinFlowTest {
 
         assertEquals(
             "All 5 default relays should round-trip",
-            CreateGroupUseCase.DEFAULT_RELAYS,
+            RelayConfig.DEFAULT_RELAYS,
             phone2Group.relays
         )
     }

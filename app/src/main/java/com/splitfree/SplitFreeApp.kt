@@ -58,7 +58,9 @@ class SplitFreeApp :
         registerBatteryStateReceiver()
         // Check relay health on startup (design doc Section 5.5)
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
-            relayHealthMonitor.checkRelays(SyncWorker.DEFAULT_RELAYS)
+            relayHealthMonitor.checkRelays(
+                com.splitfree.data.nostr.RelayConfig.DEFAULT_RELAYS + com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS
+            )
             // Resume incomplete key revocation if app was killed mid-revocation (V8 fix)
             revokeKeyUseCase.resumeIfNeeded()
         }

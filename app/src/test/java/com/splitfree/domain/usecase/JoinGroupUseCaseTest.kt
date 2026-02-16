@@ -28,6 +28,7 @@ class JoinGroupUseCaseTest {
     private val encryption = mockk<GroupEncryption>(relaxed = true)
     private val outboxDao = mockk<OutboxDao>(relaxed = true)
     private val throttler = mockk<EventThrottler>(relaxed = true)
+    private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
 
     private lateinit var useCase: JoinGroupUseCase
     private val pubkey = "aa".repeat(32)
@@ -58,7 +59,7 @@ class JoinGroupUseCaseTest {
         every { identity.getPublicKeyHex() } returns pubkey
         coEvery { groupRepo.getById(any()) } returns null
 
-        useCase = JoinGroupUseCase(groupRepo, identity, nostrClient, eventDao, eventProcessor, signer, encryption, outboxDao, throttler)
+        useCase = JoinGroupUseCase(groupRepo, identity, nostrClient, eventDao, eventProcessor, signer, encryption, outboxDao, throttler, selfHeal)
     }
 
     @After

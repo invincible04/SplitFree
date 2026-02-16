@@ -11,7 +11,7 @@ import javax.inject.Inject
 /**
  * Self-healing sync per design doc Section 9.4.
  * Re-publishes local events that are missing from relays.
- * Run once per day per group (during midnight sync).
+ * Processes in batches to avoid relay rate limiting while ensuring all events are published.
  */
 class SelfHealUseCase
     @Inject
@@ -22,41 +22,61 @@ class SelfHealUseCase
         private val identity: IdentityManager,
     ) {
         suspend operator fun invoke(groupId: String): Int {
+            if (!nostrClient.isConnected) {
+                Log.d(TAG, "No relay connection — skipping self-heal for $groupId")
+                return 0
+            }
+
             val localEvents = eventDao.getEventsByGroup(groupId)
             if (localEvents.isEmpty()) return 0
 
-            // Fetch what the relay has for this group using BOTH old (#d) and new (#g) tag formats
-            // so we don't needlessly re-publish events that are already there under the old format
             val oldestLocal = localEvents.minOfOrNull { it.createdAt } ?: 0L
-            val since = if (oldestLocal > 0) oldestLocal - 86400 else 0L // 1 day buffer
+            val since = if (oldestLocal > 0) oldestLocal - 86400 else 0L
             val remoteByGroup = nostrClient.fetchEvents(groupId, since)
-            val remoteIds = remoteByGroup.map { it.id }.toMutableSet()
+            val remoteIds = remoteByGroup.map { it.id }.toSet()
 
-            var republished = 0
-            for (event in localEvents) {
-                if (event.eventId in remoteIds) continue
-                val json = event.originalEventJson ?: continue
-                if (nostrClient.publishJson(json)) {
-                    republished++
+            val missing = localEvents.filter { it.eventId !in remoteIds && it.originalEventJson != null }
+            if (missing.isEmpty()) return 0
+
+            var totalRepublished = 0
+            val batches = missing.chunked(BATCH_SIZE)
+            for ((index, batch) in batches.withIndex()) {
+                var batchCount = 0
+                for (event in batch) {
+                    if (nostrClient.publishJson(event.originalEventJson!!)) {
+                        batchCount++
+                    }
+                    // Intra-batch throttle: pause every 10 publishes to avoid rate limiting
+                    if ((totalRepublished + batchCount) % THROTTLE_EVERY == 0 && batchCount > 0) {
+                        kotlinx.coroutines.delay(THROTTLE_DELAY_MS)
+                    }
                 }
-                // Throttle to avoid relay-side rate limiting
-                if (republished % 10 == 0) {
-                    kotlinx.coroutines.delay(1000)
-                }
-                // Cap to prevent excessive resource usage on large groups
-                if (republished >= MAX_REPUBLISH_PER_RUN) {
-                    Log.i(TAG, "Self-heal capped at $MAX_REPUBLISH_PER_RUN for group $groupId, will continue next run")
+                totalRepublished += batchCount
+
+                // Safety cap to prevent runaway in extreme cases
+                if (totalRepublished >= ABSOLUTE_CAP) {
+                    Log.i(TAG, "Self-heal capped at $ABSOLUTE_CAP for group $groupId, remaining next run")
                     break
                 }
+
+                // Inter-batch cooldown (skip after last batch)
+                if (index < batches.size - 1) {
+                    Log.d(TAG, "Self-heal batch ${index + 1}/${batches.size}: $totalRepublished/${missing.size} for group $groupId")
+                    kotlinx.coroutines.delay(BATCH_COOLDOWN_MS)
+                }
             }
-            if (republished > 0) {
-                Log.i(TAG, "Self-healed $republished events for group $groupId")
+            if (totalRepublished > 0) {
+                Log.i(TAG, "Self-healed $totalRepublished/${missing.size} events for group $groupId")
             }
-            return republished
+            return totalRepublished
         }
 
         companion object {
             private const val TAG = "SelfHealUseCase"
-            private const val MAX_REPUBLISH_PER_RUN = 200
+            const val BATCH_SIZE = 50
+            const val THROTTLE_EVERY = 10
+            const val THROTTLE_DELAY_MS = 1000L
+            const val BATCH_COOLDOWN_MS = 3000L
+            const val ABSOLUTE_CAP = 1000
         }
     }

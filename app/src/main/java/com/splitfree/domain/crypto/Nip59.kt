@@ -59,14 +59,13 @@ object Nip59 {
 
         val wrapConvKey = Nip44.getConversationKey(ephemeralPriv, recipientPubKey)
         val wrapContent = Nip44.encrypt(seal.toJson(), wrapConvKey)
-        // Route by group ID instead of recipient pubkey to avoid metadata leakage
-        val wrapTags =
-            if (rumor.tags.any { it.size >= 2 && it[0] == "g" }) {
-                val groupId = rumor.tags.first { it.size >= 2 && it[0] == "g" }[1]
-                listOf(listOf("g", groupId))
-            } else {
-                listOf(listOf("p", recipientPubHex))
-            }
+        // Include both p tag (NIP-59 standard routing) and g tag (group filtering).
+        // Relays index p tags on kind 1059 for delivery; g tag kept for subscription filters.
+        val wrapTags = buildList {
+            add(listOf("p", recipientPubHex))
+            val gTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "g" }
+            if (gTag != null) add(listOf("g", gTag[1]))
+        }
         val wrap =
             NostrEvent(
                 pubkey = ephemeralPubHex,
