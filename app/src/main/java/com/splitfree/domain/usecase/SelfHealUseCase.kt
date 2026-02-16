@@ -3,7 +3,7 @@ package com.splitfree.domain.usecase
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.nostr.NostrFilter
+import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import javax.inject.Inject
@@ -20,6 +20,7 @@ class SelfHealUseCase
         private val nostrClient: NostrClient,
         private val signer: EventSigner,
         private val identity: IdentityManager,
+        private val groupRepo: com.splitfree.data.repository.GroupRepository,
     ) {
         suspend operator fun invoke(groupId: String): Int {
             if (!nostrClient.isConnected) {
@@ -27,15 +28,23 @@ class SelfHealUseCase
                 return 0
             }
 
+            val group = groupRepo.getById(groupId) ?: return 0
+            val currentMembers = group.members.toSet()
+
             val localEvents = eventDao.getEventsByGroup(groupId)
             if (localEvents.isEmpty()) return 0
 
             val oldestLocal = localEvents.minOfOrNull { it.createdAt } ?: 0L
             val since = if (oldestLocal > 0) oldestLocal - 86400 else 0L
-            val remoteByGroup = nostrClient.fetchEvents(groupId, since)
+            val myPubkey = identity.getPublicKeyHex()
+            val remoteByGroup = nostrClient.fetchEvents(groupId, since, myPubkey)
             val remoteIds = remoteByGroup.map { it.id }.toSet()
 
-            val missing = localEvents.filter { it.eventId !in remoteIds && it.originalEventJson != null }
+            val missing = localEvents.filter {
+                it.eventId !in remoteIds
+                    && it.originalEventJson != null
+                    && it.pubkey in currentMembers
+            }
             if (missing.isEmpty()) return 0
 
             var totalRepublished = 0

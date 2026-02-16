@@ -56,6 +56,7 @@ class Relay(
                     ) {
                         _state.value = State.CONNECTED
                         reconnectAttempt = 0
+                        authAttempts = 0
                         // Re-send active subscriptions with updated since to cover reconnect gap
                         activeSubs.forEach { (subId, filters) ->
                             val lastSeen = lastEventTimestamp[subId]

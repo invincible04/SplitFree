@@ -44,9 +44,9 @@ object CompressionUtil {
                 Log.w(TAG, "Suspicious ratio $ratio:1 — possible bomb")
                 return null
             }
-            val decompressor = factory.fastDecompressor()
+            val decompressor = factory.safeDecompressor()
             val restored = ByteArray(originalSize)
-            decompressor.decompress(compressed, 4, restored, 0, originalSize)
+            decompressor.decompress(compressed, 4, compressed.size - 4, restored, 0)
             restored
         } catch (e: Exception) {
             Log.w(TAG, "Decompression failed: ${e.message}")

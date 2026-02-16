@@ -30,7 +30,7 @@ class RelayIntegrationTest {
     private val pubKey = NostrEvent.pubkeyFromPrivkey(privKey)
 
     private lateinit var relay: Relay
-    private val relayUrl = "wss://relay.damus.io"
+    private val relayUrl = "wss://nos.lol"
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Before
@@ -198,7 +198,7 @@ class RelayIntegrationTest {
                 assertTrue(client.isConnected)
 
                 // Fetch recent events for a random group ID (will return empty but exercises the path)
-                val events = client.fetchEvents("nonexistent-group-${System.nanoTime()}", 0)
+                val events = client.fetchEvents("nonexistent-group-${System.nanoTime()}", 0, pubKey)
                 // Should return empty list (no events for random group), not throw
                 assertNotNull(events)
 

@@ -97,8 +97,8 @@ fun DebugLogScreen(onBack: () -> Unit) {
                     .padding(horizontal = 8.dp),
                 contentPadding = PaddingValues(vertical = 4.dp),
             ) {
-                items(entries, key = { "${it.timestamp}-${it.message.hashCode()}" }) { entry ->
-                    LogLine(entry)
+                items(entries.size, key = { it }) { index ->
+                    LogLine(entries[index])
                 }
             }
         }

@@ -5,6 +5,7 @@ import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.nostr.RelayConfig
+import com.splitfree.data.nostr.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
@@ -26,6 +27,7 @@ class CreateGroupUseCase
         private val signer: EventSigner,
         private val outboxDao: OutboxDao,
         private val throttler: EventThrottler,
+        private val relayConnectionManager: RelayConnectionManager,
     ) {
         suspend operator fun invoke(
             name: String,
@@ -72,6 +74,7 @@ class CreateGroupUseCase
                 ),
             )
             // Publish immediately so the group is available when invite link is shared
+            try { relayConnectionManager.ensureConnected() } catch (_: Exception) {}
             throttler.enqueue(event)
             Log.i(TAG, "Enqueued group_meta publish for ${group.id}")
 

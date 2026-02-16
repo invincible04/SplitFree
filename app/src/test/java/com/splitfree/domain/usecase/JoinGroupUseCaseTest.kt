@@ -208,7 +208,7 @@ class JoinGroupUseCaseTest {
                     content = "enc",
                     sig = "sig",
                 )
-            coEvery { nostrClient.fetchEvents(groupId, 0) } returns listOf(fakeEvent)
+            coEvery { nostrClient.fetchEvents(groupId, 0, any()) } returns listOf(fakeEvent)
             coEvery { eventDao.getEventIds(groupId) } returns emptyList()
             coEvery { eventProcessor.process(any(), any(), any(), lenientTimestamp = true) } returns
                 EventProcessor.ProcessResult(stored = true)
@@ -238,7 +238,7 @@ class JoinGroupUseCaseTest {
                     content = "enc",
                     sig = "sig",
                 )
-            coEvery { nostrClient.fetchEvents(groupId, 0) } returns listOf(fakeEvent)
+            coEvery { nostrClient.fetchEvents(groupId, 0, any()) } returns listOf(fakeEvent)
             coEvery { eventDao.getEventIds(groupId) } returns listOf("existing-evt")
             coEvery { nostrClient.publish(any()) } returns true
             coEvery { outboxDao.delete(any<String>()) } just Runs

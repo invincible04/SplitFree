@@ -43,7 +43,7 @@ class RealRelayExpenseFlowTest {
     private lateinit var phone1Signer: EventSigner
     private lateinit var phone2Signer: EventSigner
 
-    private val relays = listOf("wss://relay.damus.io", "wss://nos.lol")
+    private val relays = listOf("wss://relay.snort.social", "wss://nos.lol")
 
     private lateinit var groupId: String
     private lateinit var groupKey: String
@@ -117,7 +117,7 @@ class RealRelayExpenseFlowTest {
         return key
     }
 
-    @Test(timeout = 60_000)
+    @Test(timeout = 90_000)
     fun `full expense flow - create group, add expenses, verify cross-phone sync`() = runBlocking {
         val members = listOf(phone1PubKey, phone2PubKey)
         val now = System.currentTimeMillis() / 1000
@@ -144,7 +144,7 @@ class RealRelayExpenseFlowTest {
         phone2Client.startListening()
         phone1Client.subscribe(groupId, now - 60)
         phone2Client.subscribe(groupId, now - 60)
-        delay(1000) // let subscriptions settle
+        delay(2000) // let subscriptions settle
 
         // ========== PHONE 1: Publish group_meta ==========
         println("\n=== PHONE 1: Publishing group_meta ===")
@@ -184,7 +184,7 @@ class RealRelayExpenseFlowTest {
 
         // ========== PHONE 2: Wait for expense via real-time subscription ==========
         println("\n=== PHONE 2: Waiting for expense via real-time subscription ===")
-        val received1 = withTimeout(15_000) {
+        val received1 = withTimeout(30_000) {
             phone2Client.incomingEvents.first { event ->
                 event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
             }
@@ -201,6 +201,8 @@ class RealRelayExpenseFlowTest {
         assertEquals(150000L, parsed1.amount)
         assertEquals(phone1PubKey, parsed1.paidBy)
         assertEquals(75000L, parsed1.splitAmong.find { it.pubkey == phone2PubKey }!!.share)
+
+        delay(2000)
 
         // ========== PHONE 2: Create expense "Cab ₹400" ==========
         println("\n=== PHONE 2: Creating expense 'Cab ₹400' ===")
@@ -223,7 +225,7 @@ class RealRelayExpenseFlowTest {
 
         // ========== PHONE 1: Wait for Phone 2's expense ==========
         println("\n=== PHONE 1: Waiting for expense via real-time subscription ===")
-        val received2 = withTimeout(15_000) {
+        val received2 = withTimeout(30_000) {
             phone1Client.incomingEvents.first { event ->
                 event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
                     event.pubkey == phone2PubKey

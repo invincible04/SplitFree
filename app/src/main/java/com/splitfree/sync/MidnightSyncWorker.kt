@@ -81,7 +81,7 @@ class MidnightSyncWorker
             val groups = groupRepo.getAll()
             for (group in groups) {
                 val groupKey = groupRepo.getGroupKey(group.id) ?: continue
-                val events = nostrClient.fetchEvents(group.id, 0)
+                val events = nostrClient.fetchEvents(group.id, 0, identity.getPublicKeyHex())
                 val existingIds = eventDao.getEventIds(group.id).toSet()
                 var count = 0
                 for (event in events) {

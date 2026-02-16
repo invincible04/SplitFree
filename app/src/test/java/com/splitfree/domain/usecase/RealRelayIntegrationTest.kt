@@ -65,7 +65,7 @@ class RealRelayIntegrationTest {
     private lateinit var phone1Signer: EventSigner
     private lateinit var phone2Signer: EventSigner
 
-    private val relays = listOf("wss://relay.damus.io", "wss://nos.lol")
+    private val relays = listOf("wss://relay.snort.social", "wss://nos.lol")
 
     @Before
     fun setup() {
@@ -222,7 +222,7 @@ class RealRelayIntegrationTest {
         println("Phone 2 connected: ${phone2Client.isConnected}")
 
         // Fetch events from real relays for this group
-        val fetchedEvents = phone2Client.fetchEvents(groupId, 0)
+        val fetchedEvents = phone2Client.fetchEvents(groupId, 0, phone2PubKey)
         println("Phone 2 fetched ${fetchedEvents.size} events from relays")
 
         // Verify we got Phone 1's event back
@@ -274,7 +274,7 @@ class RealRelayIntegrationTest {
         assertEquals("Group names must match", groupName, joinedGroup.name)
         assertTrue("Phone 2 pubkey must be in members", phone2PubKey in joinedGroup.members)
         assertEquals("Group key must match", groupKey, savedKey.captured)
-        assertEquals("Relays must match", relays, joinedGroup.relays)
+        assertEquals("Relays must match", relays.toSet(), joinedGroup.relays.toSet())
 
         // Verify Phone 2 published its join announcement
         coVerify { phone2Repo.updateFromMeta(groupId, any(), match { phone2PubKey in it }, any()) }

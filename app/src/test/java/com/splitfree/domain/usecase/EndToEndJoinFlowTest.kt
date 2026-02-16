@@ -98,13 +98,14 @@ class EndToEndJoinFlowTest {
         }
 
         createGroupUseCase = CreateGroupUseCase(
-            phone1Repo, phone1Encryption, phone1Identity, phone1Signer, phone1Outbox, phone1Throttler
+            phone1Repo, phone1Encryption, phone1Identity, phone1Signer, phone1Outbox, phone1Throttler,
+            mockk(relaxed = true)
         )
 
         // --- Phone 2 setup ---
         every { phone2Identity.getPublicKeyHex() } returns phone2Pubkey
         every { phone2NostrClient.isConnected } returns true
-        coEvery { phone2NostrClient.fetchEvents(any(), any()) } returns emptyList()
+        coEvery { phone2NostrClient.fetchEvents(any(), any(), any()) } returns emptyList()
         coEvery { phone2EventDao.getEventIds(any()) } returns emptyList()
         coEvery { phone2NostrClient.publish(any()) } returns true
         coEvery { phone2Outbox.delete(any<String>()) } just Runs

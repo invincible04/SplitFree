@@ -79,7 +79,7 @@ class SyncWorker
                 val groupEntity = groupRepo.getGroupEntity(group.id) ?: continue
                 val since = if (groupEntity.lastSyncTimestamp > 0) groupEntity.lastSyncTimestamp - 3600 else 0L
 
-                val events = nostrClient.fetchEvents(group.id, since)
+                val events = nostrClient.fetchEvents(group.id, since, identity.getPublicKeyHex())
                 val existingIds = eventDao.getEventIds(group.id).toSet()
                 var newCount = 0
 

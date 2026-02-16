@@ -133,7 +133,7 @@ class JoinGroupUseCase
             group: Group,
             groupKey: String,
         ) {
-            val events = nostrClient.fetchEvents(group.id, 0)
+            val events = nostrClient.fetchEvents(group.id, 0, identity.getPublicKeyHex())
             Log.i(TAG, "Initial sync fetched ${events.size} events from relays")
             val existingIds = eventDao.getEventIds(group.id).toSet()
             var count = 0

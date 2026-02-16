@@ -50,7 +50,7 @@ class FullRealWorldSimulationTest {
     private lateinit var p1Signer: EventSigner
     private lateinit var p2Signer: EventSigner
 
-    private val relays = listOf("wss://nos.lol")
+    private val relays = listOf("wss://relay.snort.social", "wss://nos.lol")
     private lateinit var groupId: String
     private lateinit var groupKey: String
     private lateinit var groupName: String
@@ -191,7 +191,7 @@ class FullRealWorldSimulationTest {
         println("   ✅ Phone 2 joined, group now has 2 members")
 
         // Phone 1 receives the updated member list
-        val joinEvent = withTimeout(15_000) {
+        val joinEvent = withTimeout(30_000) {
             phone1.incomingEvents.first { e ->
                 e.pubkey == p2Pub && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "group_meta" }
             }
@@ -221,7 +221,7 @@ class FullRealWorldSimulationTest {
         println("   Published: ${exp1Event.id.take(8)}")
 
         // Phone 2 receives it
-        val recv1 = withTimeout(15_000) {
+        val recv1 = withTimeout(30_000) {
             phone2.incomingEvents.first { e ->
                 e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
                     e.pubkey == p1Pub
@@ -253,7 +253,7 @@ class FullRealWorldSimulationTest {
         println("   Published: ${exp2Event.id.take(8)}")
 
         // Phone 1 receives it
-        val recv2 = withTimeout(15_000) {
+        val recv2 = withTimeout(30_000) {
             phone1.incomingEvents.first { e ->
                 e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
                     e.pubkey == p2Pub
@@ -284,7 +284,7 @@ class FullRealWorldSimulationTest {
         assertTrue("exp3 published", phone1.publish(exp3Event))
         println("   Published: ${exp3Event.id.take(8)}")
 
-        val recv3 = withTimeout(15_000) {
+        val recv3 = withTimeout(30_000) {
             phone2.incomingEvents.first { e ->
                 e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
                     e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp3.id }
@@ -307,7 +307,7 @@ class FullRealWorldSimulationTest {
         assertTrue("delete published", phone2.publish(delEvent))
         println("   Published deletion: ${delEvent.id.take(8)}")
 
-        val recvDel = withTimeout(20_000) {
+        val recvDel = withTimeout(30_000) {
             phone1.incomingEvents.first { e ->
                 e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense_delete" }
             }
@@ -320,7 +320,7 @@ class FullRealWorldSimulationTest {
         })
         println("   ✅ Phone 1 received deletion for expense ${exp2.id.take(8)}")
 
-        delay(2000)
+        delay(3000)
 
         // ══════════════════════════════════════════════════
         // STEP 8: Phone 2 re-adds corrected expense "Cab ₹350"
@@ -335,7 +335,7 @@ class FullRealWorldSimulationTest {
         assertTrue("corrected exp published", phone2.publish(exp2bEvent))
         println("   Published: ${exp2bEvent.id.take(8)}")
 
-        val recv2b = withTimeout(15_000) {
+        val recv2b = withTimeout(30_000) {
             phone1.incomingEvents.first { e ->
                 e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp2b.id }
             }
@@ -448,7 +448,7 @@ class FullRealWorldSimulationTest {
         println("║  ✓ Balance computation matches on both phones    ║")
         println("║  ✓ Tag structure correct ('x' not 'e')           ║")
         println("║  ✓ d-tag uniqueness (no relay overwrites)        ║")
-        println("║  ✓ Real relays: relay.damus.io + nos.lol         ║")
+        println("║  ✓ Real relays: snort.social + nos.lol            ║")
         println("╚══════════════════════════════════════════════════╝")
     }
 }

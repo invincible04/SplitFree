@@ -36,7 +36,7 @@ class RelayHealthMonitor
             }
         }
 
-        fun getOnlineRelays(relayUrls: List<String>): List<String> = relayUrls.filter { _statuses[it]?.online != false }
+        fun getOnlineRelays(relayUrls: List<String>): List<String> = relayUrls.filter { _statuses[it]?.online == true }
 
         /**
          * Test relay by requesting NIP-11 info document.

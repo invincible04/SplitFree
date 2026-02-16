@@ -27,9 +27,9 @@ class RelayHealthMonitorTest {
     }
 
     @Test
-    fun `getOnlineRelays returns all when no status known`() {
+    fun `getOnlineRelays returns empty when no status known`() {
         val relays = listOf("wss://a", "wss://b")
-        assertEquals(relays, monitor.getOnlineRelays(relays))
+        assertEquals(emptyList<String>(), monitor.getOnlineRelays(relays))
     }
 
     @Test

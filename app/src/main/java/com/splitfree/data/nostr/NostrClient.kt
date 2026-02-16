@@ -172,12 +172,14 @@ class NostrClient
                 since = sinceVal,
             )
             val filters = mutableListOf(filterByGroup)
-            // Filter 2: kind 1059 by #p tag — NIP-59 relays route gift wraps by recipient
+            // Filter 2: kind 1059 by #p tag — NIP-59 relays route gift wraps by recipient.
+            // NIP-59 randomizes timestamps up to 48h in the past, so widen the window.
             if (myPubkey != null) {
+                val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
                 filters.add(NostrFilter(
                     kinds = listOf(1059),
                     tags = mapOf("#p" to listOf(myPubkey)),
-                    since = sinceVal,
+                    since = giftWrapSince,
                 ))
             }
             relays.values.forEach { it.subscribe(subId, filters) }
@@ -232,16 +234,26 @@ class NostrClient
         suspend fun fetchEvents(
             groupId: String,
             since: Long,
+            myPubkey: String? = null,
         ): List<NostrEvent> {
             if (relays.isEmpty()) return emptyList()
 
             val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
             val sinceVal = if (since > 0) since else null
-            val filter = NostrFilter(
+            val filterByGroup = NostrFilter(
                 kinds = listOf(30078, 1059),
                 tags = mapOf("#g" to listOf(groupId)),
                 since = sinceVal,
             )
+            val filters = mutableListOf(filterByGroup)
+            if (myPubkey != null) {
+                val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
+                filters.add(NostrFilter(
+                    kinds = listOf(1059),
+                    tags = mapOf("#p" to listOf(myPubkey)),
+                    since = giftWrapSince,
+                ))
+            }
 
             val events = mutableListOf<NostrEvent>()
             val relayCount = relays.size.coerceAtLeast(1)
@@ -290,7 +302,7 @@ class NostrClient
 
             // Wait for collectors to be ready, then subscribe
             withTimeout(5_000) { collectorsReady.await() }
-            relays.values.forEach { it.subscribe(subId, listOf(filter)) }
+            relays.values.forEach { it.subscribe(subId, filters) }
 
             // Wait for EOSE or timeout
             try {

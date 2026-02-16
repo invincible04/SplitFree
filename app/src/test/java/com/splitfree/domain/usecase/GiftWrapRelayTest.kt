@@ -39,7 +39,8 @@ class GiftWrapRelayTest {
     private lateinit var p1Signer: EventSigner
     private lateinit var p2Signer: EventSigner
 
-    private val relay = "wss://nos.lol"
+    private val relay = "wss://relay.snort.social"
+    private val relays = listOf(relay, "wss://nos.lol")
     private lateinit var groupId: String
     private lateinit var groupKey: String
 
@@ -98,7 +99,7 @@ class GiftWrapRelayTest {
         return k
     }
 
-    @Test(timeout = 60_000)
+    @Test(timeout = 90_000)
     fun `gift wrapped expense is received via p-tag routing`() = runBlocking {
         val now = System.currentTimeMillis() / 1000
         println("=== GIFT WRAP RELAY TEST ===")
@@ -107,7 +108,7 @@ class GiftWrapRelayTest {
         // Connect both
         phone1.authSigner = { c, r -> p1Signer.createAuthEvent(c, r) }
         phone2.authSigner = { c, r -> p2Signer.createAuthEvent(c, r) }
-        phone1.connect(listOf(relay)); phone2.connect(listOf(relay))
+        phone1.connect(relays); phone2.connect(relays)
         delay(3000)
         assertTrue("Both connected", phone1.isConnected && phone2.isConnected)
 
@@ -172,7 +173,7 @@ class GiftWrapRelayTest {
         phone1.startListening(); phone2.startListening()
         phone1.subscribe(groupId, now - 60)
         phone2.subscribe(groupId, now - 60)
-        delay(1000)
+        delay(2000)
 
         val directExpense = p1Signer.createSignedEvent(
             groupId, "expense",
@@ -181,7 +182,7 @@ class GiftWrapRelayTest {
         )
         assertTrue("Direct expense published", phone1.publish(directExpense))
 
-        val received = withTimeout(15_000) {
+        val received = withTimeout(30_000) {
             phone2.incomingEvents.first { e ->
                 e.kind == 30078 && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
             }
@@ -209,7 +210,7 @@ class GiftWrapRelayTest {
         delay(2000)
         assertTrue("Phone 2 expense published", phone2.publish(exp2Event))
 
-        val recv2 = withTimeout(15_000) {
+        val recv2 = withTimeout(30_000) {
             phone1.incomingEvents.first { e ->
                 e.kind == 30078 && e.pubkey == p2Pub
             }

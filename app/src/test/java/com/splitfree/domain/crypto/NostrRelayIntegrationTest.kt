@@ -23,8 +23,8 @@ import java.util.concurrent.TimeUnit
 class NostrRelayIntegrationTest {
     private val relays =
         listOf(
-            "wss://relay.damus.io",
             "wss://nos.lol",
+            "wss://relay.nostr.net",
             "wss://relay.primal.net",
         )
 
@@ -191,7 +191,7 @@ class NostrRelayIntegrationTest {
         try {
             ws.send("""["EVENT",${event.toJson()}]""")
             if (!okLatch.await(10, TimeUnit.SECONDS)) return null
-            return accepted
+            return if (accepted) true else null
         } finally {
             ws.close(1000, "done")
         }

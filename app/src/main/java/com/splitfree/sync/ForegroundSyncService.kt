@@ -65,9 +65,9 @@ class ForegroundSyncService : Service() {
             }
 
             try {
-                val relays = relayConnectionManager.ensureConnected()
+                relayConnectionManager.ensureConnected()
                 connectionAcquired = true
-                connectedRelaySet = relays.toSet()
+                connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to connect: ${e.message}")
                 return@launch
@@ -92,7 +92,7 @@ class ForegroundSyncService : Service() {
                         Log.i(TAG, "Relay set changed, reconnecting...")
                         try {
                             relayConnectionManager.ensureConnected(forceReconnect = true)
-                            connectedRelaySet = nostrClient.currentRelayUrls().toSet()
+                            connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
                             // Re-subscribe all groups on new connections
                             for (group in currentGroups) {
                                 nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)

@@ -1,6 +1,7 @@
 package com.splitfree.data.nostr
 
 import io.mockk.*
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -55,5 +56,38 @@ class NostrClientTest {
     fun `startListening is a no-op`() {
         val client = NostrClient()
         client.startListening() // should not throw
+    }
+
+    @Test
+    fun `subscribe uses wider since window for gift wrap p-tag filter`() = runBlocking {
+        val client = NostrClient()
+        val relay = mockk<Relay>(relaxed = true)
+        val capturedFilters = slot<List<NostrFilter>>()
+        every { relay.subscribe(any(), capture(capturedFilters)) } just Runs
+
+        // Inject mock relay via reflection
+        val relaysField = NostrClient::class.java.getDeclaredField("relays")
+        relaysField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (relaysField.get(client) as MutableMap<String, Relay>)["wss://test"] = relay
+
+        val now = System.currentTimeMillis() / 1000
+        val since = now - 3600 // 1 hour ago
+
+        client.subscribe("test-group", since, "recipient-pubkey")
+
+        assertTrue("subscribe should have been called", capturedFilters.isCaptured)
+        val filters = capturedFilters.captured
+        assertEquals("Should have 2 filters", 2, filters.size)
+
+        // Filter 1: group filter uses original since
+        assertEquals(since, filters[0].since)
+        assertTrue(filters[0].tags!!.containsKey("#g"))
+
+        // Filter 2: p-tag filter uses since - 48h for NIP-59 timestamp randomization
+        val expectedGiftWrapSince = since - 2 * 86400
+        assertEquals(expectedGiftWrapSince, filters[1].since)
+        assertTrue(filters[1].tags!!.containsKey("#p"))
+        assertEquals(listOf(1059), filters[1].kinds)
     }
 }

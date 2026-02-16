@@ -4,6 +4,7 @@ import com.splitfree.data.local.OutboxDao
 import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.nostr.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
@@ -24,6 +25,7 @@ class CreateGroupUseCaseTest {
     private val signer = mockk<EventSigner>()
     private val outboxDao = mockk<OutboxDao>(relaxed = true)
     private val throttler = mockk<EventThrottler>(relaxed = true)
+    private val relayConnectionManager = mockk<RelayConnectionManager>(relaxed = true)
 
     private lateinit var useCase: CreateGroupUseCase
 
@@ -52,7 +54,7 @@ class CreateGroupUseCaseTest {
         every { identity.getPublicKeyHex() } returns fakePubkey
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
-        useCase = CreateGroupUseCase(groupRepo, encryption, identity, signer, outboxDao, throttler)
+        useCase = CreateGroupUseCase(groupRepo, encryption, identity, signer, outboxDao, throttler, relayConnectionManager)
     }
 
     @After
