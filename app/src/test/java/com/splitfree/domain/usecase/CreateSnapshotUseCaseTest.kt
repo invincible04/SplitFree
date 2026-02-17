@@ -44,6 +44,7 @@ class CreateSnapshotUseCaseTest {
         coEvery { computeBalances(groupId) } returns listOf(Balance("pub1", 100), Balance("pub2", -100))
         coEvery { eventDao.getEventIds(groupId) } returns listOf("e1", "e2")
         every { encryption.encrypt(any(), groupKey) } returns "encrypted"
+        every { encryption.decrypt(any(), groupKey) } answers { firstArg() }
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
 
         useCase = CreateSnapshotUseCase(db, eventDao, outboxDao, groupRepo, computeBalances, encryption, signer)
@@ -79,8 +80,7 @@ class CreateSnapshotUseCaseTest {
                     pubkey = "pub",
                     createdAt = System.currentTimeMillis() / 1000 - 86400, // 1 day ago
                     kind = 30078,
-                    contentEncrypted = "enc",
-                    contentDecrypted = """{"id":"s1","as_of_event_count":40,"as_of_timestamp":1,"balances":[],"event_hashes":[]}""",
+                    contentEncrypted = """{"id":"s1","as_of_event_count":40,"as_of_timestamp":1,"balances":[],"event_hashes":[]}""",
                     eventType = "snapshot",
                     sig = "sig",
                     receivedAt = 1,
@@ -101,8 +101,7 @@ class CreateSnapshotUseCaseTest {
                     pubkey = "pub",
                     createdAt = System.currentTimeMillis() / 1000 - 31 * 86400, // 31 days ago
                     kind = 30078,
-                    contentEncrypted = "enc",
-                    contentDecrypted = """{"id":"s1","as_of_event_count":40,"as_of_timestamp":1,"balances":[],"event_hashes":[]}""",
+                    contentEncrypted = """{"id":"s1","as_of_event_count":40,"as_of_timestamp":1,"balances":[],"event_hashes":[]}""",
                     eventType = "snapshot",
                     sig = "sig",
                     receivedAt = 1,

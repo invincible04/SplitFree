@@ -49,9 +49,6 @@ interface GroupDao {
         relays: String,
     )
 
-    @Query("UPDATE `groups` SET groupKey = '' WHERE groupId = :groupId")
-    suspend fun clearGroupKey(groupId: String)
-
     @Query("UPDATE `groups` SET lastMetaTimestamp = :timestamp WHERE groupId = :groupId")
     suspend fun updateLastMetaTimestamp(
         groupId: String,

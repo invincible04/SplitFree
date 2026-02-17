@@ -94,7 +94,6 @@ class GroupRepository
                     createdAt = group.createdAt,
                     members = json.encodeToString(stringListSerializer, group.members),
                     relays = json.encodeToString(stringListSerializer, group.relays),
-                    groupKey = "", // empty — real key is in encrypted store
                 ),
             )
         }

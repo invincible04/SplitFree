@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.model.DebtTransaction
 import com.splitfree.domain.model.Expense
@@ -47,6 +48,7 @@ class GroupDetailViewModel
         private val exportGroup: ExportGroupUseCase,
         private val migrateGroup: MigrateGroupUseCase,
         private val identity: IdentityManager,
+        private val encryption: GroupEncryption,
     ) : ViewModel() {
         private val groupId: String = savedStateHandle["groupId"] ?: ""
         private val json = Json { ignoreUnknownKeys = true }
@@ -75,14 +77,20 @@ class GroupDetailViewModel
                     val result = computeBalances.computeWithExclusions(groupId)
                     val debts = simplifyDebts(result.balances)
                     val excluded = result.excludedExpenseUuids
+                    val groupKey = groupRepo.getGroupKey(groupId)
                     val expenses =
-                        events
-                            .filter {
-                                it.eventType == "expense" && it.contentDecrypted != null &&
-                                    it.expenseUuid != null && it.expenseUuid !in excluded
-                            }.mapNotNull {
-                                runCatching { json.decodeFromString<Expense>(it.contentDecrypted!!) }.getOrNull()
-                            }.sortedByDescending { it.timestamp }
+                        if (groupKey != null) {
+                            events
+                                .filter {
+                                    it.eventType == "expense" &&
+                                        it.expenseUuid != null && it.expenseUuid !in excluded
+                                }.mapNotNull {
+                                    val content = try { encryption.decrypt(it.contentEncrypted, groupKey) } catch (_: Exception) { null }
+                                    content?.let { c -> runCatching { json.decodeFromString<Expense>(c) }.getOrNull() }
+                                }.sortedByDescending { it.timestamp }
+                        } else {
+                            emptyList()
+                        }
                     _uiState.update { it.copy(debts = debts, expenses = expenses) }
                 }
             }

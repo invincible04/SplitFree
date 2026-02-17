@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase
 import com.splitfree.data.local.EventDao
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.Group
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
@@ -10,9 +11,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComputeBalancesUseCaseTest {
+    private val groupKey = "testkey"
+
     private fun eventDao() = mockk<EventDao>(relaxed = true)
 
-    private fun groupRepo() = mockk<GroupRepository>(relaxed = true)
+    private fun groupRepo() = mockk<GroupRepository>(relaxed = true).also {
+        coEvery { it.getGroupKey("g1") } returns groupKey
+    }
+
+    /** Mock encryption that returns contentEncrypted as-is (identity function for tests). */
+    private fun encryption() = mockk<GroupEncryption>().also {
+        every { it.decrypt(any(), eq(groupKey)) } answers { firstArg() }
+    }
 
     private fun group(creator: String = "alice") =
         Group(
@@ -38,8 +48,7 @@ class ComputeBalancesUseCaseTest {
         pubkey = pubkey,
         createdAt = createdAt,
         kind = 30078,
-        contentEncrypted = "",
-        contentDecrypted = content,
+        contentEncrypted = content, // In tests, contentEncrypted holds plaintext; mock decrypt returns it as-is
         eventType = type,
         expenseUuid = uuid,
         sig = "s",
@@ -62,7 +71,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             val alice = balances.find { it.pubkey == "alice" }
@@ -88,7 +97,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val result = useCase.computeWithExclusions("g1")
 
             assertTrue(result.balances.all { it.net == 0L } || result.balances.isEmpty())
@@ -117,7 +126,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             val alice = balances.find { it.pubkey == "alice" }
@@ -147,7 +156,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             assertTrue("All balances should be zero", balances.all { it.net == 0L })
@@ -176,7 +185,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             val alice = balances.find { it.pubkey == "alice" }
@@ -212,7 +221,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             // Only one settlement should be applied
@@ -235,24 +244,26 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             assertTrue("Negative shares should cause expense to be skipped", balances.isEmpty() || balances.all { it.net == 0L })
         }
 
     @Test
-    fun `events with null decrypted content are skipped`() =
+    fun `events with undecryptable content are skipped`() =
         runTest {
             val dao = eventDao()
             val repo = groupRepo()
+            val enc = mockk<GroupEncryption>()
+            every { enc.decrypt(any(), any()) } throws IllegalArgumentException("bad key")
             coEvery { dao.getEventsByGroup("g1") } returns
                 listOf(
-                    EventEntity("e1", "g1", "alice", 1, 30078, "enc", null, "expense", "u1", "s", receivedAt = 1),
+                    EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "s", receivedAt = 1),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, enc)
             val balances = useCase("g1")
 
             assertTrue(balances.isEmpty())
@@ -266,7 +277,7 @@ class ComputeBalancesUseCaseTest {
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             assertTrue(balances.isEmpty())
@@ -294,7 +305,7 @@ class ComputeBalancesUseCaseTest {
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
 
             val aliceInr = balances.find { it.pubkey == "alice" && it.currency == "INR" }
@@ -325,7 +336,7 @@ class ComputeBalancesUseCaseTest {
                         content = """{"id":"u2","amount":200,"currency":"INR","description":"t","paid_by":"bob","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":200}""",
                     ),
                 )
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             // Snapshot: alice=50, bob=-50. Post-snapshot: alice owes bob 100 → alice net = 50-100=-50, bob net = -50+100=50
             val alice = balances.find { it.pubkey == "alice" }
@@ -344,7 +355,7 @@ class ComputeBalancesUseCaseTest {
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
                 makeEvent("s1", type = "snapshot", pubkey = "mallory", content = snapContent)
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue(balances.isEmpty())
         }
@@ -373,7 +384,7 @@ class ComputeBalancesUseCaseTest {
                 makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
             coEvery { dao.getEventIds("g1") } returns eventIds
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             val alice = balances.find { it.pubkey == "alice" }
             assertEquals(500L, alice?.net)
@@ -398,7 +409,7 @@ class ComputeBalancesUseCaseTest {
                 makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
             coEvery { dao.getEventIds("g1") } returns listOf("unrelated_1")
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue("Hash mismatch should ignore snapshot", balances.isEmpty() || balances.all { it.net == 0L })
             unmockkStatic(android.util.Log::class)
@@ -422,7 +433,7 @@ class ComputeBalancesUseCaseTest {
                 makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
             coEvery { dao.getEventIds("g1") } returns listOf("other")
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue("Few hashes with no match should ignore snapshot", balances.isEmpty() || balances.all { it.net == 0L })
             unmockkStatic(android.util.Log::class)
@@ -438,7 +449,7 @@ class ComputeBalancesUseCaseTest {
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
                 makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue(balances.isEmpty())
         }
@@ -452,7 +463,7 @@ class ComputeBalancesUseCaseTest {
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
                 makeEvent("s1", type = "snapshot", pubkey = "alice", content = "not json")
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue(balances.isEmpty())
         }
@@ -463,9 +474,9 @@ class ComputeBalancesUseCaseTest {
             val dao = eventDao()
             val repo = groupRepo()
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
-                EventEntity("s1", "g1", "alice", 1, 30078, "enc", null, "snapshot", null, "s", receivedAt = 1)
+                EventEntity("s1", "g1", "alice", 1, 30078, "enc", "snapshot", null, "s", receivedAt = 1)
             coEvery { dao.getEventsByGroup("g1") } returns emptyList()
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue(balances.isEmpty())
         }
@@ -492,7 +503,7 @@ class ComputeBalancesUseCaseTest {
                     makeEvent("e3", type = "expense_delete", uuid = "u1", content = "{}"),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
-            val useCase = ComputeBalancesUseCase(dao, repo)
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
             val balances = useCase("g1")
             assertTrue("Deleted correction should zero out", balances.isEmpty() || balances.all { it.net == 0L })
         }
@@ -513,7 +524,7 @@ class ComputeBalancesUseCaseTest {
                     makeEvent("e2", type = "expense_delete", uuid = null, content = "{}"),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
-            val balances = ComputeBalancesUseCase(dao, repo)("g1")
+            val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
             assertTrue(balances.isNotEmpty()) // expense not deleted since delete had null uuid
         }
 
@@ -532,7 +543,7 @@ class ComputeBalancesUseCaseTest {
                     ),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
-            val balances = ComputeBalancesUseCase(dao, repo)("g1")
+            val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
             assertTrue(balances.isEmpty())
         }
 
@@ -551,7 +562,7 @@ class ComputeBalancesUseCaseTest {
                     ),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
-            val balances = ComputeBalancesUseCase(dao, repo)("g1")
+            val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
             assertTrue(balances.isEmpty())
         }
 
@@ -577,7 +588,7 @@ class ComputeBalancesUseCaseTest {
                     ),
                 )
             coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
-            val balances = ComputeBalancesUseCase(dao, repo)("g1")
+            val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
             assertTrue("Correction of deleted expense should be ignored", balances.isEmpty() || balances.all { it.net == 0L })
         }
 
@@ -607,7 +618,7 @@ class ComputeBalancesUseCaseTest {
                         content = """{"id":"u2","amount":200,"currency":"INR","description":"t","paid_by":"bob","split_type":"equal","split_among":[{"pubkey":"alice","share":100},{"pubkey":"bob","share":100}],"timestamp":2}""",
                     ),
                 )
-            val balances = ComputeBalancesUseCase(dao, repo)("g1")
+            val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
             // Snapshot gives alice +50, then e2 (after snapshot) gives bob paid 200, split 100 each
             // alice: 50 + (-100) = -50, bob: 0 + 100 = 100
             val aliceInr = balances.find { it.pubkey == "alice" && it.currency == "INR" }

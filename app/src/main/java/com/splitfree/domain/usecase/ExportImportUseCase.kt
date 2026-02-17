@@ -164,6 +164,7 @@ class ImportGroupUseCase
                     } catch (_: Exception) {
                         null
                     }
+                if (decrypted != null && !EventValidator.isContentSafe(decrypted)) continue
                 eventDao.insert(
                     EventEntity(
                         eventId = event.eventId,
@@ -172,7 +173,6 @@ class ImportGroupUseCase
                         createdAt = event.createdAt,
                         kind = event.kind,
                         contentEncrypted = event.contentEncrypted,
-                        contentDecrypted = decrypted,
                         eventType = event.eventType,
                         expenseUuid = event.expenseUuid,
                         sig = event.sig,

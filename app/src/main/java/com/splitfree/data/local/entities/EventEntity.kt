@@ -19,11 +19,21 @@ data class EventEntity(
     val createdAt: Long,
     val kind: Int,
     val contentEncrypted: String,
-    val contentDecrypted: String? = null,
     val eventType: String, // expense, settlement, snapshot, expense_correction, expense_delete, group_meta
     val expenseUuid: String? = null,
     val sig: String,
     val syncedToRelays: String = "[]", // JSON array of relay URLs
     val receivedAt: Long,
     val originalEventJson: String? = null, // Full signed Nostr event JSON for self-healing re-publish
-)
+) {
+    /**
+     * Decrypt content on-the-fly. Never persisted — call each time content is needed.
+     * Returns null if decryption fails (wrong key, corrupted data).
+     */
+    fun decryptContent(decryptor: (String, String) -> String): String? =
+        try {
+            decryptor(contentEncrypted, groupId)
+        } catch (_: Exception) {
+            null
+        }
+}

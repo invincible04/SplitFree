@@ -184,7 +184,7 @@ class EventProcessor
                 }
             }
 
-            // Atomic insert
+            // Atomic insert — contentDecrypted is NOT persisted (decrypt on-the-fly)
             if (!eventDao.insertIfNew(
                     EventEntity(
                         eventId = inner.id,
@@ -193,7 +193,6 @@ class EventProcessor
                         createdAt = inner.createdAt,
                         kind = 30078,
                         contentEncrypted = encrypted,
-                        contentDecrypted = decrypted,
                         eventType = eventType,
                         expenseUuid = expenseUuid,
                         sig = inner.sig,

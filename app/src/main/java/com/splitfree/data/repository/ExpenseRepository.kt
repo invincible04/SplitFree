@@ -163,7 +163,6 @@ class ExpenseRepository
                     createdAt = event.createdAt,
                     kind = 30078,
                     contentEncrypted = encrypted,
-                    contentDecrypted = plaintext,
                     eventType = eventType,
                     expenseUuid = expenseUuid,
                     sig = event.sig,

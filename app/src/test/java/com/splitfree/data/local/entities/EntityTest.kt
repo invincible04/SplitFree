@@ -20,7 +20,6 @@ class EntityTest {
                 sig = "sig",
                 receivedAt = 1,
             )
-        assertNull(e.contentDecrypted)
         assertNull(e.expenseUuid)
         assertEquals("[]", e.syncedToRelays)
         assertNull(e.originalEventJson)
@@ -36,7 +35,6 @@ class EntityTest {
                 createdAt = 1,
                 kind = 30078,
                 contentEncrypted = "enc",
-                contentDecrypted = "dec",
                 eventType = "settlement",
                 expenseUuid = "uuid",
                 sig = "sig",
@@ -44,7 +42,6 @@ class EntityTest {
                 receivedAt = 2,
                 originalEventJson = "{}",
             )
-        assertEquals("dec", e.contentDecrypted)
         assertEquals("uuid", e.expenseUuid)
         assertEquals("{}", e.originalEventJson)
     }
@@ -69,7 +66,6 @@ class EntityTest {
                 createdAt = 1,
                 members = "[]",
                 relays = "[]",
-                groupKey = "",
             )
         assertEquals("", g.description)
         assertEquals(0L, g.lastSyncTimestamp)
@@ -78,7 +74,7 @@ class EntityTest {
 
     @Test
     fun `GroupEntity equality`() {
-        val a = GroupEntity("g", "Test", "", "p", 1, "[]", "[]", "")
+        val a = GroupEntity("g", "Test", "", "p", 1, "[]", "[]")
         val b = a.copy()
         assertEquals(a, b)
     }

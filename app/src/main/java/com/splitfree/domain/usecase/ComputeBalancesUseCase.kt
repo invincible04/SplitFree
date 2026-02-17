@@ -2,8 +2,10 @@ package com.splitfree.domain.usecase
 
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.data.local.EventDao
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.data.util.HashUtil
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.Balance
 import com.splitfree.domain.model.Expense
 import com.splitfree.domain.model.Settlement
@@ -20,10 +22,20 @@ class ComputeBalancesUseCase
     constructor(
         private val eventDao: EventDao,
         private val groupRepo: GroupRepository,
+        private val encryption: GroupEncryption,
     ) {
         private val json = Json { ignoreUnknownKeys = true }
 
+        /** Decrypt event content on-the-fly. Returns null if key missing or decryption fails. */
+        private fun decrypt(event: EventEntity, groupKey: String): String? =
+            try {
+                encryption.decrypt(event.contentEncrypted, groupKey)
+            } catch (_: Exception) {
+                null
+            }
+
         suspend fun computeWithExclusions(groupId: String): BalanceResult {
+            val groupKey = groupRepo.getGroupKey(groupId) ?: return BalanceResult(emptyList(), emptySet())
             val events = eventDao.getEventsByGroup(groupId)
             // Key: (pubkey, currency) -> net amount
             val balances = mutableMapOf<Pair<String, String>, Long>()
@@ -33,30 +45,31 @@ class ComputeBalancesUseCase
 
             val snapshotEvent = eventDao.getLatestEventByType(groupId, "snapshot")
             var snapshotTimestamp = 0L
-            if (snapshotEvent?.contentDecrypted != null) {
+            if (snapshotEvent != null) {
                 try {
-                    // Only the group creator can publish trusted snapshots
                     val group = groupRepo.getById(groupId)
                     if (group != null && snapshotEvent.pubkey == group.createdBy) {
-                        val snap = json.decodeFromString<BalanceSnapshot>(snapshotEvent.contentDecrypted!!)
-                        // Verify snapshot hashes match local events (forgery detection)
-                        val localIds = eventDao.getEventIds(groupId).toSet()
-                        if (snap.event_hashes.isNotEmpty()) {
-                            val localHashes = localIds.mapTo(HashSet()) { HashUtil.sha256Hex(it) }
-                            val matchCount = snap.event_hashes.count { it in localHashes }
-                            if (snap.event_hashes.size < 10 || matchCount.toDouble() / snap.event_hashes.size < 0.8) {
-                                Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
+                        val content = decrypt(snapshotEvent, groupKey)
+                        if (content != null) {
+                            val snap = json.decodeFromString<BalanceSnapshot>(content)
+                            val localIds = eventDao.getEventIds(groupId).toSet()
+                            if (snap.event_hashes.isNotEmpty()) {
+                                val localHashes = localIds.mapTo(HashSet()) { HashUtil.sha256Hex(it) }
+                                val matchCount = snap.event_hashes.count { it in localHashes }
+                                if (snap.event_hashes.size < 10 || matchCount.toDouble() / snap.event_hashes.size < 0.8) {
+                                    Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
+                                } else {
+                                    for (b in snap.balances) {
+                                        balances[b.pubkey to b.currency] = b.net
+                                    }
+                                    snapshotTimestamp = snap.as_of_timestamp
+                                }
                             } else {
                                 for (b in snap.balances) {
                                     balances[b.pubkey to b.currency] = b.net
                                 }
                                 snapshotTimestamp = snap.as_of_timestamp
                             }
-                        } else {
-                            for (b in snap.balances) {
-                                balances[b.pubkey to b.currency] = b.net
-                            }
-                            snapshotTimestamp = snap.as_of_timestamp
                         }
                     }
                 } catch (_: Exception) {
@@ -71,7 +84,6 @@ class ComputeBalancesUseCase
                 }
 
             for (e in relevantEvents) {
-                e.contentDecrypted ?: continue
                 when (e.eventType) {
                     "expense_delete" -> e.expenseUuid?.let { deleted.add(it) }
                     "expense_correction" -> e.expenseUuid?.let { latestCorrection[it] = e.eventId }
@@ -79,7 +91,7 @@ class ComputeBalancesUseCase
             }
 
             for (e in relevantEvents) {
-                val content = e.contentDecrypted ?: continue
+                val content = decrypt(e, groupKey) ?: continue
                 when (e.eventType) {
                     "expense" -> {
                         val uuid = e.expenseUuid ?: continue
@@ -96,7 +108,6 @@ class ComputeBalancesUseCase
 
                     "settlement" -> {
                         val s = json.decodeFromString<Settlement>(content)
-                        // Either party (payer or payee) can record a settlement
                         if (e.pubkey != s.from && e.pubkey != s.to) continue
                         if (!seenSettlementIds.add(s.id)) continue
                         val cur = s.currency.uppercase().trim()

@@ -31,7 +31,6 @@ class GroupRepositoryTest {
             createdAt = 1000,
             members = """["pub1","pub2"]""",
             relays = """["wss://r"]""",
-            groupKey = "",
             lastSyncTimestamp = 500,
             lastMetaTimestamp = 400,
         )

@@ -6,7 +6,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
 import io.mockk.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -54,14 +54,14 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `returns 0 for empty local events`() =
-        runBlocking {
+        runTest {
             coEvery { eventDao.getEventsByGroup(groupId) } returns emptyList()
             assertEquals(0, useCase(groupId))
         }
 
     @Test
     fun `returns 0 when all events already on relay`() =
-        runBlocking {
+        runTest {
             val local = listOf(entity("evt1"), entity("evt2"))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns
@@ -74,7 +74,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `republishes missing events`() =
-        runBlocking {
+        runTest {
             val local = listOf(entity("evt1"), entity("evt2"))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
@@ -84,7 +84,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `skips events without originalEventJson`() =
-        runBlocking {
+        runTest {
             val local = listOf(entity("evt1", hasJson = false))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
@@ -93,7 +93,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `counts only successful publishes`() =
-        runBlocking {
+        runTest {
             val local = listOf(entity("evt1"), entity("evt2"))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
@@ -104,7 +104,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `skips events already on relay`() =
-        runBlocking {
+        runTest {
             val local = listOf(entity("evt1"), entity("evt2"))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             val remoteEvt1 =
@@ -118,7 +118,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `publishes all events in batches instead of capping at 200`() =
-        runBlocking {
+        runTest {
             val local = (1..210).map { entity("evt$it") }
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
@@ -129,7 +129,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `caps at ABSOLUTE_CAP for safety`() =
-        runBlocking {
+        runTest {
             val local = (1..SelfHealUseCase.ABSOLUTE_CAP + 50).map { entity("evt$it") }
             coEvery { eventDao.getEventsByGroup(groupId) } returns local
             coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
@@ -140,7 +140,7 @@ class SelfHealUseCaseTest {
 
     @Test
     fun `skips events from removed members`() =
-        runBlocking {
+        runTest {
             val removedPub = "removed"
             val local = listOf(entity("evt1"), entity("evt2", pubkey = removedPub))
             coEvery { eventDao.getEventsByGroup(groupId) } returns local

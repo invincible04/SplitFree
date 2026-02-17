@@ -52,11 +52,12 @@ class CreateSnapshotUseCase
         suspend operator fun invoke(groupId: String): Boolean {
             return db.withTransaction {
                 val eventCount = eventDao.getEventCount(groupId)
+                val groupKey = groupRepo.getGroupKey(groupId) ?: return@withTransaction false
                 val lastSnapshot = eventDao.getLatestEventByType(groupId, "snapshot")
                 val lastSnapshotCount =
                     lastSnapshot?.let {
                         runCatching {
-                            val content = it.contentDecrypted ?: return@withTransaction false
+                            val content = encryption.decrypt(it.contentEncrypted, groupKey)
                             json.decodeFromString<BalanceSnapshot>(content).as_of_event_count
                         }.getOrDefault(0)
                     } ?: 0
@@ -82,7 +83,6 @@ class CreateSnapshotUseCase
                         event_hashes = eventHashes,
                     )
 
-                val groupKey = groupRepo.getGroupKey(groupId) ?: return@withTransaction false
                 val plaintext = json.encodeToString(BalanceSnapshot.serializer(), snapshot)
                 val encrypted = encryption.encrypt(plaintext, groupKey)
 
@@ -102,7 +102,6 @@ class CreateSnapshotUseCase
                         createdAt = event.createdAt,
                         kind = 30078,
                         contentEncrypted = encrypted,
-                        contentDecrypted = plaintext,
                         eventType = "snapshot",
                         expenseUuid = snapshot.id,
                         sig = event.sig,

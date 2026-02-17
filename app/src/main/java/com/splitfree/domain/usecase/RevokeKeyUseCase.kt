@@ -198,7 +198,6 @@ class RevokeKeyUseCase
                     createdAt = event.createdAt,
                     kind = 30078,
                     contentEncrypted = encrypted,
-                    contentDecrypted = plaintext,
                     eventType = eventType,
                     expenseUuid = null,
                     sig = event.sig,
