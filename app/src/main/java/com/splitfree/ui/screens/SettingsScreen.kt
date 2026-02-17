@@ -23,6 +23,9 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.ui.theme.ThemeMode
+import com.splitfree.ui.theme.ThemePreference
+import com.splitfree.ui.theme.ThemeTransitionState
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
 
@@ -241,6 +244,30 @@ fun SettingsScreen(
                     },
                 )
             }
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            SectionHeader(icon = Icons.Outlined.Palette, title = "Appearance")
+
+            val themeMode by ThemePreference.mode.collectAsStateWithLifecycle()
+            val view = LocalView.current
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+                ThemeMode.entries.forEachIndexed { index, mode ->
+                    SegmentedButton(
+                        selected = themeMode == mode,
+                        onClick = {
+                            if (themeMode != mode) {
+                                ThemeTransitionState.captureAndChange(view) {
+                                    ThemePreference.set(context, mode)
+                                }
+                            }
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index, ThemeMode.entries.size),
+                    ) {
+                        Text(mode.name.lowercase().replaceFirstChar { it.uppercase() })
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             SectionHeader(icon = Icons.Outlined.Shield, title = "Privacy")

@@ -22,7 +22,9 @@ import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.JoinGroupUseCase
 import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph
+import com.splitfree.ui.theme.CircularRevealTheme
 import com.splitfree.ui.theme.SplitFreeTheme
+import com.splitfree.ui.theme.ThemePreference
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
@@ -41,6 +43,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        ThemePreference.init(this)
         sanitizeIntent(intent)
         handleDeepLink(intent)
 
@@ -56,28 +59,30 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            SplitFreeTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
-                ) {
-                    val nav = rememberNavController()
-                    navController = nav
-                    val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
-                    SplitFreeNavGraph(
-                        navController = nav,
-                        startDestination = start,
-                        onScanResult = { scannedUrl ->
-                            handleDeepLink(Intent(Intent.ACTION_VIEW, Uri.parse(scannedUrl)))
-                        },
-                    )
+            CircularRevealTheme {
+                SplitFreeTheme {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background,
+                    ) {
+                        val nav = rememberNavController()
+                        navController = nav
+                        val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
+                        SplitFreeNavGraph(
+                            navController = nav,
+                            startDestination = start,
+                            onScanResult = { scannedUrl ->
+                                handleDeepLink(Intent(Intent.ACTION_VIEW, Uri.parse(scannedUrl)))
+                            },
+                        )
 
-                    if (isJoining) {
-                        androidx.compose.foundation.layout.Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = androidx.compose.ui.Alignment.Center,
-                        ) {
-                            androidx.compose.material3.CircularProgressIndicator()
+                        if (isJoining) {
+                            androidx.compose.foundation.layout.Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = androidx.compose.ui.Alignment.Center,
+                            ) {
+                                androidx.compose.material3.CircularProgressIndicator()
+                            }
                         }
                     }
                 }
