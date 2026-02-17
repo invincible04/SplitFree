@@ -126,7 +126,7 @@ class NostrClient
                                         ) {
                                             _incomingEvents.emit(msg.event)
                                         } else {
-                                            Log.d(TAG, "Skipped event ${msg.event.id.take(8)} kind=${msg.event.kind} verify=${msg.event.verify()} seen=${!addSeen(msg.event.id)}")
+                                            // Duplicate from another relay — skip silently
                                         }
                                     }
 

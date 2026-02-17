@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -49,7 +51,7 @@ fun GroupDetailScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { 3 })
     var showQrDialog by remember { mutableStateOf(false) }
     var showShareWarning by remember { mutableStateOf(false) }
 
@@ -107,45 +109,51 @@ fun GroupDetailScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             Column(modifier = Modifier.fillMaxSize()) {
+                val scope = rememberCoroutineScope()
                 // Tabs
-                PrimaryTabRow(selectedTabIndex = selectedTab) {
+                PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
                     Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
+                        selected = pagerState.currentPage == 0,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
                         text = { Text("Balances") },
                     )
                     Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
+                        selected = pagerState.currentPage == 1,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
                         text = { Text("Expenses") },
                     )
                     Tab(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
+                        selected = pagerState.currentPage == 2,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(2) } },
                         text = { Text("Members") },
                     )
                 }
 
-                when (selectedTab) {
-                    0 -> {
-                        BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), myPubkey = uiState.myPubkey, onSettle = {
-                            showSettleDialog =
-                                it
-                        })
-                    }
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize(),
+                ) { page ->
+                    when (page) {
+                        0 -> {
+                            BalancesTab(uiState.debts, hasExpenses = uiState.expenses.isNotEmpty(), myPubkey = uiState.myPubkey, onSettle = {
+                                showSettleDialog =
+                                    it
+                            })
+                        }
 
-                    1 -> {
-                        ExpensesTab(uiState.expenses)
-                    }
+                        1 -> {
+                            ExpensesTab(uiState.expenses)
+                        }
 
-                    2 -> {
-                        MembersTab(
-                            members = uiState.members,
-                            createdBy = uiState.createdBy,
-                            isCreator = uiState.myPubkey == uiState.createdBy,
-                            myPubkey = uiState.myPubkey,
-                            onRemove = { showRemoveDialog = it },
-                        )
+                        2 -> {
+                            MembersTab(
+                                members = uiState.members,
+                                createdBy = uiState.createdBy,
+                                isCreator = uiState.myPubkey == uiState.createdBy,
+                                myPubkey = uiState.myPubkey,
+                                onRemove = { showRemoveDialog = it },
+                            )
+                        }
                     }
                 }
             }
@@ -313,6 +321,7 @@ private fun BalancesTab(
         }
     } else {
         LazyColumn(
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -353,6 +362,7 @@ private fun ExpensesTab(expenses: List<Expense>) {
         }
     } else {
         LazyColumn(
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
