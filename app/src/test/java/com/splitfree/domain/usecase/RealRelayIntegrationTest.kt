@@ -205,7 +205,7 @@ class RealRelayIntegrationTest {
         delay(2000)
 
         // ========== PHONE 1: Generate invite link ==========
-        val inviteLink = JoinGroupUseCase.createInviteLink(phone1Group, groupKey)
+        val inviteLink = JoinGroupUseCase.createInviteLink(phone1Group, groupKey).first
         println("\n=== INVITE LINK ===")
         println("Link: $inviteLink")
         println("Link length: ${inviteLink.length} chars")

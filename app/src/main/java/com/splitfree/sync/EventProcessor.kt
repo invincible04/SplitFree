@@ -113,14 +113,21 @@ class EventProcessor
             if (eventType == "group_meta") {
                 val isCreator = group.createdBy.isEmpty() || authorHex == group.createdBy
                 if (!isCreator) {
-                    // Non-creators may only publish a self-join: their pubkey must be
-                    // in the new member list and the name must not change.
+                    // Non-creators may only publish a self-join: the only diff from
+                    // the current member list must be +authorHex, with no removals
+                    // and no changes to name or relays (CWE-863 fix).
                     val isSelfJoin = try {
                         val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
                         val meta = json.decodeFromString<GroupMeta>(
                             encryption.decrypt(inner.content, key)
                         )
-                        authorHex in meta.members
+                        val current = group.members.toSet()
+                        val proposed = meta.members.toSet()
+                        val added = proposed - current
+                        val removed = current - proposed
+                        added == setOf(authorHex) && removed.isEmpty()
+                            && meta.name == group.name
+                            && meta.relays.toSet() == group.relays.toSet()
                     } catch (e: Exception) {
                         Log.w(TAG, "Self-join check failed for $authorHex in $groupId: ${e.message}")
                         false
@@ -237,18 +244,23 @@ class EventProcessor
                             val meta = json.decodeFromString<GroupMeta>(decrypted)
                             if (meta.members.isNotEmpty()) {
                                 val currentGroup = groupRepo.getById(groupId)
-                                val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != meta.relays.toSet()
                                 val isCreator = currentGroup == null || currentGroup.createdBy.isEmpty() || authorHex == currentGroup.createdBy
 
-                                // Non-creator events merge members; creator events replace
+                                // Non-creator events: validated self-join, only add author
                                 val finalMembers = if (isCreator) {
                                     meta.members
                                 } else {
-                                    ((currentGroup?.members ?: emptyList()) + meta.members).distinct()
+                                    ((currentGroup?.members ?: emptyList()) + authorHex).distinct()
                                 }
 
-                                Log.i(TAG, "Applying group_meta for $groupId: ${finalMembers.size} members, name=${meta.name}")
-                                groupRepo.updateFromMeta(groupId, meta.name, finalMembers, meta.relays, createdAt)
+                                // Non-creators cannot change name or relays
+                                val finalName = if (isCreator) meta.name else (currentGroup?.name ?: meta.name)
+                                val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
+
+                                val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != finalRelays.toSet()
+
+                                Log.i(TAG, "Applying group_meta for $groupId: ${finalMembers.size} members, name=$finalName")
+                                groupRepo.updateFromMeta(groupId, finalName, finalMembers, finalRelays, createdAt)
 
                                 // Trigger eager self-heal when relays change
                                 if (relaysChanged) {

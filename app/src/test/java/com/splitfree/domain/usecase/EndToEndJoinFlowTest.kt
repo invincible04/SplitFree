@@ -143,7 +143,7 @@ class EndToEndJoinFlowTest {
         assertEquals(fakeGroupKey, savedKeys[phone1Group.id])
 
         // ========== PHONE 1: Generate invite link (QR code content) ==========
-        val inviteLink = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey)
+        val inviteLink = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey).first
 
         assertNotNull(inviteLink)
         assertTrue("Link should start with splitfree://join?d=", inviteLink.startsWith("splitfree://join?d="))
@@ -186,7 +186,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `invite link preserves all 5 default relays via bitmap encoding`() = runBlocking {
         val group = createGroupUseCase("Relay Test")
-        val link = JoinGroupUseCase.createInviteLink(group, fakeGroupKey)
+        val link = JoinGroupUseCase.createInviteLink(group, fakeGroupKey).first
         val phone2Group = joinGroupUseCase(link)
 
         assertEquals(
@@ -199,7 +199,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `Phone 2 joining same group twice returns existing group`() = runBlocking {
         val phone1Group = createGroupUseCase("Duplicate Test")
-        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey)
+        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey).first
 
         // First join
         val firstJoin = joinGroupUseCase(link)
@@ -217,7 +217,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `invite link with unicode group name round-trips correctly`() = runBlocking {
         val phone1Group = createGroupUseCase("旅行 🏖️ Trip")
-        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey)
+        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey).first
         val phone2Group = joinGroupUseCase(link)
 
         assertEquals("旅行 🏖️ Trip", phone2Group.name)
@@ -230,7 +230,7 @@ class EndToEndJoinFlowTest {
         coEvery { phone2NostrClient.connect(any()) } throws RuntimeException("Network unreachable")
 
         val phone1Group = createGroupUseCase("Offline Test")
-        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey)
+        val link = JoinGroupUseCase.createInviteLink(phone1Group, fakeGroupKey).first
 
         // Should NOT throw — sync failure is caught, group is still saved locally
         val phone2Group = joinGroupUseCase(link)

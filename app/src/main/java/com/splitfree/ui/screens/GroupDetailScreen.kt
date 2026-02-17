@@ -53,6 +53,7 @@ fun GroupDetailScreen(
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
     val pagerState = rememberPagerState(pageCount = { 3 })
     var showQrDialog by remember { mutableStateOf(false) }
+    val inviteLink by viewModel.inviteLink.collectAsStateWithLifecycle()
     var showShareWarning by remember { mutableStateOf(false) }
 
     var showRemoveDialog by remember { mutableStateOf<String?>(null) }
@@ -181,7 +182,7 @@ fun GroupDetailScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showShareWarning = false
-                    val link = viewModel.getInviteLink()
+                    val link = inviteLink
                     if (link != null) {
                         val intent =
                             Intent(Intent.ACTION_SEND).apply {
@@ -189,6 +190,8 @@ fun GroupDetailScreen(
                                 putExtra(Intent.EXTRA_TEXT, link)
                             }
                         context.startActivity(Intent.createChooser(intent, "Share invite"))
+                    } else {
+                        android.widget.Toast.makeText(context, "Invite link not ready yet — try again in a moment", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }) { Text("Share") }
             },
@@ -199,14 +202,14 @@ fun GroupDetailScreen(
     }
 
     if (showQrDialog) {
-        val link = viewModel.getInviteLink()
-        if (link != null) {
-            val qrBitmap = remember(link) { QrGenerator.encode(link) }
-            AlertDialog(
-                onDismissRequest = { showQrDialog = false },
-                title = { Text("Invite QR Code") },
-                text = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        val link = inviteLink
+        AlertDialog(
+            onDismissRequest = { showQrDialog = false },
+            title = { Text("Invite QR Code") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    if (link != null) {
+                        val qrBitmap = remember(link) { QrGenerator.encode(link) }
                         Image(
                             bitmap = qrBitmap.asImageBitmap(),
                             contentDescription = "Invite QR code",
@@ -218,13 +221,21 @@ fun GroupDetailScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    } else {
+                        CircularProgressIndicator(modifier = Modifier.padding(32.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Generating invite link…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showQrDialog = false }) { Text("Done") }
-                },
-            )
-        }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showQrDialog = false }) { Text("Done") }
+            },
+        )
     }
 
     showSettleDialog?.let { debt ->

@@ -9,6 +9,7 @@ import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.crypto.hexToBytes
 import com.splitfree.domain.model.Group
 import com.splitfree.sync.EventProcessor
 import io.mockk.*
@@ -176,16 +177,71 @@ class JoinGroupUseCaseTest {
     // --- createInviteLink ---
 
     @Test
-    fun `createInviteLink produces valid v2 URI`() {
+    fun `createInviteLink produces valid v2 URI when no sender key`() {
         val group = Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io", "wss://nos.lol"))
-        val link = JoinGroupUseCase.createInviteLink(group, "key123")
+        val (link, event) = JoinGroupUseCase.createInviteLink(group, "key123")
         assertTrue(link.startsWith("splitfree://join?d="))
-        // Should be compact — under 150 chars with known relays
+        assertNull("v2 link should not produce key delivery event", event)
         assertTrue("Link too long: ${link.length}", link.length < 150)
-        // Payload should be valid base64url (no +, /, or = padding issues)
         val payload = link.substringAfter("d=")
         assertFalse(payload.contains("+"))
         assertFalse(payload.contains("/"))
+    }
+
+    @Test
+    fun `createInviteLink v3 produces link and key delivery event`() {
+        val group = Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io", "wss://nos.lol"))
+        val senderPriv = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(senderPriv)) {
+            java.security.SecureRandom().nextBytes(senderPriv)
+        }
+        val (link, event) = JoinGroupUseCase.createInviteLink(group, "key123", senderPriv)
+        assertTrue(link.startsWith("splitfree://join?d="))
+        assertNotNull("v3 link must produce key delivery event", event)
+        assertEquals(1059, event!!.kind)
+        // Link should NOT contain the group key
+        assertFalse("v3 link must not contain group key", link.contains("key123"))
+        assertTrue("Link too long: ${link.length}", link.length < 200)
+    }
+
+    @Test
+    fun `v3 round-trip - key delivery event is decryptable with ephemeral key from link`() {
+        val group = Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io", "wss://nos.lol"))
+        val groupKey = "supersecretgroupkey"
+        val senderPriv = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(senderPriv)) {
+            java.security.SecureRandom().nextBytes(senderPriv)
+        }
+        val (link, giftWrap) = JoinGroupUseCase.createInviteLink(group, groupKey, senderPriv)
+        assertNotNull(giftWrap)
+
+        // Extract ephemeral private key from the link (simulating what decodeCompactLink does)
+        val payload = link.substringAfter("d=")
+        val data = java.util.Base64.getUrlDecoder().decode(payload)
+        assertEquals("version must be 3", 3, data[0].toInt() and 0xFF)
+        // Skip version(1) + uuid(16) = 17 bytes to get ephPriv(32)
+        val ephPriv = data.copyOfRange(17, 49)
+
+        // Unwrap gift wrap: decrypt with ephemeral key
+        val ephPubHex = com.splitfree.domain.crypto.NostrEvent.pubkeyFromPrivkey(ephPriv)
+        val wrapConvKey = com.splitfree.domain.crypto.Nip44.getConversationKey(ephPriv, giftWrap!!.pubkey.hexToBytes())
+        val sealJson = com.splitfree.domain.crypto.Nip44.decrypt(giftWrap.content, wrapConvKey)
+        val seal = com.splitfree.domain.crypto.NostrEvent.fromJson(sealJson)
+        assertNotNull(seal)
+        assertEquals(13, seal!!.kind)
+
+        // Unwrap seal: decrypt with ephemeral key + seal author
+        val sealConvKey = com.splitfree.domain.crypto.Nip44.getConversationKey(ephPriv, seal.pubkey.hexToBytes())
+        val rumorJson = com.splitfree.domain.crypto.Nip44.decrypt(seal.content, sealConvKey)
+        val rumor = com.splitfree.domain.crypto.NostrEvent.fromJson(rumorJson)
+        assertNotNull(rumor)
+
+        // Verify rumor contains the group key
+        assertEquals(groupKey, rumor!!.content)
+        val gTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1)
+        val tTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "t" }?.get(1)
+        assertEquals(group.id, gTag)
+        assertEquals("key_delivery", tTag)
     }
 
     // --- initialSync branches ---

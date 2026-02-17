@@ -187,15 +187,20 @@ class FullRealWorldSimulationTest {
         val meta2Event = p2Signer.createSignedEvent(groupId, "group_meta",
             encryption.encrypt(meta2, groupKey))
         assertTrue("join meta sig valid", meta2Event.verify())
+        // Start collecting BEFORE publishing to avoid race with SharedFlow
+        val joinDeferred = async {
+            withTimeout(30_000) {
+                phone1.incomingEvents.first { e ->
+                    e.pubkey == p2Pub && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "group_meta" }
+                }
+            }
+        }
+        delay(200)
         assertTrue("join meta published", phone2.publish(meta2Event))
         println("   ✅ Phone 2 joined, group now has 2 members")
 
         // Phone 1 receives the updated member list
-        val joinEvent = withTimeout(30_000) {
-            phone1.incomingEvents.first { e ->
-                e.pubkey == p2Pub && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "group_meta" }
-            }
-        }
+        val joinEvent = joinDeferred.await()
         assertTrue("Join event sig valid", joinEvent.verify())
         val joinMeta = json.parseToJsonElement(
             encryption.decrypt(joinEvent.content, groupKey)
@@ -217,16 +222,20 @@ class FullRealWorldSimulationTest {
             now, "food")
         val exp1Event = signExpense(p1Signer, exp1)
         assertTrue("exp1 sig valid", exp1Event.verify())
+        val recv1Deferred = async {
+            withTimeout(30_000) {
+                phone2.incomingEvents.first { e ->
+                    e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
+                        e.pubkey == p1Pub
+                }
+            }
+        }
+        delay(200)
         assertTrue("exp1 published", phone1.publish(exp1Event))
         println("   Published: ${exp1Event.id.take(8)}")
 
         // Phone 2 receives it
-        val recv1 = withTimeout(30_000) {
-            phone2.incomingEvents.first { e ->
-                e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
-                    e.pubkey == p1Pub
-            }
-        }
+        val recv1 = recv1Deferred.await()
         val parsed1 = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(recv1.content, groupKey))
         assertEquals("Dinner at restaurant", parsed1.description)
@@ -249,16 +258,20 @@ class FullRealWorldSimulationTest {
             now + 1, "transport")
         val exp2Event = signExpense(p2Signer, exp2)
         assertTrue("exp2 sig valid", exp2Event.verify())
+        val recv2Deferred = async {
+            withTimeout(30_000) {
+                phone1.incomingEvents.first { e ->
+                    e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
+                        e.pubkey == p2Pub
+                }
+            }
+        }
+        delay(200)
         assertTrue("exp2 published", phone2.publish(exp2Event))
         println("   Published: ${exp2Event.id.take(8)}")
 
         // Phone 1 receives it
-        val recv2 = withTimeout(30_000) {
-            phone1.incomingEvents.first { e ->
-                e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
-                    e.pubkey == p2Pub
-            }
-        }
+        val recv2 = recv2Deferred.await()
         val parsed2 = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(recv2.content, groupKey))
         assertEquals("Cab to airport", parsed2.description)
@@ -281,15 +294,19 @@ class FullRealWorldSimulationTest {
             listOf(SplitEntry(p1Pub, 40000), SplitEntry(p2Pub, 40000)),
             now + 2, "groceries")
         val exp3Event = signExpense(p1Signer, exp3)
+        val recv3Deferred = async {
+            withTimeout(30_000) {
+                phone2.incomingEvents.first { e ->
+                    e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
+                        e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp3.id }
+                }
+            }
+        }
+        delay(200)
         assertTrue("exp3 published", phone1.publish(exp3Event))
         println("   Published: ${exp3Event.id.take(8)}")
 
-        val recv3 = withTimeout(30_000) {
-            phone2.incomingEvents.first { e ->
-                e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
-                    e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp3.id }
-            }
-        }
+        val recv3 = recv3Deferred.await()
         val parsed3 = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(recv3.content, groupKey))
         assertEquals("Groceries from store", parsed3.description)
@@ -304,14 +321,18 @@ class FullRealWorldSimulationTest {
         println("\n── STEP 7: Phone 2 deletes 'Cab ₹400' (correction) ──")
         val delEvent = signDeletion(p2Signer, exp2.id, now + 3)
         assertTrue("delete sig valid", delEvent.verify())
+        val recvDelDeferred = async {
+            withTimeout(30_000) {
+                phone1.incomingEvents.first { e ->
+                    e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense_delete" }
+                }
+            }
+        }
+        delay(200)
         assertTrue("delete published", phone2.publish(delEvent))
         println("   Published deletion: ${delEvent.id.take(8)}")
 
-        val recvDel = withTimeout(30_000) {
-            phone1.incomingEvents.first { e ->
-                e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense_delete" }
-            }
-        }
+        val recvDel = recvDelDeferred.await()
         val delPayload = json.parseToJsonElement(
             encryption.decrypt(recvDel.content, groupKey)
         ).let { it as kotlinx.serialization.json.JsonObject }
@@ -332,14 +353,18 @@ class FullRealWorldSimulationTest {
             listOf(SplitEntry(p1Pub, 17500), SplitEntry(p2Pub, 17500)),
             now + 4, "transport")
         val exp2bEvent = signExpense(p2Signer, exp2b)
+        val recv2bDeferred = async {
+            withTimeout(30_000) {
+                phone1.incomingEvents.first { e ->
+                    e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp2b.id }
+                }
+            }
+        }
+        delay(200)
         assertTrue("corrected exp published", phone2.publish(exp2bEvent))
         println("   Published: ${exp2bEvent.id.take(8)}")
 
-        val recv2b = withTimeout(30_000) {
-            phone1.incomingEvents.first { e ->
-                e.tags.any { it.size >= 2 && it[0] == "x" && it[1] == exp2b.id }
-            }
-        }
+        val recv2b = recv2bDeferred.await()
         val parsed2b = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(recv2b.content, groupKey))
         assertEquals("Cab to airport (corrected)", parsed2b.description)

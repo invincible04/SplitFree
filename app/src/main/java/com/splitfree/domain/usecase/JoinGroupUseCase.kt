@@ -11,8 +11,11 @@ import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.crypto.hexToBytes
+import com.splitfree.domain.crypto.toHex
 import com.splitfree.domain.model.Group
 import com.splitfree.sync.EventProcessor
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.putJsonArray
@@ -36,17 +39,30 @@ class JoinGroupUseCase
     ) {
         /**
          * Parse an invite link and join the group.
-         * v2 format: https://splitfree.app/join#<compact_base64_payload>
+         * v3 format: splitfree://join?d=<compact_base64_payload> (ephemeral key exchange, no group key in URL)
+         * v2 format: splitfree://join?d=<compact_base64_payload> (legacy, group key in URL)
          * v1 legacy: splitfree://join?g=...&k=...&r=...&n=...&exp=...
          */
         suspend operator fun invoke(uri: String): Group {
             Log.i(TAG, "Joining via link: ${uri.take(80)}...")
             val params = parseUri(uri)
-            require(params.containsKey("g") && params.containsKey("k")) { "Invalid invite link: missing required parameters" }
+            require(params.containsKey("g")) { "Invalid invite link: missing group ID" }
             val groupId = String(Base64.decode(params["g"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
-            val groupKey = String(Base64.decode(params["k"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
             val relays = (params["r"] ?: "").split(",").filter { it.isNotBlank() }
             val name = URLDecoder.decode(params["n"] ?: "Group", "UTF-8")
+
+            // v3 links carry an ephemeral private key; v2/v1 carry the group key directly
+            val ephemeralPrivHex = params["eph"]
+            val groupKey: String
+
+            if (ephemeralPrivHex != null) {
+                // v3: fetch key_delivery event from relay using ephemeral key
+                require(relays.isNotEmpty()) { "Invite link must contain at least one relay" }
+                groupKey = fetchGroupKeyViaEphemeral(ephemeralPrivHex, groupId, relays)
+            } else {
+                require(params.containsKey("k")) { "Invalid invite link: missing key" }
+                groupKey = String(Base64.decode(params["k"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
+            }
 
             // Validate group ID is a valid UUID
             try {
@@ -123,6 +139,46 @@ class JoinGroupUseCase
                 nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
                 nostrClient.connect(relays)
                 Log.i(TAG, "Connected to ${relays.size} relays for join")
+            }
+        }
+
+        /**
+         * v3 key exchange: use the ephemeral private key from the invite link to
+         * decrypt a pre-published key_delivery gift wrap from the relay.
+         */
+        private suspend fun fetchGroupKeyViaEphemeral(
+            ephemeralPrivHex: String,
+            groupId: String,
+            relays: List<String>,
+        ): String {
+            ensureConnected(relays)
+            // Also add fallback relays — the sender may have published to a fallback
+            com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS.forEach { nostrClient.addRelay(it) }
+            delay(1500) // allow fallback relays to connect
+            val ephPriv = ephemeralPrivHex.hexToBytes()
+            val ephPub = com.splitfree.domain.crypto.NostrEvent.pubkeyFromPrivkey(ephPriv)
+            try {
+                // Fetch kind 1059 events addressed to the ephemeral pubkey
+                val events = nostrClient.fetchGiftWraps(ephPub)
+                for (event in events) {
+                    val convKey = com.splitfree.domain.crypto.Nip44.getConversationKey(ephPriv, event.pubkey.hexToBytes())
+                    val sealJson = try { com.splitfree.domain.crypto.Nip44.decrypt(event.content, convKey) } catch (_: Exception) { continue }
+                    val seal = com.splitfree.domain.crypto.NostrEvent.fromJson(sealJson) ?: continue
+                    if (seal.kind != 13) continue
+                    val sealConvKey = com.splitfree.domain.crypto.Nip44.getConversationKey(ephPriv, seal.pubkey.hexToBytes())
+                    val rumorJson = try { com.splitfree.domain.crypto.Nip44.decrypt(seal.content, sealConvKey) } catch (_: Exception) { continue }
+                    val rumor = com.splitfree.domain.crypto.NostrEvent.fromJson(rumorJson) ?: continue
+                    // Verify this is a key_delivery for our group
+                    val gTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1)
+                    val tTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "t" }?.get(1)
+                    if (gTag == groupId && tTag == "key_delivery") {
+                        Log.i(TAG, "Received group key via ephemeral key exchange for $groupId")
+                        return rumor.content
+                    }
+                }
+                throw IllegalStateException("Could not retrieve group key. The invite link may have expired or the key delivery event was not found on relays.")
+            } finally {
+                ephPriv.fill(0)
             }
         }
 
@@ -228,18 +284,23 @@ class JoinGroupUseCase
             private val KNOWN_RELAYS = com.splitfree.data.nostr.RelayConfig.KNOWN_RELAYS
 
             /**
-             * Creates a compact invite link. Format v2:
-             * https://splitfree.app/join#<base64url(version|uuid_bytes|key_bytes|relay_bitmap|exp_bytes|name_bytes)>
+             * Creates an invite link.
              *
-             * Using fragment (#) instead of query params — the entire payload is one base64 token,
-             * so messaging apps treat it as a single clickable URL with no special chars to break on.
+             * When [senderPrivKey] is provided: v3 format with ephemeral key exchange (CWE-319 fix).
+             * The group key is NOT in the URL. Instead, an ephemeral secp256k1 keypair
+             * is generated: the private key goes in the link, and a NIP-59 gift-wrapped
+             * key_delivery event (encrypted to the ephemeral pubkey) is returned for publishing.
+             *
+             * When [senderPrivKey] is null: v2 legacy format with group key in URL.
+             *
+             * @return Pair of (link URL, key delivery event to publish or null)
              */
             fun createInviteLink(
                 group: Group,
                 groupKey: String,
-            ): String {
+                senderPrivKey: ByteArray? = null,
+            ): Pair<String, com.splitfree.domain.crypto.NostrEvent?> {
                 val uuid = java.util.UUID.fromString(group.id)
-                val keyBytes = group.let { groupKey.toByteArray(Charsets.UTF_8) }
                 val nameBytes = group.name.toByteArray(Charsets.UTF_8)
                 val exp = (System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS)
 
@@ -254,31 +315,46 @@ class JoinGroupUseCase
                 val customRelayStr = customRelays.joinToString(",")
                 val customRelayBytes = customRelayStr.toByteArray(Charsets.UTF_8)
 
-                // Pack: version(1) + uuid(16) + keyLen(1) + key(N) + relayBitmap(1) + customRelayLen(1) + customRelays(N) + exp(4) + name(rest)
                 val buf = java.io.ByteArrayOutputStream()
-                buf.write(2) // version
-                buf.write((uuid.mostSignificantBits ushr 56).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 48).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 40).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 32).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 24).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 16).toInt() and 0xFF)
-                buf.write((uuid.mostSignificantBits ushr 8).toInt() and 0xFF)
-                buf.write(uuid.mostSignificantBits.toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 56).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 48).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 40).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 32).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 24).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 16).toInt() and 0xFF)
-                buf.write((uuid.leastSignificantBits ushr 8).toInt() and 0xFF)
-                buf.write(uuid.leastSignificantBits.toInt() and 0xFF)
-                buf.write(keyBytes.size.coerceAtMost(255))
-                buf.write(keyBytes, 0, keyBytes.size.coerceAtMost(255))
+                var keyDeliveryEvent: com.splitfree.domain.crypto.NostrEvent? = null
+
+                if (senderPrivKey != null) {
+                    // v3: ephemeral key exchange
+                    val ephPriv = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                    while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(ephPriv)) {
+                        java.security.SecureRandom().nextBytes(ephPriv)
+                    }
+                    val ephPubHex = com.splitfree.domain.crypto.NostrEvent.pubkeyFromPrivkey(ephPriv)
+
+                    val rumor = com.splitfree.domain.crypto.NostrEvent(
+                        pubkey = com.splitfree.domain.crypto.NostrEvent.pubkeyFromPrivkey(senderPrivKey),
+                        createdAt = System.currentTimeMillis() / 1000,
+                        kind = 30078,
+                        tags = listOf(listOf("g", group.id), listOf("t", "key_delivery")),
+                        content = groupKey,
+                    )
+                    keyDeliveryEvent = com.splitfree.domain.crypto.Nip59.giftWrap(
+                        rumor = rumor.copy(sig = ""),
+                        senderPrivKey = senderPrivKey,
+                        recipientPubKey = ephPubHex.hexToBytes(),
+                    )
+
+                    buf.write(3) // version 3
+                    writeUuid(buf, uuid)
+                    buf.write(ephPriv)
+                    ephPriv.fill(0)
+                } else {
+                    // v2: group key in URL (legacy / testing)
+                    val keyBytes = groupKey.toByteArray(Charsets.UTF_8)
+                    buf.write(2) // version 2
+                    writeUuid(buf, uuid)
+                    buf.write(keyBytes.size.coerceAtMost(255))
+                    buf.write(keyBytes, 0, keyBytes.size.coerceAtMost(255))
+                }
+
                 buf.write(relayBitmap and 0xFF)
                 buf.write(customRelayBytes.size.coerceAtMost(255))
                 if (customRelayBytes.isNotEmpty()) buf.write(customRelayBytes, 0, customRelayBytes.size.coerceAtMost(255))
-                // Expiry as 4-byte big-endian seconds
                 val expInt = (exp and 0xFFFFFFFFL).toInt()
                 buf.write((expInt ushr 24) and 0xFF)
                 buf.write((expInt ushr 16) and 0xFF)
@@ -287,15 +363,28 @@ class JoinGroupUseCase
                 buf.write(nameBytes, 0, nameBytes.size.coerceAtMost(100))
 
                 val payload = Base64.encodeToString(buf.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-                return "splitfree://join?d=$payload"
+                return "splitfree://join?d=$payload" to keyDeliveryEvent
+            }
+
+            private fun writeUuid(buf: java.io.ByteArrayOutputStream, uuid: java.util.UUID) {
+                for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
+                    buf.write((uuid.mostSignificantBits ushr shift).toInt() and 0xFF)
+                }
+                for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
+                    buf.write((uuid.leastSignificantBits ushr shift).toInt() and 0xFF)
+                }
             }
 
             /**
-             * Decode a v2 compact invite link. Returns the same parameter map as v1 for compatibility.
+             * Decode a v2 or v3 compact invite link.
+             * Returns the same parameter map as v1 for compatibility.
+             * v3 adds "eph" key (ephemeral private key hex) instead of "k".
              */
             private fun decodeCompactLink(fragment: String): Map<String, String> {
                 val data = Base64.decode(fragment, Base64.URL_SAFE or Base64.NO_WRAP)
-                if (data.isEmpty() || data[0].toInt() != 2) return emptyMap()
+                if (data.isEmpty()) return emptyMap()
+                val version = data[0].toInt() and 0xFF
+                if (version != 2 && version != 3) return emptyMap()
                 var pos = 1
 
                 // UUID (16 bytes)
@@ -307,11 +396,24 @@ class JoinGroupUseCase
                 val groupId = java.util.UUID(msb, lsb).toString()
                 pos += 16
 
-                // Key
-                if (data.size < pos + 1) return emptyMap()
-                val keyLen = data[pos].toInt() and 0xFF; pos++
-                if (data.size < pos + keyLen) return emptyMap()
-                val groupKey = String(data, pos, keyLen, Charsets.UTF_8); pos += keyLen
+                val result = mutableMapOf(
+                    "g" to Base64.encodeToString(groupId.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP),
+                )
+
+                if (version == 2) {
+                    // v2: keyLen(1) + key(N)
+                    if (data.size < pos + 1) return emptyMap()
+                    val keyLen = data[pos].toInt() and 0xFF; pos++
+                    if (data.size < pos + keyLen) return emptyMap()
+                    val groupKey = String(data, pos, keyLen, Charsets.UTF_8); pos += keyLen
+                    result["k"] = Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+                } else {
+                    // v3: ephPriv(32 bytes)
+                    if (data.size < pos + 32) return emptyMap()
+                    val ephPriv = data.copyOfRange(pos, pos + 32); pos += 32
+                    result["eph"] = ephPriv.toHex()
+                    ephPriv.fill(0)
+                }
 
                 // Relay bitmap
                 if (data.size < pos + 1) return emptyMap()
@@ -341,16 +443,13 @@ class JoinGroupUseCase
                 // Name (remaining bytes)
                 val name = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else "Group"
 
-                return mapOf(
-                    "g" to Base64.encodeToString(groupId.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP),
-                    "k" to Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP),
-                    "r" to relays.joinToString(","),
-                    "n" to URLEncoder.encode(name, "UTF-8"),
-                    "exp" to exp.toString(),
-                )
+                result["r"] = relays.joinToString(",")
+                result["n"] = URLEncoder.encode(name, "UTF-8")
+                result["exp"] = exp.toString()
+                return result
             }
 
-            private const val INVITE_EXPIRY_SECS = 7 * 86400L // 7 days
+            private const val INVITE_EXPIRY_SECS = 24 * 3600L // 24 hours (reduced from 7 days)
             private const val MAX_RELAYS = 10
             private const val MAX_RELAY_URL_LENGTH = 256
         }

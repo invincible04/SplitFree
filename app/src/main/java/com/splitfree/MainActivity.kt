@@ -9,12 +9,15 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
@@ -24,7 +27,9 @@ import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph
 import com.splitfree.ui.theme.CircularRevealTheme
 import com.splitfree.ui.theme.SplitFreeTheme
+import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
+import com.splitfree.ui.theme.ThemeTransitionState
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
@@ -42,7 +47,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         ThemePreference.init(this)
         sanitizeIntent(intent)
         handleDeepLink(intent)
@@ -59,6 +63,23 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            // Set status bar icon colors to match app theme (dark icons on light bg, light icons on dark bg)
+            val themeMode by ThemePreference.mode.collectAsState()
+            val isDark = when (themeMode) {
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+            // Defer status bar icon update until after reveal animation so icons
+            // don't become invisible against the old-theme bitmap overlay.
+            val revealDone = ThemeTransitionState.animationDone
+            LaunchedEffect(isDark, revealDone) {
+                if (ThemeTransitionState.overlay == null) {
+                    val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                    controller.isAppearanceLightStatusBars = !isDark
+                }
+            }
+
             CircularRevealTheme {
                 SplitFreeTheme {
                     Surface(
@@ -67,7 +88,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         val nav = rememberNavController()
                         navController = nav
-                        val start = if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
+                        val start = remember { if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route }
                         SplitFreeNavGraph(
                             navController = nav,
                             startDestination = start,

@@ -180,13 +180,17 @@ class GiftWrapRelayTest {
             encryption.encrypt(json.encodeToString(Expense.serializer(), expense), groupKey),
             expense.id + "-direct",
         )
-        assertTrue("Direct expense published", phone1.publish(directExpense))
-
-        val received = withTimeout(30_000) {
-            phone2.incomingEvents.first { e ->
-                e.kind == 30078 && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
+        val receivedDeferred = async {
+            withTimeout(30_000) {
+                phone2.incomingEvents.first { e ->
+                    e.kind == 30078 && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
+                }
             }
         }
+        delay(200)
+        assertTrue("Direct expense published", phone1.publish(directExpense))
+
+        val received = receivedDeferred.await()
         val directParsed = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(received.content, groupKey))
         assertEquals("Dinner", directParsed.description)
@@ -208,13 +212,17 @@ class GiftWrapRelayTest {
             exp2.id,
         )
         delay(2000)
-        assertTrue("Phone 2 expense published", phone2.publish(exp2Event))
-
-        val recv2 = withTimeout(30_000) {
-            phone1.incomingEvents.first { e ->
-                e.kind == 30078 && e.pubkey == p2Pub
+        val recv2Deferred = async {
+            withTimeout(30_000) {
+                phone1.incomingEvents.first { e ->
+                    e.kind == 30078 && e.pubkey == p2Pub
+                }
             }
         }
+        delay(200)
+        assertTrue("Phone 2 expense published", phone2.publish(exp2Event))
+
+        val recv2 = recv2Deferred.await()
         val parsed2 = json.decodeFromString(Expense.serializer(),
             encryption.decrypt(recv2.content, groupKey))
         assertEquals("Cab", parsed2.description)

@@ -240,18 +240,14 @@ class EventProcessorTest {
             val otherMember = "dd".repeat(32)
             val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, otherMember))
             coEvery { groupRepo.getById(groupId) } returns creatorGroup
-            // joiner adds themselves but their meta omits otherMember — merge keeps everyone
+            // joiner adds themselves but their meta omits otherMember — CWE-863 fix rejects this
             val meta = """{"name":"Test","description":"","created_by":"$pubkey","created_at":1000,"members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
             every { encryption.decrypt(any(), groupKey) } returns meta
             val result = processor.process(
                 makeEvent(eventType = "group_meta", author = joiner, expenseUuid = null),
                 knownGroupKey = groupKey,
             )
-            assertTrue(result.stored)
-            // Verify merge: all three members present (otherMember not removed)
-            coVerify {
-                groupRepo.updateFromMeta(groupId, "Test", match { pubkey in it && joiner in it && otherMember in it }, any(), any())
-            }
+            assertFalse("Self-join that removes members must be rejected", result.stored)
         }
 
     @Test
@@ -385,18 +381,14 @@ class EventProcessorTest {
             val member = "cc".repeat(32)
             val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, member))
             coEvery { groupRepo.getById(groupId) } returns creatorGroup
-            // member sends meta with only themselves — merge keeps creator
+            // member sends meta removing creator and changing name — CWE-863 fix rejects this
             val meta = """{"name":"Hacked","description":"","created_by":"$pubkey","created_at":1000,"members":["$member"],"relays":["wss://r"]}"""
             every { encryption.decrypt(any(), groupKey) } returns meta
             val result = processor.process(
                 makeEvent(eventType = "group_meta", author = member, expenseUuid = null),
                 knownGroupKey = groupKey,
             )
-            assertTrue(result.stored)
-            // Verify merge: creator not removed
-            coVerify {
-                groupRepo.updateFromMeta(groupId, "Hacked", match { pubkey in it && member in it }, any(), any())
-            }
+            assertFalse("Non-creator removing members or changing name must be rejected", result.stored)
         }
 
     @Test

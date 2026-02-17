@@ -179,16 +179,18 @@ class RealRelayExpenseFlowTest {
                 json.encodeToString(Expense.serializer(), expense1), groupKey),
             expenseUuid = expense1.id,
         )
+        val deferred1 = async { withTimeout(30_000) {
+            phone2Client.incomingEvents.first { event ->
+                event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
+            }
+        } }
+        delay(200)
         assertTrue("expense1 published", phone1Client.publish(expense1Event))
         println("Published expense1: ${expense1Event.id.take(12)}")
 
         // ========== PHONE 2: Wait for expense via real-time subscription ==========
         println("\n=== PHONE 2: Waiting for expense via real-time subscription ===")
-        val received1 = withTimeout(30_000) {
-            phone2Client.incomingEvents.first { event ->
-                event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
-            }
-        }
+        val received1 = deferred1.await()
         println("Phone 2 received: ${received1.id.take(12)} from ${received1.pubkey.take(8)}")
         assertTrue("Signature valid", received1.verify())
         assertEquals(phone1PubKey, received1.pubkey)
@@ -220,17 +222,19 @@ class RealRelayExpenseFlowTest {
                 json.encodeToString(Expense.serializer(), expense2), groupKey),
             expenseUuid = expense2.id,
         )
+        val deferred2 = async { withTimeout(30_000) {
+            phone1Client.incomingEvents.first { event ->
+                event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
+                    event.pubkey == phone2PubKey
+            }
+        } }
+        delay(200)
         assertTrue("expense2 published", phone2Client.publish(expense2Event))
         println("Published expense2: ${expense2Event.id.take(12)}")
 
         // ========== PHONE 1: Wait for Phone 2's expense ==========
         println("\n=== PHONE 1: Waiting for expense via real-time subscription ===")
-        val received2 = withTimeout(30_000) {
-            phone1Client.incomingEvents.first { event ->
-                event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" } &&
-                    event.pubkey == phone2PubKey
-            }
-        }
+        val received2 = deferred2.await()
         println("Phone 1 received: ${received2.id.take(12)} from ${received2.pubkey.take(8)}")
         assertTrue("Signature valid", received2.verify())
 

@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.data.local.EventDao
+import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GroupEncryption
@@ -49,6 +50,7 @@ class GroupDetailViewModel
         private val migrateGroup: MigrateGroupUseCase,
         private val identity: IdentityManager,
         private val encryption: GroupEncryption,
+        private val nostrClient: NostrClient,
     ) : ViewModel() {
         private val groupId: String = savedStateHandle["groupId"] ?: ""
         private val json = Json { ignoreUnknownKeys = true }
@@ -96,16 +98,33 @@ class GroupDetailViewModel
             }
         }
 
-        fun getInviteLink(): String? = inviteLinkCache
-
-        @Volatile
-        private var inviteLinkCache: String? = null
+        private val _inviteLink = MutableStateFlow<String?>(null)
+        val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
 
         private fun loadInviteLink() {
             viewModelScope.launch {
                 val group = groupRepo.observeById(groupId).filterNotNull().first()
                 val key = groupRepo.getGroupKey(groupId)
-                if (key != null) inviteLinkCache = JoinGroupUseCase.createInviteLink(group, key)
+                if (key != null) {
+                    val privKey = identity.getPrivateKeyBytes()
+                    try {
+                        // Try v3 (secure: key not in URL) with a 5s timeout
+                        val (v3Link, keyDeliveryEvent) = JoinGroupUseCase.createInviteLink(group, key, privKey)
+                        val v3Ok = if (keyDeliveryEvent != null) {
+                            try {
+                                kotlinx.coroutines.withTimeout(5_000) { nostrClient.publish(keyDeliveryEvent) }
+                            } catch (_: Exception) { false }
+                        } else false
+                        if (v3Ok) {
+                            _inviteLink.value = v3Link
+                        } else {
+                            Log.w("GroupDetailVM", "v3 key delivery failed — falling back to v2 link")
+                            _inviteLink.value = JoinGroupUseCase.createInviteLink(group, key).first
+                        }
+                    } finally {
+                        privKey.fill(0)
+                    }
+                }
             }
         }
 

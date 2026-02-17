@@ -321,6 +321,61 @@ class NostrClient
             return events
         }
 
+        /**
+         * Fetch kind 1059 gift wrap events addressed to a specific pubkey.
+         */
+        suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent> {
+            if (relays.isEmpty()) return emptyList()
+            val subId = "${subIdCounter.incrementAndGet()}:fetch:gw:${recipientPubHex.take(8)}"
+            val filter = NostrFilter(
+                kinds = listOf(1059),
+                tags = mapOf("#p" to listOf(recipientPubHex)),
+                since = System.currentTimeMillis() / 1000 - 86400, // last 24h
+            )
+            val events = mutableListOf<NostrEvent>()
+            val relayCount = relays.size.coerceAtLeast(1)
+            val eoseCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val allEose = CompletableDeferred<Unit>()
+            val collectorsReady = CompletableDeferred<Unit>()
+            val readyCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val collectJob = scope.launch {
+                relays.values.forEach { relay ->
+                    launch {
+                        relay.messages
+                            .onSubscription {
+                                if (readyCount.incrementAndGet() >= relayCount) collectorsReady.complete(Unit)
+                            }
+                            .collect { msg ->
+                                when (msg) {
+                                    is RelayMessage.EventMsg -> {
+                                        if (msg.subId == subId && msg.event.verify()) {
+                                            synchronized(events) {
+                                                if (events.none { it.id == msg.event.id }) events.add(msg.event)
+                                            }
+                                        }
+                                    }
+                                    is RelayMessage.EoseMsg -> {
+                                        if (msg.subId == subId && eoseCount.incrementAndGet() >= relayCount) allEose.complete(Unit)
+                                    }
+                                    else -> {}
+                                }
+                            }
+                    }
+                }
+            }
+            withTimeout(5_000) { collectorsReady.await() }
+            relays.values.forEach { it.subscribe(subId, listOf(filter)) }
+            try {
+                withTimeout(10_000) { allEose.await() }
+                delay(300)
+            } catch (e: Exception) {
+                Log.w(TAG, "fetchGiftWraps timeout/error for ${recipientPubHex.take(8)}: ${e.message}")
+            }
+            relays.values.forEach { it.closeSubscription(subId) }
+            collectJob.cancel()
+            return events
+        }
+
         fun addRelay(url: String) {
             if (!url.startsWith("wss://")) {
                 Log.w(TAG, "Rejecting non-wss:// relay URL: $url")
