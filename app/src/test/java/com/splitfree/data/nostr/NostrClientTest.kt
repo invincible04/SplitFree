@@ -1,9 +1,19 @@
 package com.splitfree.data.nostr
 
-import io.mockk.*
+import com.splitfree.data.nostr.protocol.NostrFilter
+import com.splitfree.data.nostr.relay.Relay
+import io.mockk.Runs
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.slot
+import io.mockk.unmockkStatic
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 

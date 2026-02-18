@@ -7,7 +7,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -22,6 +27,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.drawToBitmap
+import com.splitfree.ui.theme.ThemeTransitionState.captureAndChange
 import kotlin.math.hypot
 
 /**
@@ -45,7 +51,12 @@ object ThemeTransitionState {
     fun captureAndChange(view: View, change: () -> Unit) {
         if (overlay != null) return
         animationDone = false
-        val bmp = try { view.drawToBitmap() } catch (_: Exception) { null }
+        val bmp =
+            try {
+                view.drawToBitmap()
+            } catch (_: Exception) {
+                null
+            }
         if (bmp != null) {
             pendingChange = change
             overlay = bmp
@@ -95,10 +106,11 @@ fun CircularRevealTheme(content: @Composable () -> Unit) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
                     contentDescription = null,
-                    modifier = Modifier
+                    modifier =
+                    Modifier
                         .fillMaxSize()
                         .clip(InvertedCircleShape(progress.value)),
-                    contentScale = ContentScale.FillBounds,
+                    contentScale = ContentScale.FillBounds
                 )
             }
         }
@@ -110,10 +122,11 @@ private class InvertedCircleShape(private val fraction: Float) : Shape {
         val center = Offset(size.width / 2f, size.height / 2f)
         val maxRadius = hypot(size.width, size.height) / 2f
         val radius = maxRadius * fraction
-        val path = Path().apply {
-            addRect(Rect(Offset.Zero, size))
-            addOval(Rect(center = center, radius = radius))
-        }
+        val path =
+            Path().apply {
+                addRect(Rect(Offset.Zero, size))
+                addOval(Rect(center = center, radius = radius))
+            }
         path.fillType = PathFillType.EvenOdd
         return Outline.Generic(path)
     }

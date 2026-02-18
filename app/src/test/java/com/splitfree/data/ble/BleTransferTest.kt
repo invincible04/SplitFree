@@ -1,17 +1,22 @@
 package com.splitfree.data.ble
 
-import com.splitfree.data.local.EventDao
-import com.splitfree.data.local.entities.EventEntity
+import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.IdentityManager
-import com.splitfree.domain.crypto.NostrEvent
-import com.splitfree.sync.EventProcessor
-import io.mockk.*
+import com.splitfree.sync.event.EventProcessor
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -92,67 +97,59 @@ class BleTransferTest {
     }
 
     @Test
-    fun `sendMissingEvents refuses unauthenticated peer`() =
-        runBlocking {
-            transfer.sendMissingEvents("ep1", "g1", emptySet())
-            verify(exactly = 0) { nearbySync.sendPayload(any(), any()) }
-        }
+    fun `sendMissingEvents refuses unauthenticated peer`() = runBlocking {
+        transfer.sendMissingEvents("ep1", "g1", emptySet())
+        verify(exactly = 0) { nearbySync.sendPayload(any(), any()) }
+    }
 
     @Test
-    fun `sendMissingEventsBinary refuses unauthenticated peer`() =
-        runBlocking {
-            transfer.sendMissingEventsBinary("ep1", "g1", emptySet(), "pub")
-            verify(exactly = 0) { nearbySync.sendPayload(any(), any()) }
-        }
+    fun `sendMissingEventsBinary refuses unauthenticated peer`() = runBlocking {
+        transfer.sendMissingEventsBinary("ep1", "g1", emptySet(), "pub")
+        verify(exactly = 0) { nearbySync.sendPayload(any(), any()) }
+    }
 
     @Test
-    fun `processBinaryPayload rejects unauthenticated peer`() =
-        runBlocking {
-            val result = transfer.processBinaryPayload("ep1", byteArrayOf(1, 2, 3))
-            assertNull(result)
-        }
+    fun `processBinaryPayload rejects unauthenticated peer`() = runBlocking {
+        val result = transfer.processBinaryPayload("ep1", byteArrayOf(1, 2, 3))
+        assertNull(result)
+    }
 
     // --- processPayload ---
 
     @Test
-    fun `processPayload returns null for empty data`() =
-        runBlocking {
-            assertNull(transfer.processPayload("ep1", byteArrayOf()))
-        }
+    fun `processPayload returns null for empty data`() = runBlocking {
+        assertNull(transfer.processPayload("ep1", byteArrayOf()))
+    }
 
     @Test
-    fun `processPayload parses handshake`() =
-        runBlocking {
-            val hs = BleHandshake("pub", listOf("g1"))
-            val body = json.encodeToString(BleHandshake.serializer(), hs).toByteArray()
-            val data = byteArrayOf(BleTransfer.MSG_HANDSHAKE) + body
-            val result = transfer.processPayload("ep1", data)
-            assertTrue(result is BleHandshake)
-            assertEquals("pub", (result as BleHandshake).pubkey)
-        }
+    fun `processPayload parses handshake`() = runBlocking {
+        val hs = BleHandshake("pub", listOf("g1"))
+        val body = json.encodeToString(BleHandshake.serializer(), hs).toByteArray()
+        val data = byteArrayOf(BleTransfer.MSG_HANDSHAKE) + body
+        val result = transfer.processPayload("ep1", data)
+        assertTrue(result is BleHandshake)
+        assertEquals("pub", (result as BleHandshake).pubkey)
+    }
 
     @Test
-    fun `processPayload rejects event from unauthenticated peer`() =
-        runBlocking {
-            val data = byteArrayOf(BleTransfer.MSG_EVENT) + "{}".toByteArray()
-            val result = transfer.processPayload("ep1", data)
-            assertNull(result)
-        }
+    fun `processPayload rejects event from unauthenticated peer`() = runBlocking {
+        val data = byteArrayOf(BleTransfer.MSG_EVENT) + "{}".toByteArray()
+        val result = transfer.processPayload("ep1", data)
+        assertNull(result)
+    }
 
     @Test
-    fun `processPayload rejects group IDs from unauthenticated peer`() =
-        runBlocking {
-            val data = byteArrayOf(BleTransfer.MSG_GROUP_IDS) + """["g1"]""".toByteArray()
-            val result = transfer.processPayload("ep1", data)
-            assertNull(result)
-        }
+    fun `processPayload rejects group IDs from unauthenticated peer`() = runBlocking {
+        val data = byteArrayOf(BleTransfer.MSG_GROUP_IDS) + """["g1"]""".toByteArray()
+        val result = transfer.processPayload("ep1", data)
+        assertNull(result)
+    }
 
     @Test
-    fun `processPayload returns null for unknown type`() =
-        runBlocking {
-            val result = transfer.processPayload("ep1", byteArrayOf(0x7F, 0x01))
-            assertNull(result)
-        }
+    fun `processPayload returns null for unknown type`() = runBlocking {
+        val result = transfer.processPayload("ep1", byteArrayOf(0x7F, 0x01))
+        assertNull(result)
+    }
 
     // --- Data classes ---
 

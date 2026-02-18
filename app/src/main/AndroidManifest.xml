@@ -69,12 +69,12 @@
         </provider>
 
         <service
-            android:name=".sync.ForegroundSyncService"
+            android:name=".sync.worker.ForegroundSyncService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
         <receiver
-            android:name=".sync.BootReceiver"
+            android:name=".sync.worker.BootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

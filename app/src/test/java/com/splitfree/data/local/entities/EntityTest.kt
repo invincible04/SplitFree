@@ -1,6 +1,8 @@
 package com.splitfree.data.local.entities
 
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class EntityTest {
@@ -18,7 +20,7 @@ class EntityTest {
                 contentEncrypted = "enc",
                 eventType = "expense",
                 sig = "sig",
-                receivedAt = 1,
+                receivedAt = 1
             )
         assertNull(e.expenseUuid)
         assertEquals("[]", e.syncedToRelays)
@@ -40,7 +42,7 @@ class EntityTest {
                 sig = "sig",
                 syncedToRelays = """["wss://r"]""",
                 receivedAt = 2,
-                originalEventJson = "{}",
+                originalEventJson = "{}"
             )
         assertEquals("uuid", e.expenseUuid)
         assertEquals("{}", e.originalEventJson)
@@ -65,7 +67,7 @@ class EntityTest {
                 createdBy = "p",
                 createdAt = 1,
                 members = "[]",
-                relays = "[]",
+                relays = "[]"
             )
         assertEquals("", g.description)
         assertEquals(0L, g.lastSyncTimestamp)

@@ -1,6 +1,7 @@
 package com.splitfree.data.ble
 
-import org.junit.Assert.*
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NearbyModelTest {
@@ -14,7 +15,6 @@ class NearbyModelTest {
     @Test
     fun `BleEvent PeerFound`() {
         val event = BleEvent.PeerFound(NearbyPeer("ep1", "Bob"))
-        assertTrue(event is BleEvent.PeerFound)
         assertEquals("ep1", event.peer.endpointId)
     }
 

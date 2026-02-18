@@ -37,7 +37,7 @@ object BleProtocol {
         payload: ByteArray,
         senderPubkey: String,
         groupId: String? = null,
-        ttl: Byte = 7,
+        ttl: Byte = 7
     ): ByteArray {
         require(payload.size <= 65535) { "Payload too large for BLE protocol: ${payload.size}" }
 
@@ -124,7 +124,7 @@ object BleProtocol {
             timestamp = timestamp,
             senderId = senderId,
             groupId = groupId,
-            payload = payload,
+            payload = payload
         )
     }
 
@@ -137,9 +137,10 @@ object BleProtocol {
     }
 }
 
-enum class MessageType(
-    val value: Byte,
-) {
+/**
+ * BLE binary protocol message types.
+ */
+enum class MessageType(val value: Byte) {
     ANNOUNCE(0x01),
     EXPENSE(0x02),
     SETTLEMENT(0x03),
@@ -148,38 +149,42 @@ enum class MessageType(
     SNAPSHOT(0x06),
     GROUP_META(0x07),
     SYNC_REQUEST(0x20),
-    FRAGMENT(0x21),
+    FRAGMENT(0x21)
     ;
 
     companion object {
         fun fromValue(v: Byte): MessageType? = entries.find { it.value == v }
 
-        fun fromEventType(eventType: String): MessageType? =
-            when (eventType) {
-                "expense" -> EXPENSE
-                "settlement" -> SETTLEMENT
-                "expense_correction" -> EXPENSE_CORRECTION
-                "expense_delete" -> EXPENSE_DELETE
-                "snapshot" -> SNAPSHOT
-                "group_meta" -> GROUP_META
-                else -> null
-            }
+        fun fromEventType(eventType: String): MessageType? = when (eventType) {
+            "expense" -> EXPENSE
+            "settlement" -> SETTLEMENT
+            "expense_correction" -> EXPENSE_CORRECTION
+            "expense_delete" -> EXPENSE_DELETE
+            "snapshot" -> SNAPSHOT
+            "group_meta" -> GROUP_META
+            else -> null
+        }
     }
 }
 
+/**
+ * Decoded BLE binary protocol packet.
+ */
 data class BlePacket(
     val type: MessageType,
     val ttl: Byte,
     val timestamp: Long,
     val senderId: ByteArray,
     val groupId: String?,
-    val payload: ByteArray,
+    val payload: ByteArray
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is BlePacket) return false
-        return type == other.type && timestamp == other.timestamp &&
-            senderId.contentEquals(other.senderId) && payload.contentEquals(other.payload)
+        return type == other.type &&
+            timestamp == other.timestamp &&
+            senderId.contentEquals(other.senderId) &&
+            payload.contentEquals(other.payload)
     }
 
     override fun hashCode(): Int = type.hashCode() * 31 + timestamp.hashCode()
@@ -216,7 +221,8 @@ object FragmentManager {
         }
     }
 
-    private val pending = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, MutableMap<Int, ByteArray>>()
+    private val pending =
+        java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, MutableMap<Int, ByteArray>>()
     private val totalCounts = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Int>()
     private val timestamps = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Long>()
     private const val MAX_PENDING = 20
@@ -224,10 +230,7 @@ object FragmentManager {
     private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB — matches relay max_event_bytes
 
     @Synchronized
-    fun addFragment(
-        endpointId: String,
-        fragment: ByteArray,
-    ): ByteArray? {
+    fun addFragment(endpointId: String, fragment: ByteArray): ByteArray? {
         if (fragment.size < FRAGMENT_HEADER_SIZE) return null
 
         // Evict stale entries

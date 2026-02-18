@@ -2,9 +2,21 @@ package com.splitfree.domain.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
-import io.mockk.*
+import com.splitfree.domain.crypto.nip.Bip39
+import com.splitfree.util.hexToBytes
+import io.mockk.Runs
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
+import io.mockk.verify
 import org.junit.After
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 

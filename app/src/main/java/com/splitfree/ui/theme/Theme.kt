@@ -2,7 +2,12 @@ package com.splitfree.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.graphics.Color
@@ -37,7 +42,7 @@ private val LightColors =
         surfaceVariant = Color(0xFFDCE5DD),
         onSurfaceVariant = Color(0xFF414942),
         outline = Color(0xFF717972),
-        outlineVariant = Color(0xFFC0C9C1),
+        outlineVariant = Color(0xFFC0C9C1)
     )
 
 private val DarkColors =
@@ -57,7 +62,7 @@ private val DarkColors =
         surfaceVariant = Color(0xFF414942),
         onSurfaceVariant = Color(0xFFC0C9C1),
         outline = Color(0xFF8B938C),
-        outlineVariant = Color(0xFF414942),
+        outlineVariant = Color(0xFF414942)
     )
 
 private val SplitFreeTypography =
@@ -66,17 +71,18 @@ private val SplitFreeTypography =
         headlineMedium = Typography().headlineMedium.copy(fontWeight = FontWeight.SemiBold),
         titleLarge = Typography().titleLarge.copy(fontWeight = FontWeight.SemiBold),
         titleMedium = Typography().titleMedium.copy(fontWeight = FontWeight.SemiBold),
-        labelLarge = Typography().labelLarge.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.5.sp),
+        labelLarge = Typography().labelLarge.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.5.sp)
     )
 
 @Composable
 fun SplitFreeTheme(
-    darkTheme: Boolean = when (ThemePreference.mode.collectAsState().value) {
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-    },
-    content: @Composable () -> Unit,
+    darkTheme: Boolean =
+        when (ThemePreference.mode.collectAsState().value) {
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+            ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        },
+    content: @Composable () -> Unit
 ) {
     val colorScheme =
         when {
@@ -91,7 +97,7 @@ fun SplitFreeTheme(
                     primary = if (darkTheme) Green80 else Green40,
                     primaryContainer = if (darkTheme) Green40 else Green90,
                     onPrimaryContainer = if (darkTheme) Green90 else GreenDark,
-                    secondary = if (darkTheme) Teal80 else Teal40,
+                    secondary = if (darkTheme) Teal80 else Teal40
                 )
             }
 
@@ -106,6 +112,6 @@ fun SplitFreeTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = SplitFreeTypography,
-        content = content,
+        content = content
     )
 }

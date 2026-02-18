@@ -1,5 +1,5 @@
 [versions]
-agp = "8.7.3"
+agp = "8.9.2"
 kotlin = "2.1.0"
 ksp = "2.1.0-1.0.29"
 hilt = "2.55"
@@ -26,6 +26,7 @@ junit = "4.13.2"
 json = "20240303"
 mockk = "1.13.13"
 robolectric = "4.14.1"
+spotless = "7.0.2"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -73,3 +74,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

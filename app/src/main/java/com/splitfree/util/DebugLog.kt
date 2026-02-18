@@ -1,8 +1,10 @@
 package com.splitfree.util
 
 import android.util.Log as AndroidLog
+import com.splitfree.util.DebugLog.MAX_ENTRIES
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedDeque
 
 /**
@@ -17,7 +19,7 @@ object DebugLog {
         val timestamp: Long = System.currentTimeMillis(),
         val level: Char,
         val tag: String,
-        val message: String,
+        val message: String
     ) {
         private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -40,18 +42,38 @@ object DebugLog {
         revision++
     }
 
-    fun d(tag: String, msg: String): Int { add('D', tag, msg); return AndroidLog.d(tag, msg) }
-    fun i(tag: String, msg: String): Int { add('I', tag, msg); return AndroidLog.i(tag, msg) }
-    fun w(tag: String, msg: String): Int { add('W', tag, msg); return AndroidLog.w(tag, msg) }
-    fun e(tag: String, msg: String): Int { add('E', tag, msg); return AndroidLog.e(tag, msg) }
+    fun d(tag: String, msg: String): Int {
+        add('D', tag, msg)
+        return AndroidLog.d(tag, msg)
+    }
+
+    fun i(tag: String, msg: String): Int {
+        add('I', tag, msg)
+        return AndroidLog.i(tag, msg)
+    }
+
+    fun w(tag: String, msg: String): Int {
+        add('W', tag, msg)
+        return AndroidLog.w(tag, msg)
+    }
+
+    fun e(tag: String, msg: String): Int {
+        add('E', tag, msg)
+        return AndroidLog.e(tag, msg)
+    }
+
     fun e(tag: String, msg: String, tr: Throwable?): Int {
         add('E', tag, "$msg: ${tr?.message}")
         return AndroidLog.e(tag, msg, tr)
     }
+
     fun w(tag: String, msg: String, tr: Throwable?): Int {
         add('W', tag, "$msg: ${tr?.message}")
         return AndroidLog.w(tag, msg, tr)
     }
 
-    fun clear() { buffer.clear(); revision++ }
+    fun clear() {
+        buffer.clear()
+        revision++
+    }
 }

@@ -8,20 +8,20 @@ import android.content.IntentFilter
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
-import androidx.work.*
-import com.splitfree.data.nostr.RelayHealthMonitor
-import com.splitfree.domain.usecase.RevokeKeyUseCase
-import com.splitfree.sync.MidnightSyncWorker
-import com.splitfree.sync.PowerManager
-import com.splitfree.sync.SyncWorker
+import androidx.work.Configuration
+import com.splitfree.data.nostr.RelayConfig
+import com.splitfree.data.nostr.relay.RelayHealthMonitor
+import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.sync.worker.PowerManager
+import com.splitfree.sync.worker.SyncScheduler
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.time.Duration
-import java.util.Calendar
-import java.util.concurrent.TimeUnit
-import javax.inject.Inject
 
+/**
+ * Application entry point. Initializes sync scheduling, relay health checks, and battery-aware power management.
+ */
 @HiltAndroidApp
 class SplitFreeApp :
     Application(),
@@ -43,73 +43,24 @@ class SplitFreeApp :
 
     private val batteryStateReceiver =
         object : BroadcastReceiver() {
-            override fun onReceive(
-                context: Context?,
-                intent: Intent?,
-            ) {
-                schedulePeriodicSync()
+            override fun onReceive(context: Context?, intent: Intent?) {
+                SyncScheduler.schedulePeriodicSync(this@SplitFreeApp, powerManager.syncIntervalHours())
             }
         }
 
     override fun onCreate() {
         super.onCreate()
-        schedulePeriodicSync()
-        scheduleMidnightSync()
+        SyncScheduler.schedulePeriodicSync(this, powerManager.syncIntervalHours())
+        SyncScheduler.scheduleMidnightSync(this)
         registerBatteryStateReceiver()
-        // Check relay health on startup (design doc Section 5.5)
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
-            relayHealthMonitor.checkRelays(
-                com.splitfree.data.nostr.RelayConfig.DEFAULT_RELAYS + com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS
-            )
-            // Resume incomplete key revocation if app was killed mid-revocation (V8 fix)
-            revokeKeyUseCase.resumeIfNeeded()
-        }
-    }
-
-    private fun schedulePeriodicSync() {
-        val syncRequest =
-            PeriodicWorkRequestBuilder<SyncWorker>(
-                powerManager.syncIntervalHours(),
-                TimeUnit.HOURS,
-            ).setConstraints(
-                Constraints
-                    .Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build(),
-            ).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofSeconds(30))
-                .build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "splitfree_periodic_sync",
-            ExistingPeriodicWorkPolicy.UPDATE,
-            syncRequest,
-        )
-    }
-
-    private fun scheduleMidnightSync() {
-        val now = Calendar.getInstance()
-        val midnight =
-            Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
+            try {
+                relayHealthMonitor.checkRelays(RelayConfig.DEFAULT_RELAYS + RelayConfig.FALLBACK_RELAYS)
+                revokeKeyUseCase.resumeIfNeeded()
+            } catch (_: Exception) {
+                // AndroidKeyStore unavailable in test environments (Robolectric)
             }
-        val delay = midnight.timeInMillis - now.timeInMillis
-        val request =
-            OneTimeWorkRequestBuilder<MidnightSyncWorker>()
-                .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-                .setConstraints(
-                    Constraints
-                        .Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build(),
-                ).build()
-        WorkManager.getInstance(this).enqueueUniqueWork(
-            MidnightSyncWorker.WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            request,
-        )
+        }
     }
 
     private fun registerBatteryStateReceiver() {

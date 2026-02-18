@@ -1,30 +1,33 @@
 package com.splitfree.ui.viewmodels
 
-import com.splitfree.util.DebugLog as Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.splitfree.data.local.EventDao
-import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.IdentityManager
-import com.splitfree.domain.model.DebtTransaction
-import com.splitfree.domain.model.Expense
-import com.splitfree.domain.model.Settlement
-import com.splitfree.domain.usecase.ComputeBalancesUseCase
-import com.splitfree.domain.usecase.ExportGroupUseCase
-import com.splitfree.domain.usecase.JoinGroupUseCase
-import com.splitfree.domain.usecase.MigrateGroupUseCase
-import com.splitfree.domain.usecase.SimplifyDebtsUseCase
+import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
+import com.splitfree.domain.usecase.expense.GetExpensesUseCase
+import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
+import com.splitfree.domain.usecase.export.ExportGroupUseCase
+import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
+import com.splitfree.domain.usecase.group.MigrateGroupUseCase
+import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
+/**
+ * UI state for the group detail screen (expenses, balances, debts, members, invite link).
+ */
 data class GroupDetailUiState(
     val groupId: String = "",
     val groupName: String = "",
@@ -33,138 +36,107 @@ data class GroupDetailUiState(
     val createdBy: String = "",
     val myPubkey: String = "",
     val debts: List<DebtTransaction> = emptyList(),
-    val expenses: List<Expense> = emptyList(),
+    val expenses: List<Expense> = emptyList()
 )
 
+/**
+ * Drives the group detail screen: observes expenses, computes balances,
+ * handles settlements, invite links, member removal, and group export.
+ */
 @HiltViewModel
 class GroupDetailViewModel
-    @Inject
-    constructor(
-        savedStateHandle: SavedStateHandle,
-        private val groupRepo: GroupRepository,
-        private val eventDao: EventDao,
-        private val expenseRepo: ExpenseRepository,
-        private val computeBalances: ComputeBalancesUseCase,
-        private val simplifyDebts: SimplifyDebtsUseCase,
-        private val exportGroup: ExportGroupUseCase,
-        private val migrateGroup: MigrateGroupUseCase,
-        private val identity: IdentityManager,
-        private val encryption: GroupEncryption,
-        private val nostrClient: NostrClient,
-    ) : ViewModel() {
-        private val groupId: String = savedStateHandle["groupId"] ?: ""
-        private val json = Json { ignoreUnknownKeys = true }
+@Inject
+constructor(
+    savedStateHandle: SavedStateHandle,
+    private val groupRepo: GroupRepository,
+    private val expenseRepo: ExpenseRepository,
+    private val computeBalances: ComputeBalancesUseCase,
+    private val simplifyDebts: SimplifyDebtsUseCase,
+    private val exportGroup: ExportGroupUseCase,
+    private val migrateGroup: MigrateGroupUseCase,
+    private val identity: IdentityManager,
+    private val getExpenses: GetExpensesUseCase,
+    private val createInviteLink: CreateInviteLinkUseCase
+) : ViewModel() {
+    private val groupId: String = savedStateHandle["groupId"] ?: ""
 
-        private val _uiState = MutableStateFlow(GroupDetailUiState(groupId = groupId))
-        val uiState: StateFlow<GroupDetailUiState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(GroupDetailUiState(groupId = groupId))
+    val uiState: StateFlow<GroupDetailUiState> = _uiState.asStateFlow()
 
-        init {
-            viewModelScope.launch {
-                groupRepo.observeById(groupId).collect { group ->
-                    val myPub = identity.getPublicKeyHex()
-                    _uiState.update {
-                        it.copy(
-                            groupName = group?.name ?: "Group",
-                            memberCount = group?.members?.size ?: 1,
-                            members = group?.members ?: emptyList(),
-                            createdBy = group?.createdBy ?: "",
-                            myPubkey = myPub,
-                        )
-                    }
-                }
-            }
-            loadInviteLink()
-            viewModelScope.launch {
-                eventDao.observeEventsByGroup(groupId).collect { events ->
-                    val result = computeBalances.computeWithExclusions(groupId)
-                    val debts = simplifyDebts(result.balances)
-                    val excluded = result.excludedExpenseUuids
-                    val groupKey = groupRepo.getGroupKey(groupId)
-                    val expenses =
-                        if (groupKey != null) {
-                            events
-                                .filter {
-                                    it.eventType == "expense" &&
-                                        it.expenseUuid != null && it.expenseUuid !in excluded
-                                }.mapNotNull {
-                                    val content = try { encryption.decrypt(it.contentEncrypted, groupKey) } catch (_: Exception) { null }
-                                    content?.let { c -> runCatching { json.decodeFromString<Expense>(c) }.getOrNull() }
-                                }.sortedByDescending { it.timestamp }
-                        } else {
-                            emptyList()
-                        }
-                    _uiState.update { it.copy(debts = debts, expenses = expenses) }
+    init {
+        viewModelScope.launch {
+            groupRepo.observeById(groupId).collect { group ->
+                val myPub = identity.getPublicKeyHex()
+                _uiState.update {
+                    it.copy(
+                        groupName = group?.name ?: "Group",
+                        memberCount = group?.members?.size ?: 1,
+                        members = group?.members ?: emptyList(),
+                        createdBy = group?.createdBy ?: "",
+                        myPubkey = myPub
+                    )
                 }
             }
         }
-
-        private val _inviteLink = MutableStateFlow<String?>(null)
-        val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
-
-        private fun loadInviteLink() {
-            viewModelScope.launch {
-                val group = groupRepo.observeById(groupId).filterNotNull().first()
-                val key = groupRepo.getGroupKey(groupId)
-                if (key != null) {
-                    val privKey = identity.getPrivateKeyBytes()
-                    try {
-                        // Try v3 (secure: key not in URL) with a 5s timeout
-                        val (v3Link, keyDeliveryEvent) = JoinGroupUseCase.createInviteLink(group, key, privKey)
-                        val v3Ok = if (keyDeliveryEvent != null) {
-                            try {
-                                kotlinx.coroutines.withTimeout(5_000) { nostrClient.publish(keyDeliveryEvent) }
-                            } catch (_: Exception) { false }
-                        } else false
-                        if (v3Ok) {
-                            _inviteLink.value = v3Link
-                        } else {
-                            Log.w("GroupDetailVM", "v3 key delivery failed — falling back to v2 link")
-                            _inviteLink.value = JoinGroupUseCase.createInviteLink(group, key).first
-                        }
-                    } finally {
-                        privKey.fill(0)
-                    }
-                }
-            }
-        }
-
-        private var settlingInProgress = false
-
-        fun recordSettlement(debt: DebtTransaction) {
-            if (settlingInProgress) return
-            settlingInProgress = true
-            viewModelScope.launch {
-                try {
-                    val group = groupRepo.getById(groupId) ?: return@launch
-                    val settlement =
-                        Settlement(
-                            id = UUID.randomUUID().toString(),
-                            from = debt.from,
-                            to = debt.to,
-                            amount = debt.amount,
-                            currency = debt.currency,
-                            timestamp = System.currentTimeMillis() / 1000,
-                        )
-                    expenseRepo.addSettlement(settlement, groupId)
-                } finally {
-                    settlingInProgress = false
-                }
-            }
-        }
-
-        suspend fun exportGroupData(): String = exportGroup(groupId)
-
-        fun removeMember(
-            pubkey: String,
-            onMigrated: (String) -> Unit,
-        ) {
-            viewModelScope.launch {
-                try {
-                    val newGroup = migrateGroup(groupId, pubkey)
-                    onMigrated(newGroup.id)
-                } catch (e: Exception) {
-                    Log.w("GroupDetailVM", "Remove member failed: ${e.message}")
-                }
+        loadInviteLink()
+        viewModelScope.launch {
+            getExpenses.observe(groupId).collect { allExpenses ->
+                val result = computeBalances.computeWithExclusions(groupId)
+                val debts = simplifyDebts(result.balances)
+                val excluded = result.excludedExpenseUuids
+                val expenses = allExpenses.filter { e -> e.id !in excluded }
+                _uiState.update { it.copy(debts = debts, expenses = expenses) }
             }
         }
     }
+
+    private val _inviteLink = MutableStateFlow<String?>(null)
+    val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
+
+    private fun loadInviteLink() {
+        viewModelScope.launch {
+            try {
+                _inviteLink.value = createInviteLink(groupId)
+            } catch (e: Exception) {
+                Log.w("GroupDetailVM", "Failed to create invite link: ${e.message}")
+            }
+        }
+    }
+
+    private var settlingInProgress = false
+
+    fun recordSettlement(debt: DebtTransaction) {
+        if (settlingInProgress) return
+        settlingInProgress = true
+        viewModelScope.launch {
+            try {
+                val group = groupRepo.getById(groupId) ?: return@launch
+                val settlement =
+                    Settlement(
+                        id = UUID.randomUUID().toString(),
+                        from = debt.from,
+                        to = debt.to,
+                        amount = debt.amount,
+                        currency = debt.currency,
+                        timestamp = System.currentTimeMillis() / 1000
+                    )
+                expenseRepo.addSettlement(settlement, groupId)
+            } finally {
+                settlingInProgress = false
+            }
+        }
+    }
+
+    suspend fun exportGroupData(): String = exportGroup(groupId)
+
+    fun removeMember(pubkey: String, onMigrated: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val newGroup = migrateGroup(groupId, pubkey)
+                onMigrated(newGroup.id)
+            } catch (e: Exception) {
+                Log.w("GroupDetailVM", "Remove member failed: ${e.message}")
+            }
+        }
+    }
+}

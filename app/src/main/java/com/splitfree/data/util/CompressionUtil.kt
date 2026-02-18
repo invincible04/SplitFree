@@ -1,10 +1,17 @@
 package com.splitfree.data.util
 
 import com.splitfree.util.DebugLog as Log
-import net.jpountz.lz4.LZ4Factory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import net.jpountz.lz4.LZ4Factory
 
+/**
+ * LZ4 compression with decompression-bomb protection.
+ *
+ * Compressed output is prefixed with a 4-byte big-endian original size header.
+ * Decompression rejects payloads exceeding [MAX_OUTPUT_SIZE] or with a suspicious
+ * compression ratio (>1000:1) to prevent zip-bomb attacks.
+ */
 object CompressionUtil {
     private const val TAG = "CompressionUtil"
     private const val THRESHOLD = 100
