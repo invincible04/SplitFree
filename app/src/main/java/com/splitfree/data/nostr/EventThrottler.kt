@@ -31,13 +31,14 @@ constructor(private val nostrClient: NostrClient) {
             .AtomicInteger(0)
 
     fun enqueue(event: NostrEvent) {
-        if (queueSize.get() >= MAX_QUEUE_SIZE) {
+        val size = queueSize.incrementAndGet()
+        if (size > MAX_QUEUE_SIZE) {
+            queueSize.decrementAndGet()
             Log.w("EventThrottler", "Queue full, dropping event ${event.id.take(8)}")
             return
         }
         queue.offer(event)
-        queueSize.incrementAndGet()
-        Log.d("EventThrottler", "Enqueued event ${event.id.take(8)}, queue size=${queueSize.get()}")
+        Log.d("EventThrottler", "Enqueued event ${event.id.take(8)}, queue size=$size")
         processIfNeeded()
     }
 

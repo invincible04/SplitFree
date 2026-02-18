@@ -80,8 +80,8 @@ class EventValidatorTest {
     }
 
     @Test
-    fun `lenient accepts epoch 0`() {
-        assertTrue(validator.isTimestampValidLenient(0L))
+    fun `lenient rejects epoch 0`() {
+        assertFalse(validator.isTimestampValidLenient(0L))
     }
 
     @Test

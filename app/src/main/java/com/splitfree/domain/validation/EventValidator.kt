@@ -51,6 +51,7 @@ constructor() {
      * @return true if not too far in the future
      */
     fun isTimestampValidLenient(createdAtSecs: Long): Boolean {
+        if (createdAtSecs <= 0) return false
         val now = System.currentTimeMillis() / 1000
         return createdAtSecs <= now + MAX_FUTURE_SECS
     }
