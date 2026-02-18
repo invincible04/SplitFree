@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="280" viewBox="0 0 800 280">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7C3AED" />
+      <stop offset="50%" style="stop-color:#4F46E5" />
+      <stop offset="100%" style="stop-color:#1E1B4B" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#A78BFA" />
+      <stop offset="100%" style="stop-color:#60A5FA" />
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="280" rx="20" fill="url(#bg)"/>
+  <rect width="800" height="280" rx="20" fill="url(#grid)"/>
+
+  <!-- Decorative circles -->
+  <circle cx="680" cy="60" r="120" fill="rgba(167,139,250,0.06)"/>
+  <circle cx="120" cy="220" r="80" fill="rgba(96,165,250,0.05)"/>
+  <circle cx="720" cy="200" r="60" fill="rgba(167,139,250,0.04)"/>
+
+  <!-- Lock icon + App name (centered as a group) -->
+  <g transform="translate(400, 80)" text-anchor="middle">
+    <!-- Lock icon offset left of text -->
+    <g transform="translate(-155, -30)">
+      <rect x="0" y="12" width="24" height="18" rx="3" fill="none" stroke="url(#accent)" stroke-width="2"/>
+      <path d="M5 12V8a7 7 0 0 1 14 0v4" fill="none" stroke="url(#accent)" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="12" cy="22" r="2" fill="url(#accent)"/>
+    </g>
+    <text x="12" y="0" font-family="'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="-1">SplitFree</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="400" y="125" font-family="'SF Pro Text', 'Inter', system-ui, sans-serif" font-size="18" fill="#C4B5FD" text-anchor="middle" letter-spacing="0.5">Decentralized expense splitting on Nostr</text>
+
+  <!-- Divider line -->
+  <line x1="280" y1="148" x2="520" y2="148" stroke="url(#accent)" stroke-width="1" opacity="0.3"/>
+
+  <!-- Feature pills (centered) -->
+  <g font-family="'SF Pro Text', 'Inter', system-ui, sans-serif" font-size="12" font-weight="500">
+    <rect x="137" y="168" width="120" height="30" rx="15" fill="rgba(167,139,250,0.15)" stroke="rgba(167,139,250,0.3)" stroke-width="1"/>
+    <text x="197" y="187" fill="#C4B5FD" text-anchor="middle">🔐 E2E Encrypted</text>
+
+    <rect x="269" y="168" width="110" height="30" rx="15" fill="rgba(96,165,250,0.15)" stroke="rgba(96,165,250,0.3)" stroke-width="1"/>
+    <text x="324" y="187" fill="#93C5FD" text-anchor="middle">🔑 No Accounts</text>
+
+    <rect x="391" y="168" width="105" height="30" rx="15" fill="rgba(52,211,153,0.15)" stroke="rgba(52,211,153,0.3)" stroke-width="1"/>
+    <text x="443" y="187" fill="#6EE7B7" text-anchor="middle">📡 Offline Sync</text>
+
+    <rect x="508" y="168" width="95" height="30" rx="15" fill="rgba(251,191,36,0.15)" stroke="rgba(251,191,36,0.3)" stroke-width="1"/>
+    <text x="555" y="187" fill="#FCD34D" text-anchor="middle">✨ 100% Free</text>
+  </g>
+
+  <!-- Bottom text -->
+  <text x="400" y="240" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" fill="rgba(196,181,253,0.4)" text-anchor="middle" letter-spacing="3">BUILT ON NOSTR PROTOCOL  •  NO SERVERS  •  NO TRACKING</text>
+</svg>
