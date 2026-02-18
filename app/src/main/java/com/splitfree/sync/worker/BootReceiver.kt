@@ -14,7 +14,8 @@ class BootReceiver : BroadcastReceiver() {
             // Only start sync service if user has set up identity
             val hasIdentity =
                 try {
-                    java.io.File(context.filesDir.parent, "shared_prefs/splitfree_identity.xml").exists()
+                    context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+                        .getBoolean("identity_created", false)
                 } catch (_: Exception) {
                     false
                 }

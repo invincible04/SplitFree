@@ -106,7 +106,13 @@ class InviteLinkTest {
         val customLen = data[pos].toInt() and 0xFF
         pos++
         if (customLen > 0 && data.size >= pos + customLen) {
-            relays.addAll(String(data, pos, customLen, Charsets.UTF_8).split(",").filter { it.isNotBlank() })
+            val customList = String(data, pos, customLen, Charsets.UTF_8).split(",").filter { it.isNotBlank() }
+            for (r in customList) {
+                require(r.startsWith("wss://") && r.length <= 256) {
+                    "Invalid relay URL in compact link"
+                }
+            }
+            relays.addAll(customList)
             pos += customLen
         }
 

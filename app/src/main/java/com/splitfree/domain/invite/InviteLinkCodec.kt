@@ -224,7 +224,13 @@ object InviteLinkCodec {
         pos++
         if (customLen > 0 && data.size >= pos + customLen) {
             val custom = String(data, pos, customLen, Charsets.UTF_8)
-            relays.addAll(custom.split(",").filter { it.isNotBlank() })
+            val customList = custom.split(",").filter { it.isNotBlank() }
+            for (r in customList) {
+                require(r.startsWith("wss://") && r.length <= MAX_RELAY_URL_LENGTH) {
+                    "Invalid relay URL in compact link"
+                }
+            }
+            relays.addAll(customList)
             pos += customLen
         }
 

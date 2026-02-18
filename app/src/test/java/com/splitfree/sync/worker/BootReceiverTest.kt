@@ -2,14 +2,11 @@ package com.splitfree.sync.worker
 
 import android.content.Context
 import android.content.Intent
-import com.splitfree.sync.worker.BootReceiver
-import com.splitfree.sync.worker.ForegroundSyncService
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import io.mockk.unmockkAll
 import io.mockk.verify
-import java.io.File
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,36 +33,49 @@ class BootReceiverTest {
     }
 
     @Test
-    fun `does nothing when no identity file`() {
+    fun `does nothing when no identity flag`() {
         val context = spyk(RuntimeEnvironment.getApplication() as Context)
-        val filesDir = File("/tmp/test_boot_no_id_${System.nanoTime()}/files")
-        every { context.filesDir } returns filesDir
+        // Don't set the flag — default is false
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
-        // No startForegroundService since identity file doesn't exist
+        verify(exactly = 0) { context.startForegroundService(any()) }
+        verify(exactly = 0) { context.startService(any()) }
     }
 
     @Test
-    fun `starts foreground service when identity exists`() {
+    fun `does nothing when identity flag is explicitly false`() {
         val context = spyk(RuntimeEnvironment.getApplication() as Context)
-        val base = "/tmp/test_boot_fg_${System.nanoTime()}"
-        val prefsDir = File(base, "shared_prefs")
-        prefsDir.mkdirs()
-        File(prefsDir, "splitfree_identity.xml").createNewFile()
-        every { context.filesDir } returns File(base, "files")
+        context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+            .edit().putBoolean("identity_created", false).commit()
+        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
+        receiver.onReceive(context, intent)
+        verify(exactly = 0) { context.startForegroundService(any()) }
+        context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+            .edit().clear().commit()
+    }
+
+    @Test
+    fun `starts foreground service when identity flag is set`() {
+        val context = spyk(RuntimeEnvironment.getApplication() as Context)
+        // Set the boot flag like IdentityManager would
+        context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("identity_created", true)
+            .commit()
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
         verify(exactly = 1) { context.startForegroundService(any()) }
-        File(prefsDir, "splitfree_identity.xml").delete()
-        prefsDir.delete()
-        File(base).delete()
+        // Cleanup
+        context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+            .edit().clear().commit()
     }
 
     @Test
-    fun `handles exception when checking identity file`() {
-        val context = spyk(RuntimeEnvironment.getApplication() as Context)
-        every { context.filesDir } throws RuntimeException("no access")
-        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
+    fun `handles exception when checking identity flag`() {
+        val context = mockk<Context>(relaxed = true)
+        every { context.getSharedPreferences(any(), any()) } throws RuntimeException("no access")
+        val intent = mockk<Intent>()
+        every { intent.action } returns Intent.ACTION_BOOT_COMPLETED
         receiver.onReceive(context, intent)
         verify(exactly = 0) { context.startForegroundService(any()) }
     }

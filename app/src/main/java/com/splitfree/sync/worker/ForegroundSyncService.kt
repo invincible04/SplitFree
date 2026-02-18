@@ -103,7 +103,8 @@ class ForegroundSyncService : Service() {
 
                     // Check if relay set has changed (compare group relays only, excluding fallbacks)
                     val currentRelaySet = currentGroups.flatMap { it.relays }.toSet()
-                    val previousRelaySet = connectedRelaySet - com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS.toSet()
+                    val previousRelaySet =
+                        connectedRelaySet - com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS.toSet()
                     if (currentRelaySet != previousRelaySet) {
                         Log.i(TAG, "Relay set changed, reconnecting...")
                         try {

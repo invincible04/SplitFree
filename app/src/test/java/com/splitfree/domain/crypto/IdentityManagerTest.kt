@@ -100,6 +100,19 @@ class IdentityManagerTest {
     }
 
     @Test
+    fun `generateKeyPair sets boot identity flag`() {
+        val bootPrefs = mockk<SharedPreferences>(relaxed = true)
+        val bootEditor = mockk<SharedPreferences.Editor>(relaxed = true)
+        every { context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE) } returns bootPrefs
+        every { bootPrefs.edit() } returns bootEditor
+        every { bootEditor.putBoolean(any(), any()) } returns bootEditor
+        every { bootEditor.apply() } just Runs
+        mgr.generateKeyPair()
+        verify { bootEditor.putBoolean("identity_created", true) }
+        verify { bootEditor.apply() }
+    }
+
+    @Test
     fun `generatePendingKeyPair stores pending keys`() {
         val (priv, pub) = mgr.generatePendingKeyPair()
         assertEquals(64, priv.length)
@@ -176,6 +189,18 @@ class IdentityManagerTest {
         mgr.importKey(validPrivHex)
         verify { editor.putString("nsec", validPrivHex) }
         verify { editor.putString("npub", validPubHex) }
+    }
+
+    @Test
+    fun `importKey sets boot identity flag`() {
+        val bootPrefs = mockk<SharedPreferences>(relaxed = true)
+        val bootEditor = mockk<SharedPreferences.Editor>(relaxed = true)
+        every { context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE) } returns bootPrefs
+        every { bootPrefs.edit() } returns bootEditor
+        every { bootEditor.putBoolean(any(), any()) } returns bootEditor
+        every { bootEditor.apply() } just Runs
+        mgr.importKey(validPrivHex)
+        verify { bootEditor.putBoolean("identity_created", true) }
     }
 
     @Test

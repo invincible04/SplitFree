@@ -1,6 +1,7 @@
 package com.splitfree.sync.event
 
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
@@ -9,7 +10,6 @@ import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -25,7 +25,8 @@ constructor(
     private val groupRepo: GroupRepository,
     private val migrateGroup: MigrateGroupUseCase,
     private val revokeKey: RevokeKeyUseCase,
-    private val selfHeal: SelfHealUseCase
+    private val selfHeal: SelfHealUseCase,
+    @ApplicationScope private val appScope: CoroutineScope
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -92,7 +93,7 @@ constructor(
 
             if (relaysChanged) {
                 Log.i(TAG, "Relays changed for $groupId — triggering eager self-heal")
-                CoroutineScope(Dispatchers.IO).launch {
+                appScope.launch {
                     try {
                         selfHeal(groupId)
                     } catch (

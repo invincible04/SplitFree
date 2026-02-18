@@ -64,4 +64,19 @@ class RelayTest {
         assertNotNull(Relay.State.CONNECTING)
         assertNotNull(Relay.State.CONNECTED)
     }
+
+    @Test
+    fun `resetReconnect does not throw`() {
+        val relay =
+            Relay("wss://test.relay", kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined))
+        relay.resetReconnect() // should not throw
+        assertEquals(Relay.State.DISCONNECTED, relay.state.value)
+    }
+
+    @Test
+    fun `closeSubscription on unknown subId is no-op`() {
+        val relay =
+            Relay("wss://test.relay", kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined))
+        relay.closeSubscription("nonexistent") // should not throw
+    }
 }

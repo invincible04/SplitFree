@@ -59,6 +59,7 @@ constructor(@ApplicationContext private val context: Context) {
             .remove(KEY_PENDING_PRIVATE)
             .remove(KEY_PENDING_PUBLIC)
             .apply()
+        markIdentityCreated()
         return privHex to pubHex
     }
 
@@ -114,6 +115,14 @@ constructor(@ApplicationContext private val context: Context) {
     /** Check if there's an incomplete revocation to resume. */
     fun hasPendingKeyPair(): Boolean = prefs.contains(KEY_PENDING_PRIVATE)
 
+    /** Set a plain SharedPreferences flag so BootReceiver can check without EncryptedSharedPreferences. */
+    private fun markIdentityCreated() {
+        context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("identity_created", true)
+            .apply()
+    }
+
     fun getPendingPublicKeyHex(): String? = prefs.getString(KEY_PENDING_PUBLIC, null)
 
     fun getPendingPrivateKeyBytes(): ByteArray? = prefs.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
@@ -156,6 +165,7 @@ constructor(@ApplicationContext private val context: Context) {
             .putString(KEY_PUBLIC, pubHex)
             .apply()
         privBytes.fill(0)
+        markIdentityCreated()
     }
 
     companion object {

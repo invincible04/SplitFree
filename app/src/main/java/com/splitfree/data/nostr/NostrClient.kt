@@ -275,8 +275,9 @@ constructor() {
                                 when (msg) {
                                     is RelayMessage.EventMsg -> {
                                         if (msg.subId == subId && msg.event.verify()) {
-                                            val accepted = synchronized(events) { dedup(msg.event, events) }
-                                            if (accepted) synchronized(events) { events.add(msg.event) }
+                                            synchronized(events) {
+                                                if (dedup(msg.event, events)) events.add(msg.event)
+                                            }
                                         }
                                     }
 

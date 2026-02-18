@@ -90,24 +90,28 @@ class Relay(
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        val msg = RelayMessage.parse(text) ?: return
-                        when (msg) {
-                            is RelayMessage.OkMsg -> {
-                                okCallbacks.remove(msg.eventId)?.complete(msg)
-                            }
-
-                            is RelayMessage.AuthMsg -> {
-                                handleAuth(msg.challenge)
-                            }
-
-                            else -> {
-                                // Track last-seen event timestamp per subscription for reconnect
-                                if (msg is RelayMessage.EventMsg) {
-                                    val ts = msg.event.createdAt
-                                    lastEventTimestamp.merge(msg.subId, ts) { old, new -> maxOf(old, new) }
+                        try {
+                            val msg = RelayMessage.parse(text) ?: return
+                            when (msg) {
+                                is RelayMessage.OkMsg -> {
+                                    okCallbacks.remove(msg.eventId)?.complete(msg)
                                 }
-                                _messages.tryEmit(msg)
+
+                                is RelayMessage.AuthMsg -> {
+                                    handleAuth(msg.challenge)
+                                }
+
+                                else -> {
+                                    // Track last-seen event timestamp per subscription for reconnect
+                                    if (msg is RelayMessage.EventMsg) {
+                                        val ts = msg.event.createdAt
+                                        lastEventTimestamp.merge(msg.subId, ts) { old, new -> maxOf(old, new) }
+                                    }
+                                    _messages.tryEmit(msg)
+                                }
                             }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onMessage error from $url: ${e.message}")
                         }
                     }
 

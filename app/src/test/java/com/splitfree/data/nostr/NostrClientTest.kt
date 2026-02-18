@@ -2,6 +2,7 @@ package com.splitfree.data.nostr
 
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.relay.Relay
+import com.splitfree.domain.crypto.NostrEvent
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
@@ -99,5 +100,59 @@ class NostrClientTest {
         assertEquals(expectedGiftWrapSince, filters[1].since)
         assertTrue(filters[1].tags!!.containsKey("#p"))
         assertEquals(listOf(1059), filters[1].kinds)
+    }
+
+    @Test
+    fun `connect filters out non-wss URLs`() = runBlocking {
+        val client = NostrClient()
+        client.connect(listOf("ws://insecure.relay", "http://bad.relay"))
+        assertEquals(emptyList<String>(), client.currentRelayUrls())
+        assertFalse(client.isConnected)
+    }
+
+    @Test
+    fun `publish returns false when no relays`() = runBlocking {
+        val client = NostrClient()
+        val event = mockk<NostrEvent>(relaxed = true)
+        every { event.id } returns "abc12345"
+        assertFalse(client.publish(event))
+    }
+
+    @Test
+    fun `publishJson returns false for invalid JSON`() = runBlocking {
+        val client = NostrClient()
+        assertFalse(client.publishJson("not valid json"))
+    }
+
+    @Test
+    fun `unsubscribe with unknown groupId is no-op`() = runBlocking {
+        val client = NostrClient()
+        client.unsubscribe("nonexistent-group") // should not throw
+    }
+
+    @Test
+    fun `unsubscribeAll on empty client is no-op`() = runBlocking {
+        val client = NostrClient()
+        client.unsubscribeAll() // should not throw
+    }
+
+    @Test
+    fun `currentRelayUrls returns empty initially`() {
+        val client = NostrClient()
+        assertEquals(emptyList<String>(), client.currentRelayUrls())
+    }
+
+    @Test
+    fun `connectionState is false initially`() {
+        val client = NostrClient()
+        assertFalse(client.connectionState.value)
+    }
+
+    @Test
+    fun `addRelay ignores duplicate URL`() {
+        val client = NostrClient()
+        client.addRelay("wss://relay.test.io")
+        client.addRelay("wss://relay.test.io") // should not create a second relay
+        client.disconnect()
     }
 }
