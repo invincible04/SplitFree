@@ -162,11 +162,8 @@ class MainActivity : ComponentActivity() {
         if (uriStr.startsWith("splitfree://join") ||
             uriStr.startsWith("https://splitfree.app/join")
         ) {
-            // v2 compact links use fragment (#), v1 uses query params (?)
-            val hasParams =
-                uri.getQueryParameter("d") != null ||
-                    uri.getQueryParameter("g") != null ||
-                    uri.fragment?.isNotEmpty() == true
+            // Compact invite links use ?d= parameter
+            val hasParams = uri.getQueryParameter("d") != null
             if (!hasParams) return
             // Show confirmation dialog — never auto-join from deep links (CVE-2025-4957, USENIX 2017)
             AlertDialog

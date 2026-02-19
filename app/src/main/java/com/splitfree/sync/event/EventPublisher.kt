@@ -5,6 +5,7 @@ import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GiftWrapService
@@ -102,7 +103,7 @@ constructor(
                 groupId = groupId,
                 pubkey = event.pubkey,
                 createdAt = event.createdAt,
-                kind = 30078,
+                kind = NostrKind.APP_SPECIFIC,
                 contentEncrypted = encrypted,
                 eventType = eventType,
                 expenseUuid = expenseUuid,

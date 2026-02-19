@@ -1,286 +1,102 @@
 package com.splitfree.domain.usecase.group
 
-import java.io.ByteArrayOutputStream
+import com.splitfree.domain.invite.InviteLinkCodec
+import com.splitfree.domain.model.group.Group
+import java.security.SecureRandom
 import java.util.Base64
-import java.util.UUID
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Tests for invite link v2 compact format and v1 legacy parsing.
- * Uses java.util.Base64 for URL-safe encoding.
+ * Tests for invite link encoding/decoding (NIP-44 encrypted key in URL).
  */
 class InviteLinkTest {
-    companion object {
-        // Must match JoinGroupUseCase.KNOWN_RELAYS exactly
-        private val KNOWN_RELAYS =
-            listOf(
-                "wss://relay.damus.io",
-                "wss://nos.lol",
-                "wss://relay.primal.net",
-                "wss://relay.snort.social",
-                "wss://relay.nostr.net"
-            )
+
+    private val testPubkey = "aa".repeat(32)
+
+    private fun validSenderPrivKey(): ByteArray {
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key)) {
+            SecureRandom().nextBytes(key)
+        }
+        return key
     }
 
-    // --- v2 compact format helpers (mirrors production code using java.util.Base64) ---
-
-    private fun createCompactLink(
-        groupId: String,
-        groupKey: String,
-        relays: List<String>,
-        name: String,
-        expiry: Long = System.currentTimeMillis() / 1000 + 7 * 86400
-    ): String {
-        val uuid = UUID.fromString(groupId)
-        val keyBytes = groupKey.toByteArray(Charsets.UTF_8)
-        val nameBytes = name.toByteArray(Charsets.UTF_8)
-
-        var relayBitmap = 0
-        val customRelays = mutableListOf<String>()
-        for (relay in relays) {
-            val idx = KNOWN_RELAYS.indexOf(relay)
-            if (idx >= 0) {
-                relayBitmap = relayBitmap or (1 shl idx)
-            } else {
-                customRelays.add(relay)
-            }
-        }
-        val customRelayBytes = customRelays.joinToString(",").toByteArray(Charsets.UTF_8)
-
-        val buf = ByteArrayOutputStream()
-        buf.write(2)
-        for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
-            buf.write((uuid.mostSignificantBits ushr shift).toInt() and 0xFF)
-        }
-        for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
-            buf.write((uuid.leastSignificantBits ushr shift).toInt() and 0xFF)
-        }
-        buf.write(keyBytes.size)
-        buf.write(keyBytes)
-        buf.write(relayBitmap and 0xFF)
-        buf.write(customRelayBytes.size)
-        if (customRelayBytes.isNotEmpty()) buf.write(customRelayBytes)
-        val expInt = (expiry and 0xFFFFFFFFL).toInt()
-        buf.write((expInt ushr 24) and 0xFF)
-        buf.write((expInt ushr 16) and 0xFF)
-        buf.write((expInt ushr 8) and 0xFF)
-        buf.write(expInt and 0xFF)
-        buf.write(nameBytes, 0, nameBytes.size.coerceAtMost(100))
-
-        val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(buf.toByteArray())
-        return "splitfree://join?d=$payload"
-    }
-
-    private fun decodeCompactLink(fragment: String): Map<String, String> {
-        val data = Base64.getUrlDecoder().decode(fragment)
-        if (data.isEmpty() || data[0].toInt() != 2) return emptyMap()
-        var pos = 1
-
-        if (data.size < pos + 16) return emptyMap()
-        var msb = 0L
-        for (i in 0 until 8) msb = (msb shl 8) or (data[pos + i].toLong() and 0xFF)
-        var lsb = 0L
-        for (i in 0 until 8) lsb = (lsb shl 8) or (data[pos + 8 + i].toLong() and 0xFF)
-        val groupId = UUID(msb, lsb).toString()
-        pos += 16
-
-        if (data.size < pos + 1) return emptyMap()
-        val keyLen = data[pos].toInt() and 0xFF
-        pos++
-        if (data.size < pos + keyLen) return emptyMap()
-        val groupKey = String(data, pos, keyLen, Charsets.UTF_8)
-        pos += keyLen
-
-        if (data.size < pos + 1) return emptyMap()
-        val bitmap = data[pos].toInt() and 0xFF
-        pos++
-        val relays = mutableListOf<String>()
-        for (i in KNOWN_RELAYS.indices) {
-            if (bitmap and (1 shl i) != 0) relays.add(KNOWN_RELAYS[i])
-        }
-
-        if (data.size < pos + 1) return emptyMap()
-        val customLen = data[pos].toInt() and 0xFF
-        pos++
-        if (customLen > 0 && data.size >= pos + customLen) {
-            val customList = String(data, pos, customLen, Charsets.UTF_8).split(",").filter { it.isNotBlank() }
-            for (r in customList) {
-                require(r.startsWith("wss://") && r.length <= 256) {
-                    "Invalid relay URL in compact link"
-                }
-            }
-            relays.addAll(customList)
-            pos += customLen
-        }
-
-        if (data.size < pos + 4) return emptyMap()
-        val exp =
-            ((data[pos].toLong() and 0xFF) shl 24) or
-                ((data[pos + 1].toLong() and 0xFF) shl 16) or
-                ((data[pos + 2].toLong() and 0xFF) shl 8) or
-                (data[pos + 3].toLong() and 0xFF)
-        pos += 4
-
-        val name = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else "Group"
-
-        return mapOf(
-            "groupId" to groupId,
-            "groupKey" to groupKey,
-            "relays" to relays.joinToString(","),
-            "name" to name,
-            "exp" to exp.toString()
-        )
-    }
-
-    // v1 legacy helper
-    private fun parseV1Uri(uri: String): Map<String, String> {
-        val query = uri.substringAfter("?", "")
-        return query.split("&").filter { it.contains("=") }.associate {
-            val (k, v) = it.split("=", limit = 2)
-            k to v
-        }
-    }
-
-    // --- v2 round-trip tests ---
+    private fun testGroup(
+        id: String = "550e8400-e29b-41d4-a716-446655440000",
+        name: String = "Trip",
+        relays: List<String> = listOf("wss://relay.damus.io", "wss://nos.lol")
+    ) = Group(id, name, "", testPubkey, 1000, listOf(testPubkey), relays)
 
     @Test
-    fun `v2 invite link round-trip preserves all fields`() {
-        val groupId = "56a0833d-a77c-418f-ac2d-64150216af31"
-        val groupKey = "oOptOxcjIjJ4avhfwNc8gkFutNgKjGjmr0RtG4XzA0c="
-        val relays = listOf("wss://relay.damus.io", "wss://nos.lol")
-        val name = "Goa Trip 2026"
-        val exp = System.currentTimeMillis() / 1000 + 7 * 86400
-
-        val link = createCompactLink(groupId, groupKey, relays, name, exp)
+    fun `encode produces link with encrypted key — key not visible in URL`() {
+        val link = InviteLinkCodec.encode(testGroup(), "key123", validSenderPrivKey())
         assertTrue(link.startsWith("splitfree://join?d="))
-
-        val fragment = link.substringAfter("d=")
-        val decoded = decodeCompactLink(fragment)
-        assertEquals(groupId, decoded["groupId"])
-        assertEquals(groupKey, decoded["groupKey"])
-        assertEquals("wss://relay.damus.io,wss://nos.lol", decoded["relays"])
-        assertEquals(name, decoded["name"])
-        assertEquals(exp.toString(), decoded["exp"])
+        assertFalse("Link must not contain plaintext group key", link.contains("key123"))
     }
 
     @Test
-    fun `v2 link with all 5 known relays uses bitmap only`() {
-        val link =
-            createCompactLink(
-                "56a0833d-a77c-418f-ac2d-64150216af31",
-                "key1",
-                KNOWN_RELAYS,
-                "Test"
-            )
-        val fragment = link.substringAfter("d=")
-        // No relay URLs in the link — all encoded as bitmap
-        assertFalse(link.contains("wss://"))
-        val decoded = decodeCompactLink(fragment)
-        assertEquals(KNOWN_RELAYS.joinToString(","), decoded["relays"])
+    fun `round-trip preserves all fields and decrypts group key`() {
+        val groupKey = "supersecretgroupkey"
+        val group = testGroup(name = "Goa Trip 2026")
+        val link = InviteLinkCodec.encode(group, groupKey, validSenderPrivKey())
+
+        val invite = InviteLinkCodec.decode(link)
+        assertEquals(group.id, invite.groupId)
+        assertEquals("Goa Trip 2026", invite.name)
+        assertEquals(groupKey, invite.groupKey)
+        assertTrue(invite.relays.contains("wss://relay.damus.io"))
+        assertTrue(invite.relays.contains("wss://nos.lol"))
+        assertTrue(invite.expiry > System.currentTimeMillis() / 1000)
     }
 
     @Test
-    fun `v2 link with custom relay includes it in payload`() {
+    fun `link with custom relay includes it in payload`() {
         val relays = listOf("wss://relay.damus.io", "wss://custom.relay.example")
-        val link = createCompactLink("56a0833d-a77c-418f-ac2d-64150216af31", "key1", relays, "Test")
-        val decoded = decodeCompactLink(link.substringAfter("d="))
-        val parsedRelays = decoded["relays"]!!.split(",")
-        assertEquals(2, parsedRelays.size)
-        assertTrue(parsedRelays.contains("wss://relay.damus.io"))
-        assertTrue(parsedRelays.contains("wss://custom.relay.example"))
+        val link = InviteLinkCodec.encode(testGroup(relays = relays), "key", validSenderPrivKey())
+        val invite = InviteLinkCodec.decode(link)
+        assertEquals(2, invite.relays.size)
+        assertTrue(invite.relays.contains("wss://relay.damus.io"))
+        assertTrue(invite.relays.contains("wss://custom.relay.example"))
     }
 
     @Test
-    fun `v2 link with unicode group name`() {
-        val link =
-            createCompactLink("56a0833d-a77c-418f-ac2d-64150216af31", "key1", listOf("wss://nos.lol"), "गोवा ट्रिप 🏖️")
-        val decoded = decodeCompactLink(link.substringAfter("d="))
-        assertEquals("गोवा ट्रिप 🏖️", decoded["name"])
+    fun `link with unicode group name`() {
+        val link = InviteLinkCodec.encode(testGroup(name = "गोवा ट्रिप 🏖️"), "key", validSenderPrivKey())
+        assertEquals("गोवा ट्रिप 🏖️", InviteLinkCodec.decode(link).name)
     }
 
     @Test
-    fun `v2 link is compact — under 150 chars with known relays`() {
-        val link =
-            createCompactLink(
-                "56a0833d-a77c-418f-ac2d-64150216af31",
-                "oOptOxcjIjJ4avhfwNc8gkFutNgKjGjmr0RtG4XzA0c=",
-                KNOWN_RELAYS,
-                "Goa Trip 2026"
-            )
-        assertTrue("Link too long: ${link.length} chars", link.length < 150)
+    fun `link fits in QR code — under 400 chars with known relays`() {
+        val link = InviteLinkCodec.encode(testGroup(name = "Goa Trip 2026"), "key123", validSenderPrivKey())
+        assertTrue("Link too long: ${link.length} chars", link.length < 400)
     }
 
     @Test
-    fun `v2 link fragment contains no URL-breaking characters`() {
-        val link = createCompactLink("56a0833d-a77c-418f-ac2d-64150216af31", "key1", KNOWN_RELAYS, "Test")
-        val fragment = link.substringAfter("d=")
-        assertFalse("Fragment contains +", fragment.contains("+"))
-        assertFalse("Fragment contains /", fragment.contains("/"))
-        assertFalse("Fragment contains space", fragment.contains(" "))
+    fun `link payload contains no URL-breaking characters`() {
+        val link = InviteLinkCodec.encode(testGroup(), "key", validSenderPrivKey())
+        val payload = link.substringAfter("d=")
+        assertFalse("Payload contains +", payload.contains("+"))
+        assertFalse("Payload contains /", payload.contains("/"))
+        assertFalse("Payload contains space", payload.contains(" "))
     }
 
     @Test
-    fun `v2 decode rejects version 1 payload`() {
-        val data = byteArrayOf(1, 0, 0) // version 1
-        val fragment = Base64.getUrlEncoder().withoutPadding().encodeToString(data)
-        val result = decodeCompactLink(fragment)
-        assertTrue(result.isEmpty())
+    fun `different sender keys produce different encrypted blobs`() {
+        val group = testGroup()
+        val link1 = InviteLinkCodec.encode(group, "key", validSenderPrivKey())
+        val link2 = InviteLinkCodec.encode(group, "key", validSenderPrivKey())
+        assertNotEquals("Links should differ due to ephemeral keys", link1, link2)
     }
 
-    @Test
-    fun `v2 decode rejects truncated payload`() {
-        val data = byteArrayOf(2, 0, 0, 0) // version 2 but too short
-        val fragment = Base64.getUrlEncoder().withoutPadding().encodeToString(data)
-        val result = decodeCompactLink(fragment)
-        assertTrue(result.isEmpty())
+    @Test(expected = IllegalArgumentException::class)
+    fun `decode rejects truncated payload`() {
+        val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(10))
+        InviteLinkCodec.decode("splitfree://join?d=$payload")
     }
 
-    // --- v1 legacy format tests ---
-
-    @Test
-    fun `v1 legacy link round-trip preserves fields`() {
-        val g = Base64.getUrlEncoder().withoutPadding().encodeToString(
-            "56a0833d-a77c-418f-ac2d-64150216af31".toByteArray()
-        )
-        val k = Base64.getUrlEncoder().withoutPadding().encodeToString("key123".toByteArray())
-        val uri = "splitfree://join?g=$g&k=$k&r=wss://relay.damus.io,wss://nos.lol&n=Test+Group&exp=1771623333"
-        val params = parseV1Uri(uri)
-        assertEquals(g, params["g"])
-        assertEquals(k, params["k"])
-        assertEquals("wss://relay.damus.io,wss://nos.lol", params["r"])
-        assertEquals("Test+Group", params["n"])
-        assertEquals("1771623333", params["exp"])
-    }
-
-    @Test
-    fun `v1 parseUri handles empty query`() {
-        val params = parseV1Uri("splitfree://join?")
-        assertTrue(params.isEmpty())
-    }
-
-    @Test
-    fun `v1 parseUri handles value with equals sign`() {
-        val params = parseV1Uri("splitfree://join?g=abc==&k=def==&r=wss://r.io&n=Test")
-        assertEquals("abc==", params["g"])
-        assertEquals("def==", params["k"])
-    }
-
-    @Test
-    fun `group key survives base64 round-trip`() {
-        val originalKey = "oOptOxcjIjJ4avhfwNc8gkFutNgKjGjmr0RtG4XzA0c="
-        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(originalKey.toByteArray())
-        val decoded = String(Base64.getUrlDecoder().decode(encoded))
-        assertEquals(originalKey, decoded)
-    }
-
-    @Test
-    fun `group id survives base64 round-trip`() {
-        val id = "56a0833d-a77c-418f-ac2d-64150216af31"
-        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(id.toByteArray())
-        val decoded = String(Base64.getUrlDecoder().decode(encoded))
-        assertEquals(id, decoded)
+    @Test(expected = IllegalArgumentException::class)
+    fun `decode rejects missing d parameter`() {
+        InviteLinkCodec.decode("splitfree://join?foo=bar")
     }
 }

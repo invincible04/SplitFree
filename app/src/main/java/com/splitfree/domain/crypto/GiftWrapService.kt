@@ -52,7 +52,7 @@ constructor(
      * @return pair of (inner rumor, sender pubkey hex), or null if not a gift wrap or decryption fails
      */
     fun tryUnwrap(event: NostrEvent): Pair<NostrEvent, String>? {
-        if (event.kind != 1059) return null
+        if (event.kind != NostrKind.GIFT_WRAP) return null
         val privKey = identityManager.getPrivateKeyBytes()
         try {
             return Nip59.unwrap(event, privKey)

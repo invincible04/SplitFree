@@ -1,6 +1,7 @@
 package com.splitfree.domain.crypto.nip
 
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import fr.acinq.secp256k1.Secp256k1
@@ -43,7 +44,7 @@ object Nip59 {
             NostrEvent(
                 pubkey = senderPubHex,
                 createdAt = randomTimestamp(),
-                kind = 13,
+                kind = NostrKind.SEAL,
                 tags = emptyList(), // MUST be empty per spec
                 content = sealContent
             ).sign(senderPrivKey)
@@ -70,7 +71,7 @@ object Nip59 {
             NostrEvent(
                 pubkey = ephemeralPubHex,
                 createdAt = randomTimestamp(),
-                kind = 1059,
+                kind = NostrKind.GIFT_WRAP,
                 tags = wrapTags,
                 content = wrapContent
             ).sign(ephemeralPriv)
@@ -89,7 +90,7 @@ object Nip59 {
      * @return Pair of (rumor, senderPubkeyHex) or null if invalid
      */
     fun unwrap(giftWrap: NostrEvent, recipientPrivKey: ByteArray): Pair<NostrEvent, String>? {
-        if (giftWrap.kind != 1059) return null
+        if (giftWrap.kind != NostrKind.GIFT_WRAP) return null
         if (!giftWrap.verify()) return null
 
         // Decrypt gift wrap → seal
@@ -104,7 +105,7 @@ object Nip59 {
 
         // Verify seal
         if (!seal.verify()) return null
-        if (seal.kind != 13) return null
+        if (seal.kind != NostrKind.SEAL) return null
 
         // Decrypt seal → rumor
         val sealConvKey = Nip44.getConversationKey(recipientPrivKey, seal.pubkey.hexToBytes())

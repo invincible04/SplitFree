@@ -52,7 +52,7 @@ constructor(private val identityManager: IdentityContract) {
             return NostrEvent(
                 pubkey = pubHex,
                 createdAt = System.currentTimeMillis() / 1000,
-                kind = 30078,
+                kind = NostrKind.APP_SPECIFIC,
                 tags = tags,
                 content = encryptedContent
             ).sign(privKey)
@@ -77,7 +77,7 @@ constructor(private val identityManager: IdentityContract) {
             return NostrEvent(
                 pubkey = identityManager.getPublicKeyHex(),
                 createdAt = System.currentTimeMillis() / 1000,
-                kind = 22242,
+                kind = NostrKind.AUTH,
                 tags = listOf(listOf("challenge", challenge), listOf("relay", relayUrl)),
                 content = ""
             ).sign(privKey)
@@ -100,7 +100,7 @@ constructor(private val identityManager: IdentityContract) {
             return NostrEvent(
                 pubkey = identityManager.getPublicKeyHex(),
                 createdAt = System.currentTimeMillis() / 1000,
-                kind = 5,
+                kind = NostrKind.DELETION,
                 tags = tags,
                 content = reason
             ).sign(privKey)

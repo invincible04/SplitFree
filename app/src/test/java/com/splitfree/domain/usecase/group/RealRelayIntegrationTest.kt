@@ -27,6 +27,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Assume
 import org.junit.Test
 
 /**
@@ -38,6 +39,12 @@ import org.junit.Test
  *          fetches events, joins group, publishes join announcement.
  *
  * Only Android storage (Room, SharedPreferences) is mocked — everything else is real.
+ *
+ * This test depends on external Nostr relays and is skipped by default.
+ * Run with `-DREAL_RELAY_TEST=true` to enable:
+ * ```
+ * ./gradlew test -DREAL_RELAY_TEST=true --tests "*.RealRelayIntegrationTest"
+ * ```
  */
 class RealRelayIntegrationTest {
     // Real NostrClient instances (separate relay pools, like two different phones)
@@ -131,8 +138,12 @@ class RealRelayIntegrationTest {
         return key
     }
 
-    @Test(timeout = 30_000)
+    @Test(timeout = 60_000)
     fun `real relay - Phone 1 creates and publishes, Phone 2 fetches and joins`() = runBlocking {
+        Assume.assumeTrue(
+            "Skipped: set -DREAL_RELAY_TEST=true to run real relay tests",
+            System.getProperty("REAL_RELAY_TEST") == "true"
+        )
         // ========== PHONE 1: Create group with real crypto ==========
         val groupKey = phone1Encryption.generateGroupKey()
         val groupId =
@@ -198,14 +209,14 @@ class RealRelayIntegrationTest {
 
         val published = phone1Client.publish(event)
         println("Phone 1 published group_meta: $published")
-        // Don't fail on publish — some relays may reject ephemeral test events
+        // Don't fail on publish — some relays may reject test events
         // The important thing is the event was signed and sent
 
         // Wait for relay propagation
         delay(2000)
 
         // ========== PHONE 1: Generate invite link ==========
-        val inviteLink = InviteLinkCodec.encode(phone1Group, groupKey).first
+        val inviteLink = InviteLinkCodec.encode(phone1Group, groupKey, phone1PrivKey)
         println("\n=== INVITE LINK ===")
         println("Link: $inviteLink")
         println("Link length: ${inviteLink.length} chars")
@@ -221,45 +232,14 @@ class RealRelayIntegrationTest {
         assertTrue("Phone 2 should be connected", phone2Client.isConnected)
         println("Phone 2 connected: ${phone2Client.isConnected}")
 
-        // Fetch events from real relays for this group
-        val fetchedEvents = phone2Client.fetchEvents(groupId, 0, phone2PubKey)
-        println("Phone 2 fetched ${fetchedEvents.size} events from relays")
-
-        // Verify we got Phone 1's event back
-        if (fetchedEvents.isNotEmpty()) {
-            val foundOurEvent = fetchedEvents.any { it.id == event.id }
-            println("Found Phone 1's group_meta event: $foundOurEvent")
-
-            // Verify the fetched event has valid signature
-            for (fetched in fetchedEvents) {
-                assertTrue("Fetched event ${fetched.id.take(8)} should have valid sig", fetched.verify())
-                println(
-                    "  Event ${fetched.id.take(
-                        8
-                    )}: kind=${fetched.kind} pubkey=${fetched.pubkey.take(8)} sig_valid=${fetched.verify()}"
-                )
-            }
-
-            // Try to decrypt the content with the group key
-            if (foundOurEvent) {
-                val fetchedEvent = fetchedEvents.first { it.id == event.id }
-                val decrypted = phone2Encryption.decrypt(fetchedEvent.content, groupKey)
-                println("Phone 2 decrypted group_meta: ${decrypted.take(80)}...")
-                assertTrue("Decrypted content should contain group name", decrypted.contains(groupName))
-                assertTrue("Decrypted content should contain Phone 1 pubkey", decrypted.contains(phone1PubKey))
-            }
-        }
-
-        // ========== PHONE 2: Parse invite link and verify ==========
-        // Simulate what JoinGroupUseCase.invoke() does with the link
-        // We set up the mock repo to capture the save
+        // ========== PHONE 2: Join via invite link ==========
+        // Key exchange is local (NIP-44 encrypted in URL), no relay needed for key delivery.
         val savedGroup = slot<Group>()
         val savedKey = slot<String>()
         coEvery { phone2Repo.save(capture(savedGroup), capture(savedKey)) } answers {
             coEvery { phone2Repo.getById(savedGroup.captured.id) } returns savedGroup.captured
         }
 
-        // Create JoinGroupUseCase with Phone 2's REAL client and crypto
         val joinUseCase =
             JoinGroupUseCase(
                 phone2Repo,
@@ -274,6 +254,27 @@ class RealRelayIntegrationTest {
 
         val joinedGroup = joinUseCase(inviteLink)
 
+        // ========== PHONE 2: Verify relay round-trip for group_meta ==========
+        val fetchedEvents = phone2Client.fetchEvents(groupId, 0, phone2PubKey)
+        println("Phone 2 fetched ${fetchedEvents.size} events from relays")
+
+        if (fetchedEvents.isNotEmpty()) {
+            for (fetched in fetchedEvents) {
+                assertTrue("Fetched event ${fetched.id.take(8)} should have valid sig", fetched.verify())
+                println(
+                    "  Event ${fetched.id.take(8)}: kind=${fetched.kind} pubkey=${fetched.pubkey.take(8)} sig_valid=${fetched.verify()}"
+                )
+            }
+            val foundOurEvent = fetchedEvents.any { it.id == event.id }
+            if (foundOurEvent) {
+                val fetchedEvent = fetchedEvents.first { it.id == event.id }
+                val decrypted = phone2Encryption.decrypt(fetchedEvent.content, groupKey)
+                println("Phone 2 decrypted group_meta: ${decrypted.take(80)}...")
+                assertTrue("Decrypted content should contain group name", decrypted.contains(groupName))
+                assertTrue("Decrypted content should contain Phone 1 pubkey", decrypted.contains(phone1PubKey))
+            }
+        }
+
         println("\n=== RESULTS ===")
         println("Phone 2 joined group: ${joinedGroup.id}")
         println("Group name: ${joinedGroup.name}")
@@ -287,15 +288,13 @@ class RealRelayIntegrationTest {
         assertEquals("Group key must match", groupKey, savedKey.captured)
         assertEquals("Relays must match", relays.toSet(), joinedGroup.relays.toSet())
 
-        // Verify Phone 2 published its join announcement
         coVerify { phone2Repo.updateFromMeta(groupId, any(), match { phone2PubKey in it }, any()) }
 
         println("\n✅ REAL RELAY INTEGRATION TEST PASSED")
         println("   Phone 1 (${phone1PubKey.take(8)}) created group '$groupName'")
         println("   Phone 1 published group_meta to ${relays.size} real relays")
-        println("   Phone 2 (${phone2PubKey.take(8)}) parsed invite link")
-        println("   Phone 2 connected to real relays and fetched events")
-        println("   Phone 2 joined group and published join announcement")
+        println("   Phone 2 (${phone2PubKey.take(8)}) joined via invite link (NIP-44 encrypted key in URL)")
+        println("   Phone 2 verified relay round-trip for group_meta")
         println("   Both phones share group ID: ${groupId.take(8)}...")
     }
 }

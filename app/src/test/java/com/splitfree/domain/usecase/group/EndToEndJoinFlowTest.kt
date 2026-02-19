@@ -18,6 +18,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import java.security.SecureRandom
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -62,6 +63,20 @@ class EndToEndJoinFlowTest {
     // Capture what Phone 1 saves so Phone 2's repo can return it after sync
     private val savedGroups = mutableMapOf<String, Group>()
     private val savedKeys = mutableMapOf<String, String>()
+
+    private fun validSenderPrivKey(): ByteArray {
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key)) {
+            SecureRandom().nextBytes(key)
+        }
+        return key
+    }
+
+    /** Encode an invite link — group key is encrypted in the URL, no relay needed. */
+    private fun encodeInviteLink(group: Group, groupKey: String): String {
+        val senderPriv = validSenderPrivKey()
+        return InviteLinkCodec.encode(group, groupKey, senderPriv)
+    }
 
     @Before
     fun setup() {
@@ -149,7 +164,7 @@ class EndToEndJoinFlowTest {
         assertEquals(fakeGroupKey, savedKeys[phone1Group.id])
 
         // ========== PHONE 1: Generate invite link (QR code content) ==========
-        val inviteLink = InviteLinkCodec.encode(phone1Group, fakeGroupKey).first
+        val inviteLink = encodeInviteLink(phone1Group, fakeGroupKey)
 
         assertNotNull(inviteLink)
         assertTrue("Link should start with splitfree://join?d=", inviteLink.startsWith("splitfree://join?d="))
@@ -192,7 +207,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `invite link preserves all 5 default relays via bitmap encoding`() = runBlocking {
         val group = createGroupUseCase("Relay Test")
-        val link = InviteLinkCodec.encode(group, fakeGroupKey).first
+        val link = encodeInviteLink(group, fakeGroupKey)
         val phone2Group = joinGroupUseCase(link)
 
         assertEquals(
@@ -205,7 +220,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `Phone 2 joining same group twice returns existing group`() = runBlocking {
         val phone1Group = createGroupUseCase("Duplicate Test")
-        val link = InviteLinkCodec.encode(phone1Group, fakeGroupKey).first
+        val link = encodeInviteLink(phone1Group, fakeGroupKey)
 
         // First join
         val firstJoin = joinGroupUseCase(link)
@@ -223,7 +238,7 @@ class EndToEndJoinFlowTest {
     @Test
     fun `invite link with unicode group name round-trips correctly`() = runBlocking {
         val phone1Group = createGroupUseCase("旅行 🏖️ Trip")
-        val link = InviteLinkCodec.encode(phone1Group, fakeGroupKey).first
+        val link = encodeInviteLink(phone1Group, fakeGroupKey)
         val phone2Group = joinGroupUseCase(link)
 
         assertEquals("旅行 🏖️ Trip", phone2Group.name)
@@ -231,12 +246,12 @@ class EndToEndJoinFlowTest {
 
     @Test
     fun `Phone 2 join works even when initial sync fails`() = runBlocking {
-        // Simulate relay connection failure during sync
-        every { phone2NostrClient.isConnected } returns false
-        coEvery { phone2NostrClient.connect(any()) } throws RuntimeException("Network unreachable")
+        // Simulate sync failure after key retrieval succeeds
+        coEvery { phone2SyncEngine.pullEvents(any(), any(), any(), lenientTimestamp = any()) } throws
+            RuntimeException("sync failed")
 
-        val phone1Group = createGroupUseCase("Offline Test")
-        val link = InviteLinkCodec.encode(phone1Group, fakeGroupKey).first
+        val phone1Group = createGroupUseCase("Sync Fail Test")
+        val link = encodeInviteLink(phone1Group, fakeGroupKey)
 
         // Should NOT throw — sync failure is caught, group is still saved locally
         val phone2Group = joinGroupUseCase(link)

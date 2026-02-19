@@ -3,6 +3,7 @@ package com.splitfree.sync.event
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.entities.EventEntity
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
@@ -134,7 +135,7 @@ constructor(
         if (!eventDao.insertIfNew(
                 EventEntity(
                     eventId = inner.id, groupId = groupId, pubkey = authorHex,
-                    createdAt = inner.createdAt, kind = 30078, contentEncrypted = inner.content,
+                    createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
                     eventType = eventType, expenseUuid = expenseUuid, sig = inner.sig,
                     receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson()
                 )

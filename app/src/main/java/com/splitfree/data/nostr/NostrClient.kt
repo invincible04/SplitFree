@@ -3,6 +3,7 @@ package com.splitfree.data.nostr
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
 import com.splitfree.data.nostr.relay.Relay
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
@@ -130,7 +131,7 @@ constructor() : NostrClientContract {
                             when (msg) {
                                 is RelayMessage.EventMsg -> {
                                     // Validate event kind matches expected kind (relay filter bypass defense)
-                                    if (msg.event.kind != 30078 && msg.event.kind != 1059) {
+                                    if (msg.event.kind != NostrKind.APP_SPECIFIC && msg.event.kind != NostrKind.GIFT_WRAP) {
                                         Log.w(
                                             TAG,
                                             "Rejecting unexpected event kind ${msg.event.kind} from ${relay.url}"
@@ -178,7 +179,7 @@ constructor() : NostrClientContract {
         // Filter 1: kind 30078 (direct) + kind 1059 (gift wrap) by #g tag
         val filterByGroup =
             NostrFilter(
-                kinds = listOf(30078, 1059),
+                kinds = listOf(NostrKind.APP_SPECIFIC, NostrKind.GIFT_WRAP),
                 tags = mapOf("#g" to listOf(groupId)),
                 since = sinceVal
             )
@@ -189,7 +190,7 @@ constructor() : NostrClientContract {
             val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
             filters.add(
                 NostrFilter(
-                    kinds = listOf(1059),
+                    kinds = listOf(NostrKind.GIFT_WRAP),
                     tags = mapOf("#p" to listOf(myPubkey)),
                     since = giftWrapSince
                 )
@@ -323,7 +324,7 @@ constructor() : NostrClientContract {
         val filters =
             mutableListOf(
                 NostrFilter(
-                    kinds = listOf(30078, 1059),
+                    kinds = listOf(NostrKind.APP_SPECIFIC, NostrKind.GIFT_WRAP),
                     tags = mapOf("#g" to listOf(groupId)),
                     since = sinceVal
                 )
@@ -332,7 +333,7 @@ constructor() : NostrClientContract {
             val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
             filters.add(
                 NostrFilter(
-                    kinds = listOf(1059),
+                    kinds = listOf(NostrKind.GIFT_WRAP),
                     tags = mapOf("#p" to listOf(myPubkey)),
                     since = giftWrapSince
                 )
@@ -349,13 +350,14 @@ constructor() : NostrClientContract {
      */
     override suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent> {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:gw:${recipientPubHex.take(8)}"
-        val filter =
+        val filters = listOf(
             NostrFilter(
-                kinds = listOf(1059),
+                kinds = listOf(NostrKind.GIFT_WRAP),
                 tags = mapOf("#p" to listOf(recipientPubHex)),
                 since = System.currentTimeMillis() / 1000 - 86400
             )
-        return fetchWithFilters(subId, listOf(filter), timeoutMs = 10_000) { event, list ->
+        )
+        return fetchWithFilters(subId, filters, timeoutMs = 10_000) { event, list ->
             list.none { it.id == event.id }
         }
     }
@@ -371,7 +373,7 @@ constructor() : NostrClientContract {
         scope.launch {
             relay.messages.collect { msg ->
                 if (msg is RelayMessage.EventMsg &&
-                    (msg.event.kind == 30078 || msg.event.kind == 1059) &&
+                    (msg.event.kind == NostrKind.APP_SPECIFIC || msg.event.kind == NostrKind.GIFT_WRAP) &&
                     msg.event.verify() &&
                     addSeen(msg.event.id)
                 ) {

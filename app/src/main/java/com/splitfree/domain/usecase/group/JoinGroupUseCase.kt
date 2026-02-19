@@ -11,12 +11,8 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
-import com.splitfree.domain.util.RelayDefaults
-import com.splitfree.domain.util.hexToBytes
 import com.splitfree.util.DebugLog as Log
-import java.util.Base64
 import javax.inject.Inject
-import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 
 /**
@@ -38,9 +34,14 @@ constructor(
 
     /**
      * Parse an invite link and join the group.
-     * v3 format: splitfree://join?d=<compact_base64_payload> (ephemeral key exchange, no group key in URL)
-     * v2 format: splitfree://join?d=<compact_base64_payload> (legacy, group key in URL)
-     * v1 legacy: splitfree://join?g=...&k=...&r=...&n=...&exp=...
+     *
+     * Decodes the compact link, retrieves the group key via ephemeral key exchange,
+     * saves the group locally, performs initial sync, and publishes a join announcement.
+     *
+     * @param uri `splitfree://join?d=<compact_base64_payload>` deep link
+     * @return the joined [Group]
+     * @throws IllegalArgumentException if the link is malformed or the group ID is invalid
+     * @throws IllegalStateException if the link is expired, relays are empty, or key retrieval fails
      */
     suspend operator fun invoke(uri: String): Group {
         Log.i(TAG, "Joining via link: ${uri.take(80)}...")
@@ -56,18 +57,11 @@ constructor(
         check(invite.relays.isNotEmpty()) { "Invite link must contain at least one relay" }
 
         // Validate invite link expiration
-        if (invite.expiry != null && System.currentTimeMillis() / 1000 > invite.expiry) {
+        if (System.currentTimeMillis() / 1000 > invite.expiry) {
             throw IllegalStateException("This invite link has expired. Ask the group creator for a new one.")
         }
 
-        // v3 links carry an ephemeral private key; v2/v1 carry the group key directly
-        val groupKey: String =
-            if (invite.ephemeralPrivHex != null) {
-                fetchGroupKeyViaEphemeral(invite.ephemeralPrivHex, invite.groupId, invite.relays)
-            } else {
-                require(invite.groupKeyBase64 != null) { "Invalid invite link: missing key" }
-                String(Base64.getUrlDecoder().decode(invite.groupKeyBase64))
-            }
+        val groupKey = invite.groupKey
 
         Log.i(TAG, "Parsed invite: group=${invite.groupId} name=${invite.name} relays=${invite.relays.size}")
 
@@ -128,80 +122,12 @@ constructor(
         return groupRepo.getById(group.id) ?: group
     }
 
+    /** Connects to the given relays if not already connected, setting up auth signing. */
     private suspend fun ensureConnected(relays: List<String>) {
         if (!nostrClient.isConnected) {
             nostrClient.authSigner = { challenge, relayUrl -> signer.createAuthEvent(challenge, relayUrl) }
             nostrClient.connect(relays)
             Log.i(TAG, "Connected to ${relays.size} relays for join")
-        }
-    }
-
-    /**
-     * v3 key exchange: use the ephemeral private key from the invite link to
-     * decrypt a pre-published key_delivery gift wrap from the relay.
-     */
-    private suspend fun fetchGroupKeyViaEphemeral(
-        ephemeralPrivHex: String,
-        groupId: String,
-        relays: List<String>
-    ): String {
-        ensureConnected(relays)
-        // Also add fallback relays — the sender may have published to a fallback
-        RelayDefaults.FALLBACK_RELAYS
-            .forEach { nostrClient.addRelay(it) }
-        delay(1500) // allow fallback relays to connect
-        val ephPriv = ephemeralPrivHex.hexToBytes()
-        val ephPub =
-            com.splitfree.domain.crypto.NostrEvent
-                .pubkeyFromPrivkey(ephPriv)
-        try {
-            // Fetch kind 1059 events addressed to the ephemeral pubkey
-            val events = nostrClient.fetchGiftWraps(ephPub)
-            for (event in events) {
-                val convKey =
-                    com.splitfree.domain.crypto.nip.Nip44
-                        .getConversationKey(ephPriv, event.pubkey.hexToBytes())
-                val sealJson =
-                    try {
-                        com.splitfree.domain.crypto.nip.Nip44
-                            .decrypt(event.content, convKey)
-                    } catch (
-                        _: Exception
-                    ) {
-                        continue
-                    }
-                val seal =
-                    com.splitfree.domain.crypto.NostrEvent
-                        .fromJson(sealJson) ?: continue
-                if (seal.kind != 13) continue
-                val sealConvKey =
-                    com.splitfree.domain.crypto.nip.Nip44
-                        .getConversationKey(ephPriv, seal.pubkey.hexToBytes())
-                val rumorJson =
-                    try {
-                        com.splitfree.domain.crypto.nip.Nip44
-                            .decrypt(seal.content, sealConvKey)
-                    } catch (
-                        _: Exception
-                    ) {
-                        continue
-                    }
-                val rumor =
-                    com.splitfree.domain.crypto.NostrEvent
-                        .fromJson(rumorJson) ?: continue
-                // Verify this is a key_delivery for our group
-                val gTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1)
-                val tTag = rumor.tags.firstOrNull { it.size >= 2 && it[0] == "t" }?.get(1)
-                if (gTag == groupId && tTag == "key_delivery") {
-                    Log.i(TAG, "Received group key via ephemeral key exchange for $groupId")
-                    return rumor.content
-                }
-            }
-            throw IllegalStateException(
-                "Could not retrieve group key. The invite link may have expired or the key delivery event was not found on relays."
-            )
-        } finally {
-            ephPriv.fill(0)
         }
     }
 
@@ -217,6 +143,7 @@ constructor(
         }
     }
 
+    /** Publishes an encrypted group_meta event announcing the updated member list to relays. */
     private suspend fun publishGroupMeta(
         groupId: String,
         name: String,
