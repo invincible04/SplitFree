@@ -1,11 +1,11 @@
 package com.splitfree.domain.usecase.expense
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import io.mockk.coEvery
 import io.mockk.every
@@ -20,7 +20,7 @@ import org.junit.Before
 import org.junit.Test
 
 class GetExpensesUseCaseTest {
-    private val eventDao = mockk<EventDao>()
+    private val eventRepo = mockk<EventRepositoryContract>()
     private val groupRepo = mockk<GroupRepositoryContract>()
     private val encryption = mockk<GroupEncryption>()
     private lateinit var useCase: GetExpensesUseCase
@@ -32,13 +32,13 @@ class GetExpensesUseCaseTest {
     @Before
     fun setup() {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        useCase = GetExpensesUseCase(eventDao, groupRepo, encryption)
+        useCase = GetExpensesUseCase(eventRepo, groupRepo, encryption)
     }
 
     @Test
     fun `observe returns empty when no group key`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
-        every { eventDao.observeEventsByGroup(groupId) } returns flowOf(listOf(makeEntity("e1")))
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(listOf(makeEntity("e1")))
 
         val result = useCase.observe(groupId).first()
         assertTrue(result.isEmpty())
@@ -51,7 +51,7 @@ class GetExpensesUseCaseTest {
         every { encryption.decrypt("enc1", groupKey) } returns expenseJson
         every { encryption.decrypt("enc2", groupKey) } returns """{"data":"x"}"""
 
-        every { eventDao.observeEventsByGroup(groupId) } returns flowOf(
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
             listOf(
                 makeEntity("e1", eventType = "expense", uuid = "exp1", content = "enc1"),
                 makeEntity("e2", eventType = "settlement", uuid = "s1", content = "enc2"),
@@ -67,7 +67,7 @@ class GetExpensesUseCaseTest {
     @Test
     fun `observe skips events that fail decryption`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad key")
-        every { eventDao.observeEventsByGroup(groupId) } returns flowOf(
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
             listOf(makeEntity("e1", eventType = "expense", uuid = "exp1"))
         )
 
@@ -82,7 +82,7 @@ class GetExpensesUseCaseTest {
         every { encryption.decrypt("enc1", groupKey) } returns json.encodeToString(Expense.serializer(), old)
         every { encryption.decrypt("enc2", groupKey) } returns json.encodeToString(Expense.serializer(), recent)
 
-        every { eventDao.observeEventsByGroup(groupId) } returns flowOf(
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
             listOf(
                 makeEntity("e1", eventType = "expense", uuid = "exp1", content = "enc1"),
                 makeEntity("e2", eventType = "expense", uuid = "exp2", content = "enc2")
@@ -106,7 +106,7 @@ class GetExpensesUseCaseTest {
     )
 
     private fun makeEntity(id: String, eventType: String = "expense", uuid: String? = "uuid", content: String = "enc") =
-        EventEntity(
+        EventSnapshot(
             eventId = id, groupId = groupId, pubkey = "pub1", createdAt = 1000,
             kind = 30078, contentEncrypted = content, eventType = eventType,
             expenseUuid = uuid, sig = "sig", receivedAt = 1000

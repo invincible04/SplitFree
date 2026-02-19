@@ -1,10 +1,10 @@
 package com.splitfree.domain.usecase.export
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.export.SplitFreeExport
+import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.validation.EventValidator
 import java.security.MessageDigest
@@ -18,7 +18,7 @@ import kotlinx.serialization.json.Json
 class ImportGroupUseCase
 @Inject
 constructor(
-    private val eventDao: EventDao,
+    private val eventRepo: EventRepositoryContract,
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
     private val eventValidator: EventValidator
@@ -48,7 +48,7 @@ constructor(
             "Export file integrity check failed — file may have been tampered with"
         }
 
-        val existingIds = eventDao.getEventIds(groupId).toSet()
+        val existingIds = eventRepo.getEventIds(groupId).toSet()
         var imported = 0
         val group = groupRepo.getById(groupId)
 
@@ -70,7 +70,7 @@ constructor(
             }
 
             if (event.eventType == "expense_correction" || event.eventType == "expense_delete") {
-                val originalCreator = event.expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
+                val originalCreator = event.expenseUuid?.let { eventRepo.getExpenseByUuid(it)?.pubkey }
                 if (!eventValidator.isCorrectionAuthorValid(event.eventType, event.pubkey, originalCreator)) continue
             }
 
@@ -83,8 +83,8 @@ constructor(
             }
             if (decrypted != null && !eventValidator.isContentSafe(decrypted)) continue
 
-            eventDao.insert(
-                EventEntity(
+            eventRepo.insert(
+                EventSnapshot(
                     eventId = event.eventId, groupId = groupId, pubkey = event.pubkey,
                     createdAt = event.createdAt, kind = event.kind,
                     contentEncrypted = event.contentEncrypted, eventType = event.eventType,

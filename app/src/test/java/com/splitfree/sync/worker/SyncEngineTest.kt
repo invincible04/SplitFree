@@ -1,11 +1,11 @@
 package com.splitfree.sync.worker
 
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.sync.event.EventProcessor
 import io.mockk.coEvery

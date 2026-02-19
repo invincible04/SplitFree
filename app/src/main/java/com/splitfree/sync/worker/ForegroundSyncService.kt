@@ -7,10 +7,11 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.relay.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
 import com.splitfree.util.DebugLog as Log
@@ -104,7 +105,7 @@ class ForegroundSyncService : Service() {
                     // Check if relay set has changed (compare group relays only, excluding fallbacks)
                     val currentRelaySet = currentGroups.flatMap { it.relays }.toSet()
                     val previousRelaySet =
-                        connectedRelaySet - com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS.toSet()
+                        connectedRelaySet - RelayDefaults.FALLBACK_RELAYS.toSet()
                     if (currentRelaySet != previousRelaySet) {
                         Log.i(TAG, "Relay set changed, reconnecting...")
                         try {

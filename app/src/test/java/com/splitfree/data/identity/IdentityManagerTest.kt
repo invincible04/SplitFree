@@ -1,9 +1,10 @@
-package com.splitfree.domain.crypto
+package com.splitfree.data.identity
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
-import com.splitfree.util.hexToBytes
+import com.splitfree.domain.util.hexToBytes
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just

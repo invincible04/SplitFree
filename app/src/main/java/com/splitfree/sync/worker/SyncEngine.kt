@@ -1,11 +1,12 @@
 package com.splitfree.sync.worker
 
 import android.content.Context
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
 import com.splitfree.util.DebugLog as Log
@@ -25,7 +26,7 @@ constructor(
     private val nostrClient: NostrClient,
     private val identity: IdentityManager,
     private val eventProcessor: EventProcessor
-) {
+) : SyncEngineContract {
     /**
      * Pull events for a group from connected relays and process new ones.
      *
@@ -35,6 +36,14 @@ constructor(
      * @param lenientTimestamp if true, allows events older than 30 days
      * @param notifyContext if non-null, shows local notifications for incoming expenses
      * @return number of new events stored
+     */
+    override suspend fun pullEvents(groupId: String, since: Long, groupKey: String, lenientTimestamp: Boolean): Int =
+        pullEvents(groupId, since, groupKey, lenientTimestamp, notifyContext = null)
+
+    /**
+     * Pull events with optional notification support (data layer only).
+     *
+     * @param notifyContext if non-null, shows local notifications for incoming expenses
      */
     suspend fun pullEvents(
         groupId: String,
@@ -80,7 +89,7 @@ constructor(
      *
      * @return number of successfully published events
      */
-    suspend fun flushOutbox(): Int {
+    override suspend fun flushOutbox(): Int {
         val pending = outboxDao.getAll()
         if (pending.isEmpty()) return 0
         Log.i(TAG, "Flushing ${pending.size} outbox events")

@@ -21,7 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.domain.usecase.group.JoinGroupUseCase
 import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph

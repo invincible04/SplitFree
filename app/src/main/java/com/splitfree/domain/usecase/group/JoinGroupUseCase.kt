@@ -1,24 +1,23 @@
 package com.splitfree.domain.usecase.group
 
-import android.util.Base64
-import com.splitfree.data.local.dao.OutboxDao
-import com.splitfree.data.local.entities.OutboxEntity
-import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.NostrClientContract
+import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
-import com.splitfree.sync.worker.SyncEngine
+import com.splitfree.domain.util.RelayDefaults
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.util.DebugLog as Log
-import com.splitfree.util.hexToBytes
+import java.util.Base64
 import javax.inject.Inject
 import kotlinx.coroutines.delay
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.Json
 
 /**
  * Parses an invite link, retrieves the group key, syncs existing events, and joins the group.
@@ -27,14 +26,16 @@ class JoinGroupUseCase
 @Inject
 constructor(
     private val groupRepo: GroupRepositoryContract,
-    private val identity: IdentityManager,
-    private val nostrClient: NostrClient,
+    private val identity: IdentityContract,
+    private val nostrClient: NostrClientContract,
     private val signer: EventSigner,
     private val encryption: GroupEncryption,
-    private val outboxDao: OutboxDao,
+    private val eventPublisher: EventPublisherContract,
     private val selfHeal: SelfHealUseCase,
-    private val syncEngine: SyncEngine
+    private val syncEngine: SyncEngineContract
 ) {
+    private val json = Json { ignoreUnknownKeys = true }
+
     /**
      * Parse an invite link and join the group.
      * v3 format: splitfree://join?d=<compact_base64_payload> (ephemeral key exchange, no group key in URL)
@@ -65,7 +66,7 @@ constructor(
                 fetchGroupKeyViaEphemeral(invite.ephemeralPrivHex, invite.groupId, invite.relays)
             } else {
                 require(invite.groupKeyBase64 != null) { "Invalid invite link: missing key" }
-                String(Base64.decode(invite.groupKeyBase64, Base64.URL_SAFE or Base64.NO_WRAP))
+                String(Base64.getUrlDecoder().decode(invite.groupKeyBase64))
             }
 
         Log.i(TAG, "Parsed invite: group=${invite.groupId} name=${invite.name} relays=${invite.relays.size}")
@@ -146,7 +147,7 @@ constructor(
     ): String {
         ensureConnected(relays)
         // Also add fallback relays — the sender may have published to a fallback
-        com.splitfree.data.nostr.RelayConfig.FALLBACK_RELAYS
+        RelayDefaults.FALLBACK_RELAYS
             .forEach { nostrClient.addRelay(it) }
         delay(1500) // allow fallback relays to connect
         val ephPriv = ephemeralPrivHex.hexToBytes()
@@ -226,15 +227,15 @@ constructor(
         groupKey: String
     ) {
         try {
-            val metaJson =
-                buildJsonObject {
-                    put("name", JsonPrimitive(name))
-                    put("description", JsonPrimitive(""))
-                    put("created_by", JsonPrimitive(createdBy))
-                    put("created_at", JsonPrimitive(createdAt))
-                    putJsonArray("members") { members.forEach { add(JsonPrimitive(it)) } }
-                    putJsonArray("relays") { relays.forEach { add(JsonPrimitive(it)) } }
-                }.toString()
+            val meta = GroupMeta(
+                name = name,
+                description = "",
+                createdBy = createdBy,
+                createdAt = createdAt,
+                members = members,
+                relays = relays
+            )
+            val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
             val encrypted = encryption.encrypt(metaJson, groupKey)
             val event =
                 signer.createSignedEvent(
@@ -242,17 +243,8 @@ constructor(
                     eventType = "group_meta",
                     encryptedContent = encrypted
                 )
-            outboxDao.insert(
-                OutboxEntity(eventId = event.id, eventJson = event.toJson(), createdAt = event.createdAt)
-            )
-            // Publish directly while we still have a connection (throttler is async and may fire after disconnect)
-            val published = nostrClient.publish(event)
-            if (published) {
-                outboxDao.delete(event.id)
-                Log.i(TAG, "Published group_meta with ${members.size} members for group $groupId")
-            } else {
-                Log.w(TAG, "Direct publish failed — outbox will retry via SyncWorker")
-            }
+            eventPublisher.publishDirect(event, groupId, encrypted, "group_meta")
+            Log.i(TAG, "Published group_meta with ${members.size} members for group $groupId")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

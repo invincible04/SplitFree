@@ -14,7 +14,7 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject

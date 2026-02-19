@@ -1,5 +1,6 @@
 package com.splitfree.domain.crypto
 
+import com.splitfree.domain.repository.IdentityContract
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -10,7 +11,7 @@ import javax.inject.Singleton
 @Singleton
 class EventSigner
 @Inject
-constructor(private val identityManager: IdentityManager) {
+constructor(private val identityManager: IdentityContract) {
     /**
      * Build a signed Nostr kind-30078 event for SplitFree.
      *

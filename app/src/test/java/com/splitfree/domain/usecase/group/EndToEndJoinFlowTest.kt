@@ -1,24 +1,20 @@
 package com.splitfree.domain.usecase.group
 
-import android.util.Base64
-import com.splitfree.data.local.dao.OutboxDao
-import com.splitfree.data.nostr.EventThrottler
-import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.nostr.RelayConfig
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.NostrClientContract
+import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
-import com.splitfree.sync.worker.SyncEngine
-import io.mockk.Runs
+import com.splitfree.domain.util.RelayDefaults
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
@@ -40,22 +36,21 @@ import org.junit.Test
  */
 class EndToEndJoinFlowTest {
     // --- Phone 1 (creator) mocks ---
-    private val phone1Repo = mockk<GroupRepository>(relaxed = true)
-    private val phone1Identity = mockk<IdentityManager>()
+    private val phone1Repo = mockk<GroupRepositoryContract>(relaxed = true)
+    private val phone1Identity = mockk<IdentityContract>()
     private val phone1Encryption = mockk<GroupEncryption>()
     private val phone1Signer = mockk<EventSigner>()
-    private val phone1Outbox = mockk<OutboxDao>(relaxed = true)
-    private val phone1Throttler = mockk<EventThrottler>(relaxed = true)
+    private val phone1EventPublisher = mockk<EventPublisherContract>(relaxed = true)
 
     // --- Phone 2 (joiner) mocks ---
-    private val phone2Repo = mockk<GroupRepository>(relaxed = true)
-    private val phone2Identity = mockk<IdentityManager>()
-    private val phone2NostrClient = mockk<NostrClient>(relaxed = true)
+    private val phone2Repo = mockk<GroupRepositoryContract>(relaxed = true)
+    private val phone2Identity = mockk<IdentityContract>()
+    private val phone2NostrClient = mockk<NostrClientContract>(relaxed = true)
     private val phone2Signer = mockk<EventSigner>(relaxed = true)
     private val phone2Encryption = mockk<GroupEncryption>(relaxed = true)
-    private val phone2Outbox = mockk<OutboxDao>(relaxed = true)
+    private val phone2EventPublisher = mockk<EventPublisherContract>(relaxed = true)
     private val phone2SelfHeal = mockk<SelfHealUseCase>(relaxed = true)
-    private val phone2SyncEngine = mockk<SyncEngine>(relaxed = true)
+    private val phone2SyncEngine = mockk<SyncEngineContract>(relaxed = true)
 
     private val phone1Pubkey = "aa".repeat(32) // Phone 1's identity
     private val phone2Pubkey = "bb".repeat(32) // Phone 2's identity
@@ -78,19 +73,6 @@ class EndToEndJoinFlowTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
-
-        mockkStatic(Base64::class)
-        every { Base64.decode(any<String>(), any()) } answers {
-            java.util.Base64
-                .getUrlDecoder()
-                .decode(firstArg<String>())
-        }
-        every { Base64.encodeToString(any(), any()) } answers {
-            java.util.Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(firstArg<ByteArray>())
-        }
 
         // --- Phone 1 setup ---
         every { phone1Identity.getPublicKeyHex() } returns phone1Pubkey
@@ -120,16 +102,13 @@ class EndToEndJoinFlowTest {
                 phone1Encryption,
                 phone1Identity,
                 phone1Signer,
-                phone1Outbox,
-                phone1Throttler,
-                mockk(relaxed = true)
+                phone1EventPublisher
             )
 
         // --- Phone 2 setup ---
         every { phone2Identity.getPublicKeyHex() } returns phone2Pubkey
         every { phone2NostrClient.isConnected } returns true
         coEvery { phone2NostrClient.publish(any()) } returns true
-        coEvery { phone2Outbox.delete(any<String>()) } just Runs
         // Phone 2 hasn't joined any group yet
         coEvery { phone2Repo.getById(any()) } returns null
         // After Phone 2 saves, return the group on subsequent getById calls
@@ -145,7 +124,7 @@ class EndToEndJoinFlowTest {
                 phone2NostrClient,
                 phone2Signer,
                 phone2Encryption,
-                phone2Outbox,
+                phone2EventPublisher,
                 phone2SelfHeal,
                 phone2SyncEngine
             )
@@ -154,7 +133,6 @@ class EndToEndJoinFlowTest {
     @After
     fun teardown() {
         unmockkStatic(android.util.Log::class)
-        unmockkStatic(Base64::class)
     }
 
     @Test
@@ -166,7 +144,7 @@ class EndToEndJoinFlowTest {
         assertEquals("Weekend Trip", phone1Group.name)
         assertEquals(phone1Pubkey, phone1Group.createdBy)
         assertEquals(listOf(phone1Pubkey), phone1Group.members)
-        assertEquals(RelayConfig.DEFAULT_RELAYS, phone1Group.relays)
+        assertEquals(RelayDefaults.DEFAULT_RELAYS, phone1Group.relays)
         assertTrue(savedGroups.containsKey(phone1Group.id))
         assertEquals(fakeGroupKey, savedKeys[phone1Group.id])
 
@@ -202,7 +180,7 @@ class EndToEndJoinFlowTest {
 
         // ========== Verify Phone 2 published group_meta to relays ==========
         coVerify { phone2Repo.updateFromMeta(phone1Group.id, any(), match { phone2Pubkey in it }, any()) }
-        coVerify { phone2NostrClient.publish(any()) }
+        coVerify { phone2EventPublisher.publishDirect(any(), any(), any(), eq("group_meta")) }
 
         println("\n✅ End-to-end flow passed:")
         println("   Phone 1 created group '${phone1Group.name}' (${phone1Group.id.take(8)}...)")
@@ -219,7 +197,7 @@ class EndToEndJoinFlowTest {
 
         assertEquals(
             "All 5 default relays should round-trip",
-            RelayConfig.DEFAULT_RELAYS,
+            RelayDefaults.DEFAULT_RELAYS,
             phone2Group.relays
         )
     }

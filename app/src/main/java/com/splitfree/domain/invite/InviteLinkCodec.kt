@@ -1,16 +1,16 @@
 package com.splitfree.domain.invite
 
-import android.util.Base64
-import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip59
 import com.splitfree.domain.model.group.Group
-import com.splitfree.util.hexToBytes
-import com.splitfree.util.toHex
+import com.splitfree.domain.util.RelayDefaults
+import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import java.io.ByteArrayOutputStream
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.security.SecureRandom
+import java.util.Base64
 import java.util.UUID
 
 /**
@@ -37,10 +37,10 @@ data class InviteParams(
  * - v2: `splitfree://join?d=<base64>` with embedded group key (legacy compact)
  * - v1: `splitfree://join?g=...&k=...&r=...` (legacy query params)
  *
- * Relay URLs are bitmap-encoded against [RelayConfig.KNOWN_RELAYS] for compactness.
+ * Relay URLs are bitmap-encoded against [RelayDefaults.KNOWN_RELAYS] for compactness.
  */
 object InviteLinkCodec {
-    private val KNOWN_RELAYS = RelayConfig.KNOWN_RELAYS
+    private val KNOWN_RELAYS = RelayDefaults.KNOWN_RELAYS
     private const val INVITE_EXPIRY_SECS = 24 * 3600L
     private const val MAX_RELAYS = 10
     private const val MAX_RELAY_URL_LENGTH = 256
@@ -120,7 +120,7 @@ object InviteLinkCodec {
         buf.write(expInt and 0xFF)
         buf.write(nameBytes, 0, nameBytes.size.coerceAtMost(100))
 
-        val payload = Base64.encodeToString(buf.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+        val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(buf.toByteArray())
         return "splitfree://join?d=$payload" to keyDeliveryEvent
     }
 
@@ -134,7 +134,7 @@ object InviteLinkCodec {
     fun decode(uri: String): InviteParams {
         val params = parseUri(uri)
         require(params.containsKey("g")) { "Invalid invite link: missing group ID" }
-        val groupId = String(Base64.decode(params["g"]!!, Base64.URL_SAFE or Base64.NO_WRAP))
+        val groupId = String(Base64.getUrlDecoder().decode(params["g"]!!))
         val relays = (params["r"] ?: "").split(",").filter { it.isNotBlank() }
         val name = URLDecoder.decode(params["n"] ?: "Group", "UTF-8")
         val expiry = params["exp"]?.toLongOrNull()
@@ -176,7 +176,7 @@ object InviteLinkCodec {
     }
 
     private fun decodeCompactLink(fragment: String): Map<String, String> {
-        val data = Base64.decode(fragment, Base64.URL_SAFE or Base64.NO_WRAP)
+        val data = Base64.getUrlDecoder().decode(fragment)
         if (data.isEmpty()) return emptyMap()
         val version = data[0].toInt() and 0xFF
         if (version != 2 && version != 3) return emptyMap()
@@ -192,7 +192,7 @@ object InviteLinkCodec {
 
         val result =
             mutableMapOf(
-                "g" to Base64.encodeToString(groupId.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+                "g" to Base64.getUrlEncoder().withoutPadding().encodeToString(groupId.toByteArray())
             )
 
         if (version == 2) {
@@ -202,7 +202,7 @@ object InviteLinkCodec {
             if (data.size < pos + keyLen) return emptyMap()
             val groupKey = String(data, pos, keyLen, Charsets.UTF_8)
             pos += keyLen
-            result["k"] = Base64.encodeToString(groupKey.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+            result["k"] = Base64.getUrlEncoder().withoutPadding().encodeToString(groupKey.toByteArray())
         } else {
             if (data.size < pos + 32) return emptyMap()
             val ephPriv = data.copyOfRange(pos, pos + 32)

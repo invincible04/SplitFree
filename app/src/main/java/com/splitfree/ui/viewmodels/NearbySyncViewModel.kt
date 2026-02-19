@@ -8,9 +8,9 @@ import com.splitfree.data.ble.BleHandshake
 import com.splitfree.data.ble.BleTransfer
 import com.splitfree.data.ble.NearbyPeer
 import com.splitfree.data.ble.NearbySync
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.sync.worker.PowerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject

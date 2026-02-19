@@ -1,18 +1,17 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.GroupMigration
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.util.DebugLog as Log
-import com.splitfree.util.hexToBytes
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.NonCancellable
@@ -35,10 +34,9 @@ class MigrateGroupUseCase
 constructor(
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val signer: EventSigner,
-    private val eventDao: EventDao,
-    private val eventPublisher: EventPublisher
+    private val eventPublisher: EventPublisherContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 

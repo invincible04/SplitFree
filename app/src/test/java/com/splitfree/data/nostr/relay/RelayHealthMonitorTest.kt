@@ -1,8 +1,8 @@
 package com.splitfree.data.nostr.relay
 
-import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
+import com.splitfree.domain.util.RelayDefaults
 import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
@@ -77,8 +77,8 @@ class RelayHealthMonitorTest {
 
     @Test
     fun `FALLBACK_RELAYS are all wss`() {
-        assertTrue(RelayConfig.FALLBACK_RELAYS.all { it.startsWith("wss://") })
-        assertTrue(RelayConfig.FALLBACK_RELAYS.isNotEmpty())
+        assertTrue(RelayDefaults.FALLBACK_RELAYS.all { it.startsWith("wss://") })
+        assertTrue(RelayDefaults.FALLBACK_RELAYS.isNotEmpty())
     }
 
     @Test

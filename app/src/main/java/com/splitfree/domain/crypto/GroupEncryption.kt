@@ -1,7 +1,7 @@
 package com.splitfree.domain.crypto
 
-import com.splitfree.data.util.CompressionUtil
 import com.splitfree.domain.crypto.nip.Nip44
+import com.splitfree.domain.util.CompressionProvider
 import fr.acinq.secp256k1.Secp256k1
 import java.security.SecureRandom
 import javax.crypto.Mac
@@ -18,7 +18,7 @@ import javax.inject.Singleton
 @Singleton
 class GroupEncryption
 @Inject
-constructor() {
+constructor(private val compression: CompressionProvider) {
     fun generateGroupKey(): String {
         val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
         return java.util.Base64
@@ -32,8 +32,8 @@ constructor() {
         try {
             val raw = plaintext.toByteArray()
             val payload =
-                if (CompressionUtil.shouldCompress(raw)) {
-                    val compressed = CompressionUtil.compress(raw)
+                if (compression.shouldCompress(raw)) {
+                    val compressed = compression.compress(raw)
                     if (compressed != null) {
                         COMPRESSED_PREFIX +
                             java.util.Base64
@@ -61,7 +61,7 @@ constructor() {
                     java.util.Base64
                         .getDecoder()
                         .decode(b64)
-                val decompressed = CompressionUtil.decompress(compressed)
+                val decompressed = compression.decompress(compressed)
                 if (decompressed != null) return String(decompressed)
             }
             return decoded

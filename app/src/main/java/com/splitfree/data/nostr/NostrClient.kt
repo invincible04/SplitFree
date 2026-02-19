@@ -4,6 +4,7 @@ import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
 import com.splitfree.data.nostr.relay.Relay
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -36,7 +37,7 @@ import kotlinx.coroutines.withTimeout
 @Singleton
 class NostrClient
 @Inject
-constructor() {
+constructor() : NostrClientContract {
     private val relays = ConcurrentHashMap<String, Relay>()
     private val connectionMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -62,7 +63,7 @@ constructor() {
     }
 
     private val _incomingEvents = MutableSharedFlow<NostrEvent>(extraBufferCapacity = 64)
-    val incomingEvents: SharedFlow<NostrEvent> = _incomingEvents
+    override val incomingEvents: SharedFlow<NostrEvent> = _incomingEvents
 
     private val activeUsers = AtomicInteger(0)
 
@@ -70,28 +71,28 @@ constructor() {
     private val activeSubscriptions = ConcurrentHashMap<String, String>()
 
     /** Set this before connect() to enable NIP-42 AUTH on relays that require it. */
-    var authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)? = null
+    override var authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)? = null
 
     @Volatile
     private var currentRelays: List<String> = emptyList()
 
-    val isConnected: Boolean get() = relays.values.any { it.state.value == Relay.State.CONNECTED }
+    override val isConnected: Boolean get() = relays.values.any { it.state.value == Relay.State.CONNECTED }
 
-    fun currentRelayUrls(): List<String> = currentRelays.toList()
+    override fun currentRelayUrls(): List<String> = currentRelays.toList()
 
     /** Reactive connection state — emits whenever any relay connects/disconnects. */
     private val _connectionState = MutableStateFlow(false)
-    val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
+    override val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
 
     private fun refreshConnectionState() {
         _connectionState.value = relays.values.any { it.state.value == Relay.State.CONNECTED }
     }
 
-    fun acquireConnection() {
+    override fun acquireConnection() {
         activeUsers.incrementAndGet()
     }
 
-    fun releaseConnection() {
+    override fun releaseConnection() {
         if (activeUsers.decrementAndGet() <= 0) {
             activeUsers.set(0)
             disconnect()
@@ -103,7 +104,7 @@ constructor() {
      *
      * @param relayUrls list of `wss://` relay URLs; non-wss URLs are silently rejected
      */
-    suspend fun connect(relayUrls: List<String>) {
+    override suspend fun connect(relayUrls: List<String>) {
         connectionMutex.withLock {
             val safeUrls = relayUrls.filter { it.startsWith("wss://") }
             if (safeUrls.isEmpty() && relayUrls.isNotEmpty()) {
@@ -170,7 +171,7 @@ constructor() {
         }
     }
 
-    suspend fun subscribe(groupId: String, since: Long, myPubkey: String? = null) {
+    override suspend fun subscribe(groupId: String, since: Long, myPubkey: String?) {
         val subId = "${subIdCounter.incrementAndGet()}:$groupId"
         activeSubscriptions[groupId] = subId
         val sinceVal = if (since > 0) since else null
@@ -198,12 +199,12 @@ constructor() {
         Log.d(TAG, "subscribe($subId): ${filters.size} filters, since=$sinceVal, relays=${relays.size}")
     }
 
-    suspend fun unsubscribe(groupId: String) {
+    override suspend fun unsubscribe(groupId: String) {
         val subId = activeSubscriptions.remove(groupId) ?: return
         relays.values.forEach { it.closeSubscription(subId) }
     }
 
-    suspend fun unsubscribeAll() {
+    override suspend fun unsubscribeAll() {
         activeSubscriptions.forEach { (_, subId) ->
             relays.values.forEach { it.closeSubscription(subId) }
         }
@@ -211,9 +212,9 @@ constructor() {
     }
 
     /** Start listening is now a no-op — messages flow automatically via SharedFlow. */
-    fun startListening() { /* messages already flowing via relay.messages collectors */ }
+    override fun startListening() { /* messages already flowing via relay.messages collectors */ }
 
-    suspend fun publish(event: NostrEvent): Boolean {
+    override suspend fun publish(event: NostrEvent): Boolean {
         if (relays.isEmpty()) {
             Log.w(TAG, "publish: no relays connected, event ${event.id.take(8)} will be lost")
             return false
@@ -237,7 +238,7 @@ constructor() {
         return anySuccess
     }
 
-    suspend fun publishJson(eventJson: String): Boolean {
+    override suspend fun publishJson(eventJson: String): Boolean {
         val event = NostrEvent.fromJson(eventJson) ?: return false
         return publish(event)
     }
@@ -316,7 +317,7 @@ constructor() {
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
      * @return deduplicated list of verified events
      */
-    suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): List<NostrEvent> {
+    override suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String?): List<NostrEvent> {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
         val sinceVal = if (since > 0) since else null
         val filters =
@@ -346,7 +347,7 @@ constructor() {
      * @param recipientPubHex 64-char hex public key of the recipient
      * @return list of gift-wrapped events
      */
-    suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent> {
+    override suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent> {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:gw:${recipientPubHex.take(8)}"
         val filter =
             NostrFilter(
@@ -359,7 +360,7 @@ constructor() {
         }
     }
 
-    fun addRelay(url: String) {
+    override fun addRelay(url: String) {
         if (!url.startsWith("wss://")) {
             Log.w(TAG, "Rejecting non-wss:// relay URL: $url")
             return
@@ -381,7 +382,7 @@ constructor() {
         relay.connect()
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         activeSubscriptions.clear()
         relays.values.forEach { it.disconnect() }
         relays.clear()

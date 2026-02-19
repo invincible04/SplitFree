@@ -1,9 +1,9 @@
 package com.splitfree.domain.usecase.expense
 
-import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.repository.ExpenseRepositoryContract
 import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -16,9 +16,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AddExpenseUseCaseTest {
-    private fun repo() = mockk<ExpenseRepository>(relaxed = true)
+    private fun repo() = mockk<ExpenseRepositoryContract>(relaxed = true)
 
-    private fun useCase(repo: ExpenseRepository = repo()) = AddExpenseUseCase(repo)
+    private fun useCase(repo: ExpenseRepositoryContract = repo()) = AddExpenseUseCase(repo)
 
     @Test
     fun `valid expense calls repository`() = runTest {

@@ -1,22 +1,19 @@
 package com.splitfree.domain.usecase.group
 
-import android.util.Base64
-import com.splitfree.data.local.dao.OutboxDao
-import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.NostrClientContract
+import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
-import com.splitfree.sync.worker.SyncEngine
-import com.splitfree.util.hexToBytes
-import io.mockk.Runs
+import com.splitfree.domain.util.hexToBytes
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
@@ -31,14 +28,14 @@ import org.junit.Before
 import org.junit.Test
 
 class JoinGroupUseCaseTest {
-    private val groupRepo = mockk<GroupRepository>(relaxed = true)
-    private val identity = mockk<IdentityManager>()
-    private val nostrClient = mockk<NostrClient>(relaxed = true)
+    private val groupRepo = mockk<GroupRepositoryContract>(relaxed = true)
+    private val identity = mockk<IdentityContract>()
+    private val nostrClient = mockk<NostrClientContract>(relaxed = true)
     private val signer = mockk<EventSigner>(relaxed = true)
     private val encryption = mockk<GroupEncryption>(relaxed = true)
-    private val outboxDao = mockk<OutboxDao>(relaxed = true)
+    private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
     private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
-    private val syncEngine = mockk<SyncEngine>(relaxed = true)
+    private val syncEngine = mockk<SyncEngineContract>(relaxed = true)
 
     private lateinit var useCase: JoinGroupUseCase
     private val pubkey = "aa".repeat(32)
@@ -53,30 +50,16 @@ class JoinGroupUseCaseTest {
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
 
-        mockkStatic(Base64::class)
-        every { Base64.decode(any<String>(), any()) } answers {
-            java.util.Base64
-                .getUrlDecoder()
-                .decode(firstArg<String>())
-        }
-        every { Base64.encodeToString(any(), any()) } answers {
-            java.util.Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(firstArg<ByteArray>())
-        }
-
         every { identity.getPublicKeyHex() } returns pubkey
         coEvery { groupRepo.getById(any()) } returns null
 
         useCase =
-            JoinGroupUseCase(groupRepo, identity, nostrClient, signer, encryption, outboxDao, selfHeal, syncEngine)
+            JoinGroupUseCase(groupRepo, identity, nostrClient, signer, encryption, eventPublisher, selfHeal, syncEngine)
     }
 
     @After
     fun teardown() {
         unmockkStatic(android.util.Log::class)
-        unmockkStatic(Base64::class)
     }
 
     private fun buildUri(
@@ -303,8 +286,6 @@ class JoinGroupUseCaseTest {
                 .toString()
         every { nostrClient.isConnected } returns false
         coEvery { syncEngine.pullEvents(any(), any(), any(), lenientTimestamp = true) } returns 3
-        coEvery { nostrClient.publish(any()) } returns true
-        coEvery { outboxDao.delete(any<String>()) } just Runs
 
         useCase(buildUri(groupId = groupId))
         coVerify { syncEngine.pullEvents(groupId, 0, any(), lenientTimestamp = true) }

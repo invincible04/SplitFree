@@ -10,7 +10,7 @@ import org.junit.Test
 
 /**
  * Tests for invite link v2 compact format and v1 legacy parsing.
- * Uses java.util.Base64 instead of android.util.Base64 (same encoding).
+ * Uses java.util.Base64 for URL-safe encoding.
  */
 class InviteLinkTest {
     companion object {

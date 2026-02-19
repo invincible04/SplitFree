@@ -27,9 +27,8 @@ constructor() {
     }
 
     private class RateEntry {
-        @Volatile var count: Int = 0
-
-        @Volatile var windowStart: Long = 0L
+        var count: Int = 0
+        var windowStart: Long = 0L
     }
 
     /**
@@ -92,7 +91,7 @@ constructor() {
                 synchronized(entry.value) { now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
             }
         }
-        val entry = rateCounts.getOrPut(pubkey) { RateEntry() }
+        val entry = rateCounts.computeIfAbsent(pubkey) { RateEntry() }
         synchronized(entry) {
             if (now - entry.windowStart > RATE_WINDOW_MS) {
                 entry.count = 1
@@ -117,7 +116,7 @@ constructor() {
                 synchronized(entry.value) { now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
             }
         }
-        val entry = groupRateCounts.getOrPut(groupId) { RateEntry() }
+        val entry = groupRateCounts.computeIfAbsent(groupId) { RateEntry() }
         synchronized(entry) {
             if (now - entry.windowStart > RATE_WINDOW_MS) {
                 entry.count = 1

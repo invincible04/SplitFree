@@ -2,8 +2,8 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.GroupRepositoryContract
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -15,7 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 @HiltViewModel
 class GroupsListViewModel
 @Inject
-constructor(groupRepo: GroupRepository, nostrClient: NostrClient) : ViewModel() {
+constructor(groupRepo: GroupRepositoryContract, nostrClient: NostrClient) :
+    ViewModel() {
     val groups: Flow<List<Group>> = groupRepo.observeAll()
     val isConnected: StateFlow<Boolean> = nostrClient.connectionState
 }

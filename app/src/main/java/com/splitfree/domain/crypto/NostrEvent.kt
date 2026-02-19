@@ -1,7 +1,7 @@
 package com.splitfree.domain.crypto
 
-import com.splitfree.util.hexToBytes
-import com.splitfree.util.toHex
+import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import fr.acinq.secp256k1.Secp256k1
 import java.security.MessageDigest
 import java.security.SecureRandom

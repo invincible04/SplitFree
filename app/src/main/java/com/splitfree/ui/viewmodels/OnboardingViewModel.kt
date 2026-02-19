@@ -1,7 +1,7 @@
 package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.data.identity.IdentityManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow

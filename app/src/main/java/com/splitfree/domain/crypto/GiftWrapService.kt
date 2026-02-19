@@ -1,8 +1,9 @@
 package com.splitfree.domain.crypto
 
-import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.crypto.nip.Nip59
-import com.splitfree.util.hexToBytes
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.SettingsContract
+import com.splitfree.domain.util.hexToBytes
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,8 +15,8 @@ import javax.inject.Singleton
 class GiftWrapService
 @Inject
 constructor(
-    private val identityManager: IdentityManager,
-    private val userPreferences: UserPreferences
+    private val identityManager: IdentityContract,
+    private val userPreferences: SettingsContract
 ) {
     val enabled: Boolean get() = userPreferences.giftWrapEnabled
 

@@ -1,5 +1,6 @@
 package com.splitfree.sync.event
 
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.EventEntity
@@ -7,8 +8,8 @@ import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GiftWrapService
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.repository.EventPublisherContract
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,7 +27,7 @@ constructor(
     private val giftWrap: GiftWrapService,
     private val groupRepo: GroupRepository,
     private val identity: IdentityManager
-) {
+) : EventPublisherContract {
     /**
      * Save event locally and enqueue for publishing with per-member NIP-59 gift wrapping.
      *
@@ -36,12 +37,12 @@ constructor(
      * @param eventType event type tag value
      * @param expenseUuid optional expense UUID
      */
-    suspend fun publishToGroup(
+    override suspend fun publishToGroup(
         event: NostrEvent,
         groupId: String,
         encrypted: String,
         eventType: String,
-        expenseUuid: String? = null
+        expenseUuid: String?
     ) {
         saveEvent(event, groupId, encrypted, eventType, expenseUuid)
 
@@ -62,12 +63,12 @@ constructor(
     /**
      * Save event locally and enqueue for direct publishing (no gift wrap).
      */
-    suspend fun publishDirect(
+    override suspend fun publishDirect(
         event: NostrEvent,
         groupId: String,
         encrypted: String,
         eventType: String,
-        expenseUuid: String? = null
+        expenseUuid: String?
     ) {
         saveEvent(event, groupId, encrypted, eventType, expenseUuid)
         enqueueOutbox(event)
@@ -77,12 +78,12 @@ constructor(
     /**
      * Save event locally and enqueue outbox only (no throttler). For snapshots.
      */
-    suspend fun saveAndQueue(
+    override suspend fun saveAndQueue(
         event: NostrEvent,
         groupId: String,
         encrypted: String,
         eventType: String,
-        expenseUuid: String? = null
+        expenseUuid: String?
     ) {
         saveEvent(event, groupId, encrypted, eventType, expenseUuid)
         enqueueOutbox(event)
@@ -129,6 +130,6 @@ constructor(
     }
 
     /** Check if outbox contains events matching a predicate on the JSON. */
-    suspend fun hasOutboxMatching(predicate: (String) -> Boolean): Boolean =
+    override suspend fun hasOutboxMatching(predicate: (String) -> Boolean): Boolean =
         outboxDao.getAll().any { predicate(it.eventJson) }
 }

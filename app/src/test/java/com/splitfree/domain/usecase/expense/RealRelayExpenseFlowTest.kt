@@ -1,10 +1,9 @@
 package com.splitfree.domain.usecase.expense
 
-import android.util.Base64
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
@@ -35,13 +34,13 @@ import org.junit.Test
  * to match the actual app behavior and avoid SharedFlow race conditions.
  *
  * Real: secp256k1 keys, NIP-44 encryption, Schnorr signatures, WebSocket relay connections
- * Mocked: Android Log and Base64 only
+ * Mocked: Android Log only
  */
 class RealRelayExpenseFlowTest {
     private lateinit var phone1Client: NostrClient
     private lateinit var phone2Client: NostrClient
 
-    private val encryption = GroupEncryption()
+    private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
     private val json = Json { ignoreUnknownKeys = true }
 
     private lateinit var phone1PrivKey: ByteArray
@@ -85,19 +84,6 @@ class RealRelayExpenseFlowTest {
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
 
-        mockkStatic(Base64::class)
-        every { Base64.decode(any<String>(), any()) } answers {
-            java.util.Base64
-                .getUrlDecoder()
-                .decode(firstArg<String>())
-        }
-        every { Base64.encodeToString(any(), any()) } answers {
-            java.util.Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(firstArg<ByteArray>())
-        }
-
         phone1PrivKey = generateValidPrivateKey()
         phone1PubKey = NostrEvent.pubkeyFromPrivkey(phone1PrivKey)
         phone2PrivKey = generateValidPrivateKey()
@@ -129,7 +115,6 @@ class RealRelayExpenseFlowTest {
         phone1PrivKey.fill(0)
         phone2PrivKey.fill(0)
         unmockkStatic(android.util.Log::class)
-        unmockkStatic(Base64::class)
     }
 
     private fun generateValidPrivateKey(): ByteArray {

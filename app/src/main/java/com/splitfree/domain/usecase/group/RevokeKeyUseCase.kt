@@ -1,14 +1,13 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRevocation
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import kotlinx.coroutines.NonCancellable
@@ -30,12 +29,11 @@ import kotlinx.serialization.json.Json
 class RevokeKeyUseCase
 @Inject
 constructor(
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
     private val signer: EventSigner,
-    private val eventDao: EventDao,
-    private val eventPublisher: EventPublisher
+    private val eventPublisher: EventPublisherContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 

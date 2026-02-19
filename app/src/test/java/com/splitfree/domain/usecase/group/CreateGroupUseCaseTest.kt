@@ -1,16 +1,13 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.data.local.dao.OutboxDao
-import com.splitfree.data.local.entities.OutboxEntity
-import com.splitfree.data.nostr.EventThrottler
-import com.splitfree.data.nostr.RelayConfig
-import com.splitfree.data.nostr.relay.RelayConnectionManager
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.RelayDefaults
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -25,13 +22,11 @@ import org.junit.Before
 import org.junit.Test
 
 class CreateGroupUseCaseTest {
-    private val groupRepo = mockk<GroupRepository>(relaxed = true)
+    private val groupRepo = mockk<GroupRepositoryContract>(relaxed = true)
     private val encryption = mockk<GroupEncryption>()
-    private val identity = mockk<IdentityManager>()
+    private val identity = mockk<IdentityContract>()
     private val signer = mockk<EventSigner>()
-    private val outboxDao = mockk<OutboxDao>(relaxed = true)
-    private val throttler = mockk<EventThrottler>(relaxed = true)
-    private val relayConnectionManager = mockk<RelayConnectionManager>(relaxed = true)
+    private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
 
     private lateinit var useCase: CreateGroupUseCase
 
@@ -61,7 +56,7 @@ class CreateGroupUseCaseTest {
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
         useCase =
-            CreateGroupUseCase(groupRepo, encryption, identity, signer, outboxDao, throttler, relayConnectionManager)
+            CreateGroupUseCase(groupRepo, encryption, identity, signer, eventPublisher)
     }
 
     @After
@@ -75,7 +70,7 @@ class CreateGroupUseCaseTest {
         assertEquals("Trip to Goa", group.name)
         assertEquals(fakePubkey, group.createdBy)
         assertEquals(listOf(fakePubkey), group.members)
-        assertEquals(RelayConfig.DEFAULT_RELAYS, group.relays)
+        assertEquals(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS, group.relays)
     }
 
     @Test
@@ -89,8 +84,7 @@ class CreateGroupUseCaseTest {
         useCase("Test")
         verify { encryption.encrypt(any(), fakeGroupKey) }
         verify { signer.createSignedEvent(any(), eq("group_meta"), eq("encrypted"), isNull()) }
-        coVerify { outboxDao.insert(any<OutboxEntity>()) }
-        coVerify { throttler.enqueue(fakeEvent) }
+        coVerify { eventPublisher.publishDirect(any(), any(), any(), any()) }
     }
 
     @Test
@@ -120,12 +114,12 @@ class CreateGroupUseCaseTest {
 
     @Test
     fun `DEFAULT_RELAYS contains expected relay URLs`() {
-        assertTrue(RelayConfig.DEFAULT_RELAYS.all { it.startsWith("wss://") })
-        assertTrue(RelayConfig.DEFAULT_RELAYS.size >= 3)
+        assertTrue(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS.all { it.startsWith("wss://") })
+        assertTrue(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS.size >= 3)
     }
 
     @Test
     fun `MAX_GROUP_MEMBERS is 50`() {
-        assertEquals(50, RelayConfig.MAX_GROUP_MEMBERS)
+        assertEquals(50, com.splitfree.domain.util.RelayDefaults.MAX_GROUP_MEMBERS)
     }
 }

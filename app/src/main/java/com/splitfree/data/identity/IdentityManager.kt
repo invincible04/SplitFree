@@ -1,11 +1,13 @@
-package com.splitfree.domain.crypto
+package com.splitfree.data.identity
 
 import android.content.Context
 import android.content.SharedPreferences
 import com.splitfree.data.util.EncryptedPrefsFactory
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
-import com.splitfree.util.hexToBytes
-import com.splitfree.util.toHex
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.acinq.secp256k1.Secp256k1
 import java.security.SecureRandom
@@ -19,27 +21,27 @@ import javax.inject.Singleton
 @Singleton
 class IdentityManager
 @Inject
-constructor(@ApplicationContext private val context: Context) {
+constructor(@ApplicationContext private val context: Context) : IdentityContract {
     private val prefs: SharedPreferences by lazy {
         EncryptedPrefsFactory.create(context, "splitfree_identity")
     }
 
-    fun hasIdentity(): Boolean = prefs.contains(KEY_PRIVATE)
+    override fun hasIdentity(): Boolean = prefs.contains(KEY_PRIVATE)
 
-    fun getPublicKeyHex(): String = prefs.getString(KEY_PUBLIC, "")!!
+    override fun getPublicKeyHex(): String = prefs.getString(KEY_PUBLIC, "")!!
 
     /**
      * Returns private key as hex string. WARNING: String is immutable and cannot be
      * zeroed from memory. Use getPrivateKeyBytes() + fill(0) for crypto operations.
      * Only use this for user-facing display (Settings screen reveal).
      */
-    fun getPrivateKeyHex(): String = prefs.getString(KEY_PRIVATE, "")!!
+    override fun getPrivateKeyHex(): String = prefs.getString(KEY_PRIVATE, "")!!
 
-    fun getPrivateKeyBytes(): ByteArray = getPrivateKeyHex().hexToBytes()
+    override fun getPrivateKeyBytes(): ByteArray = getPrivateKeyHex().hexToBytes()
 
-    fun getPublicKeyBytes(): ByteArray = getPublicKeyHex().hexToBytes()
+    override fun getPublicKeyBytes(): ByteArray = getPublicKeyHex().hexToBytes()
 
-    fun generateKeyPair(): Pair<String, String> {
+    override fun generateKeyPair(): Pair<String, String> {
         val privKey = ByteArray(32)
         val random = SecureRandom()
         do {
@@ -67,7 +69,7 @@ constructor(@ApplicationContext private val context: Context) {
      * Generate a new keypair and store it as "pending" alongside the current one.
      * The old key is NOT overwritten until [commitPendingKeyPair] is called.
      */
-    fun generatePendingKeyPair(): Pair<String, String> {
+    override fun generatePendingKeyPair(): Pair<String, String> {
         val privKey = ByteArray(32)
         val random = SecureRandom()
         do {
@@ -87,7 +89,7 @@ constructor(@ApplicationContext private val context: Context) {
     }
 
     /** Promote the pending keypair to active and delete the old one. */
-    fun commitPendingKeyPair() {
+    override fun commitPendingKeyPair() {
         val pendingPriv =
             prefs.getString(KEY_PENDING_PRIVATE, null)
                 ?: error("No pending keypair to commit")
@@ -104,7 +106,7 @@ constructor(@ApplicationContext private val context: Context) {
     }
 
     /** Discard a pending keypair (e.g., on revocation failure). */
-    fun discardPendingKeyPair() {
+    override fun discardPendingKeyPair() {
         prefs
             .edit()
             .remove(KEY_PENDING_PRIVATE)
@@ -113,7 +115,7 @@ constructor(@ApplicationContext private val context: Context) {
     }
 
     /** Check if there's an incomplete revocation to resume. */
-    fun hasPendingKeyPair(): Boolean = prefs.contains(KEY_PENDING_PRIVATE)
+    override fun hasPendingKeyPair(): Boolean = prefs.contains(KEY_PENDING_PRIVATE)
 
     /** Set a plain SharedPreferences flag so BootReceiver can check without EncryptedSharedPreferences. */
     private fun markIdentityCreated() {
@@ -123,14 +125,14 @@ constructor(@ApplicationContext private val context: Context) {
             .apply()
     }
 
-    fun getPendingPublicKeyHex(): String? = prefs.getString(KEY_PENDING_PUBLIC, null)
+    override fun getPendingPublicKeyHex(): String? = prefs.getString(KEY_PENDING_PUBLIC, null)
 
-    fun getPendingPrivateKeyBytes(): ByteArray? = prefs.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
+    override fun getPendingPrivateKeyBytes(): ByteArray? = prefs.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
 
     /**
      * Export private key as 24-word BIP-39 mnemonic.
      */
-    fun exportAsMnemonic(): List<String> {
+    override fun exportAsMnemonic(): List<String> {
         val privBytes = getPrivateKeyBytes()
         try {
             return Bip39.toMnemonic(privBytes)
@@ -143,7 +145,7 @@ constructor(@ApplicationContext private val context: Context) {
      * Import a key from hex string, or BIP-39 mnemonic (space-separated words).
      * @throws IllegalArgumentException if the key is invalid.
      */
-    fun importKey(input: String) {
+    override fun importKey(input: String) {
         val trimmed = input.trim()
         val words = trimmed.split("\\s+".toRegex())
         val privBytes =

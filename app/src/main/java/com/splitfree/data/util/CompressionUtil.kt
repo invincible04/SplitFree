@@ -1,5 +1,6 @@
 package com.splitfree.data.util
 
+import com.splitfree.domain.util.CompressionProvider
 import com.splitfree.util.DebugLog as Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -12,16 +13,16 @@ import net.jpountz.lz4.LZ4Factory
  * Decompression rejects payloads exceeding [MAX_OUTPUT_SIZE] or with a suspicious
  * compression ratio (>1000:1) to prevent zip-bomb attacks.
  */
-object CompressionUtil {
+object CompressionUtil : CompressionProvider {
     private const val TAG = "CompressionUtil"
     private const val THRESHOLD = 100
     private const val MAX_RATIO = 1_000.0
     private const val MAX_OUTPUT_SIZE = 100_000 // 100KB — expense data should never exceed this
     private val factory = LZ4Factory.fastestInstance()
 
-    fun shouldCompress(data: ByteArray): Boolean = data.size >= THRESHOLD
+    override fun shouldCompress(data: ByteArray): Boolean = data.size >= THRESHOLD
 
-    fun compress(data: ByteArray): ByteArray? {
+    override fun compress(data: ByteArray): ByteArray? {
         return try {
             val compressor = factory.fastCompressor()
             val maxLen = compressor.maxCompressedLength(data.size)
@@ -41,7 +42,7 @@ object CompressionUtil {
         }
     }
 
-    fun decompress(compressed: ByteArray): ByteArray? {
+    override fun decompress(compressed: ByteArray): ByteArray? {
         if (compressed.size < 4) return null
         return try {
             val originalSize = ByteBuffer.wrap(compressed, 0, 4).order(ByteOrder.BIG_ENDIAN).int

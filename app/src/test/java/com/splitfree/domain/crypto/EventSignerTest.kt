@@ -1,6 +1,7 @@
 package com.splitfree.domain.crypto
 
-import com.splitfree.util.hexToBytes
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
@@ -21,7 +22,7 @@ import org.junit.Test
 class EventSignerTest {
     private val privKey = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a".hexToBytes()
     private val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
-    private val identity = mockk<IdentityManager>()
+    private val identity = mockk<IdentityContract>()
     private lateinit var signer: EventSigner
 
     @Before

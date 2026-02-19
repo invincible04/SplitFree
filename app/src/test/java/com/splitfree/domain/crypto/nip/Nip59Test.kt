@@ -4,8 +4,8 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.crypto.nip.Nip59
-import com.splitfree.util.hexToBytes
-import com.splitfree.util.toHex
+import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import java.security.SecureRandom
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

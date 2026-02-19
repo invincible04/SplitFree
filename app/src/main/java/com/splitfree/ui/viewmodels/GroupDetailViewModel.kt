@@ -3,12 +3,12 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.splitfree.data.repository.ExpenseRepository
-import com.splitfree.data.repository.GroupRepository
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.repository.ExpenseRepositoryContract
+import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
@@ -48,8 +48,8 @@ class GroupDetailViewModel
 @Inject
 constructor(
     savedStateHandle: SavedStateHandle,
-    private val groupRepo: GroupRepository,
-    private val expenseRepo: ExpenseRepository,
+    private val groupRepo: GroupRepositoryContract,
+    private val expenseRepo: ExpenseRepositoryContract,
     private val computeBalances: ComputeBalancesUseCase,
     private val simplifyDebts: SimplifyDebtsUseCase,
     private val exportGroup: ExportGroupUseCase,
@@ -93,6 +93,9 @@ constructor(
     private val _inviteLink = MutableStateFlow<String?>(null)
     val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
 
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
     private fun loadInviteLink() {
         viewModelScope.launch {
             try {
@@ -121,6 +124,9 @@ constructor(
                         timestamp = System.currentTimeMillis() / 1000
                     )
                 expenseRepo.addSettlement(settlement, groupId)
+            } catch (e: Exception) {
+                Log.w("GroupDetailVM", "Settlement failed: ${e.message}")
+                _error.value = e.message ?: "Settlement failed"
             } finally {
                 settlingInProgress = false
             }

@@ -1,14 +1,14 @@
 package com.splitfree.data.ble
 
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.util.DebugLog as Log
-import com.splitfree.util.hexToBytes
-import com.splitfree.util.toHex
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.Serializable

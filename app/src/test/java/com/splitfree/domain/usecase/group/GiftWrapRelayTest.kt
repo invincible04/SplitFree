@@ -1,10 +1,9 @@
 package com.splitfree.domain.usecase.group
 
-import android.util.Base64
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip59
 import com.splitfree.domain.model.expense.Expense
@@ -40,7 +39,7 @@ import org.junit.Test
 class GiftWrapRelayTest {
     private lateinit var phone1: NostrClient
     private lateinit var phone2: NostrClient
-    private val encryption = GroupEncryption()
+    private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
     private val json = Json { ignoreUnknownKeys = true }
 
     private lateinit var p1Priv: ByteArray
@@ -69,19 +68,6 @@ class GiftWrapRelayTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
-
-        mockkStatic(Base64::class)
-        every { Base64.decode(any<String>(), any()) } answers {
-            java.util.Base64
-                .getUrlDecoder()
-                .decode(firstArg<String>())
-        }
-        every { Base64.encodeToString(any(), any()) } answers {
-            java.util.Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(firstArg<ByteArray>())
-        }
 
         p1Priv = genKey()
         p1Pub = NostrEvent.pubkeyFromPrivkey(p1Priv)
@@ -114,7 +100,6 @@ class GiftWrapRelayTest {
         p1Priv.fill(0)
         p2Priv.fill(0)
         unmockkStatic(android.util.Log::class)
-        unmockkStatic(Base64::class)
     }
 
     private fun genKey(): ByteArray {

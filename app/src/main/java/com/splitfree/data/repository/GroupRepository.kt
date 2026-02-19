@@ -4,9 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
-import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.util.EncryptedPrefsFactory
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -86,10 +86,10 @@ constructor(
         relays: List<String>,
         eventTimestamp: Long
     ) {
-        if (members.size > RelayConfig.MAX_GROUP_MEMBERS) {
+        if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
                 "GroupRepository",
-                "Rejecting group_meta with ${members.size} members (max ${RelayConfig.MAX_GROUP_MEMBERS})"
+                "Rejecting group_meta with ${members.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
             )
             return
         }

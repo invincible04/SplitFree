@@ -15,7 +15,7 @@ import org.junit.Test
  * GroupEncryption tests: encrypt/decrypt with shared group key.
  */
 class GroupEncryptionTest {
-    private val encryption = GroupEncryption()
+    private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
     private val enc = encryption
     private val key = encryption.generateGroupKey()
 
@@ -149,8 +149,8 @@ class GroupEncryptionTest {
     @Test
     fun `group key derivation is deterministic across instances`() {
         val key = encryption.generateGroupKey()
-        val enc1 = GroupEncryption()
-        val enc2 = GroupEncryption()
+        val enc1 = GroupEncryption(com.splitfree.data.util.CompressionUtil)
+        val enc2 = GroupEncryption(com.splitfree.data.util.CompressionUtil)
         val encrypted = enc1.encrypt("hello", key)
         assertEquals("hello", enc2.decrypt(encrypted, key))
     }

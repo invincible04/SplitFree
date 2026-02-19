@@ -1,9 +1,8 @@
 package com.splitfree.domain.usecase.export
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
+import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -18,7 +17,7 @@ import kotlinx.serialization.json.Json
 class ExportGroupUseCase
 @Inject
 constructor(
-    private val eventDao: EventDao,
+    private val eventRepo: EventRepositoryContract,
     private val groupRepo: GroupRepositoryContract
 ) {
     private val json = Json { prettyPrint = true }
@@ -29,8 +28,14 @@ constructor(
      */
     suspend operator fun invoke(groupId: String): String {
         val groupKey = groupRepo.getGroupKey(groupId)
-        val events = eventDao.getEventsByGroup(groupId)
-        val exportedEvents = events.map { it.toExported() }
+        val events = eventRepo.getEventsByGroup(groupId)
+        val exportedEvents = events.map { e ->
+            ExportedEvent(
+                eventId = e.eventId, pubkey = e.pubkey, createdAt = e.createdAt, kind = e.kind,
+                contentEncrypted = e.contentEncrypted, eventType = e.eventType,
+                expenseUuid = e.expenseUuid, sig = e.sig, originalEventJson = e.originalEventJson
+            )
+        }
         val eventsJson = Json.encodeToString(exportedEvents)
         val hmac = if (groupKey != null) HmacUtil.compute(eventsJson, groupKey) else ""
         val export =
@@ -42,12 +47,6 @@ constructor(
             )
         return json.encodeToString(export)
     }
-
-    private fun EventEntity.toExported() = ExportedEvent(
-        eventId = eventId, pubkey = pubkey, createdAt = createdAt, kind = kind,
-        contentEncrypted = contentEncrypted, eventType = eventType,
-        expenseUuid = expenseUuid, sig = sig, originalEventJson = originalEventJson
-    )
 }
 
 /**

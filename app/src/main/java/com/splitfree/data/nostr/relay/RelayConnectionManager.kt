@@ -1,10 +1,10 @@
 package com.splitfree.data.nostr.relay
 
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,7 +39,7 @@ constructor(
 
         val primaryRelays = resolvePrimaryRelays()
         val onlineRelays = relayHealthMonitor.getOnlineRelays(primaryRelays).ifEmpty { primaryRelays }
-        val allRelays = (onlineRelays + RelayConfig.FALLBACK_RELAYS).distinct()
+        val allRelays = (onlineRelays + RelayDefaults.FALLBACK_RELAYS).distinct()
 
         nostrClient.connect(allRelays)
         nostrClient.acquireConnection()
@@ -53,11 +53,11 @@ constructor(
         if (custom.isNotEmpty()) return custom
 
         val groupRelays = groupRepo.getAll().flatMap { it.relays }.distinct()
-        return groupRelays.ifEmpty { RelayConfig.DEFAULT_RELAYS }
+        return groupRelays.ifEmpty { RelayDefaults.DEFAULT_RELAYS }
     }
 
     /** Get all relays that should be connected (primary + fallbacks). */
-    suspend fun resolveAllRelays(): List<String> = (resolvePrimaryRelays() + RelayConfig.FALLBACK_RELAYS).distinct()
+    suspend fun resolveAllRelays(): List<String> = (resolvePrimaryRelays() + RelayDefaults.FALLBACK_RELAYS).distinct()
 
     companion object {
         private const val TAG = "RelayConnectionManager"

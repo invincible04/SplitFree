@@ -1,9 +1,9 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.data.nostr.NostrClient
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 
@@ -14,8 +14,8 @@ class CreateInviteLinkUseCase
 @Inject
 constructor(
     private val groupRepo: GroupRepositoryContract,
-    private val identity: IdentityManager,
-    private val nostrClient: NostrClient
+    private val identity: IdentityContract,
+    private val nostrClient: NostrClientContract
 ) {
     /**
      * Generate a shareable invite link for a group. Attempts v3 (ephemeral key exchange)

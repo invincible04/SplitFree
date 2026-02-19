@@ -1,15 +1,14 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMigration
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -28,12 +27,11 @@ import org.junit.Before
 import org.junit.Test
 
 class MigrateGroupUseCaseTest {
-    private val groupRepo = mockk<GroupRepository>(relaxed = true)
+    private val groupRepo = mockk<GroupRepositoryContract>(relaxed = true)
     private val encryption = mockk<GroupEncryption>()
-    private val identity = mockk<IdentityManager>()
+    private val identity = mockk<IdentityContract>()
     private val signer = mockk<EventSigner>()
-    private val eventDao = mockk<EventDao>(relaxed = true)
-    private val eventPublisher = mockk<EventPublisher>(relaxed = true)
+    private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
 
     private lateinit var useCase: MigrateGroupUseCase
 
@@ -83,7 +81,7 @@ class MigrateGroupUseCaseTest {
         coEvery { groupRepo.getById(oldGroupId) } returns oldGroup
         coEvery { groupRepo.getGroupKey(oldGroupId) } returns groupKey
 
-        useCase = MigrateGroupUseCase(groupRepo, encryption, identity, signer, eventDao, eventPublisher)
+        useCase = MigrateGroupUseCase(groupRepo, encryption, identity, signer, eventPublisher)
     }
 
     @After

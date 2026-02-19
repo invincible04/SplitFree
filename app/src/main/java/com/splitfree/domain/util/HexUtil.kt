@@ -1,12 +1,10 @@
-package com.splitfree.util
+package com.splitfree.domain.util
 
 /**
- * Hex encoding/decoding extensions used throughout the codebase for Nostr keys and event IDs.
+ * Hex encoding/decoding extensions for Nostr keys and event IDs.
  */
 
-/**
- * @return lowercase hex string representation of this byte array
- */
+/** @return lowercase hex string representation of this byte array */
 fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
 /**

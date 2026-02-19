@@ -1,10 +1,10 @@
 package com.splitfree.domain.usecase.expense
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.local.entities.EventEntity
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
+import com.splitfree.domain.repository.GroupRepositoryContract
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -19,9 +19,9 @@ import org.junit.Test
 class ComputeBalancesUseCaseTest {
     private val groupKey = "testkey"
 
-    private fun eventDao() = mockk<EventDao>(relaxed = true)
+    private fun eventDao() = mockk<EventRepositoryContract>(relaxed = true)
 
-    private fun groupRepo() = mockk<GroupRepository>(relaxed = true).also {
+    private fun groupRepo() = mockk<GroupRepositoryContract>(relaxed = true).also {
         coEvery { it.getGroupKey("g1") } returns groupKey
     }
 
@@ -93,7 +93,7 @@ class ComputeBalancesUseCaseTest {
         content: String,
         uuid: String? = null,
         createdAt: Long = 1
-    ) = EventEntity(
+    ) = EventSnapshot(
         eventId = id,
         groupId = groupId,
         pubkey = pubkey,
@@ -378,7 +378,7 @@ class ComputeBalancesUseCaseTest {
         every { enc.decrypt(any(), any()) } throws IllegalArgumentException("bad key")
         coEvery { dao.getEventsByGroup("g1") } returns
             listOf(
-                EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "s", receivedAt = 1)
+                EventSnapshot("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "s", receivedAt = 1)
             )
         coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
 
@@ -523,7 +523,7 @@ class ComputeBalancesUseCaseTest {
         coEvery { repo.getById("g1") } returns group("alice")
         val eventIds = (1..10).map { "event_$it" }
         val hashes = eventIds.map {
-            com.splitfree.data.util.HashUtil.sha256Hex(it)
+            com.splitfree.domain.util.HashUtil.sha256Hex(it)
         }
         val hashArr = hashes.joinToString(",", "[", "]") {
             "\"$it\""
@@ -673,7 +673,7 @@ class ComputeBalancesUseCaseTest {
         val dao = eventDao()
         val repo = groupRepo()
         coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
-            EventEntity("s1", "g1", "alice", 1, 30078, "enc", "snapshot", null, "s", receivedAt = 1)
+            EventSnapshot("s1", "g1", "alice", 1, 30078, "enc", "snapshot", null, "s", receivedAt = 1)
         coEvery { dao.getEventsByGroup("g1") } returns emptyList()
         val useCase = ComputeBalancesUseCase(dao, repo, encryption())
         val balances = useCase("g1")

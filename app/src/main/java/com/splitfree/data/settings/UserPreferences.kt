@@ -3,6 +3,7 @@ package com.splitfree.data.settings
 import android.content.Context
 import android.content.SharedPreferences
 import com.splitfree.data.util.EncryptedPrefsFactory
+import com.splitfree.domain.repository.SettingsContract
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -13,23 +14,23 @@ import javax.inject.Singleton
 @Singleton
 class UserPreferences
 @Inject
-constructor(@ApplicationContext private val context: Context) {
+constructor(@ApplicationContext private val context: Context) : SettingsContract {
     private val prefs: SharedPreferences by lazy {
         EncryptedPrefsFactory.create(context, "splitfree_settings")
     }
 
-    var giftWrapEnabled: Boolean
+    override var giftWrapEnabled: Boolean
         get() = prefs.getBoolean(KEY_GIFT_WRAP, true)
         set(value) {
             prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply()
         }
 
-    fun getCustomRelays(): List<String> {
+    override fun getCustomRelays(): List<String> {
         val raw = prefs.getString(KEY_CUSTOM_RELAYS, null) ?: return emptyList()
         return raw.split(",").filter { it.startsWith("wss://") }
     }
 
-    fun setCustomRelays(relays: List<String>) {
+    override fun setCustomRelays(relays: List<String>) {
         val safe = relays.filter { it.startsWith("wss://") }
         prefs.edit().putString(KEY_CUSTOM_RELAYS, safe.joinToString(",")).apply()
     }

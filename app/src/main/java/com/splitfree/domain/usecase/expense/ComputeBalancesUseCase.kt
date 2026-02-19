@@ -1,15 +1,15 @@
 package com.splitfree.domain.usecase.expense
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.local.entities.EventEntity
-import com.splitfree.data.util.HashUtil
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.util.HashUtil
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import kotlinx.serialization.json.Json
@@ -20,14 +20,14 @@ import kotlinx.serialization.json.Json
 class ComputeBalancesUseCase
 @Inject
 constructor(
-    private val eventDao: EventDao,
+    private val eventRepo: EventRepositoryContract,
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Decrypt event content on-the-fly. Returns null if key missing or decryption fails. */
-    private fun decrypt(event: EventEntity, groupKey: String): String? = try {
+    private fun decrypt(event: EventSnapshot, groupKey: String): String? = try {
         encryption.decrypt(event.contentEncrypted, groupKey)
     } catch (_: Exception) {
         null
@@ -42,14 +42,14 @@ constructor(
      */
     suspend fun computeWithExclusions(groupId: String): BalanceResult {
         val groupKey = groupRepo.getGroupKey(groupId) ?: return BalanceResult(emptyList(), emptySet())
-        val events = eventDao.getEventsByGroup(groupId)
+        val events = eventRepo.getEventsByGroup(groupId)
         // Key: (pubkey, currency) -> net amount
         val balances = mutableMapOf<Pair<String, String>, Long>()
         val deleted = mutableSetOf<String>()
         val latestCorrection = mutableMapOf<String, String>()
         val seenSettlementIds = mutableSetOf<String>()
 
-        val snapshotEvent = eventDao.getLatestEventByType(groupId, "snapshot")
+        val snapshotEvent = eventRepo.getLatestEventByType(groupId, "snapshot")
         var snapshotTimestamp = 0L
         if (snapshotEvent != null) {
             try {
@@ -58,7 +58,7 @@ constructor(
                     val content = decrypt(snapshotEvent, groupKey)
                     if (content != null) {
                         val snap = json.decodeFromString<BalanceSnapshot>(content)
-                        val localIds = eventDao.getEventIds(groupId).toSet()
+                        val localIds = eventRepo.getEventIds(groupId).toSet()
                         if (snap.event_hashes.isNotEmpty()) {
                             val localHashes = localIds.mapTo(HashSet()) { HashUtil.sha256Hex(it) }
                             val matchCount = snap.event_hashes.count { it in localHashes }

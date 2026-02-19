@@ -9,9 +9,9 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.work.Configuration
-import com.splitfree.data.nostr.RelayConfig
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.worker.PowerManager
 import com.splitfree.sync.worker.SyncScheduler
 import dagger.hilt.android.HiltAndroidApp
@@ -55,7 +55,7 @@ class SplitFreeApp :
         registerBatteryStateReceiver()
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
             try {
-                relayHealthMonitor.checkRelays(RelayConfig.DEFAULT_RELAYS + RelayConfig.FALLBACK_RELAYS)
+                relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)
                 revokeKeyUseCase.resumeIfNeeded()
             } catch (_: Exception) {
                 // AndroidKeyStore unavailable in test environments (Robolectric)

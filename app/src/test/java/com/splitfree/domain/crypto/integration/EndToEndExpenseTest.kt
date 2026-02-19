@@ -7,7 +7,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
-import com.splitfree.util.hexToBytes
+import com.splitfree.domain.util.hexToBytes
 import java.security.SecureRandom
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -23,7 +23,7 @@ import org.junit.Test
  */
 class EndToEndExpenseTest {
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-    private val encryption = GroupEncryption()
+    private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
 
     @Test
     fun `full expense lifecycle - create, sign, serialize, parse, verify, decrypt`() {

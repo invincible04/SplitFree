@@ -2,9 +2,9 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.crypto.GiftWrapService
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject

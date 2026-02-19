@@ -1,17 +1,16 @@
 package com.splitfree.domain.usecase.group
 
-import android.util.Base64
-import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.IdentityManager
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
-import com.splitfree.sync.worker.SyncEngine
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -46,8 +45,8 @@ class RealRelayIntegrationTest {
     private lateinit var phone2Client: NostrClient
 
     // Real crypto
-    private val phone1Encryption = GroupEncryption()
-    private val phone2Encryption = GroupEncryption()
+    private val phone1Encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
+    private val phone2Encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
 
     // Real keys (generated fresh each test)
     private lateinit var phone1PrivKey: ByteArray
@@ -58,12 +57,12 @@ class RealRelayIntegrationTest {
     // Mocked Android storage (only thing we can't run on JVM)
     private val phone1Identity = mockk<IdentityManager>()
     private val phone2Identity = mockk<IdentityManager>()
-    private val phone1Repo = mockk<GroupRepository>(relaxed = true)
-    private val phone2Repo = mockk<GroupRepository>(relaxed = true)
-    private val phone1Outbox = mockk<OutboxDao>(relaxed = true)
-    private val phone2Outbox = mockk<OutboxDao>(relaxed = true)
+    private val phone1Repo = mockk<GroupRepositoryContract>(relaxed = true)
+    private val phone2Repo = mockk<GroupRepositoryContract>(relaxed = true)
+    private val phone1EventPublisher = mockk<EventPublisherContract>(relaxed = true)
+    private val phone2EventPublisher = mockk<EventPublisherContract>(relaxed = true)
     private val phone2SelfHeal = mockk<SelfHealUseCase>(relaxed = true)
-    private val phone2SyncEngine = mockk<SyncEngine>(relaxed = true)
+    private val phone2SyncEngine = mockk<SyncEngineContract>(relaxed = true)
 
     // Real signers backed by real keys
     private lateinit var phone1Signer: EventSigner
@@ -81,20 +80,6 @@ class RealRelayIntegrationTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
-
-        // Mock Base64 to use java.util.Base64
-        mockkStatic(Base64::class)
-        every { Base64.decode(any<String>(), any()) } answers {
-            java.util.Base64
-                .getUrlDecoder()
-                .decode(firstArg<String>())
-        }
-        every { Base64.encodeToString(any(), any()) } answers {
-            java.util.Base64
-                .getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(firstArg<ByteArray>())
-        }
 
         // Generate REAL secp256k1 keypairs
         phone1PrivKey = generateValidPrivateKey()
@@ -133,7 +118,6 @@ class RealRelayIntegrationTest {
         phone1PrivKey.fill(0)
         phone2PrivKey.fill(0)
         unmockkStatic(android.util.Log::class)
-        unmockkStatic(Base64::class)
     }
 
     private fun generateValidPrivateKey(): ByteArray {
@@ -283,7 +267,7 @@ class RealRelayIntegrationTest {
                 phone2Client,
                 phone2Signer,
                 phone2Encryption,
-                phone2Outbox,
+                phone2EventPublisher,
                 phone2SelfHeal,
                 phone2SyncEngine
             )

@@ -1,15 +1,13 @@
 package com.splitfree.domain.usecase.expense
 
-import androidx.room.withTransaction
-import com.splitfree.data.local.AppDatabase
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.util.HashUtil
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.balance.SnapshotBalance
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.util.HashUtil
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.serialization.json.Json
@@ -21,13 +19,12 @@ import kotlinx.serialization.json.Json
 class CreateSnapshotUseCase
 @Inject
 constructor(
-    private val db: AppDatabase,
-    private val eventDao: EventDao,
+    private val eventRepo: EventRepositoryContract,
     private val groupRepo: GroupRepositoryContract,
     private val computeBalances: ComputeBalancesUseCase,
     private val encryption: GroupEncryption,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisher
+    private val eventPublisher: EventPublisherContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -38,10 +35,10 @@ constructor(
      * @return true if a snapshot was created, false if skipped
      */
     suspend operator fun invoke(groupId: String): Boolean {
-        return db.withTransaction {
-            val eventCount = eventDao.getEventCount(groupId)
+        return eventRepo.withTransaction {
+            val eventCount = eventRepo.getEventCount(groupId)
             val groupKey = groupRepo.getGroupKey(groupId) ?: return@withTransaction false
-            val lastSnapshot = eventDao.getLatestEventByType(groupId, "snapshot")
+            val lastSnapshot = eventRepo.getLatestEventByType(groupId, "snapshot")
             val lastSnapshotCount =
                 lastSnapshot?.let {
                     runCatching {
@@ -59,7 +56,7 @@ constructor(
             if (eventsSinceSnapshot < 100 && daysSinceSnapshot < 30) return@withTransaction false
 
             val balances = computeBalances(groupId)
-            val eventIds = eventDao.getEventIds(groupId)
+            val eventIds = eventRepo.getEventIds(groupId)
             val eventHashes = eventIds.map { HashUtil.sha256Hex(it) }
 
             val snapshot =

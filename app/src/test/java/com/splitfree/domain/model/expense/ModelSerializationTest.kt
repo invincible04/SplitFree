@@ -192,7 +192,7 @@ class ModelSerializationTest {
     fun `Expense survives serialize-encrypt-decrypt-deserialize`() {
         val encryption =
             com.splitfree.domain.crypto
-                .GroupEncryption()
+                .GroupEncryption(com.splitfree.data.util.CompressionUtil)
         val key = encryption.generateGroupKey()
         val expense =
             Expense(

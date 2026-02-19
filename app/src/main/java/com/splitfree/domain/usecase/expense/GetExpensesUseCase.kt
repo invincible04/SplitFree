@@ -1,8 +1,8 @@
 package com.splitfree.domain.usecase.expense
 
-import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -15,7 +15,7 @@ import kotlinx.serialization.json.Json
 class GetExpensesUseCase
 @Inject
 constructor(
-    private val eventDao: EventDao,
+    private val eventRepo: EventRepositoryContract,
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption
 ) {
@@ -27,7 +27,7 @@ constructor(
      * @param groupId target group UUID
      * @return reactive [Flow] of expenses; emits empty list if group key is unavailable
      */
-    fun observe(groupId: String): Flow<List<Expense>> = eventDao.observeEventsByGroup(groupId).map { events ->
+    fun observe(groupId: String): Flow<List<Expense>> = eventRepo.observeEventsByGroup(groupId).map { events ->
         val groupKey = groupRepo.getGroupKey(groupId) ?: return@map emptyList()
         events
             .filter { it.eventType == "expense" && it.expenseUuid != null }

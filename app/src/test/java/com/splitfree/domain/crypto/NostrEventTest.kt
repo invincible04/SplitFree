@@ -1,6 +1,6 @@
 package com.splitfree.domain.crypto
 
-import com.splitfree.util.hexToBytes
+import com.splitfree.domain.util.hexToBytes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull

@@ -1,9 +1,10 @@
 package com.splitfree.domain.usecase.sync
 
-import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
-import com.splitfree.domain.crypto.IdentityManager
+import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import kotlinx.coroutines.delay
@@ -15,11 +16,11 @@ import kotlinx.coroutines.delay
 class SelfHealUseCase
 @Inject
 constructor(
-    private val eventDao: EventDao,
-    private val nostrClient: NostrClient,
+    private val eventRepo: EventRepositoryContract,
+    private val nostrClient: NostrClientContract,
     private val signer: EventSigner,
-    private val identity: IdentityManager,
-    private val groupRepo: com.splitfree.domain.repository.GroupRepositoryContract
+    private val identity: IdentityContract,
+    private val groupRepo: GroupRepositoryContract
 ) {
     suspend operator fun invoke(groupId: String): Int {
         if (!nostrClient.isConnected) {
@@ -30,7 +31,7 @@ constructor(
         val group = groupRepo.getById(groupId) ?: return 0
         val currentMembers = group.members.toSet()
 
-        val localEvents = eventDao.getEventsByGroup(groupId)
+        val localEvents = eventRepo.getEventsByGroup(groupId)
         if (localEvents.isEmpty()) return 0
 
         val oldestLocal = localEvents.minOfOrNull { it.createdAt } ?: 0L

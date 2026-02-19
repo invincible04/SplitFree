@@ -1,4 +1,4 @@
-package com.splitfree.data.util
+package com.splitfree.domain.util
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
