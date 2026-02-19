@@ -107,7 +107,7 @@ class EventRepositoryTest {
             eventType = "settlement", sig = "sig2", receivedAt = 4000L
         )
         val slot = slot<EventEntity>()
-        coEvery { eventDao.insert(capture(slot)) } returns Unit
+        coEvery { eventDao.insert(capture(slot)) } returns 1L
         repo.insert(snapshot)
         assertEquals("e2", slot.captured.eventId)
         assertEquals("g1", slot.captured.groupId)
@@ -151,7 +151,7 @@ class EventRepositoryTest {
             receivedAt = 6000L, originalEventJson = null
         )
         val slot = slot<EventEntity>()
-        coEvery { eventDao.insert(capture(slot)) } returns Unit
+        coEvery { eventDao.insert(capture(slot)) } returns 1L
         repo.insert(snapshot)
         assertNull(slot.captured.expenseUuid)
         assertNull(slot.captured.originalEventJson)

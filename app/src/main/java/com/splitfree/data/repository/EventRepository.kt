@@ -40,7 +40,9 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
 
     override suspend fun insertIfNew(snapshot: EventSnapshot): Boolean = eventDao.insertIfNew(snapshot.toEntity())
 
-    override suspend fun insert(snapshot: EventSnapshot) = eventDao.insert(snapshot.toEntity())
+    override suspend fun insert(snapshot: EventSnapshot) {
+        eventDao.insert(snapshot.toEntity())
+    }
 
     override suspend fun <T> withTransaction(block: suspend () -> T): T = db.withTransaction { block() }
 

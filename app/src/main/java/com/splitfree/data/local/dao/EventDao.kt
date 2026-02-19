@@ -4,7 +4,6 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Transaction
 import com.splitfree.data.local.entities.EventEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -17,7 +16,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface EventDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(event: EventEntity)
+    suspend fun insert(event: EventEntity): Long
 
     @Query("SELECT * FROM events WHERE groupId = :groupId ORDER BY createdAt ASC, eventId ASC")
     suspend fun getEventsByGroup(groupId: String): List<EventEntity>
@@ -45,11 +44,6 @@ interface EventDao {
     )
     suspend fun getDeletedExpenseUuids(groupId: String): List<String>
 
-    @Transaction
-    suspend fun insertIfNew(event: EventEntity): Boolean {
-        val existing = getEvent(event.eventId)
-        if (existing != null) return false
-        insert(event)
-        return true
-    }
+    /** Atomic insert — returns true only if the row was actually inserted (not a duplicate). */
+    suspend fun insertIfNew(event: EventEntity): Boolean = insert(event) != -1L
 }

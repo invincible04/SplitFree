@@ -47,6 +47,8 @@ object InviteLinkCodec {
     private const val INVITE_EXPIRY_SECS = 24 * 3600L
     private const val MAX_RELAYS = 10
     private const val MAX_RELAY_URL_LENGTH = 256
+    private const val MAX_PAYLOAD_LENGTH = 2048
+
     /** uuid(16) + ephPriv(32) + senderPub(32) + bitmap(1) + customLen(1) */
     private const val HEADER_SIZE = 16 + 32 + 32 + 1 + 1
     private const val EXPIRY_SIZE = 4
@@ -94,24 +96,33 @@ object InviteLinkCodec {
      */
     fun decode(uri: String): InviteParams {
         val dParam = extractPayloadParam(uri)
+        require(dParam.length <= MAX_PAYLOAD_LENGTH) { "Invalid invite link: payload too large" }
         val data = Base64.getUrlDecoder().decode(dParam)
         require(data.size >= HEADER_SIZE + EXPIRY_SIZE) { "Invalid invite link: payload too short" }
 
         var pos = 0
-        val groupId = readUuid(data, pos); pos += 16
+        val groupId = readUuid(data, pos)
+        pos += 16
 
-        val ephPriv = data.copyOfRange(pos, pos + 32); pos += 32
-        val senderPub = data.copyOfRange(pos, pos + 32); pos += 32
+        val ephPriv = data.copyOfRange(pos, pos + 32)
+        pos += 32
+        val senderPub = data.copyOfRange(pos, pos + 32)
+        pos += 32
 
-        val (relays, bytesRead) = decodeRelays(data, pos); pos += bytesRead
+        val (relays, bytesRead) = decodeRelays(data, pos)
+        pos += bytesRead
 
         require(data.size >= pos + EXPIRY_SIZE) { "Invalid invite link: missing expiry" }
-        val exp = readUint32(data, pos); pos += EXPIRY_SIZE
+        val exp = readUint32(data, pos)
+        pos += EXPIRY_SIZE
+        require(System.currentTimeMillis() / 1000 <= exp) { "This invite link has expired" }
 
         require(data.size >= pos + 1) { "Invalid invite link: missing encrypted key" }
-        val encKeyLen = data[pos].toInt() and 0xFF; pos++
+        val encKeyLen = data[pos].toInt() and 0xFF
+        pos++
         require(data.size >= pos + encKeyLen) { "Invalid invite link: truncated encrypted key" }
-        val encKeyBytes = data.copyOfRange(pos, pos + encKeyLen); pos += encKeyLen
+        val encKeyBytes = data.copyOfRange(pos, pos + encKeyLen)
+        pos += encKeyLen
 
         val groupKey = try {
             decryptGroupKey(encKeyBytes, ephPriv, senderPub)
@@ -178,13 +189,15 @@ object InviteLinkCodec {
     /** Decodes relay bitmap + custom relays from binary data. Returns (relays, bytesConsumed). */
     private fun decodeRelays(data: ByteArray, startPos: Int): Pair<List<String>, Int> {
         var pos = startPos
-        val bitmap = data[pos].toInt() and 0xFF; pos++
+        val bitmap = data[pos].toInt() and 0xFF
+        pos++
         val relays = mutableListOf<String>()
         for (i in KNOWN_RELAYS.indices) {
             if (bitmap and (1 shl i) != 0) relays.add(KNOWN_RELAYS[i])
         }
 
-        val customLen = data[pos].toInt() and 0xFF; pos++
+        val customLen = data[pos].toInt() and 0xFF
+        pos++
         if (customLen > 0) {
             require(data.size >= pos + customLen) { "Invalid invite link: truncated custom relays" }
             val customList = String(data, pos, customLen, Charsets.UTF_8).split(",").filter { it.isNotBlank() }
@@ -225,10 +238,8 @@ object InviteLinkCodec {
         buf.write(v and 0xFF)
     }
 
-    private fun readUint32(data: ByteArray, pos: Int): Long {
-        return ((data[pos].toLong() and 0xFF) shl 24) or
-            ((data[pos + 1].toLong() and 0xFF) shl 16) or
-            ((data[pos + 2].toLong() and 0xFF) shl 8) or
-            (data[pos + 3].toLong() and 0xFF)
-    }
+    private fun readUint32(data: ByteArray, pos: Int): Long = ((data[pos].toLong() and 0xFF) shl 24) or
+        ((data[pos + 1].toLong() and 0xFF) shl 16) or
+        ((data[pos + 2].toLong() and 0xFF) shl 8) or
+        (data[pos + 3].toLong() and 0xFF)
 }

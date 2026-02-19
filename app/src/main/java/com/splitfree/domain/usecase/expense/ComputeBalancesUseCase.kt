@@ -54,7 +54,12 @@ constructor(
         if (snapshotEvent != null) {
             try {
                 val group = groupRepo.getById(groupId)
-                if (group != null && snapshotEvent.pubkey == group.createdBy) {
+                if (group != null &&
+                    (
+                        snapshotEvent.pubkey == group.createdBy ||
+                            (group.createdBy.isEmpty() && snapshotEvent.pubkey in group.members)
+                        )
+                ) {
                     val content = decrypt(snapshotEvent, groupKey)
                     if (content != null) {
                         val snap = json.decodeFromString<BalanceSnapshot>(content)

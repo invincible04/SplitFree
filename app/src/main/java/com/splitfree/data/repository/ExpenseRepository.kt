@@ -34,6 +34,10 @@ constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun addExpense(expense: Expense, groupId: String) {
+        require(expense.amount > 0) { "Expense amount must be positive" }
+        require(expense.amount <= 10_000_000_000_00L) { "Expense amount exceeds maximum" }
+        require(expense.splitAmong.isNotEmpty()) { "Expense must have at least one split" }
+        require(expense.splitAmong.none { it.share < 0 }) { "Split shares must be non-negative" }
         val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group $groupId not found")
         val plaintext = json.encodeToString(Expense.serializer(), expense)
         val encrypted = encryption.encrypt(plaintext, groupKey)

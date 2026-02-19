@@ -4,7 +4,10 @@ import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import java.security.SecureRandom
 import java.util.Base64
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**

@@ -3,8 +3,8 @@ package com.splitfree.data.nostr
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
 import com.splitfree.data.nostr.relay.Relay
-import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.util.concurrent.ConcurrentHashMap
@@ -16,6 +16,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,7 +28,6 @@ import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -132,7 +132,9 @@ constructor() : NostrClientContract {
                             when (msg) {
                                 is RelayMessage.EventMsg -> {
                                     // Validate event kind matches expected kind (relay filter bypass defense)
-                                    if (msg.event.kind != NostrKind.APP_SPECIFIC && msg.event.kind != NostrKind.GIFT_WRAP) {
+                                    if (msg.event.kind != NostrKind.APP_SPECIFIC &&
+                                        msg.event.kind != NostrKind.GIFT_WRAP
+                                    ) {
                                         Log.w(
                                             TAG,
                                             "Rejecting unexpected event kind ${msg.event.kind} from ${relay.url}"

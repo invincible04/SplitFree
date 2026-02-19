@@ -26,8 +26,8 @@ import kotlinx.serialization.json.putJsonArray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Assume
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -262,7 +262,9 @@ class RealRelayIntegrationTest {
             for (fetched in fetchedEvents) {
                 assertTrue("Fetched event ${fetched.id.take(8)} should have valid sig", fetched.verify())
                 println(
-                    "  Event ${fetched.id.take(8)}: kind=${fetched.kind} pubkey=${fetched.pubkey.take(8)} sig_valid=${fetched.verify()}"
+                    "  Event ${fetched.id.take(
+                        8
+                    )}: kind=${fetched.kind} pubkey=${fetched.pubkey.take(8)} sig_valid=${fetched.verify()}"
                 )
             }
             val foundOurEvent = fetchedEvents.any { it.id == event.id }

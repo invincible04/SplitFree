@@ -56,11 +56,6 @@ constructor(
 
         check(invite.relays.isNotEmpty()) { "Invite link must contain at least one relay" }
 
-        // Validate invite link expiration
-        if (System.currentTimeMillis() / 1000 > invite.expiry) {
-            throw IllegalStateException("This invite link has expired. Ask the group creator for a new one.")
-        }
-
         val groupKey = invite.groupKey
 
         Log.i(TAG, "Parsed invite: group=${invite.groupId} name=${invite.name} relays=${invite.relays.size}")

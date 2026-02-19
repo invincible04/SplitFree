@@ -101,7 +101,7 @@ class JoinGroupUseCaseTest {
         Unit
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test(expected = IllegalArgumentException::class)
     fun `invoke rejects expired invite link`() = runBlocking {
         val groupId = java.util.UUID.randomUUID().toString()
         val group = Group(groupId, "Test", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io"))

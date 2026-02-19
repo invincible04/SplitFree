@@ -93,8 +93,9 @@ constructor(
             )
             return
         }
+        val safeRelays = relays.filter { it.startsWith("wss://") && it.length <= 256 }
         val membersJson = json.encodeToString(stringListSerializer, members)
-        val relaysJson = json.encodeToString(stringListSerializer, relays)
+        val relaysJson = json.encodeToString(stringListSerializer, safeRelays)
         if (eventTimestamp > 0) {
             // Atomic update — only applies if eventTimestamp is newer than stored lastMetaTimestamp
             val updated = groupDao.updateMetaIfNewer(groupId, name, membersJson, relaysJson, eventTimestamp)

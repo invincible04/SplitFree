@@ -158,7 +158,7 @@ class MainActivity : ComponentActivity() {
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
         val uriStr = uri.toString()
-        Log.i("MainActivity", "handleDeepLink: $uriStr")
+        Log.i("MainActivity", "handleDeepLink: ${uri.scheme}://${uri.host}${uri.path}?d=[REDACTED]")
         if (uriStr.startsWith("splitfree://join") ||
             uriStr.startsWith("https://splitfree.app/join")
         ) {
