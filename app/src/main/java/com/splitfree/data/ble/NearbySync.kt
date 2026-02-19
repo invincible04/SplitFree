@@ -17,6 +17,7 @@ import com.google.android.gms.nearby.connection.Strategy
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -60,7 +61,7 @@ constructor(
     private val _events = MutableSharedFlow<BleEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<BleEvent> = _events
 
-    private val connectedEndpoints = mutableSetOf<String>()
+    private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
 
     fun startAdvertising() {
         val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()

@@ -21,12 +21,6 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 -keepclassmembers class com.splitfree.domain.model.** { *; }
--keepclassmembers class com.splitfree.domain.usecase.BalanceSnapshot { *; }
--keepclassmembers class com.splitfree.domain.usecase.SnapshotBalance { *; }
--keepclassmembers class com.splitfree.domain.usecase.GroupMigration { *; }
--keepclassmembers class com.splitfree.domain.usecase.KeyRevocation { *; }
--keepclassmembers class com.splitfree.domain.usecase.SplitFreeExport { *; }
--keepclassmembers class com.splitfree.domain.usecase.ExportedEvent { *; }
 -keepclassmembers class com.splitfree.data.ble.BleHandshake { *; }
 -keepclassmembers class com.splitfree.data.ble.BleSyncRequest { *; }
 

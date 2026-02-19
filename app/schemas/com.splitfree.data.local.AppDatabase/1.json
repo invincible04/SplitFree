@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "ea45a45fb5a67ede1cb170b3b0c27b12",
+    "identityHash": "b004a9f565241d01668b16813db42931",
     "entities": [
       {
         "tableName": "events",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `pubkey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `contentEncrypted` TEXT NOT NULL, `eventType` TEXT NOT NULL, `expenseUuid` TEXT, `sig` TEXT NOT NULL, `syncedToRelays` TEXT NOT NULL, `receivedAt` INTEGER NOT NULL, `originalEventJson` TEXT, PRIMARY KEY(`eventId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `pubkey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `contentEncrypted` TEXT NOT NULL, `eventType` TEXT NOT NULL, `expenseUuid` TEXT, `sig` TEXT NOT NULL, `receivedAt` INTEGER NOT NULL, `originalEventJson` TEXT, PRIMARY KEY(`eventId`))",
         "fields": [
           {
             "fieldPath": "eventId",
@@ -58,12 +58,6 @@
           {
             "fieldPath": "sig",
             "columnName": "sig",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "syncedToRelays",
-            "columnName": "syncedToRelays",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -227,7 +221,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ea45a45fb5a67ede1cb170b3b0c27b12')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b004a9f565241d01668b16813db42931')"
     ]
   }
 }

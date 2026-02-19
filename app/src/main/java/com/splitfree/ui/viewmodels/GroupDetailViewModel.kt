@@ -18,6 +18,7 @@ import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -106,11 +107,10 @@ constructor(
         }
     }
 
-    private var settlingInProgress = false
+    private val settlingInProgress = AtomicBoolean(false)
 
     fun recordSettlement(debt: DebtTransaction) {
-        if (settlingInProgress) return
-        settlingInProgress = true
+        if (!settlingInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
                 val group = groupRepo.getById(groupId) ?: return@launch
@@ -128,7 +128,7 @@ constructor(
                 Log.w("GroupDetailVM", "Settlement failed: ${e.message}")
                 _error.value = e.message ?: "Settlement failed"
             } finally {
-                settlingInProgress = false
+                settlingInProgress.set(false)
             }
         }
     }

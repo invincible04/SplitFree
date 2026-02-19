@@ -46,7 +46,8 @@ class ForegroundSyncService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false
-    private var connectedRelaySet = emptySet<String>()
+
+    @Volatile private var connectedRelaySet = emptySet<String>()
 
     override fun onCreate() {
         super.onCreate()

@@ -23,7 +23,6 @@ class EntityTest {
                 receivedAt = 1
             )
         assertNull(e.expenseUuid)
-        assertEquals("[]", e.syncedToRelays)
         assertNull(e.originalEventJson)
     }
 
@@ -40,7 +39,6 @@ class EntityTest {
                 eventType = "settlement",
                 expenseUuid = "uuid",
                 sig = "sig",
-                syncedToRelays = """["wss://r"]""",
                 receivedAt = 2,
                 originalEventJson = "{}"
             )

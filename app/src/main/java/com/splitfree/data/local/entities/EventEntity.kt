@@ -35,7 +35,6 @@ data class EventEntity(
     val eventType: String,
     val expenseUuid: String? = null,
     val sig: String,
-    val syncedToRelays: String = "[]",
     val receivedAt: Long,
     val originalEventJson: String? = null
 ) {

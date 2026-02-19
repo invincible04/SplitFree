@@ -30,6 +30,9 @@ data class InviteParams(
 /**
  * Encodes/decodes compact invite links for group sharing.
  *
+ * SECURITY MODEL: Bearer-token invite — the URL itself is the credential.
+ * Anyone with the link can join. Mitigated by 24h expiry and confirmation dialog.
+ *
  * Format: `splitfree://join?d=<base64>` with direct NIP-44 encrypted key exchange.
  * The group key is NIP-44 encrypted using ECDH between the sender's private key and
  * an ephemeral key, then embedded in the URL. No relay involvement for key delivery.
