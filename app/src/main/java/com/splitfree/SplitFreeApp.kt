@@ -56,8 +56,12 @@ class SplitFreeApp :
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
             try {
                 relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)
-                revokeKeyUseCase.resumeIfNeeded()
             } catch (_: Exception) {
+                // Relay health check is best-effort
+            }
+            try {
+                revokeKeyUseCase.resumeIfNeeded()
+            } catch (_: java.security.KeyStoreException) {
                 // AndroidKeyStore unavailable in test environments (Robolectric)
             }
         }

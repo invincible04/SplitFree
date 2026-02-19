@@ -11,6 +11,7 @@ import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -123,10 +124,13 @@ constructor(
                     createdAt = event.createdAt
                 )
             )
+        } else {
+            Log.w(TAG, "Outbox full ($MAX_OUTBOX_SIZE), event ${event.id.take(8)} deferred to self-heal")
         }
     }
 
     companion object {
+        private const val TAG = "EventPublisher"
         private const val MAX_OUTBOX_SIZE = 5000
     }
 

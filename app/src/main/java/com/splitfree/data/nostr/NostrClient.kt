@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -302,7 +303,8 @@ constructor() : NostrClientContract {
         try {
             withTimeout(timeoutMs) { allEose.await() }
             delay(500)
-        } catch (_: Exception) {
+        } catch (_: TimeoutCancellationException) {
+            // Timeout waiting for EOSE — proceed with whatever events we collected
         }
         relays.values.forEach { it.closeSubscription(subId) }
         collectJob.cancel()
