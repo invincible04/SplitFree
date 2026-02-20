@@ -61,7 +61,7 @@ object BleProtocol {
         buf.put(VERSION)
         buf.put(type.value)
         buf.put(ttl)
-        buf.putLong(System.currentTimeMillis())
+        buf.putLong(System.currentTimeMillis() / 60_000 * 60_000)
         buf.put(flags.toByte())
         buf.putShort((data.size and 0xFFFF).toShort())
 

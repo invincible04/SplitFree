@@ -2,11 +2,11 @@ package com.splitfree.data.nostr
 
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.util.DebugLog as Log
-import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +25,6 @@ constructor(private val nostrClient: NostrClient) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val publishing = AtomicBoolean(false)
     private val intervalMs = 500L
-    private val secureRandom = SecureRandom()
     private val queueSize =
         java.util.concurrent.atomic
             .AtomicInteger(0)
@@ -50,7 +49,7 @@ constructor(private val nostrClient: NostrClient) {
                     val event = queue.poll() ?: break
                     queueSize.decrementAndGet()
                     nostrClient.publish(event)
-                    delay(intervalMs + (secureRandom.nextLong().ushr(1) % 800) + 100)
+                    delay(intervalMs + Random.nextLong(100, 900))
                 }
             } finally {
                 publishing.set(false)
