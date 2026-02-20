@@ -3,6 +3,7 @@ package com.splitfree.data.nostr
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
 import com.splitfree.data.nostr.relay.Relay
+import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.repository.NostrClientContract
@@ -14,7 +15,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -39,10 +40,13 @@ import kotlinx.coroutines.withTimeout
 @Singleton
 class NostrClient
 @Inject
-constructor() : NostrClientContract {
+constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClientContract {
     private val relays = ConcurrentHashMap<String, Relay>()
     private val connectionMutex = Mutex()
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** Child job for relay collectors — cancelled on [disconnect] to stop stale coroutines. */
+    private var sessionJob = SupervisorJob(appScope.coroutineContext[Job])
+    private val scope get() = CoroutineScope(appScope.coroutineContext + sessionJob)
     private val subIdCounter = AtomicLong(0)
 
     // Bounded dedup set — evicts oldest entries beyond 10K to prevent memory leak.
@@ -389,6 +393,8 @@ constructor() : NostrClientContract {
     }
 
     override fun disconnect() {
+        sessionJob.cancel()
+        sessionJob = SupervisorJob(appScope.coroutineContext[Job])
         activeSubscriptions.clear()
         relays.values.forEach { it.disconnect() }
         relays.clear()

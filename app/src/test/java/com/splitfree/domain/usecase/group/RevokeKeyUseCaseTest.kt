@@ -53,6 +53,9 @@ class RevokeKeyUseCaseTest {
         every { identity.commitPendingKeyPair() } just Runs
         every { identity.discardPendingKeyPair() } just Runs
         every { identity.hasPendingKeyPair() } returns false
+        every { identity.setRevocationEventIds(any()) } just Runs
+        every { identity.getRevocationEventIds() } returns emptyList()
+        every { identity.getRevocationStartTime() } returns 0L
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
         coEvery { groupRepo.getAll() } returns listOf(group)
@@ -127,7 +130,9 @@ class RevokeKeyUseCaseTest {
     fun `resumeIfNeeded commits when outbox is empty`() = runBlocking {
         every { identity.hasPendingKeyPair() } returns true
         every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { eventPublisher.hasOutboxMatching(any()) } returns false
+        every { identity.getRevocationEventIds() } returns listOf("evt1", "evt2")
+        every { identity.getRevocationStartTime() } returns System.currentTimeMillis() / 1000
+        coEvery { eventPublisher.hasOutboxEventsById(any()) } returns false
         useCase.resumeIfNeeded()
         verify { identity.commitPendingKeyPair() }
     }
@@ -136,7 +141,9 @@ class RevokeKeyUseCaseTest {
     fun `resumeIfNeeded waits when outbox has revocation events`() = runBlocking {
         every { identity.hasPendingKeyPair() } returns true
         every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { eventPublisher.hasOutboxMatching(any()) } returns true
+        every { identity.getRevocationEventIds() } returns listOf("evt1", "evt2")
+        every { identity.getRevocationStartTime() } returns System.currentTimeMillis() / 1000
+        coEvery { eventPublisher.hasOutboxEventsById(any()) } returns true
         useCase.resumeIfNeeded()
         verify(exactly = 0) { identity.commitPendingKeyPair() }
     }
@@ -196,7 +203,9 @@ class RevokeKeyUseCaseTest {
     fun `resumeIfNeeded waits when outbox has group_meta events`() = runBlocking {
         every { identity.hasPendingKeyPair() } returns true
         every { identity.getPendingPublicKeyHex() } returns newPubkey
-        coEvery { eventPublisher.hasOutboxMatching(any()) } returns true
+        every { identity.getRevocationEventIds() } returns listOf("evt1")
+        every { identity.getRevocationStartTime() } returns System.currentTimeMillis() / 1000
+        coEvery { eventPublisher.hasOutboxEventsById(any()) } returns true
         useCase.resumeIfNeeded()
         verify(exactly = 0) { identity.commitPendingKeyPair() }
     }
@@ -216,5 +225,23 @@ class RevokeKeyUseCaseTest {
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
         useCase.handleRevocation(payload, oldPubkey, groupId)
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `resumeIfNeeded commits on timeout even with events in outbox`() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns true
+        every { identity.getPendingPublicKeyHex() } returns newPubkey
+        every { identity.getRevocationEventIds() } returns listOf("evt1")
+        // Started 25 hours ago
+        every { identity.getRevocationStartTime() } returns System.currentTimeMillis() / 1000 - 25 * 3600
+        coEvery { eventPublisher.hasOutboxEventsById(any()) } returns true
+        useCase.resumeIfNeeded()
+        verify { identity.commitPendingKeyPair() }
+    }
+
+    @Test
+    fun `invoke stores revocation event IDs`() = runBlocking {
+        useCase()
+        verify { identity.setRevocationEventIds(match { it.isNotEmpty() }) }
     }
 }

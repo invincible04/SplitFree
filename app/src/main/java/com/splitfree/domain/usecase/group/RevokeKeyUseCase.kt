@@ -52,6 +52,7 @@ constructor(
 
             // 1. Generate new keypair alongside old (does NOT overwrite)
             val (_, newPubkey) = identity.generatePendingKeyPair()
+            val revocationEventIds = mutableListOf<String>()
 
             try {
                 // 2. Publish revocation to each group with OLD key
@@ -69,6 +70,7 @@ constructor(
                             eventType = "key_revocation",
                             encryptedContent = encrypted
                         )
+                    revocationEventIds += event.id
                     saveAndPublish(event, group.id, encrypted, payload, "key_revocation")
                 }
 
@@ -97,10 +99,14 @@ constructor(
                             eventType = "group_meta",
                             encryptedContent = metaEncrypted
                         )
+                    revocationEventIds += metaEvent.id
                     saveAndPublish(metaEvent, group.id, metaEncrypted, metaPayload, "group_meta")
                 }
 
-                // 4. All publishes succeeded — now promote the pending key
+                // 4. Store event IDs so resumeIfNeeded can track them
+                identity.setRevocationEventIds(revocationEventIds)
+
+                // 5. All publishes succeeded — now promote the pending key
                 identity.commitPendingKeyPair()
             } catch (e: Exception) {
                 // Revocation failed — discard pending key, old key is still active
@@ -115,21 +121,30 @@ constructor(
 
     /**
      * Resume an incomplete revocation on app startup.
-     * Only commits the pending key if the revocation events have been published
-     * (i.e., no longer in the outbox). If events are still pending, leave the
-     * pending key in place — the outbox will publish them on next sync.
+     * Commits the pending key if:
+     * - the tracked revocation events have left the outbox (published), OR
+     * - more than [MAX_REVOCATION_AGE_SECS] have elapsed (timeout safety net)
      */
     suspend fun resumeIfNeeded() {
         if (!identity.hasPendingKeyPair()) return
         val newPubkey = identity.getPendingPublicKeyHex() ?: return
 
-        // Check if revocation events are still in the outbox (not yet published)
-        val hasUnpublishedRevocation =
-            eventPublisher.hasOutboxMatching { json ->
-                json.contains("\"key_revocation\"") || json.contains("\"group_meta\"")
-            }
+        val eventIds = identity.getRevocationEventIds()
+        val startTime = identity.getRevocationStartTime()
+        val nowSecs = System.currentTimeMillis() / 1000
 
-        if (hasUnpublishedRevocation) {
+        // Timeout: commit anyway after 24h to avoid permanent limbo
+        if (startTime > 0 && nowSecs - startTime > MAX_REVOCATION_AGE_SECS) {
+            Log.w(
+                TAG,
+                "Revocation timeout (${MAX_REVOCATION_AGE_SECS}s) — committing pending key ${newPubkey.take(8)}…"
+            )
+            identity.commitPendingKeyPair()
+            return
+        }
+
+        // Check if tracked revocation events are still in the outbox
+        if (eventIds.isNotEmpty() && eventPublisher.hasOutboxEventsById(eventIds)) {
             Log.i(TAG, "Pending key ${newPubkey.take(8)}… waiting — revocation events still in outbox")
             return
         }
@@ -189,5 +204,8 @@ constructor(
 
     companion object {
         private const val TAG = "RevokeKeyUseCase"
+
+        /** 24 hours — commit pending key even if outbox events haven't published */
+        private const val MAX_REVOCATION_AGE_SECS = 24 * 60 * 60L
     }
 }

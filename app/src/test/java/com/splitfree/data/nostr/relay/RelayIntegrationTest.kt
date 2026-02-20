@@ -200,7 +200,7 @@ class RelayIntegrationTest {
 
     @Test
     fun `NostrClient full round-trip with live relay`() = runBlocking {
-        val client = NostrClient()
+        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
         try {
             client.connect(listOf(relayUrl))
 
@@ -233,7 +233,7 @@ class RelayIntegrationTest {
 
     @Test
     fun `NostrClient rejects non-wss relay URLs`() = runBlocking {
-        val client = NostrClient()
+        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
         try {
             client.connect(listOf("ws://insecure.relay", "http://bad.relay"))
             // Should connect to 0 relays

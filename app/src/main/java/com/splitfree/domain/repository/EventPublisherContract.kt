@@ -49,4 +49,7 @@ interface EventPublisherContract {
 
     /** @return true if any outbox event JSON matches [predicate] */
     suspend fun hasOutboxMatching(predicate: (String) -> Boolean): Boolean
+
+    /** @return true if any of the given event IDs are still in the outbox */
+    suspend fun hasOutboxEventsById(eventIds: List<String>): Boolean
 }

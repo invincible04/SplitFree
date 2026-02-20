@@ -12,6 +12,9 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -93,8 +96,8 @@ class FullRealWorldSimulationTest {
 
         p1Signer = EventSigner(p1Id)
         p2Signer = EventSigner(p2Id)
-        phone1 = NostrClient()
-        phone2 = NostrClient()
+        phone1 = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        phone2 = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
         groupId =
             java.util.UUID

@@ -31,4 +31,7 @@ interface OutboxDao {
 
     @Query("UPDATE outbox SET retryCount = retryCount + 1, lastRetryAt = :now WHERE eventId = :eventId")
     suspend fun incrementRetry(eventId: String, now: Long)
+
+    @Query("SELECT COUNT(*) FROM outbox WHERE eventId IN (:eventIds)")
+    suspend fun countByEventIds(eventIds: List<String>): Int
 }

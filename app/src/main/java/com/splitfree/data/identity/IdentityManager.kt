@@ -102,6 +102,8 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
             .putString(KEY_PUBLIC, pendingPub)
             .remove(KEY_PENDING_PRIVATE)
             .remove(KEY_PENDING_PUBLIC)
+            .remove(KEY_REVOCATION_EVENT_IDS)
+            .remove(KEY_REVOCATION_START)
             .apply()
     }
 
@@ -111,6 +113,8 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
             .edit()
             .remove(KEY_PENDING_PRIVATE)
             .remove(KEY_PENDING_PUBLIC)
+            .remove(KEY_REVOCATION_EVENT_IDS)
+            .remove(KEY_REVOCATION_START)
             .apply()
     }
 
@@ -128,6 +132,21 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
     override fun getPendingPublicKeyHex(): String? = prefs.getString(KEY_PENDING_PUBLIC, null)
 
     override fun getPendingPrivateKeyBytes(): ByteArray? = prefs.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
+
+    override fun setRevocationEventIds(eventIds: List<String>) {
+        prefs
+            .edit()
+            .putString(KEY_REVOCATION_EVENT_IDS, eventIds.joinToString(","))
+            .putLong(KEY_REVOCATION_START, System.currentTimeMillis() / 1000)
+            .apply()
+    }
+
+    override fun getRevocationEventIds(): List<String> = prefs.getString(KEY_REVOCATION_EVENT_IDS, null)
+        ?.split(",")
+        ?.filter { it.isNotEmpty() }
+        ?: emptyList()
+
+    override fun getRevocationStartTime(): Long = prefs.getLong(KEY_REVOCATION_START, 0L)
 
     /**
      * Export private key as 24-word BIP-39 mnemonic.
@@ -175,5 +194,7 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
         private const val KEY_PUBLIC = "npub"
         private const val KEY_PENDING_PRIVATE = "nsec_pending"
         private const val KEY_PENDING_PUBLIC = "npub_pending"
+        private const val KEY_REVOCATION_EVENT_IDS = "revocation_event_ids"
+        private const val KEY_REVOCATION_START = "revocation_start"
     }
 }

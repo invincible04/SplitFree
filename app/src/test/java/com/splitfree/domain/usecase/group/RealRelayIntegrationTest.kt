@@ -18,6 +18,9 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
@@ -110,8 +113,8 @@ class RealRelayIntegrationTest {
         phone2Signer = EventSigner(phone2Identity)
 
         // Real NostrClient instances (separate pools)
-        phone1Client = NostrClient()
-        phone2Client = NostrClient()
+        phone1Client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        phone2Client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
         // Storage mocks
         coEvery { phone1Repo.getById(any()) } returns null

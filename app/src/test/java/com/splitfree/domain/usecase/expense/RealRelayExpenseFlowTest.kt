@@ -12,6 +12,9 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -97,8 +100,8 @@ class RealRelayExpenseFlowTest {
         phone1Signer = EventSigner(phone1Identity)
         phone2Signer = EventSigner(phone2Identity)
 
-        phone1Client = NostrClient()
-        phone2Client = NostrClient()
+        phone1Client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        phone2Client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
         groupId =
             java.util.UUID

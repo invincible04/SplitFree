@@ -49,6 +49,15 @@ interface IdentityContract {
     /** @return raw 32-byte pending private key, or null */
     fun getPendingPrivateKeyBytes(): ByteArray?
 
+    /** Store event IDs created during key revocation so resumeIfNeeded can track them. */
+    fun setRevocationEventIds(eventIds: List<String>)
+
+    /** @return event IDs from the in-progress revocation, or empty */
+    fun getRevocationEventIds(): List<String>
+
+    /** @return epoch seconds when the revocation was started, or 0 */
+    fun getRevocationStartTime(): Long
+
     /** Export private key as a 24-word BIP-39 mnemonic. */
     fun exportAsMnemonic(): List<String>
 
