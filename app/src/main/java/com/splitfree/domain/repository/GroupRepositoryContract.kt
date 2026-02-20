@@ -30,7 +30,7 @@ interface GroupRepositoryContract {
      * Persist a new group and its symmetric key.
      *
      * @param group the group to save
-     * @param groupKey base64-encoded symmetric key stored in EncryptedSharedPreferences
+     * @param groupKey base64-encoded symmetric key stored in Keystore-backed encrypted storage
      */
     suspend fun save(group: Group, groupKey: String)
 

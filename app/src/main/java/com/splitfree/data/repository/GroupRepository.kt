@@ -1,15 +1,13 @@
 package com.splitfree.data.repository
 
-import android.content.Context
-import android.content.SharedPreferences
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
-import com.splitfree.data.util.EncryptedPrefsFactory
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
-import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -21,22 +19,18 @@ import kotlinx.serialization.json.Json
  * Manages group persistence and symmetric key storage.
  *
  * Group metadata (name, members, relays) is stored in Room. Symmetric group keys
- * are stored separately in EncryptedSharedPreferences and never written to the Room database.
+ * are stored separately in Android Keystore-backed encrypted storage and never
+ * written to the Room database.
  */
 @Singleton
 class GroupRepository
 @Inject
 constructor(
     private val groupDao: GroupDao,
-    @ApplicationContext private val context: Context
+    @Named("groupKeys") private val keyStore: SecureStorage
 ) : com.splitfree.domain.repository.GroupRepositoryContract {
     private val json = Json
     private val stringListSerializer = ListSerializer(String.serializer())
-
-    /** Encrypted storage for group keys — never stored in plaintext Room DB. */
-    private val keyStore: SharedPreferences by lazy {
-        EncryptedPrefsFactory.create(context, "splitfree_group_keys")
-    }
 
     override fun observeAll(): Flow<List<Group>> = groupDao.observeAll().map { entities ->
         entities.map { it.toDomain() }
@@ -54,14 +48,13 @@ constructor(
 
     /** Remove a group key from encrypted storage (e.g., after migration). */
     override fun deleteGroupKey(groupId: String) {
-        keyStore.edit().remove(groupId).apply()
+        keyStore.remove(groupId)
     }
 
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
 
     override suspend fun save(group: Group, groupKey: String) {
-        // Store key in encrypted prefs, not in Room
-        keyStore.edit().putString(group.id, groupKey).apply()
+        keyStore.putString(group.id, groupKey)
         groupDao.insert(
             GroupEntity(
                 groupId = group.id,
@@ -97,7 +90,6 @@ constructor(
         val membersJson = json.encodeToString(stringListSerializer, members)
         val relaysJson = json.encodeToString(stringListSerializer, safeRelays)
         if (eventTimestamp > 0) {
-            // Atomic update — only applies if eventTimestamp is newer than stored lastMetaTimestamp
             val updated = groupDao.updateMetaIfNewer(groupId, name, membersJson, relaysJson, eventTimestamp)
             if (updated > 0) {
                 groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)

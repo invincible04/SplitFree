@@ -53,7 +53,7 @@ SplitFree's security model is built on several layers:
 - **End-to-end encryption**: All group data encrypted with NIP-44 v2 (ChaCha20 + HMAC-SHA256). Relays only see ciphertext.
 - **Gift Wrap privacy**: Optional NIP-59 triple-layer encryption hides sender metadata.
 - **Cryptographic identity**: BIP-340 Schnorr keypairs. No passwords, no accounts.
-- **Key storage**: Private keys stored in Android `EncryptedSharedPreferences` (AES-256-GCM backed by Android Keystore).
+- **Key storage**: Private keys stored in Android Keystore (AES-256-GCM, hardware-backed).
 - **Event validation**: Signature verification, timestamp bounds, rate limiting, content size limits, nesting depth checks.
 - **BLE authentication**: Challenge-response handshake before any data exchange over Bluetooth.
 - **Export security**: HMAC-SHA256 authentication on all exported data.

@@ -2,21 +2,21 @@ package com.splitfree.data.settings
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.splitfree.data.util.EncryptedPrefsFactory
 import com.splitfree.domain.repository.SettingsContract
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * User preferences backed by EncryptedSharedPreferences (relay config, privacy toggles).
+ * User preferences backed by plain SharedPreferences (relay config, privacy toggles).
+ * No sensitive data — Android FBE protects at rest.
  */
 @Singleton
 class UserPreferences
 @Inject
 constructor(@ApplicationContext private val context: Context) : SettingsContract {
     private val prefs: SharedPreferences by lazy {
-        EncryptedPrefsFactory.create(context, "splitfree_settings")
+        context.getSharedPreferences("splitfree_settings", Context.MODE_PRIVATE)
     }
 
     override var giftWrapEnabled: Boolean

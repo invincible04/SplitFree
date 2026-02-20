@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
 import com.splitfree.domain.util.hexToBytes
+import com.splitfree.test.FakeSecureStorage
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
@@ -23,8 +24,7 @@ import org.junit.Test
 
 class IdentityManagerTest {
     private val context = mockk<Context>(relaxed = true)
-    private val prefs = mockk<SharedPreferences>(relaxed = true)
-    private val editor = mockk<SharedPreferences.Editor>(relaxed = true)
+    private lateinit var storage: FakeSecureStorage
     private lateinit var mgr: IdentityManager
 
     // A valid secp256k1 private key (known to pass secKeyVerify)
@@ -36,15 +36,8 @@ class IdentityManagerTest {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.e(any(), any()) } returns 0
 
-        every { prefs.edit() } returns editor
-        every { editor.putString(any(), any()) } returns editor
-        every { editor.remove(any()) } returns editor
-        every { editor.apply() } just Runs
-
-        mgr = IdentityManager(context)
-        val field = IdentityManager::class.java.getDeclaredField("prefs\$delegate")
-        field.isAccessible = true
-        field.set(mgr, lazy { prefs })
+        storage = FakeSecureStorage()
+        mgr = IdentityManager(context, storage)
     }
 
     @After
@@ -54,37 +47,36 @@ class IdentityManagerTest {
 
     @Test
     fun `hasIdentity true`() {
-        every { prefs.contains("nsec") } returns true
+        storage.putString("nsec", "key")
         assertTrue(mgr.hasIdentity())
     }
 
     @Test
     fun `hasIdentity false`() {
-        every { prefs.contains("nsec") } returns false
         assertFalse(mgr.hasIdentity())
     }
 
     @Test
     fun `getPublicKeyHex`() {
-        every { prefs.getString("npub", "") } returns "aabb"
+        storage.putString("npub", "aabb")
         assertEquals("aabb", mgr.getPublicKeyHex())
     }
 
     @Test
     fun `getPrivateKeyHex`() {
-        every { prefs.getString("nsec", "") } returns "ccdd"
+        storage.putString("nsec", "ccdd")
         assertEquals("ccdd", mgr.getPrivateKeyHex())
     }
 
     @Test
     fun `getPrivateKeyBytes`() {
-        every { prefs.getString("nsec", "") } returns validPrivHex
+        storage.putString("nsec", validPrivHex)
         assertEquals(32, mgr.getPrivateKeyBytes().size)
     }
 
     @Test
     fun `getPublicKeyBytes`() {
-        every { prefs.getString("npub", "") } returns validPubHex
+        storage.putString("npub", validPubHex)
         assertEquals(32, mgr.getPublicKeyBytes().size)
     }
 
@@ -93,11 +85,10 @@ class IdentityManagerTest {
         val (priv, pub) = mgr.generateKeyPair()
         assertEquals(64, priv.length)
         assertEquals(64, pub.length)
-        verify { editor.putString("nsec", priv) }
-        verify { editor.putString("npub", pub) }
-        verify { editor.remove("nsec_pending") }
-        verify { editor.remove("npub_pending") }
-        verify { editor.apply() }
+        assertEquals(priv, storage.getString("nsec", null))
+        assertEquals(pub, storage.getString("npub", null))
+        assertFalse(storage.contains("nsec_pending"))
+        assertFalse(storage.contains("npub_pending"))
     }
 
     @Test
@@ -118,69 +109,65 @@ class IdentityManagerTest {
         val (priv, pub) = mgr.generatePendingKeyPair()
         assertEquals(64, priv.length)
         assertEquals(64, pub.length)
-        verify { editor.putString("nsec_pending", priv) }
-        verify { editor.putString("npub_pending", pub) }
-        verify { editor.apply() }
+        assertEquals(priv, storage.getString("nsec_pending", null))
+        assertEquals(pub, storage.getString("npub_pending", null))
     }
 
     @Test
     fun `commitPendingKeyPair promotes pending to active`() {
-        every { prefs.getString("nsec_pending", null) } returns "pendpriv"
-        every { prefs.getString("npub_pending", null) } returns "pendpub"
+        storage.putString("nsec_pending", "pendpriv")
+        storage.putString("npub_pending", "pendpub")
         mgr.commitPendingKeyPair()
-        verify { editor.putString("nsec", "pendpriv") }
-        verify { editor.putString("npub", "pendpub") }
-        verify { editor.remove("nsec_pending") }
-        verify { editor.remove("npub_pending") }
+        assertEquals("pendpriv", storage.getString("nsec", null))
+        assertEquals("pendpub", storage.getString("npub", null))
+        assertFalse(storage.contains("nsec_pending"))
+        assertFalse(storage.contains("npub_pending"))
     }
 
     @Test
     fun `commitPendingKeyPair throws when no pending private`() {
-        every { prefs.getString("nsec_pending", null) } returns null
         assertThrows(IllegalStateException::class.java) { mgr.commitPendingKeyPair() }
     }
 
     @Test
     fun `commitPendingKeyPair throws when no pending public`() {
-        every { prefs.getString("nsec_pending", null) } returns "priv"
-        every { prefs.getString("npub_pending", null) } returns null
+        storage.putString("nsec_pending", "priv")
         assertThrows(IllegalStateException::class.java) { mgr.commitPendingKeyPair() }
     }
 
     @Test
     fun `discardPendingKeyPair removes pending`() {
+        storage.putString("nsec_pending", "p")
+        storage.putString("npub_pending", "p")
         mgr.discardPendingKeyPair()
-        verify { editor.remove("nsec_pending") }
-        verify { editor.remove("npub_pending") }
+        assertFalse(storage.contains("nsec_pending"))
+        assertFalse(storage.contains("npub_pending"))
     }
 
     @Test
     fun `hasPendingKeyPair`() {
-        every { prefs.contains("nsec_pending") } returns true
-        assertTrue(mgr.hasPendingKeyPair())
-        every { prefs.contains("nsec_pending") } returns false
         assertFalse(mgr.hasPendingKeyPair())
+        storage.putString("nsec_pending", "p")
+        assertTrue(mgr.hasPendingKeyPair())
     }
 
     @Test
     fun `getPendingPublicKeyHex`() {
-        every { prefs.getString("npub_pending", null) } returns "abc"
-        assertEquals("abc", mgr.getPendingPublicKeyHex())
-        every { prefs.getString("npub_pending", null) } returns null
         assertNull(mgr.getPendingPublicKeyHex())
+        storage.putString("npub_pending", "abc")
+        assertEquals("abc", mgr.getPendingPublicKeyHex())
     }
 
     @Test
     fun `getPendingPrivateKeyBytes returns bytes or null`() {
-        every { prefs.getString("nsec_pending", null) } returns validPrivHex
-        assertEquals(32, mgr.getPendingPrivateKeyBytes()!!.size)
-        every { prefs.getString("nsec_pending", null) } returns null
         assertNull(mgr.getPendingPrivateKeyBytes())
+        storage.putString("nsec_pending", validPrivHex)
+        assertEquals(32, mgr.getPendingPrivateKeyBytes()!!.size)
     }
 
     @Test
     fun `exportAsMnemonic returns 24 words`() {
-        every { prefs.getString("nsec", "") } returns validPrivHex
+        storage.putString("nsec", validPrivHex)
         val words = mgr.exportAsMnemonic()
         assertEquals(24, words.size)
     }
@@ -188,8 +175,8 @@ class IdentityManagerTest {
     @Test
     fun `importKey with hex`() {
         mgr.importKey(validPrivHex)
-        verify { editor.putString("nsec", validPrivHex) }
-        verify { editor.putString("npub", validPubHex) }
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(validPubHex, storage.getString("npub", null))
     }
 
     @Test
@@ -206,25 +193,21 @@ class IdentityManagerTest {
 
     @Test
     fun `importKey with 24-word mnemonic`() {
-        // Generate mnemonic from known key, then import it back
         val mnemonic = Bip39.toMnemonic(validPrivHex.hexToBytes())
         mgr.importKey(mnemonic.joinToString(" "))
-        verify { editor.putString("nsec", validPrivHex) }
-        verify { editor.putString("npub", validPubHex) }
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(validPubHex, storage.getString("npub", null))
     }
 
     @Test
     fun `importKey rejects 12-word mnemonic`() {
-        // Build a string that Bip39.isMnemonic recognizes but has only 12 words
         val words24 = Bip39.toMnemonic(validPrivHex.hexToBytes())
         val words12 = words24.take(12).joinToString(" ")
-        // isMnemonic checks if all words are in wordlist — 12 valid words will pass
         assertThrows(IllegalArgumentException::class.java) { mgr.importKey(words12) }
     }
 
     @Test
     fun `importKey rejects invalid hex key`() {
-        // All zeros is not a valid secp256k1 key
         assertThrows(IllegalArgumentException::class.java) {
             mgr.importKey("00".repeat(32))
         }
@@ -233,6 +216,23 @@ class IdentityManagerTest {
     @Test
     fun `importKey trims whitespace`() {
         mgr.importKey("  $validPrivHex  ")
-        verify { editor.putString("nsec", validPrivHex) }
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+    }
+
+    @Test
+    fun `setRevocationEventIds stores ids and timestamp`() {
+        mgr.setRevocationEventIds(listOf("e1", "e2"))
+        assertEquals("e1,e2", storage.getString("revocation_event_ids", null))
+        assertTrue(storage.getLong("revocation_start", 0L) > 0)
+    }
+
+    @Test
+    fun `getRevocationEventIds returns empty when not set`() {
+        assertEquals(emptyList<String>(), mgr.getRevocationEventIds())
+    }
+
+    @Test
+    fun `getRevocationStartTime returns 0 when not set`() {
+        assertEquals(0L, mgr.getRevocationStartTime())
     }
 }

@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.Flow
  * Data access for expense groups.
  *
  * Group metadata (name, members, relays) is stored here. Symmetric group keys
- * are stored separately in [EncryptedSharedPreferences][com.splitfree.data.util.EncryptedPrefsFactory]
+ * are stored separately in [KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage]
  * via [GroupRepository][com.splitfree.data.repository.GroupRepository].
  */
 @Dao

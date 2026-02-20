@@ -130,9 +130,6 @@ dependencies {
     // Compression
     implementation(libs.lz4)
 
-    // Security (EncryptedSharedPreferences)
-    implementation(libs.androidx.security.crypto)
-
     // Core
     implementation(libs.androidx.core.ktx)
 

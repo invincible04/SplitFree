@@ -420,39 +420,6 @@
     </issue>
 
     <issue
-        id="GradleDependency"
-        message="A newer version of androidx.security:security-crypto than 1.1.0-alpha06 is available: 1.1.0"
-        errorLine1="securityCrypto = &quot;1.1.0-alpha06&quot;"
-        errorLine2="                 ~~~~~~~~~~~~~~~">
-        <location
-            file="../gradle/libs.versions.toml"
-            line="15"
-            column="18"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.security:security-crypto than 1.1.0-alpha06 is available: 1.1.0"
-        errorLine1="securityCrypto = &quot;1.1.0-alpha06&quot;"
-        errorLine2="                 ~~~~~~~~~~~~~~~">
-        <location
-            file="../gradle/libs.versions.toml"
-            line="15"
-            column="18"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.security:security-crypto than 1.1.0-alpha06 is available: 1.1.0"
-        errorLine1="securityCrypto = &quot;1.1.0-alpha06&quot;"
-        errorLine2="                 ~~~~~~~~~~~~~~~">
-        <location
-            file="../gradle/libs.versions.toml"
-            line="15"
-            column="18"/>
-    </issue>
-
-    <issue
         id="DataExtractionRules"
         message="The attribute `android:dataExtractionRules` only applies for Android 12 and higher; since `minSdkVersion` is API 26 you should also set `android:fullBackupContent`"
         errorLine1="        android:dataExtractionRules=&quot;@xml/data_extraction_rules&quot;"

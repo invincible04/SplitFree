@@ -18,7 +18,7 @@ import com.splitfree.data.local.entities.OutboxEntity
  * Room database for SplitFree's local-first storage.
  *
  * All expense data is stored encrypted — the database holds ciphertext, never plaintext.
- * Group symmetric keys are stored separately in [EncryptedSharedPreferences][com.splitfree.data.util.EncryptedPrefsFactory].
+ * Group symmetric keys are stored separately in [KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage].
  */
 abstract class AppDatabase : RoomDatabase() {
     abstract fun eventDao(): EventDao

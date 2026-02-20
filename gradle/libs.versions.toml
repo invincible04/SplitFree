@@ -12,7 +12,6 @@ workRuntime = "2.11.0"
 hiltNavCompose = "1.2.0"
 hiltWork = "1.2.0"
 coreKtx = "1.16.0"
-securityCrypto = "1.1.0-alpha06"
 coroutines = "1.10.2"
 serialization = "1.8.1"
 okhttp = "4.12.0"
@@ -48,7 +47,6 @@ androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref
 androidx-hilt-work = { module = "androidx.hilt:hilt-work", version.ref = "hiltWork" }
 androidx-hilt-compiler = { module = "androidx.hilt:hilt-compiler", version.ref = "hiltWork" }
 androidx-hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavCompose" }
-androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
 hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }

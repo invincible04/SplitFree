@@ -1,19 +1,15 @@
 package com.splitfree.data.repository
 
-import android.content.Context
-import android.content.SharedPreferences
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.domain.model.group.Group
-import io.mockk.Runs
+import com.splitfree.test.FakeSecureStorage
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
-import io.mockk.verify
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -26,10 +22,7 @@ import org.junit.Test
 
 class GroupRepositoryTest {
     private val groupDao = mockk<GroupDao>(relaxed = true)
-    private val context = mockk<Context>(relaxed = true)
-    private val prefs = mockk<SharedPreferences>(relaxed = true)
-    private val editor = mockk<SharedPreferences.Editor>(relaxed = true)
-
+    private lateinit var keyStore: FakeSecureStorage
     private lateinit var repo: GroupRepository
 
     private val groupEntity =
@@ -51,17 +44,8 @@ class GroupRepositoryTest {
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
 
-        every { prefs.getString(any(), any()) } returns null
-        every { prefs.edit() } returns editor
-        every { editor.putString(any(), any()) } returns editor
-        every { editor.remove(any()) } returns editor
-        every { editor.apply() } just Runs
-
-        // Use reflection to inject mocked prefs since constructor needs Android Context
-        repo = GroupRepository(groupDao, context)
-        val field = GroupRepository::class.java.getDeclaredField("keyStore\$delegate")
-        field.isAccessible = true
-        field.set(repo, lazy { prefs })
+        keyStore = FakeSecureStorage()
+        repo = GroupRepository(groupDao, keyStore)
     }
 
     @After
@@ -94,29 +78,29 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `getGroupKey returns from prefs`() = runBlocking {
-        every { prefs.getString("g1", null) } returns "secretKey"
+    fun `getGroupKey returns from storage`() = runBlocking {
+        keyStore.putString("g1", "secretKey")
         assertEquals("secretKey", repo.getGroupKey("g1"))
     }
 
     @Test
     fun `getGroupKey returns null when missing`() = runBlocking {
-        every { prefs.getString("g1", null) } returns null
         assertNull(repo.getGroupKey("g1"))
     }
 
     @Test
-    fun `save stores key in prefs and entity in dao`() = runBlocking {
+    fun `save stores key in storage and entity in dao`() = runBlocking {
         val group = Group("g1", "Test", "", "pub", 1000, listOf("pub"), listOf("wss://r"))
         repo.save(group, "key123")
-        verify { editor.putString("g1", "key123") }
+        assertEquals("key123", keyStore.getString("g1", null))
         coVerify { groupDao.insert(any()) }
     }
 
     @Test
-    fun `deleteGroupKey removes from prefs`() {
+    fun `deleteGroupKey removes from storage`() {
+        keyStore.putString("g1", "key")
         repo.deleteGroupKey("g1")
-        verify { editor.remove("g1") }
+        assertNull(keyStore.getString("g1", null))
     }
 
     @Test

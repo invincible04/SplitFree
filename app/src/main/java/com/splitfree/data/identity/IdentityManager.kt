@@ -1,41 +1,41 @@
 package com.splitfree.data.identity
 
 import android.content.Context
-import android.content.SharedPreferences
-import com.splitfree.data.util.EncryptedPrefsFactory
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.acinq.secp256k1.Secp256k1
 import java.security.SecureRandom
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 /**
  * Manages the user's secp256k1 keypair using ACINQ secp256k1-kmp.
- * Keys stored in EncryptedSharedPreferences.
+ * Keys stored in Android Keystore-backed encrypted storage.
  */
 @Singleton
 class IdentityManager
 @Inject
-constructor(@ApplicationContext private val context: Context) : IdentityContract {
-    private val prefs: SharedPreferences by lazy {
-        EncryptedPrefsFactory.create(context, "splitfree_identity")
-    }
+constructor(
+    @ApplicationContext private val context: Context,
+    @Named("identity") private val storage: SecureStorage
+) : IdentityContract {
 
-    override fun hasIdentity(): Boolean = prefs.contains(KEY_PRIVATE)
+    override fun hasIdentity(): Boolean = storage.contains(KEY_PRIVATE)
 
-    override fun getPublicKeyHex(): String = prefs.getString(KEY_PUBLIC, "")!!
+    override fun getPublicKeyHex(): String = storage.getString(KEY_PUBLIC, "")!!
 
     /**
      * Returns private key as hex string. WARNING: String is immutable and cannot be
      * zeroed from memory. Use getPrivateKeyBytes() + fill(0) for crypto operations.
      * Only use this for user-facing display (Settings screen reveal).
      */
-    override fun getPrivateKeyHex(): String = prefs.getString(KEY_PRIVATE, "")!!
+    override fun getPrivateKeyHex(): String = storage.getString(KEY_PRIVATE, "")!!
 
     override fun getPrivateKeyBytes(): ByteArray = getPrivateKeyHex().hexToBytes()
 
@@ -49,18 +49,13 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
         } while (!Secp256k1.secKeyVerify(privKey))
 
         val pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
-        // Inline toHex() into putString to avoid a local privHex variable lingering in memory.
-        // The String is still immutable and can't be zeroed, but we minimize the exposure window.
         val privHex = privKey.toHex()
         privKey.fill(0)
 
-        prefs
-            .edit()
-            .putString(KEY_PRIVATE, privHex)
-            .putString(KEY_PUBLIC, pubHex)
-            .remove(KEY_PENDING_PRIVATE)
-            .remove(KEY_PENDING_PUBLIC)
-            .apply()
+        storage.putString(KEY_PRIVATE, privHex)
+        storage.putString(KEY_PUBLIC, pubHex)
+        storage.remove(KEY_PENDING_PRIVATE)
+        storage.remove(KEY_PENDING_PUBLIC)
         markIdentityCreated()
         return privHex to pubHex
     }
@@ -80,48 +75,39 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
         val privHex = privKey.toHex()
         privKey.fill(0)
 
-        prefs
-            .edit()
-            .putString(KEY_PENDING_PRIVATE, privHex)
-            .putString(KEY_PENDING_PUBLIC, pubHex)
-            .apply()
+        storage.putString(KEY_PENDING_PRIVATE, privHex)
+        storage.putString(KEY_PENDING_PUBLIC, pubHex)
         return privHex to pubHex
     }
 
     /** Promote the pending keypair to active and delete the old one. */
     override fun commitPendingKeyPair() {
         val pendingPriv =
-            prefs.getString(KEY_PENDING_PRIVATE, null)
+            storage.getString(KEY_PENDING_PRIVATE, null)
                 ?: error("No pending keypair to commit")
         val pendingPub =
-            prefs.getString(KEY_PENDING_PUBLIC, null)
+            storage.getString(KEY_PENDING_PUBLIC, null)
                 ?: error("No pending keypair to commit")
-        prefs
-            .edit()
-            .putString(KEY_PRIVATE, pendingPriv)
-            .putString(KEY_PUBLIC, pendingPub)
-            .remove(KEY_PENDING_PRIVATE)
-            .remove(KEY_PENDING_PUBLIC)
-            .remove(KEY_REVOCATION_EVENT_IDS)
-            .remove(KEY_REVOCATION_START)
-            .apply()
+        storage.putString(KEY_PRIVATE, pendingPriv)
+        storage.putString(KEY_PUBLIC, pendingPub)
+        storage.remove(KEY_PENDING_PRIVATE)
+        storage.remove(KEY_PENDING_PUBLIC)
+        storage.remove(KEY_REVOCATION_EVENT_IDS)
+        storage.remove(KEY_REVOCATION_START)
     }
 
     /** Discard a pending keypair (e.g., on revocation failure). */
     override fun discardPendingKeyPair() {
-        prefs
-            .edit()
-            .remove(KEY_PENDING_PRIVATE)
-            .remove(KEY_PENDING_PUBLIC)
-            .remove(KEY_REVOCATION_EVENT_IDS)
-            .remove(KEY_REVOCATION_START)
-            .apply()
+        storage.remove(KEY_PENDING_PRIVATE)
+        storage.remove(KEY_PENDING_PUBLIC)
+        storage.remove(KEY_REVOCATION_EVENT_IDS)
+        storage.remove(KEY_REVOCATION_START)
     }
 
     /** Check if there's an incomplete revocation to resume. */
-    override fun hasPendingKeyPair(): Boolean = prefs.contains(KEY_PENDING_PRIVATE)
+    override fun hasPendingKeyPair(): Boolean = storage.contains(KEY_PENDING_PRIVATE)
 
-    /** Set a plain SharedPreferences flag so BootReceiver can check without EncryptedSharedPreferences. */
+    /** Set a plain SharedPreferences flag so BootReceiver can check without encrypted storage. */
     private fun markIdentityCreated() {
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
             .edit()
@@ -129,24 +115,21 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
             .apply()
     }
 
-    override fun getPendingPublicKeyHex(): String? = prefs.getString(KEY_PENDING_PUBLIC, null)
+    override fun getPendingPublicKeyHex(): String? = storage.getString(KEY_PENDING_PUBLIC, null)
 
-    override fun getPendingPrivateKeyBytes(): ByteArray? = prefs.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
+    override fun getPendingPrivateKeyBytes(): ByteArray? = storage.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
 
     override fun setRevocationEventIds(eventIds: List<String>) {
-        prefs
-            .edit()
-            .putString(KEY_REVOCATION_EVENT_IDS, eventIds.joinToString(","))
-            .putLong(KEY_REVOCATION_START, System.currentTimeMillis() / 1000)
-            .apply()
+        storage.putString(KEY_REVOCATION_EVENT_IDS, eventIds.joinToString(","))
+        storage.putLong(KEY_REVOCATION_START, System.currentTimeMillis() / 1000)
     }
 
-    override fun getRevocationEventIds(): List<String> = prefs.getString(KEY_REVOCATION_EVENT_IDS, null)
+    override fun getRevocationEventIds(): List<String> = storage.getString(KEY_REVOCATION_EVENT_IDS, null)
         ?.split(",")
         ?.filter { it.isNotEmpty() }
         ?: emptyList()
 
-    override fun getRevocationStartTime(): Long = prefs.getLong(KEY_REVOCATION_START, 0L)
+    override fun getRevocationStartTime(): Long = storage.getLong(KEY_REVOCATION_START, 0L)
 
     /**
      * Export private key as 24-word BIP-39 mnemonic.
@@ -177,14 +160,8 @@ constructor(@ApplicationContext private val context: Context) : IdentityContract
         require(privBytes.size == 32 && Secp256k1.secKeyVerify(privBytes)) { "Invalid private key" }
 
         val pubHex = NostrEvent.pubkeyFromPrivkey(privBytes)
-        // Store directly — privBytes.toHex() creates an immutable String we can't zero,
-        // but SharedPreferences requires String storage. Minimize exposure by writing
-        // immediately and not keeping a local variable.
-        prefs
-            .edit()
-            .putString(KEY_PRIVATE, privBytes.toHex())
-            .putString(KEY_PUBLIC, pubHex)
-            .apply()
+        storage.putString(KEY_PRIVATE, privBytes.toHex())
+        storage.putString(KEY_PUBLIC, pubHex)
         privBytes.fill(0)
         markIdentityCreated()
     }

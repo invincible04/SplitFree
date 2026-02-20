@@ -130,7 +130,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │   BLE: NearbySync, BleTransfer, BleProtocol (binary framing)│
 │   Sync: SyncEngine, SyncWorker, ForegroundSyncService,      │
 │         MidnightSyncWorker, PowerManager                    │
-│   Settings: EncryptedSharedPreferences                      │
+│   Settings: Android Keystore (AES-256-GCM)                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -213,7 +213,7 @@ app/src/main/java/com/splitfree/
 │   │   ├── protocol/     # ClientMessage, RelayMessage, NostrFilter
 │   │   └── relay/        # RelayConnectionManager, RelayHealthMonitor
 │   ├── repository/       # GroupRepository, ExpenseRepository
-│   ├── settings/         # UserPreferences (EncryptedSharedPreferences)
+│   ├── settings/         # UserPreferences (plain SharedPreferences)
 │   └── util/             # Compression, hashing, encrypted prefs factory
 ├── di/                   # Hilt modules (Database, Repository)
 ├── domain/
@@ -288,7 +288,7 @@ git checkout -b feat/your-feature-name
 SplitFree takes security seriously:
 
 - All group data is end-to-end encrypted (NIP-44 v2)
-- Private keys stored in Android `EncryptedSharedPreferences` (AES-256-GCM backed by Android Keystore)
+- Private keys stored in Android Keystore (AES-256-GCM, hardware-backed)
 - Event signatures verified on receipt (BIP-340 Schnorr)
 - Content validated for size limits, nesting depth, and rate limiting
 - BLE connections authenticated via Schnorr challenge-response handshake
