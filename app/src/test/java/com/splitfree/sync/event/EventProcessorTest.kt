@@ -1,13 +1,13 @@
 package com.splitfree.sync.event
 
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.sync.event.EventPostProcessor
 import com.splitfree.sync.event.EventProcessor
@@ -27,10 +27,10 @@ import org.junit.Test
 
 class EventProcessorTest {
     private val eventDao = mockk<EventDao>(relaxed = true)
-    private val groupRepo = mockk<GroupRepository>()
+    private val groupRepo = mockk<GroupRepositoryContract>()
     private val encryption = mockk<GroupEncryption>()
     private val signer = mockk<EventSigner>()
-    private val identity = mockk<IdentityManager>()
+    private val identity = mockk<IdentityContract>()
     private val giftWrap = mockk<GiftWrapService>()
     private val eventValidator = mockk<EventValidator>()
     private val postProcessor = mockk<EventPostProcessor>(relaxed = true)
@@ -78,12 +78,14 @@ class EventProcessorTest {
         every { eventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns true
         every { eventValidator.isDeletedExpense(any(), any(), any()) } returns false
         every { eventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns true
+        every { eventValidator.isExpenseAmountValid(any(), any()) } returns true
 
         every { giftWrap.tryUnwrap(any()) } returns null
         every { signer.verify(any()) } returns true
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        every { encryption.decrypt(any(), groupKey) } returns """{"test":"data"}"""
+        every { encryption.decrypt(any(), groupKey) } returns
+            """{"id":"uuid1","amount":100,"currency":"USD","description":"test","paid_by":"$pubkey","split_type":"equal","split_among":[{"pubkey":"$pubkey","share":100}],"timestamp":1000}"""
         coEvery { eventDao.insertIfNew(any()) } returns true
         coEvery { eventDao.getDeletedExpenseUuids(any()) } returns emptyList()
         coEvery { eventDao.getLatestEventByType(any(), any()) } returns null
@@ -656,6 +658,27 @@ class EventProcessorTest {
         } catch (_: kotlinx.coroutines.CancellationException) {
             // expected
         }
+    }
+
+    @Test
+    fun `process rejects expense with invalid amount`() = runBlocking {
+        every { eventValidator.isExpenseAmountValid(any(), any()) } returns false
+        val result = processor.process(makeEvent(eventType = "expense"), knownGroupKey = groupKey)
+        assertFalse("Expense with invalid amount must be rejected", result.stored)
+    }
+
+    @Test
+    fun `process rejects expense_correction with invalid amount`() = runBlocking {
+        every { eventValidator.isExpenseAmountValid(any(), any()) } returns false
+        val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense with unparseable content`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns "not-valid-expense-json"
+        val result = processor.process(makeEvent(eventType = "expense"), knownGroupKey = groupKey)
+        assertFalse("Unparseable expense content must be rejected", result.stored)
     }
 
     @Test

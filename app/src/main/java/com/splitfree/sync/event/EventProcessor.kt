@@ -1,15 +1,16 @@
 package com.splitfree.sync.event
 
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.entities.EventEntity
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
+import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -25,10 +26,10 @@ class EventProcessor
 @Inject
 constructor(
     private val eventDao: EventDao,
-    private val groupRepo: GroupRepository,
+    private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
     private val signer: EventSigner,
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val giftWrap: GiftWrapService,
     private val eventValidator: EventValidator,
     private val postProcessor: EventPostProcessor
@@ -129,6 +130,20 @@ constructor(
         // 7. Business rule validations
         if (!validateBusinessRules(eventType, authorHex, expenseUuid, groupId, inner.createdAt)) {
             return ProcessResult(false)
+        }
+
+        // 7b. Validate expense amounts from remote peers
+        if (decrypted != null && (eventType == "expense" || eventType == "expense_correction")) {
+            try {
+                val expense = json.decodeFromString<Expense>(decrypted)
+                if (!eventValidator.isExpenseAmountValid(expense.amount, expense.splitAmong.map { it.share })) {
+                    Log.w(TAG, "Rejecting $eventType with invalid amount/splits: ${inner.id}")
+                    return ProcessResult(false)
+                }
+            } catch (_: Exception) {
+                Log.w(TAG, "Rejecting $eventType with unparseable content: ${inner.id}")
+                return ProcessResult(false)
+            }
         }
 
         // 8. Store

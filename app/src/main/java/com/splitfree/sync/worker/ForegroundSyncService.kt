@@ -7,10 +7,10 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.relay.RelayConnectionManager
-import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
@@ -36,9 +36,9 @@ import kotlinx.coroutines.launch
 class ForegroundSyncService : Service() {
     @Inject lateinit var nostrClient: NostrClient
 
-    @Inject lateinit var groupRepo: GroupRepository
+    @Inject lateinit var groupRepo: GroupRepositoryContract
 
-    @Inject lateinit var identity: IdentityManager
+    @Inject lateinit var identity: IdentityContract
 
     @Inject lateinit var eventProcessor: EventProcessor
 

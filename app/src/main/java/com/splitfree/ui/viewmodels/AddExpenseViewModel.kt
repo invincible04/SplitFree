@@ -3,10 +3,10 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -35,7 +35,7 @@ constructor(
     savedStateHandle: SavedStateHandle,
     private val addExpense: AddExpenseUseCase,
     private val groupRepo: GroupRepositoryContract,
-    private val identity: IdentityManager
+    private val identity: IdentityContract
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
 

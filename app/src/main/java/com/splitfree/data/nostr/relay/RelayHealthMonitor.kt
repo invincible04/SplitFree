@@ -6,6 +6,8 @@ import javax.inject.Singleton
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /**
  * Relay health check result from a NIP-11 info document probe.
@@ -22,11 +24,12 @@ data class RelayStatus(
 /**
  * Monitors relay health by probing NIP-11 info documents.
  * Tests relays via HTTP GET with `Accept: application/nostr+json` header.
+ * Shares the app-wide [OkHttpClient] connection pool and TLS session cache.
  */
 @Singleton
 class RelayHealthMonitor
 @Inject
-constructor() {
+constructor(private val httpClient: OkHttpClient) {
     private val _statuses = java.util.concurrent.ConcurrentHashMap<String, RelayStatus>()
     val statuses: Map<String, RelayStatus> get() = _statuses.toMap()
 
@@ -61,18 +64,13 @@ constructor() {
         withTimeout(5000L) {
             val start = System.currentTimeMillis()
             val httpUrl = url.replace("wss://", "https://").replace("ws://", "http://")
-            val conn = java.net.URL(httpUrl).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("Accept", "application/nostr+json")
-            try {
-                conn.connect()
+            val request = Request.Builder()
+                .url(httpUrl)
+                .header("Accept", "application/nostr+json")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
                 val latency = System.currentTimeMillis() - start
-                val online = conn.responseCode == 200
-                RelayStatus(url, online, latency)
-            } finally {
-                conn.disconnect()
+                RelayStatus(url, response.isSuccessful, latency)
             }
         }
     } catch (e: Exception) {

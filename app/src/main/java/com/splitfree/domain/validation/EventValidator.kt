@@ -21,6 +21,7 @@ constructor() {
         private const val MAX_AGE_SECS = 30L * 86400L
         private const val MAX_CONTENT_BYTES = 65_536
         private const val MAX_JSON_DEPTH = 32
+        private const val MAX_EXPENSE_AMOUNT = 1_000_000_000_000L
         private const val RATE_LIMIT_PER_MINUTE = 30
         private const val RATE_WINDOW_MS = 60_000L
         private const val GROUP_RATE_LIMIT_PER_MINUTE = 60
@@ -171,4 +172,14 @@ constructor() {
         }
         return true
     }
+
+    /**
+     * Validate expense/settlement amounts and splits from remote peers.
+     *
+     * @param amount total expense amount
+     * @param shares per-member share values
+     * @return true if the expense passes sanity checks
+     */
+    fun isExpenseAmountValid(amount: Long, shares: List<Long>): Boolean =
+        amount > 0 && amount <= MAX_EXPENSE_AMOUNT && shares.isNotEmpty() && shares.none { it < 0 }
 }

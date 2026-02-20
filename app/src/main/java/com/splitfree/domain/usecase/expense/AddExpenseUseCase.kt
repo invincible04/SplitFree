@@ -37,7 +37,7 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
         category: String = ""
     ) {
         require(amount > 0) { "Amount must be positive" }
-        require(amount <= 10_000_000_000_00L) { "Amount exceeds maximum ($10B)" }
+        require(amount <= 1_000_000_000_000L) { "Amount exceeds maximum ($10B)" }
         require(splitAmong.isNotEmpty()) { "Must split among at least one person" }
         require(splitAmong.all { it.share > 0 }) { "All split shares must be positive" }
         // Use Math.addExact to detect overflow in share summation (CWE-190)

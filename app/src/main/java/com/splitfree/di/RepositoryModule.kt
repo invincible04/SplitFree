@@ -2,6 +2,7 @@ package com.splitfree.di
 
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.data.nostr.relay.Relay
 import com.splitfree.data.repository.EventRepository
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
@@ -24,6 +25,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import okhttp3.OkHttpClient
 
 /**
  * Binds repository interfaces to their implementations (Dependency Inversion).
@@ -67,5 +69,9 @@ abstract class RepositoryModule {
         @Provides
         @Singleton
         fun provideCompressionProvider(): CompressionProvider = CompressionUtil
+
+        @Provides
+        @Singleton
+        fun provideOkHttpClient(): OkHttpClient = Relay.sharedClient
     }
 }

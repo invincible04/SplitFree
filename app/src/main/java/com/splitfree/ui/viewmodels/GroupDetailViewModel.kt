@@ -3,12 +3,12 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
@@ -55,7 +55,7 @@ constructor(
     private val simplifyDebts: SimplifyDebtsUseCase,
     private val exportGroup: ExportGroupUseCase,
     private val migrateGroup: MigrateGroupUseCase,
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val getExpenses: GetExpensesUseCase,
     private val createInviteLink: CreateInviteLinkUseCase
 ) : ViewModel() {

@@ -113,7 +113,15 @@ constructor(
         description = description,
         createdBy = createdBy,
         createdAt = createdAt,
-        members = json.decodeFromString(stringListSerializer, members),
-        relays = json.decodeFromString(stringListSerializer, relays)
+        members = try {
+            json.decodeFromString(stringListSerializer, members)
+        } catch (_: Exception) {
+            emptyList()
+        },
+        relays = try {
+            json.decodeFromString(stringListSerializer, relays)
+        } catch (_: Exception) {
+            emptyList()
+        }
     )
 }

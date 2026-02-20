@@ -9,11 +9,11 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.relay.RelayConnectionManager
-import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
@@ -36,9 +36,9 @@ constructor(
     @Assisted private val context: Context,
     @Assisted params: WorkerParameters,
     private val outboxDao: OutboxDao,
-    private val groupRepo: GroupRepository,
+    private val groupRepo: GroupRepositoryContract,
     private val nostrClient: NostrClient,
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val createSnapshot: CreateSnapshotUseCase,
     private val selfHeal: SelfHealUseCase,
     private val relayConnectionManager: RelayConnectionManager,

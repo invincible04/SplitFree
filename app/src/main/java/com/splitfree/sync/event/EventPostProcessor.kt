@@ -1,8 +1,8 @@
 package com.splitfree.sync.event
 
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
@@ -22,7 +22,7 @@ import kotlinx.serialization.json.Json
 class EventPostProcessor
 @Inject
 constructor(
-    private val groupRepo: GroupRepository,
+    private val groupRepo: GroupRepositoryContract,
     private val migrateGroup: MigrateGroupUseCase,
     private val revokeKey: RevokeKeyUseCase,
     private val selfHeal: SelfHealUseCase,

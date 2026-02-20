@@ -1,9 +1,9 @@
 package com.splitfree.data.nostr.relay
 
 import com.splitfree.data.nostr.NostrClient
-import com.splitfree.data.repository.GroupRepository
-import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -18,9 +18,9 @@ class RelayConnectionManager
 @Inject
 constructor(
     private val nostrClient: NostrClient,
-    private val groupRepo: GroupRepository,
+    private val groupRepo: GroupRepositoryContract,
     private val relayHealthMonitor: RelayHealthMonitor,
-    private val userPreferences: UserPreferences,
+    private val userPreferences: SettingsContract,
     private val signer: EventSigner
 ) {
     /**

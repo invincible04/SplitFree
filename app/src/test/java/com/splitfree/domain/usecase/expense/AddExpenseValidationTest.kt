@@ -14,7 +14,7 @@ class AddExpenseValidationTest {
     // Mirror the full validation logic from AddExpenseUseCase
     private fun validate(amount: Long, currency: String, splitAmong: List<SplitEntry>) {
         require(amount > 0) { "Amount must be positive" }
-        require(amount <= 10_000_000_000_00L) { "Amount exceeds maximum (\$10B)" }
+        require(amount <= 1_000_000_000_000L) { "Amount exceeds maximum (\$10B)" }
         require(splitAmong.isNotEmpty()) { "Must split among at least one person" }
         require(splitAmong.all { it.share > 0 }) { "All split shares must be positive" }
         val shareSum = splitAmong.fold(0L) { acc, entry -> Math.addExact(acc, entry.share) }
@@ -74,7 +74,7 @@ class AddExpenseValidationTest {
 
     @Test
     fun `amount at exactly 10B passes`() {
-        validate(10_000_000_000_00L, listOf(SplitEntry("a", 10_000_000_000_00L)))
+        validate(1_000_000_000_000L, listOf(SplitEntry("a", 1_000_000_000_000L)))
     }
 
     // --- Share positivity ---

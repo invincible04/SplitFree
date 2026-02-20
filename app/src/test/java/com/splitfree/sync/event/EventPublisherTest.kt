@@ -1,17 +1,18 @@
 package com.splitfree.sync.event
 
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
-import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
@@ -24,8 +25,8 @@ class EventPublisherTest {
     private val outboxDao = mockk<OutboxDao>(relaxed = true)
     private val throttler = mockk<EventThrottler>(relaxed = true)
     private val giftWrap = mockk<GiftWrapService>()
-    private val groupRepo = mockk<GroupRepository>()
-    private val identity = mockk<IdentityManager>()
+    private val groupRepo = mockk<GroupRepositoryContract>()
+    private val identity = mockk<IdentityContract>()
     private lateinit var publisher: EventPublisher
 
     private val myPub = "aa".repeat(32)
@@ -35,6 +36,10 @@ class EventPublisherTest {
 
     @Before
     fun setup() {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.i(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { identity.getPublicKeyHex() } returns myPub
         coEvery { outboxDao.count() } returns 0
         publisher = EventPublisher(eventDao, outboxDao, throttler, giftWrap, groupRepo, identity)

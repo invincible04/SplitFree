@@ -16,7 +16,7 @@ import org.junit.Before
 import org.junit.Test
 
 class RelayHealthMonitorTest {
-    private val monitor = RelayHealthMonitor()
+    private val monitor = RelayHealthMonitor(okhttp3.OkHttpClient())
 
     @Before
     fun setup() {

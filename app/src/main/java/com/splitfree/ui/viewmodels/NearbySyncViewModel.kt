@@ -8,9 +8,9 @@ import com.splitfree.data.ble.BleHandshake
 import com.splitfree.data.ble.BleTransfer
 import com.splitfree.data.ble.NearbyPeer
 import com.splitfree.data.ble.NearbySync
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
-import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.sync.worker.PowerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -42,8 +42,8 @@ constructor(
     savedStateHandle: SavedStateHandle,
     private val nearbySync: NearbySync,
     private val bleTransfer: BleTransfer,
-    private val identity: IdentityManager,
-    private val groupRepo: GroupRepository,
+    private val identity: IdentityContract,
+    private val groupRepo: GroupRepositoryContract,
     private val eventDao: EventDao,
     private val powerManager: PowerManager
 ) : ViewModel() {

@@ -2,9 +2,9 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.splitfree.data.identity.IdentityManager
-import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.crypto.GiftWrapService
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -20,9 +20,9 @@ import kotlinx.coroutines.launch
 class SettingsViewModel
 @Inject
 constructor(
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val giftWrap: GiftWrapService,
-    private val userPreferences: UserPreferences,
+    private val userPreferences: SettingsContract,
     private val revokeKeyUseCase: RevokeKeyUseCase
 ) : ViewModel() {
     private val _npub = MutableStateFlow(if (identity.hasIdentity()) identity.getPublicKeyHex() else "")

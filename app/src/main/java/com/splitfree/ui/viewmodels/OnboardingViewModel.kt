@@ -1,7 +1,7 @@
 package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
-import com.splitfree.data.identity.IdentityManager
+import com.splitfree.domain.repository.IdentityContract
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 @HiltViewModel
 class OnboardingViewModel
 @Inject
-constructor(private val identity: IdentityManager) : ViewModel() {
+constructor(private val identity: IdentityContract) : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
