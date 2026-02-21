@@ -87,7 +87,7 @@ constructor(
                         myPubkey = myPub
                     )
                 }
-                if (group?.createdBy == myPub && inviteLinkLoaded.compareAndSet(false, true)) {
+                if (inviteLinkLoaded.compareAndSet(false, true)) {
                     loadInviteLink()
                 }
             }

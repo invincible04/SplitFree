@@ -26,47 +26,24 @@ class CreateInviteLinkUseCaseTest {
     }
 
     @Test
-    fun `creator can generate invite link`() = runBlocking {
+    fun `any member can generate invite link`() = runBlocking {
         val privKey = validPrivateKey()
         val pubKey = NostrEvent.pubkeyFromPrivkey(privKey)
-        val group =
-            Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", pubKey, 1000, listOf(pubKey), listOf("wss://r"))
-        coEvery { groupRepo.getById(group.id) } returns group
-        coEvery { groupRepo.getGroupKey(group.id) } returns "group-key"
-        every { identity.getPublicKeyHex() } returns pubKey
-        every { identity.getPrivateKeyBytes() } returns privKey.copyOf()
-
-        val link = useCase(group.id)
-        assertTrue(link.startsWith("splitfree://join?d="))
-    }
-
-    @Test(expected = IllegalStateException::class)
-    fun `non creator cannot generate invite link`() = runBlocking {
         val group =
             Group(
                 "550e8400-e29b-41d4-a716-446655440000",
                 "Trip",
                 "",
-                "creator",
+                "other-creator",
                 1000,
-                listOf("creator"),
+                listOf(pubKey),
                 listOf("wss://r")
             )
         coEvery { groupRepo.getById(group.id) } returns group
-        every { identity.getPublicKeyHex() } returns "member"
+        coEvery { groupRepo.getGroupKey(group.id) } returns "group-key"
+        every { identity.getPrivateKeyBytes() } returns privKey.copyOf()
 
-        useCase(group.id)
-        Unit
-    }
-
-    @Test(expected = IllegalStateException::class)
-    fun `cannot generate invite when creator is unknown`() = runBlocking {
-        val group =
-            Group("550e8400-e29b-41d4-a716-446655440000", "Trip", "", "", 1000, listOf("member"), listOf("wss://r"))
-        coEvery { groupRepo.getById(group.id) } returns group
-        every { identity.getPublicKeyHex() } returns "member"
-
-        useCase(group.id)
-        Unit
+        val link = useCase(group.id)
+        assertTrue(link.startsWith("splitfree://join?d="))
     }
 }

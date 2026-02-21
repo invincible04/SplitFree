@@ -87,18 +87,15 @@ constructor(
             val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
             val finalMemberNames =
                 if (isCreator) {
-                    // Preserve existing names if creator event has no member_names.
-                    if (meta.memberNames.isNotEmpty()) {
-                        meta.memberNames
-                    } else {
-                        currentGroup?.memberNames ?: emptyMap()
-                    }
+                    meta.memberNames
                 } else {
                     // Non-creator events may only contribute their own display name.
                     (currentGroup?.memberNames ?: emptyMap()).toMutableMap().apply {
                         val authorName = meta.memberNames[authorHex]?.trim().orEmpty().take(50)
                         if (authorName.isNotEmpty()) {
                             put(authorHex, authorName)
+                        } else {
+                            remove(authorHex)
                         }
                     }
                 }

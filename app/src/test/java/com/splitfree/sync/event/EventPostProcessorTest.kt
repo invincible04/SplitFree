@@ -119,7 +119,35 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle group_meta creator event preserves names when member_names is missing`() = runBlocking {
+    fun `handle group_meta non-creator clearing name removes it`() = runBlocking {
+        val stranger = "bb".repeat(32)
+        val namedGroup = group.copy(
+            members = listOf(pubkey, stranger),
+            memberNames = mapOf(pubkey to "Creator", stranger to "OldName")
+        )
+        coEvery { groupRepo.getById(groupId) } returns namedGroup
+        val meta =
+            """{"name":"Test","members":["$pubkey","$stranger"],""" +
+                """"relays":["wss://r"],"member_names":{}}"""
+        processor.handle("group_meta", meta, stranger, groupId, 2000, false)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match { stranger in it && pubkey in it },
+                listOf("wss://r"),
+                2000,
+                "",
+                match { names ->
+                    names[pubkey] == "Creator" &&
+                        stranger !in names
+                }
+            )
+        }
+    }
+
+    @Test
+    fun `handle group_meta creator event with empty member_names clears names`() = runBlocking {
         val namedGroup = group.copy(memberNames = mapOf(pubkey to "Creator"))
         coEvery { groupRepo.getById(groupId) } returns namedGroup
         val meta =
@@ -134,7 +162,7 @@ class EventPostProcessorTest {
                 listOf("wss://r"),
                 2000,
                 pubkey,
-                mapOf(pubkey to "Creator")
+                emptyMap()
             )
         }
     }
