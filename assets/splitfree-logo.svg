@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
+  <circle cx="100" cy="100" r="100" fill="#121216" />
+
+  <!-- Vertical bar + left arrow arm (connected) -->
+  <polygon points="92.5,158 107.5,158 107.5,101 72.5,66 82,56.5 53,56.5 53,85 62.5,75.5 92.5,105.5" fill="#76D79F" />
+
+  <!-- Right arrow arm (with gap) -->
+  <polygon points="145,56.5 145,85 135.5,75.5 117,94 106,83 125.5,66 116,56.5" fill="#76D79F" />
+</svg>
