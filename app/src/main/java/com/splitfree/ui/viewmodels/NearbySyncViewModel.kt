@@ -132,6 +132,22 @@ constructor(
                         bleTransfer.clearPeer(event.endpointId)
                         _uiState.value = _uiState.value.copy(syncing = false, status = "Sync complete")
                     }
+
+                    is BleEvent.Error -> {
+                        val status = "BLE ${event.operation} failed: ${event.reason}"
+                        val scanFatal = event.operation == "advertise" || event.operation == "discovery"
+                        _uiState.value =
+                            _uiState.value.copy(
+                                scanning = if (scanFatal) false else _uiState.value.scanning,
+                                syncing = false,
+                                status = status
+                            )
+                        if (scanFatal) {
+                            dutyCycleJob?.cancel()
+                            dutyCycleJob = null
+                            nearbySync.stop()
+                        }
+                    }
                 }
             }
         }
@@ -162,9 +178,9 @@ constructor(
         _uiState.value = _uiState.value.copy(scanning = true, peers = emptyList(), status = "Scanning…")
         dutyCycleJob =
             viewModelScope.launch {
+                nearbySync.startAdvertising()
                 while (true) {
                     val (scanMs, pauseMs) = powerManager.bleScanDuty()
-                    nearbySync.startAdvertising()
                     nearbySync.startDiscovery()
                     delay(scanMs)
                     nearbySync.stopDiscovery()

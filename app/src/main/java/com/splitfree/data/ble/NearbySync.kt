@@ -41,6 +41,8 @@ sealed class BleEvent {
     data class Disconnected(val endpointId: String) : BleEvent()
 
     data class PayloadReceived(val endpointId: String, val data: ByteArray) : BleEvent()
+
+    data class Error(val operation: String, val reason: String) : BleEvent()
 }
 
 /**
@@ -64,29 +66,49 @@ constructor(
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
 
     fun startAdvertising() {
-        val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
-        client
-            .startAdvertising(
-                identity.getPublicKeyHex().take(8),
-                SERVICE_ID,
-                connectionLifecycleCallback,
-                options
-            ).addOnFailureListener { Log.w(TAG, "Advertise failed: ${it.message}") }
+        try {
+            val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+            client
+                .startAdvertising(
+                    identity.getPublicKeyHex().take(8),
+                    SERVICE_ID,
+                    connectionLifecycleCallback,
+                    options
+                ).addOnFailureListener { emitError("advertise", it) }
+        } catch (e: SecurityException) {
+            emitError("advertise", e)
+        }
     }
 
     fun startDiscovery() {
-        val options = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
-        client
-            .startDiscovery(SERVICE_ID, endpointDiscoveryCallback, options)
-            .addOnFailureListener { Log.w(TAG, "Discovery failed: ${it.message}") }
+        try {
+            val options = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+            client
+                .startDiscovery(SERVICE_ID, endpointDiscoveryCallback, options)
+                .addOnFailureListener { emitError("discovery", it) }
+        } catch (e: SecurityException) {
+            emitError("discovery", e)
+        }
     }
 
     fun requestConnection(endpointId: String) {
-        client.requestConnection(identity.getPublicKeyHex().take(8), endpointId, connectionLifecycleCallback)
+        try {
+            client
+                .requestConnection(identity.getPublicKeyHex().take(8), endpointId, connectionLifecycleCallback)
+                .addOnFailureListener { emitError("request_connection", it) }
+        } catch (e: SecurityException) {
+            emitError("request_connection", e)
+        }
     }
 
     fun sendPayload(endpointId: String, data: ByteArray) {
-        client.sendPayload(endpointId, Payload.fromBytes(data))
+        try {
+            client
+                .sendPayload(endpointId, Payload.fromBytes(data))
+                .addOnFailureListener { emitError("send_payload", it) }
+        } catch (e: SecurityException) {
+            emitError("send_payload", e)
+        }
     }
 
     fun stopDiscovery() {
@@ -137,6 +159,10 @@ constructor(
                 if (result.status.isSuccess) {
                     connectedEndpoints.add(endpointId)
                     _events.tryEmit(BleEvent.Connected(endpointId))
+                } else {
+                    val reason = result.status.statusMessage ?: "status=${result.status.statusCode}"
+                    Log.w(TAG, "Connection failed for $endpointId: $reason")
+                    _events.tryEmit(BleEvent.Error("connection_result", reason))
                 }
             }
 
@@ -158,5 +184,11 @@ constructor(
     companion object {
         private const val TAG = "NearbySync"
         private const val SERVICE_ID = "com.splitfree.ble"
+    }
+
+    private fun emitError(operation: String, throwable: Exception) {
+        val reason = throwable.message ?: throwable.javaClass.simpleName
+        Log.w(TAG, "$operation failed: $reason")
+        _events.tryEmit(BleEvent.Error(operation, reason))
     }
 }

@@ -43,4 +43,11 @@ class NearbyModelTest {
         assertEquals("ep1", event.endpointId)
         assertArrayEquals(data, event.data)
     }
+
+    @Test
+    fun `BleEvent Error`() {
+        val event = BleEvent.Error("discovery", "missing permission")
+        assertEquals("discovery", event.operation)
+        assertEquals("missing permission", event.reason)
+    }
 }

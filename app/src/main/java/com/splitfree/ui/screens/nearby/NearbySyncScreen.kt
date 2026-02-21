@@ -1,6 +1,12 @@
 package com.splitfree.ui.screens.nearby
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,9 +52,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.ui.viewmodels.NearbySyncViewModel
 
@@ -56,31 +65,59 @@ import com.splitfree.ui.viewmodels.NearbySyncViewModel
 @Composable
 fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var permissionsGranted by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val requiredPermissions = remember { requiredNearbyPermissions() }
+    var permissionsGranted by remember {
+        mutableStateOf(hasAllPermissions(context, requiredPermissions))
+    }
+    val btAdapter = remember {
+        (context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    }
+    var bluetoothEnabled by remember {
+        mutableStateOf(isBluetoothEnabled(context, btAdapter))
+    }
+    var pendingScanAfterEnable by remember { mutableStateOf(false) }
 
-    DisposableEffect(Unit) {
-        onDispose { viewModel.stopScan() }
+    val btEnableLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
+        if (pendingScanAfterEnable && permissionsGranted && bluetoothEnabled) {
+            viewModel.startScan()
+        }
+        pendingScanAfterEnable = false
     }
 
     val permissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
-        ) { results -> permissionsGranted = results.values.all { it } }
+        ) {
+            permissionsGranted = hasAllPermissions(context, requiredPermissions)
+            bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
+            if (permissionsGranted && pendingScanAfterEnable) {
+                if (!bluetoothEnabled) {
+                    btEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                } else {
+                    viewModel.startScan()
+                    pendingScanAfterEnable = false
+                }
+            }
+        }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.stopScan() }
+    }
+
+    LifecycleResumeEffect(Unit) {
+        permissionsGranted = hasAllPermissions(context, requiredPermissions)
+        bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
+        onPauseOrDispose { }
+    }
 
     LaunchedEffect(Unit) {
-        val perms =
-            buildList {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    add(Manifest.permission.BLUETOOTH_SCAN)
-                    add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                    add(Manifest.permission.BLUETOOTH_CONNECT)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                }
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
-        permissionLauncher.launch(perms.toTypedArray())
+        if (!permissionsGranted && requiredPermissions.isNotEmpty()) {
+            permissionLauncher.launch(requiredPermissions.toTypedArray())
+        }
     }
 
     Scaffold(
@@ -142,22 +179,39 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                 }
 
                 if (!uiState.scanning) {
+                    val bluetoothSupported = btAdapter != null
                     Button(
-                        onClick = { viewModel.startScan() },
+                        onClick = {
+                            if (!permissionsGranted) {
+                                pendingScanAfterEnable = true
+                                permissionLauncher.launch(requiredPermissions.toTypedArray())
+                            } else if (!bluetoothEnabled) {
+                                pendingScanAfterEnable = true
+                                btEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                            } else {
+                                pendingScanAfterEnable = false
+                                viewModel.startScan()
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        enabled = permissionsGranted,
+                        enabled = bluetoothSupported,
                         shape = MaterialTheme.shapes.large
                     ) {
                         Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (permissionsGranted) "Scan for nearby members" else "Permissions required",
+                            when {
+                                !bluetoothSupported -> "Bluetooth unavailable"
+                                !permissionsGranted -> "Permissions required"
+                                !bluetoothEnabled -> "Enable Bluetooth"
+                                else -> "Scan for nearby members"
+                            },
                             style = MaterialTheme.typography.titleMedium
                         )
                     }
                     if (!permissionsGranted) {
                         Text(
-                            "Bluetooth and location permissions are needed for nearby sync.",
+                            "Bluetooth permissions are required for nearby sync. Tap the button to grant access.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline,
                             textAlign = TextAlign.Center,
@@ -235,4 +289,31 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
             }
         }
     }
+}
+
+private fun requiredNearbyPermissions(): List<String> = buildList {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_SCAN)
+        add(Manifest.permission.BLUETOOTH_ADVERTISE)
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+}
+
+private fun hasAllPermissions(context: Context, permissions: List<String>): Boolean = permissions.all {
+    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+}
+
+@SuppressLint("MissingPermission")
+private fun isBluetoothEnabled(context: Context, adapter: BluetoothAdapter?): Boolean {
+    if (adapter == null) return false
+    if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return false
+    }
+    return adapter.isEnabled
 }
