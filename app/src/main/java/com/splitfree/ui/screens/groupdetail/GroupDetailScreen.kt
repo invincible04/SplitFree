@@ -161,10 +161,11 @@ fun GroupDetailScreen(
         ShareWarningDialog(
             inviteLink = inviteLink,
             onShare = { link ->
+                val shareText = "Join my SplitFree group!\n\nOpen this link in SplitFree, or scan the QR code:\n$link"
                 val intent =
                     Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, link)
+                        putExtra(Intent.EXTRA_TEXT, shareText)
                     }
                 context.startActivity(Intent.createChooser(intent, "Share invite"))
             },

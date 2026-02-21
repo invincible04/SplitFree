@@ -64,6 +64,14 @@ constructor(
     private val _uiState = MutableStateFlow(GroupDetailUiState(groupId = groupId))
     val uiState: StateFlow<GroupDetailUiState> = _uiState.asStateFlow()
 
+    private val _inviteLink = MutableStateFlow<String?>(null)
+    val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
+    private val inviteLinkLoaded = AtomicBoolean(false)
+
     init {
         viewModelScope.launch {
             groupRepo.observeById(groupId).collect { group ->
@@ -77,9 +85,11 @@ constructor(
                         myPubkey = myPub
                     )
                 }
+                if (group?.createdBy == myPub && inviteLinkLoaded.compareAndSet(false, true)) {
+                    loadInviteLink()
+                }
             }
         }
-        loadInviteLink()
         viewModelScope.launch {
             getExpenses.observe(groupId).collect { allExpenses ->
                 val result = computeBalances.computeWithExclusions(groupId)
@@ -91,18 +101,12 @@ constructor(
         }
     }
 
-    private val _inviteLink = MutableStateFlow<String?>(null)
-    val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
-
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-
     private fun loadInviteLink() {
         viewModelScope.launch {
             try {
                 _inviteLink.value = createInviteLink(groupId)
             } catch (e: Exception) {
-                Log.w("GroupDetailVM", "Failed to create invite link: ${e.message}")
+                Log.w(TAG, "Failed to create invite link: ${e.message}")
             }
         }
     }
@@ -125,7 +129,7 @@ constructor(
                     )
                 expenseRepo.addSettlement(settlement, groupId)
             } catch (e: Exception) {
-                Log.w("GroupDetailVM", "Settlement failed: ${e.message}")
+                Log.w(TAG, "Settlement failed: ${e.message}")
                 _error.value = e.message ?: "Settlement failed"
             } finally {
                 settlingInProgress.set(false)
@@ -141,8 +145,12 @@ constructor(
                 val newGroup = migrateGroup(groupId, pubkey)
                 onMigrated(newGroup.id)
             } catch (e: Exception) {
-                Log.w("GroupDetailVM", "Remove member failed: ${e.message}")
+                Log.w(TAG, "Remove member failed: ${e.message}")
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "GroupDetailVM"
     }
 }

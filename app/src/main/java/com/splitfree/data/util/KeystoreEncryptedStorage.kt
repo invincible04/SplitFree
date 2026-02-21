@@ -82,7 +82,7 @@ class KeystoreEncryptedStorage(
 
     private fun handleCorruption(e: Exception) {
         if (!resetOnCorruption) throw e
-        Log.e("KeystoreEncryptedStorage", "Key corrupted for '$keyAlias', resetting: ${e.message}")
+        Log.e(TAG, "Key corrupted for '$keyAlias', resetting: ${e.message}")
         try {
             KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(keyAlias)
         } catch (_: Exception) {}
@@ -108,4 +108,8 @@ class KeystoreEncryptedStorage(
     override fun remove(key: String) = withCorruptionHandling({ prefs.edit().remove(key).apply() }, Unit)
 
     override fun clear() = withCorruptionHandling({ prefs.edit().clear().apply() }, Unit)
+
+    companion object {
+        private const val TAG = "KeystoreEncryptedStorage"
+    }
 }

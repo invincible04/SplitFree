@@ -49,12 +49,6 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="splitfree" android:host="join" />
             </intent-filter>
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="splitfree.app" android:pathPrefix="/join" />
-            </intent-filter>
         </activity>
 
         <!-- Disable default WorkManager initializer; SplitFreeApp provides custom config via Configuration.Provider -->

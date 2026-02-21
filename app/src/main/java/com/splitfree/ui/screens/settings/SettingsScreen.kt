@@ -183,8 +183,10 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             // About
             SectionHeader(icon = Icons.Outlined.Info, title = "About")
             ListItem(
-                headlineContent = { Text("SplitFree v1.0.0") },
-                supportingContent = { Text("Decentralized expense splitting over Nostr") }
+                headlineContent = { Text("SplitFree v1.1.0") },
+                supportingContent = {
+                    Text("Decentralized expense splitting over Nostr.")
+                }
             )
             ListItem(
                 headlineContent = { Text("Debug Logs") },

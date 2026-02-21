@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Card
@@ -43,10 +44,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,7 +59,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.domain.model.group.Group
 import com.splitfree.ui.viewmodels.GroupsListViewModel
 import com.splitfree.util.DebugLog as Log
+import kotlinx.coroutines.launch
 
+private const val TAG = "GroupsListScreen"
+
+/**
+ * Main screen showing all expense groups the user belongs to.
+ *
+ * Top bar actions: paste invite link, scan QR code, settings.
+ * FAB creates a new group. Empty state shown when no groups exist.
+ *
+ * @param onGroupClick navigates to group detail
+ * @param onCreateGroup navigates to group creation
+ * @param onSettings navigates to settings
+ * @param onScanResult callback for scanned/pasted invite links
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GroupsListScreen(
@@ -69,6 +86,8 @@ fun GroupsListScreen(
     val groups by viewModel.groups.collectAsStateWithLifecycle(initialValue = emptyList())
     val isConnected by viewModel.isConnected.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -81,28 +100,8 @@ fun GroupsListScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = {
-                        val options =
-                            com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-                                .Builder()
-                                .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
-                                .build()
-                        val scanner =
-                            com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-                                .getClient(context, options)
-                        scanner
-                            .startScan()
-                            .addOnSuccessListener { barcode ->
-                                barcode.rawValue?.let {
-                                    Log.i("GroupsListScreen", "QR scanned: ${it.take(60)}...")
-                                    onScanResult(it)
-                                }
-                            }.addOnFailureListener { e ->
-                                Log.w("GroupsListScreen", "QR scan failed: ${e.message}")
-                            }
-                    }) {
-                        Icon(Icons.Outlined.QrCodeScanner, contentDescription = "Scan QR")
-                    }
+                    PasteInviteButton { scope.launch { extractInviteLink(clipboard)?.let(onScanResult) } }
+                    ScanQrButton(context, onScanResult)
                     IconButton(onClick = onSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -128,13 +127,67 @@ fun GroupsListScreen(
                 items(groups, key = { it.id }) { group ->
                     GroupCard(group = group, onClick = { onGroupClick(group.id) })
                 }
-                // Bottom spacer for FAB
                 item { Spacer(Modifier.height(80.dp)) }
             }
         }
     }
 }
 
+// --- Top bar action helpers ---
+
+/**
+ * Reads the clipboard and extracts a SplitFree invite link if present.
+ * Handles `splitfree://join` scheme even when the link is embedded in a larger message.
+ *
+ * @return the invite link, or null if clipboard doesn't contain one
+ */
+private suspend fun extractInviteLink(clipboard: androidx.compose.ui.platform.Clipboard): String? {
+    val text = clipboard.getClipEntry()
+        ?.clipData
+        ?.getItemAt(0)
+        ?.text
+        ?.toString()
+        ?.trim()
+        ?: return null
+    val link = text.lines().firstOrNull { it.trimStart().startsWith("splitfree://join") }?.trim()
+    if (link != null) Log.i(TAG, "Pasted invite: ${link.take(60)}...")
+    return link
+}
+
+/** Clipboard paste button — reads invite link from clipboard and triggers join flow. */
+@Composable
+private fun PasteInviteButton(onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(Icons.Outlined.ContentPaste, contentDescription = "Paste invite link")
+    }
+}
+
+/** QR scanner button — launches ML Kit barcode scanner for invite QR codes. */
+@Composable
+private fun ScanQrButton(context: android.content.Context, onScanResult: (String) -> Unit) {
+    IconButton(onClick = {
+        val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+            .build()
+        com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options)
+            .startScan()
+            .addOnSuccessListener { barcode ->
+                barcode.rawValue?.let {
+                    Log.i(TAG, "QR scanned: ${it.take(60)}...")
+                    onScanResult(it)
+                }
+            }
+            .addOnFailureListener { e ->
+                Log.w(TAG, "QR scan failed: ${e.message}")
+            }
+    }) {
+        Icon(Icons.Outlined.QrCodeScanner, contentDescription = "Scan QR")
+    }
+}
+
+// --- List content ---
+
+/** Placeholder shown when the user has no groups yet. */
 @Composable
 private fun EmptyGroupsState(modifier: Modifier = Modifier) {
     Column(
@@ -164,6 +217,7 @@ private fun EmptyGroupsState(modifier: Modifier = Modifier) {
     }
 }
 
+/** Single group row with avatar, name, and member count. */
 @Composable
 private fun GroupCard(group: Group, onClick: () -> Unit) {
     Card(
@@ -175,12 +229,8 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Avatar with first letter
             Box(
-                modifier =
-                Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
+                modifier = Modifier.size(48.dp).clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
@@ -214,6 +264,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
     }
 }
 
+/** Animated dot indicating relay connection status (green = connected, grey pulsing = disconnected). */
 @Composable
 private fun ConnectionDot(connected: Boolean) {
     val color by animateColorAsState(
@@ -233,10 +284,7 @@ private fun ConnectionDot(connected: Boolean) {
         remember { mutableFloatStateOf(1f) }
     }
     Box(
-        modifier =
-        Modifier
-            .size(8.dp)
-            .clip(CircleShape)
+        modifier = Modifier.size(8.dp).clip(CircleShape)
             .background(color.copy(alpha = alpha))
     )
 }

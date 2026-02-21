@@ -33,11 +33,11 @@ constructor(private val nostrClient: NostrClient) {
         val size = queueSize.incrementAndGet()
         if (size > MAX_QUEUE_SIZE) {
             queueSize.decrementAndGet()
-            Log.w("EventThrottler", "Queue full, dropping event ${event.id.take(8)}")
+            Log.w(TAG, "Queue full, dropping event ${event.id.take(8)}")
             return
         }
         queue.offer(event)
-        Log.d("EventThrottler", "Enqueued event ${event.id.take(8)}, queue size=$size")
+        Log.d(TAG, "Enqueued event ${event.id.take(8)}, queue size=$size")
         processIfNeeded()
     }
 
@@ -59,6 +59,7 @@ constructor(private val nostrClient: NostrClient) {
     }
 
     companion object {
+        private const val TAG = "EventThrottler"
         private const val MAX_QUEUE_SIZE = 500
     }
 }

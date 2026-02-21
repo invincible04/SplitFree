@@ -129,14 +129,14 @@ class MainActivity : ComponentActivity() {
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e("MainActivity", "Join failed: ${e.message}", e)
+                    Log.e(TAG, "Join failed: ${e.message}", e)
                     Toast.makeText(this@MainActivity, "Join failed: ${e.message}", Toast.LENGTH_LONG).show()
                     null
                 } finally {
                     isJoining = false
                 }
             if (group != null) {
-                Log.i("MainActivity", "Joined group: ${group.id} (${group.name})")
+                Log.i(TAG, "Joined group: ${group.id} (${group.name})")
                 navController?.navigate(Screen.GroupDetail.withId(group.id))
             }
         }
@@ -158,10 +158,8 @@ class MainActivity : ComponentActivity() {
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
         val uriStr = uri.toString()
-        Log.i("MainActivity", "handleDeepLink: ${uri.scheme}://${uri.host}${uri.path}?d=[REDACTED]")
-        if (uriStr.startsWith("splitfree://join") ||
-            uriStr.startsWith("https://splitfree.app/join")
-        ) {
+        Log.i(TAG, "handleDeepLink: ${uri.scheme}://${uri.host}${uri.path}?d=[REDACTED]")
+        if (uriStr.startsWith("splitfree://join")) {
             // Compact invite links use ?d= parameter
             val hasParams = uri.getQueryParameter("d") != null
             if (!hasParams) return
@@ -174,5 +172,9 @@ class MainActivity : ComponentActivity() {
                 .setNegativeButton("Cancel", null)
                 .show()
         }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }

@@ -70,7 +70,7 @@ constructor(
                             if (snap.event_hashes.size < 10 ||
                                 matchCount.toDouble() / snap.event_hashes.size < 0.8
                             ) {
-                                Log.w("ComputeBalances", "Snapshot hash mismatch — ignoring")
+                                Log.w(TAG, "Snapshot hash mismatch — ignoring")
                             } else {
                                 for (b in snap.balances) {
                                     balances[b.pubkey to b.currency] = b.net
@@ -150,5 +150,9 @@ constructor(
                 balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "ComputeBalances"
     }
 }
