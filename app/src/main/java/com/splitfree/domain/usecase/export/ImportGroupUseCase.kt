@@ -48,36 +48,52 @@ constructor(
             "Export file integrity check failed — file may have been tampered with"
         }
 
-        val existingIds = eventRepo.getEventIds(groupId).toSet()
+        val knownEventIds = eventRepo.getEventIds(groupId).toMutableSet()
         var imported = 0
         val group = groupRepo.getById(groupId)
 
         for (event in export.events) {
-            if (event.eventId in existingIds) continue
+            val originalJson = event.originalEventJson ?: continue
+            val parsed = NostrEvent.fromJson(originalJson) ?: continue
+            if (!parsed.verify()) continue
+            if (!eventValidator.isTimestampValidLenient(parsed.createdAt)) continue
+
+            val eventId = parsed.id
+            if (eventId in knownEventIds) continue
+
+            val pubkey = parsed.pubkey
+            val createdAt = parsed.createdAt
+            val contentEncrypted = parsed.content
+            val sig = parsed.sig
+            val kind = parsed.kind
+
+            var eventType = "unknown"
+            var expenseUuid: String? = null
+            for (tag in parsed.tags) {
+                if (tag.size >= 2) {
+                    when (tag[0]) {
+                        "t" -> eventType = tag[1]
+                        "x" -> expenseUuid = tag[1]
+                    }
+                }
+            }
 
             if (group != null &&
-                event.pubkey !in group.members &&
-                event.eventType !in setOf("group_meta", "group_migrate", "key_revocation")
+                pubkey !in group.members &&
+                eventType !in setOf("group_meta", "group_migrate", "key_revocation")
             ) {
                 continue
             }
 
-            val originalJson = event.originalEventJson
-            if (originalJson != null) {
-                val parsed = NostrEvent.fromJson(originalJson)
-                if (parsed == null || !parsed.verify()) continue
-                if (!eventValidator.isTimestampValidLenient(parsed.createdAt)) continue
+            if (eventType == "expense_correction" || eventType == "expense_delete") {
+                val originalCreator = expenseUuid?.let { eventRepo.getExpenseByUuid(it, groupId)?.pubkey }
+                if (!eventValidator.isCorrectionAuthorValid(eventType, pubkey, originalCreator)) continue
             }
 
-            if (event.eventType == "expense_correction" || event.eventType == "expense_delete") {
-                val originalCreator = event.expenseUuid?.let { eventRepo.getExpenseByUuid(it)?.pubkey }
-                if (!eventValidator.isCorrectionAuthorValid(event.eventType, event.pubkey, originalCreator)) continue
-            }
-
-            if (!eventValidator.isWithinRateLimit(event.pubkey)) continue
+            if (!eventValidator.isWithinRateLimit(pubkey)) continue
 
             val decrypted = try {
-                encryption.decrypt(event.contentEncrypted, groupKey)
+                encryption.decrypt(contentEncrypted, groupKey)
             } catch (_: Exception) {
                 null
             }
@@ -85,14 +101,15 @@ constructor(
 
             eventRepo.insert(
                 EventSnapshot(
-                    eventId = event.eventId, groupId = groupId, pubkey = event.pubkey,
-                    createdAt = event.createdAt, kind = event.kind,
-                    contentEncrypted = event.contentEncrypted, eventType = event.eventType,
-                    expenseUuid = event.expenseUuid, sig = event.sig,
+                    eventId = eventId, groupId = groupId, pubkey = pubkey,
+                    createdAt = createdAt, kind = kind,
+                    contentEncrypted = contentEncrypted, eventType = eventType,
+                    expenseUuid = expenseUuid, sig = sig,
                     receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = event.originalEventJson
+                    originalEventJson = originalJson
                 )
             )
+            knownEventIds += eventId
             imported++
         }
         return imported

@@ -122,6 +122,11 @@ constructor(
             null
         }
 
+        if (decrypted == null && eventType in setOf("group_migrate", "key_revocation", "group_meta")) {
+            Log.w(TAG, "Rejecting undecryptable $eventType from $authorHex in group $groupId")
+            return ProcessResult(false)
+        }
+
         if (decrypted != null && !eventValidator.isContentSafe(decrypted)) {
             Log.w(TAG, "Rejecting event with unsafe content: ${inner.id}")
             return ProcessResult(false)
@@ -174,14 +179,15 @@ constructor(
         groupId: String,
         inner: NostrEvent
     ): Boolean {
-        val privilegedTypes = setOf("group_meta", "group_migrate", "key_revocation")
-        if (eventType !in privilegedTypes && authorHex !in group.members) {
-            Log.w(TAG, "Rejecting event from non-member $authorHex in group $groupId")
-            return false
+        if (authorHex !in group.members) {
+            if (eventType != "group_meta") {
+                Log.w(TAG, "Rejecting $eventType from non-member $authorHex in group $groupId")
+                return false
+            }
         }
         if (eventType == "group_meta") {
-            val isCreator = group.createdBy.isEmpty() || authorHex == group.createdBy
-            if (!isCreator) {
+            val isCreator = group.createdBy.isNotEmpty() && authorHex == group.createdBy
+            if (!isCreator && authorHex !in group.members) {
                 val isSelfJoin = try {
                     val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
                     val meta = json.decodeFromString<GroupMeta>(encryption.decrypt(inner.content, key))
@@ -201,6 +207,10 @@ constructor(
                 }
             }
         }
+        if (eventType == "group_migrate" && group.createdBy.isNotEmpty() && authorHex != group.createdBy) {
+            Log.w(TAG, "Rejecting group_migrate from non-creator $authorHex in group $groupId")
+            return false
+        }
         return true
     }
 
@@ -212,7 +222,7 @@ constructor(
         createdAt: Long
     ): Boolean {
         if (eventType == "expense_correction" || eventType == "expense_delete") {
-            val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it)?.pubkey }
+            val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it, groupId)?.pubkey }
             if (!eventValidator.isCorrectionAuthorValid(eventType, authorHex, originalCreator)) {
                 Log.w(TAG, "Rejecting $eventType: author $authorHex is not the original creator")
                 return false

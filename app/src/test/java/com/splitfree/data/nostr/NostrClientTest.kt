@@ -10,6 +10,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -103,6 +104,26 @@ class NostrClientTest {
         assertEquals(expectedGiftWrapSince, filters[1].since)
         assertTrue(filters[1].tags!!.containsKey("#p"))
         assertEquals(listOf(1059), filters[1].kinds)
+    }
+
+    @Test
+    fun `subscribe closes previous subscription for same group`() = runBlocking {
+        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        val relay = mockk<Relay>(relaxed = true)
+        val subIds = mutableListOf<String>()
+        every { relay.subscribe(any(), any()) } answers {
+            subIds += firstArg<String>()
+        }
+
+        val relaysField = NostrClient::class.java.getDeclaredField("relays")
+        relaysField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (relaysField.get(client) as MutableMap<String, Relay>)["wss://test"] = relay
+
+        client.subscribe("group-1", 0, null)
+        client.subscribe("group-1", 0, null)
+
+        verify(exactly = 1) { relay.closeSubscription(subIds.first()) }
     }
 
     @Test

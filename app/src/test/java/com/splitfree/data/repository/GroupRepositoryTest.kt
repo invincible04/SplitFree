@@ -135,29 +135,35 @@ class GroupRepositoryTest {
     fun `updateFromMeta rejects too many members`() = runBlocking {
         val bigList = (1..51).map { "pub$it" }
         repo.updateFromMeta("g1", "name", bigList, emptyList())
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `updateFromMeta with timestamp uses atomic update`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any()) } returns 1
+        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any()) } returns 1
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), 500) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500) }
         coVerify { groupDao.updateLastMetaTimestamp("g1", 500) }
     }
 
     @Test
     fun `updateFromMeta without timestamp uses simple update`() = runBlocking {
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"))
-        coVerify { groupDao.updateMeta("g1", "name", any(), any()) }
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "") }
     }
 
     @Test
     fun `updateFromMeta with timestamp skips lastMetaTimestamp when not newer`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any()) } returns 0
+        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any()) } returns 0
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), 500) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500) }
         coVerify(exactly = 0) { groupDao.updateLastMetaTimestamp(any(), any()) }
+    }
+
+    @Test
+    fun `updateFromMeta passes createdBy when provided`() = runBlocking {
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), createdBy = "creator")
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "creator") }
     }
 
     @Test

@@ -75,8 +75,7 @@ constructor(
             val currentGroup = groupRepo.getById(groupId)
             val isCreator =
                 currentGroup == null ||
-                    currentGroup.createdBy.isEmpty() ||
-                    authorHex == currentGroup.createdBy
+                    (currentGroup.createdBy.isNotEmpty() && authorHex == currentGroup.createdBy)
 
             val finalMembers =
                 if (isCreator) {
@@ -86,10 +85,19 @@ constructor(
                 }
             val finalName = if (isCreator) meta.name else (currentGroup?.name ?: meta.name)
             val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
+            val trustedCreatedBy =
+                if (currentGroup != null &&
+                    currentGroup.createdBy.isNotEmpty() &&
+                    authorHex == currentGroup.createdBy
+                ) {
+                    meta.createdBy.ifEmpty { authorHex }
+                } else {
+                    ""
+                }
             val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != finalRelays.toSet()
 
             Log.i(TAG, "Applying group_meta for $groupId: ${finalMembers.size} members, name=$finalName")
-            groupRepo.updateFromMeta(groupId, finalName, finalMembers, finalRelays, createdAt)
+            groupRepo.updateFromMeta(groupId, finalName, finalMembers, finalRelays, createdAt, trustedCreatedBy)
 
             if (relaysChanged) {
                 Log.i(TAG, "Relays changed for $groupId — triggering eager self-heal")

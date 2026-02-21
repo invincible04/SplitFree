@@ -1,6 +1,6 @@
 package com.splitfree.domain.usecase.sync
 
-import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -18,13 +18,17 @@ class SelfHealUseCase
 constructor(
     private val eventRepo: EventRepositoryContract,
     private val nostrClient: NostrClientContract,
-    private val signer: EventSigner,
+    private val giftWrap: GiftWrapService,
     private val identity: IdentityContract,
     private val groupRepo: GroupRepositoryContract
 ) {
     suspend operator fun invoke(groupId: String): Int {
         if (!nostrClient.isConnected) {
             Log.d(TAG, "No relay connection — skipping self-heal for $groupId")
+            return 0
+        }
+        if (giftWrap.enabled) {
+            Log.d(TAG, "Gift wrap enabled — skipping self-heal for $groupId (outbox handles retries)")
             return 0
         }
 
@@ -37,8 +41,7 @@ constructor(
         val oldestLocal = localEvents.minOfOrNull { it.createdAt } ?: 0L
         val since = if (oldestLocal > 0) oldestLocal - 86400 else 0L
         val myPubkey = identity.getPublicKeyHex()
-        val remoteByGroup = nostrClient.fetchEvents(groupId, since, myPubkey)
-        val remoteIds = remoteByGroup.map { it.id }.toSet()
+        val remoteIds = nostrClient.fetchEventIds(groupId, since, myPubkey)
 
         val missing =
             localEvents.filter {

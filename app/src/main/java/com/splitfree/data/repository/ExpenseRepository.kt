@@ -73,7 +73,7 @@ constructor(
     }
 
     override suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String) {
-        val original = eventDao.getExpenseByUuid(expenseUuid)
+        val original = eventDao.getExpenseByUuid(expenseUuid, groupId)
         checkNotNull(original) { "Expense $expenseUuid not found" }
         check(original.pubkey == identity.getPublicKeyHex()) { "Only the creator can delete this expense" }
 
@@ -96,7 +96,7 @@ constructor(
     }
 
     override suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String) {
-        val original = eventDao.getExpenseByUuid(originalUuid)
+        val original = eventDao.getExpenseByUuid(originalUuid, groupId)
         checkNotNull(original) { "Expense $originalUuid not found" }
         check(original.pubkey == identity.getPublicKeyHex()) { "Only the creator can correct this expense" }
 

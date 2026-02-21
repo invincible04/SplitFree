@@ -19,8 +19,12 @@ interface EventRepositoryContract {
     /** @return UUIDs of soft-deleted expenses in a group */
     suspend fun getDeletedExpenseUuids(groupId: String): List<String>
 
-    /** @return the event with the given expense UUID, or null */
-    suspend fun getExpenseByUuid(uuid: String): EventSnapshot?
+    /**
+     * Resolve an original expense by UUID within a specific group.
+     *
+     * If multiple events reuse the same UUID, the earliest deterministic event is returned.
+     */
+    suspend fun getExpenseByUuid(uuid: String, groupId: String): EventSnapshot?
 
     /** @return the most recent event of [eventType] in a group, or null */
     suspend fun getLatestEventByType(groupId: String, eventType: String): EventSnapshot?

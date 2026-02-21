@@ -89,7 +89,7 @@ class EventProcessorTest {
         coEvery { eventDao.insertIfNew(any()) } returns true
         coEvery { eventDao.getDeletedExpenseUuids(any()) } returns emptyList()
         coEvery { eventDao.getLatestEventByType(any(), any()) } returns null
-        coEvery { eventDao.getExpenseByUuid(any()) } returns null
+        coEvery { eventDao.getExpenseByUuid(any(), any()) } returns null
 
         processor =
             EventProcessor(
@@ -384,7 +384,7 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -422,11 +422,11 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects group_meta from non-creator member`() = runBlocking {
+    fun `process accepts group_meta from non-creator member and defers mutation controls`() = runBlocking {
         val member = "cc".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, member))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
-        // member sends meta removing creator and changing name — CWE-863 fix
+        // Mutation limits are enforced in EventPostProcessor; processor should only validate auth envelope.
         val meta =
             """{"name":"Hacked","description":"",""" +
                 """"created_by":"$pubkey","created_at":1000,""" +
@@ -438,7 +438,7 @@ class EventProcessorTest {
                 makeEvent(eventType = "group_meta", author = member, expenseUuid = null),
                 knownGroupKey = groupKey
             )
-        assertFalse("Non-creator removing members or changing name must be rejected", result.stored)
+        assertTrue(result.stored)
     }
 
     @Test
@@ -531,10 +531,45 @@ class EventProcessorTest {
             makeEvent(eventType = "group_meta", expenseUuid = null),
             knownGroupKey = groupKey
         )
-        assertTrue(result.stored)
+        assertFalse(result.stored)
         coVerify(exactly = 0) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any())
         }
+    }
+
+    @Test
+    fun `process rejects key_revocation from non-member`() = runBlocking {
+        val stranger = "cc".repeat(32)
+        every { encryption.decrypt(any(), groupKey) } returns """{"oldPubkey":"x","newPubkey":"y"}"""
+        val result = processor.process(
+            makeEvent(eventType = "key_revocation", author = stranger, expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects group_migrate from member who is not creator`() = runBlocking {
+        val member = "cc".repeat(32)
+        val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, member))
+        coEvery { groupRepo.getById(groupId) } returns creatorGroup
+        every { encryption.decrypt(any(), groupKey) } returns
+            """{"newGroupId":"n","encryptedKeys":{},"members":["$pubkey"]}"""
+        val result = processor.process(
+            makeEvent(eventType = "group_migrate", author = member, expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects undecryptable key_revocation`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
+        val result = processor.process(
+            makeEvent(eventType = "key_revocation", expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
     }
 
     @Test

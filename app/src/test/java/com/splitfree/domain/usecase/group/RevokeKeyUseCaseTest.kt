@@ -106,7 +106,16 @@ class RevokeKeyUseCaseTest {
     @Test
     fun `invoke updates member list replacing old pubkey`() = runBlocking {
         useCase()
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it && oldPubkey !in it }, any()) }
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match { newPubkey in it && oldPubkey !in it },
+                any(),
+                0,
+                newPubkey
+            )
+        }
     }
 
     @Test
@@ -155,7 +164,7 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns group
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey, "test"))
         useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it }, any()) }
+        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { newPubkey in it }, any(), 0, "") }
     }
 
     @Test
@@ -163,13 +172,13 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns group
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
         useCase.handleRevocation(payload, "wrong-signer", groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `handleRevocation ignores invalid JSON`() = runBlocking {
         useCase.handleRevocation("bad json", oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -177,7 +186,7 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns group
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, "", "compromised"))
         useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { oldPubkey !in it }, any()) }
+        coVerify { groupRepo.updateFromMeta(groupId, "Test", match { oldPubkey !in it }, any(), 0, "") }
     }
 
     @Test
@@ -188,7 +197,7 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         useCase()
         // createdBy should remain otherCreator, not be replaced
-        coVerify { groupRepo.updateFromMeta(groupId, any(), any(), any()) }
+        coVerify { groupRepo.updateFromMeta(groupId, any(), any(), any(), 0, otherCreator) }
     }
 
     @Test
@@ -215,7 +224,7 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns null
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
         useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -224,7 +233,7 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns groupNoMember
         val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
         useCase.handleRevocation(payload, oldPubkey, groupId)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test

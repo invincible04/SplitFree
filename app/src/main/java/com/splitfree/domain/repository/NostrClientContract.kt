@@ -68,6 +68,19 @@ interface NostrClientContract {
     suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): List<NostrEvent>
 
     /**
+     * Fetch only direct-mode event IDs for self-heal comparison.
+     *
+     * This intentionally excludes gift-wrap events (kind 1059) because their IDs do not
+     * correspond to the stored inner event IDs.
+     *
+     * @param groupId target group UUID
+     * @param since unix timestamp; 0 to fetch all history
+     * @param myPubkey optional caller pubkey (reserved for future filter compatibility)
+     * @return deduplicated set of event IDs for kind-30078 events
+     */
+    suspend fun fetchEventIds(groupId: String, since: Long, myPubkey: String? = null): Set<String>
+
+    /**
      * Fetch kind-1059 gift wrap events addressed to a specific pubkey (last 24h).
      * @param recipientPubHex 64-char hex public key of the recipient
      */

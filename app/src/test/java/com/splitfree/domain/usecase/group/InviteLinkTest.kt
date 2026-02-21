@@ -51,6 +51,7 @@ class InviteLinkTest {
         assertTrue(invite.relays.contains("wss://relay.damus.io"))
         assertTrue(invite.relays.contains("wss://nos.lol"))
         assertTrue(invite.expiry > System.currentTimeMillis() / 1000)
+        assertEquals(64, invite.inviterPubkey.length)
     }
 
     @Test

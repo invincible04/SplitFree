@@ -78,7 +78,14 @@ constructor(
                 for (group in groups) {
                     val groupKey = groupRepo.getGroupKey(group.id) ?: continue
                     val updatedMembers = group.members.map { if (it == oldPubkey) newPubkey else it }
-                    groupRepo.updateFromMeta(group.id, group.name, updatedMembers, group.relays)
+                    val newCreatedBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy
+                    groupRepo.updateFromMeta(
+                        group.id,
+                        group.name,
+                        updatedMembers,
+                        group.relays,
+                        createdBy = newCreatedBy
+                    )
 
                     val metaPayload =
                         json.encodeToString(

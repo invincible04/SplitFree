@@ -76,15 +76,15 @@ class EventRepositoryTest {
 
     @Test
     fun `getExpenseByUuid returns mapped snapshot`() = runTest {
-        coEvery { eventDao.getExpenseByUuid("u1") } returns entity
-        val result = repo.getExpenseByUuid("u1")!!
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns entity
+        val result = repo.getExpenseByUuid("u1", "g1")!!
         assertEquals("e1", result.eventId)
     }
 
     @Test
     fun `getExpenseByUuid returns null when not found`() = runTest {
-        coEvery { eventDao.getExpenseByUuid("missing") } returns null
-        assertNull(repo.getExpenseByUuid("missing"))
+        coEvery { eventDao.getExpenseByUuid("missing", "g1") } returns null
+        assertNull(repo.getExpenseByUuid("missing", "g1"))
     }
 
     @Test

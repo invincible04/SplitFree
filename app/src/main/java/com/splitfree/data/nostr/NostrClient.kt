@@ -180,6 +180,10 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     }
 
     override suspend fun subscribe(groupId: String, since: Long, myPubkey: String?) {
+        val oldSubId = activeSubscriptions[groupId]
+        if (oldSubId != null) {
+            relays.values.forEach { it.closeSubscription(oldSubId) }
+        }
         val subId = "${subIdCounter.incrementAndGet()}:$groupId"
         activeSubscriptions[groupId] = subId
         val sinceVal = if (since > 0) since else null
@@ -348,6 +352,22 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             )
         }
         return fetchWithFilters(subId, filters)
+    }
+
+    override suspend fun fetchEventIds(groupId: String, since: Long, myPubkey: String?): Set<String> {
+        val subId = "${subIdCounter.incrementAndGet()}:heal:$groupId"
+        val sinceVal = if (since > 0) since else null
+        val filters = mutableListOf(
+            NostrFilter(
+                kinds = listOf(NostrKind.APP_SPECIFIC),
+                tags = mapOf("#g" to listOf(groupId)),
+                since = sinceVal
+            )
+        )
+        val events = fetchWithFilters(subId, filters) { event, list ->
+            list.none { it.id == event.id }
+        }
+        return events.map { it.id }.toSet()
     }
 
     /**

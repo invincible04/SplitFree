@@ -45,12 +45,14 @@ interface GroupRepositoryContract {
      * @param members updated member pubkey list
      * @param relays updated relay URL list
      * @param eventTimestamp the `createdAt` of the incoming group_meta event
+     * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
      */
     suspend fun updateFromMeta(
         groupId: String,
         name: String,
         members: List<String>,
         relays: List<String>,
-        eventTimestamp: Long = 0
+        eventTimestamp: Long = 0,
+        createdBy: String = ""
     )
 }

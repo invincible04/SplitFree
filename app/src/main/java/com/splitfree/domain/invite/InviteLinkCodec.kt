@@ -5,6 +5,7 @@ import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.domain.util.hexToBytes
+import com.splitfree.domain.util.toHex
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
 import java.util.Base64
@@ -18,13 +19,15 @@ import java.util.UUID
  * @property relays list of Nostr relay URLs for this group
  * @property name human-readable group name
  * @property expiry unix timestamp (seconds) after which the link should be rejected
+ * @property inviterPubkey inviter public key hex decoded from invite payload
  */
 data class InviteParams(
     val groupId: String,
     val groupKey: String,
     val relays: List<String>,
     val name: String,
-    val expiry: Long
+    val expiry: Long,
+    val inviterPubkey: String
 )
 
 /**
@@ -135,7 +138,8 @@ object InviteLinkCodec {
 
         val name = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else "Group"
 
-        return InviteParams(groupId, groupKey, relays, name, exp)
+        val inviterPubkey = senderPub.toHex()
+        return InviteParams(groupId, groupKey, relays, name, exp, inviterPubkey)
     }
 
     // --- Crypto helpers ---

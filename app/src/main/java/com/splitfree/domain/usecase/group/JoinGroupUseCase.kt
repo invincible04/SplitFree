@@ -71,7 +71,7 @@ constructor(
             Group(
                 id = invite.groupId,
                 name = invite.name,
-                createdBy = "",
+                createdBy = invite.inviterPubkey,
                 createdAt = System.currentTimeMillis() / 1000,
                 members = listOf(pubkey),
                 relays = invite.relays
@@ -105,9 +105,7 @@ constructor(
         publishGroupMeta(
             group.id,
             currentGroup.name,
-            currentGroup.createdBy.ifEmpty {
-                pubkey
-            },
+            currentGroup.createdBy,
             currentGroup.createdAt,
             updatedMembers,
             currentGroup.relays,

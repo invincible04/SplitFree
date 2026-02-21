@@ -80,9 +80,12 @@ class JoinGroupUseCaseTest {
 
     @Test
     fun `invoke creates group from valid invite link`() = runBlocking {
-        val group = useCase(buildInviteUri())
+        val inviteUri = buildInviteUri()
+        val invite = InviteLinkCodec.decode(inviteUri)
+        val group = useCase(inviteUri)
         assertEquals("TestGroup", group.name)
         assertEquals(listOf(pubkey), group.members)
+        assertEquals(invite.inviterPubkey, group.createdBy)
         coVerify { groupRepo.save(any(), any()) }
     }
 

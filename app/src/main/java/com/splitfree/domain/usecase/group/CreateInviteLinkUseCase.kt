@@ -24,6 +24,10 @@ constructor(
      */
     suspend operator fun invoke(groupId: String): String {
         val group = groupRepo.getById(groupId) ?: throw IllegalStateException("Group $groupId not found")
+        val myPubkey = identity.getPublicKeyHex()
+        check(group.createdBy.isNotEmpty() && group.createdBy == myPubkey) {
+            "Only the group creator can generate invite links"
+        }
         val key = groupRepo.getGroupKey(groupId) ?: throw IllegalStateException("No key for group $groupId")
         val privKey = identity.getPrivateKeyBytes()
         try {

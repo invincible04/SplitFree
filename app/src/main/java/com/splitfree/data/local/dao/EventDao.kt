@@ -36,8 +36,11 @@ interface EventDao {
     @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId")
     suspend fun getEventCount(groupId: String): Int
 
-    @Query("SELECT * FROM events WHERE expenseUuid = :uuid AND eventType = 'expense' LIMIT 1")
-    suspend fun getExpenseByUuid(uuid: String): EventEntity?
+    @Query(
+        "SELECT * FROM events WHERE expenseUuid = :uuid AND groupId = :groupId " +
+            "AND eventType = 'expense' ORDER BY createdAt ASC, eventId ASC LIMIT 1"
+    )
+    suspend fun getExpenseByUuid(uuid: String, groupId: String): EventEntity?
 
     @Query(
         "SELECT expenseUuid FROM events WHERE groupId = :groupId AND eventType = 'expense_delete' AND expenseUuid IS NOT NULL"

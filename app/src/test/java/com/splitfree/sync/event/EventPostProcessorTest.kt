@@ -47,13 +47,13 @@ class EventPostProcessorTest {
     @Test
     fun `handle null decrypted is no-op`() = runBlocking {
         processor.handle("group_meta", null, pubkey, groupId, 1000, false)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `handle unknown event type is no-op`() = runBlocking {
         processor.handle("expense", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { migrateGroup.handleMigration(any(), any(), any()) }
         coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any()) }
     }
@@ -64,14 +64,14 @@ class EventPostProcessorTest {
             """{"name":"New","description":"","created_by":"$pubkey",""" +
                 """"created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
-        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(pubkey), listOf("wss://r"), 2000) }
+        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(pubkey), listOf("wss://r"), 2000, pubkey) }
     }
 
     @Test
     fun `handle group_meta with empty members skips update`() = runBlocking {
         val meta = """{"name":"X","members":[],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, pubkey, groupId, 1000, false)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -80,7 +80,16 @@ class EventPostProcessorTest {
         val meta = """{"name":"Test","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
         coVerify {
-            groupRepo.updateFromMeta(groupId, "Test", match { stranger in it && pubkey in it }, listOf("wss://r"), 2000)
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match {
+                    stranger in it && pubkey in it
+                },
+                listOf("wss://r"),
+                2000,
+                ""
+            )
         }
     }
 
@@ -128,7 +137,7 @@ class EventPostProcessorTest {
         val meta =
             """{"name":"NC","members":["$pubkey"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, pubkey, groupId, 2000, true)
-        coVerify { groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), 2000) }
+        coVerify { groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), 2000, pubkey) }
     }
 
     @Test
@@ -138,18 +147,46 @@ class EventPostProcessorTest {
         val meta = """{"name":"New","members":["$stranger"],"relays":["wss://r2"]}"""
         // When currentGroup is null, isCreator is true regardless of author
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
-        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(stranger), listOf("wss://r2"), 2000) }
+        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(stranger), listOf("wss://r2"), 2000, "") }
     }
 
     @Test
-    fun `handle group_meta when createdBy is empty treats author as creator`() = runBlocking {
+    fun `handle group_meta when createdBy is empty stays in restricted mode`() = runBlocking {
         val emptyCreatorGroup = group.copy(createdBy = "")
         coEvery { groupRepo.getById(groupId) } returns emptyCreatorGroup
         val stranger = "bb".repeat(32)
         val meta = """{"name":"Updated","members":["$stranger"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
-        // isCreator=true because createdBy is empty, so stranger's meta is accepted as-is
-        coVerify { groupRepo.updateFromMeta(groupId, "Updated", listOf(stranger), listOf("wss://r"), 2000) }
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match { stranger in it && pubkey in it },
+                listOf("wss://r"),
+                2000,
+                ""
+            )
+        }
+    }
+
+    @Test
+    fun `handle group_meta does not bootstrap creator from relay metadata`() = runBlocking {
+        val emptyCreatorGroup = group.copy(createdBy = "")
+        coEvery { groupRepo.getById(groupId) } returns emptyCreatorGroup
+        val stranger = "bb".repeat(32)
+        val meta =
+            """{"name":"Updated","created_by":"$stranger","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
+        processor.handle("group_meta", meta, stranger, groupId, 2000, false)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match { stranger in it && pubkey in it },
+                listOf("wss://r"),
+                2000,
+                ""
+            )
+        }
     }
 
     @Test

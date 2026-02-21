@@ -31,7 +31,8 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
     override suspend fun getDeletedExpenseUuids(groupId: String): List<String> =
         eventDao.getDeletedExpenseUuids(groupId)
 
-    override suspend fun getExpenseByUuid(uuid: String): EventSnapshot? = eventDao.getExpenseByUuid(uuid)?.toSnapshot()
+    override suspend fun getExpenseByUuid(uuid: String, groupId: String): EventSnapshot? =
+        eventDao.getExpenseByUuid(uuid, groupId)?.toSnapshot()
 
     override suspend fun getLatestEventByType(groupId: String, eventType: String): EventSnapshot? =
         eventDao.getLatestEventByType(groupId, eventType)?.toSnapshot()

@@ -101,7 +101,7 @@ class ExpenseRepositoryTest {
     @Test
     fun `deleteExpense stores delete event`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByUuid("u1") } returns
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity(
                 "e1",
                 "g1",
@@ -122,14 +122,14 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalStateException::class)
     fun `deleteExpense throws when expense not found`() = runTest {
-        coEvery { eventDao.getExpenseByUuid("u1") } returns null
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns null
         repo().deleteExpense("u1", "g1")
     }
 
     @Test(expected = IllegalStateException::class)
     fun `deleteExpense throws when not creator`() = runTest {
         every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByUuid("u1") } returns
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity(
                 "e1",
                 "g1",
@@ -150,7 +150,7 @@ class ExpenseRepositoryTest {
     @Test
     fun `correctExpense stores correction event`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByUuid("u1") } returns
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity(
                 "e1",
                 "g1",
@@ -182,7 +182,7 @@ class ExpenseRepositoryTest {
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when not creator`() = runTest {
         every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByUuid("u1") } returns
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity(
                 "e1",
                 "g1",
@@ -215,7 +215,7 @@ class ExpenseRepositoryTest {
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when no group key`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByUuid("u1") } returns
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity(
                 "e1",
                 "g1",
@@ -234,7 +234,7 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when expense not found`() = runTest {
-        coEvery { eventDao.getExpenseByUuid("u1") } returns null
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns null
         repo().correctExpense("u1", mockk(), "g1")
     }
 }

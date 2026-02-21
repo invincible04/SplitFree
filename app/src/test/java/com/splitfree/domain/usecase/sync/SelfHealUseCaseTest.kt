@@ -1,6 +1,6 @@
 package com.splitfree.domain.usecase.sync
 
-import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -20,7 +20,7 @@ import org.junit.Test
 class SelfHealUseCaseTest {
     private val eventRepo = mockk<EventRepositoryContract>()
     private val nostrClient = mockk<NostrClientContract>()
-    private val signer = mockk<EventSigner>()
+    private val giftWrap = mockk<GiftWrapService>()
     private val identity = mockk<IdentityContract>()
     private val groupRepo = mockk<com.splitfree.domain.repository.GroupRepositoryContract>()
 
@@ -47,6 +47,7 @@ class SelfHealUseCaseTest {
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.d(any<String>(), any<String>()) } returns 0
         every { nostrClient.isConnected } returns true
+        every { giftWrap.enabled } returns false
         every { identity.getPublicKeyHex() } returns memberPub
         coEvery { groupRepo.getById(groupId) } returns
             Group(
@@ -58,7 +59,7 @@ class SelfHealUseCaseTest {
                 listOf(memberPub),
                 listOf("wss://r")
             )
-        useCase = SelfHealUseCase(eventRepo, nostrClient, signer, identity, groupRepo)
+        useCase = SelfHealUseCase(eventRepo, nostrClient, giftWrap, identity, groupRepo)
     }
 
     @Test
@@ -71,11 +72,7 @@ class SelfHealUseCaseTest {
     fun `returns 0 when all events already on relay`() = runTest {
         val local = listOf(entity("evt1"), entity("evt2"))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns
-            local.map {
-                com.splitfree.domain.crypto
-                    .NostrEvent(it.eventId, "pub", 1700000000, 30078, emptyList(), "enc", "sig")
-            }
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns local.map { it.eventId }.toSet()
         assertEquals(0, useCase(groupId))
     }
 
@@ -83,7 +80,7 @@ class SelfHealUseCaseTest {
     fun `republishes missing events`() = runTest {
         val local = listOf(entity("evt1"), entity("evt2"))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         coEvery { nostrClient.publishJson(any()) } returns true
         assertEquals(2, useCase(groupId))
     }
@@ -92,7 +89,7 @@ class SelfHealUseCaseTest {
     fun `skips events without originalEventJson`() = runTest {
         val local = listOf(entity("evt1", hasJson = false))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         assertEquals(0, useCase(groupId))
     }
 
@@ -100,7 +97,7 @@ class SelfHealUseCaseTest {
     fun `counts only successful publishes`() = runTest {
         val local = listOf(entity("evt1"), entity("evt2"))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         coEvery { nostrClient.publishJson(match { it.contains("evt1") }) } returns true
         coEvery { nostrClient.publishJson(match { it.contains("evt2") }) } returns false
         assertEquals(1, useCase(groupId))
@@ -110,10 +107,7 @@ class SelfHealUseCaseTest {
     fun `skips events already on relay`() = runTest {
         val local = listOf(entity("evt1"), entity("evt2"))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        val remoteEvt1 =
-            com.splitfree.domain.crypto
-                .NostrEvent("evt1", "pub", 1700000000, 30078, emptyList(), "enc", "sig")
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns listOf(remoteEvt1)
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns setOf("evt1")
         coEvery { nostrClient.publishJson(any()) } returns true
         assertEquals(1, useCase(groupId))
         coVerify(exactly = 1) { nostrClient.publishJson(any()) }
@@ -123,7 +117,7 @@ class SelfHealUseCaseTest {
     fun `publishes all events in batches instead of capping at 200`() = runTest {
         val local = (1..210).map { entity("evt$it") }
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         coEvery { nostrClient.publishJson(any()) } returns true
         val result = useCase(groupId)
         assertEquals(210, result)
@@ -133,7 +127,7 @@ class SelfHealUseCaseTest {
     fun `caps at ABSOLUTE_CAP for safety`() = runTest {
         val local = (1..SelfHealUseCase.ABSOLUTE_CAP + 50).map { entity("evt$it") }
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         coEvery { nostrClient.publishJson(any()) } returns true
         val result = useCase(groupId)
         assertEquals(SelfHealUseCase.ABSOLUTE_CAP, result)
@@ -144,9 +138,16 @@ class SelfHealUseCaseTest {
         val removedPub = "removed"
         val local = listOf(entity("evt1"), entity("evt2", pubkey = removedPub))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns local
-        coEvery { nostrClient.fetchEvents(groupId, any(), any()) } returns emptyList()
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
         coEvery { nostrClient.publishJson(any()) } returns true
         assertEquals(1, useCase(groupId))
+    }
+
+    @Test
+    fun `returns 0 immediately when gift wrap is enabled`() = runTest {
+        every { giftWrap.enabled } returns true
+        assertEquals(0, useCase(groupId))
+        coVerify(exactly = 0) { eventRepo.getEventsByGroup(any()) }
     }
 
     @Test

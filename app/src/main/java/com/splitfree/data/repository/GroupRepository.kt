@@ -77,7 +77,8 @@ constructor(
         name: String,
         members: List<String>,
         relays: List<String>,
-        eventTimestamp: Long
+        eventTimestamp: Long,
+        createdBy: String
     ) {
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
@@ -90,12 +91,12 @@ constructor(
         val membersJson = json.encodeToString(stringListSerializer, members)
         val relaysJson = json.encodeToString(stringListSerializer, safeRelays)
         if (eventTimestamp > 0) {
-            val updated = groupDao.updateMetaIfNewer(groupId, name, membersJson, relaysJson, eventTimestamp)
+            val updated = groupDao.updateMetaIfNewer(groupId, name, membersJson, relaysJson, createdBy, eventTimestamp)
             if (updated > 0) {
                 groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)
             }
         } else {
-            groupDao.updateMeta(groupId, name, membersJson, relaysJson)
+            groupDao.updateMeta(groupId, name, membersJson, relaysJson, createdBy)
         }
     }
 
