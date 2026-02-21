@@ -9,6 +9,7 @@ import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.NostrClientContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
@@ -28,7 +29,8 @@ constructor(
     private val encryption: GroupEncryption,
     private val eventPublisher: EventPublisherContract,
     private val selfHeal: SelfHealUseCase,
-    private val syncEngine: SyncEngineContract
+    private val syncEngine: SyncEngineContract,
+    private val settings: SettingsContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -98,7 +100,16 @@ constructor(
             } else {
                 currentGroup.members + pubkey
             }
-        groupRepo.updateFromMeta(group.id, currentGroup.name, updatedMembers, currentGroup.relays)
+        val myName = settings.displayName
+        val updatedNames = currentGroup.memberNames.toMutableMap()
+        if (myName.isNotBlank()) updatedNames[pubkey] = myName
+        groupRepo.updateFromMeta(
+            group.id,
+            currentGroup.name,
+            updatedMembers,
+            currentGroup.relays,
+            memberNames = updatedNames
+        )
         Log.i(TAG, "Local members after join: ${updatedMembers.map { it.take(8) }}")
 
         // Publish join announcement while still connected
@@ -109,7 +120,8 @@ constructor(
             currentGroup.createdAt,
             updatedMembers,
             currentGroup.relays,
-            groupKey
+            groupKey,
+            updatedNames
         )
 
         return groupRepo.getById(group.id) ?: group
@@ -144,7 +156,8 @@ constructor(
         createdAt: Long,
         members: List<String>,
         relays: List<String>,
-        groupKey: String
+        groupKey: String,
+        memberNames: Map<String, String> = emptyMap()
     ) {
         try {
             val meta = GroupMeta(
@@ -153,7 +166,8 @@ constructor(
                 createdBy = createdBy,
                 createdAt = createdAt,
                 members = members,
-                relays = relays
+                relays = relays,
+                memberNames = memberNames
             )
             val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
             val encrypted = encryption.encrypt(metaJson, groupKey)

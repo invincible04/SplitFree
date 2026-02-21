@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +40,7 @@ import com.splitfree.ui.viewmodels.OnboardingViewModel
 fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hiltViewModel()) {
     var showImport by remember { mutableStateOf(false) }
     var importInput by remember { mutableStateOf("") }
+    var nameInput by remember { mutableStateOf("") }
     val error by viewModel.error.collectAsStateWithLifecycle()
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -92,9 +94,22 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     if (!importing) {
+                        OutlinedTextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it.take(50) },
+                            label = { Text("Your name") },
+                            placeholder = { Text("How friends will see you") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.Person, contentDescription = null)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = MaterialTheme.shapes.medium
+                        )
+                        Spacer(Modifier.height(16.dp))
                         Button(
                             onClick = {
-                                viewModel.generateIdentity()
+                                viewModel.generateIdentity(nameInput.trim())
                                 onComplete()
                             },
                             modifier = Modifier.fillMaxWidth().height(52.dp),

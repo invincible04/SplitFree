@@ -8,6 +8,7 @@ import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.NostrClientContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import io.mockk.coEvery
@@ -33,6 +34,7 @@ class JoinGroupUseCaseTest {
     private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
     private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
     private val syncEngine = mockk<SyncEngineContract>(relaxed = true)
+    private val settings = mockk<SettingsContract>(relaxed = true)
 
     private lateinit var useCase: JoinGroupUseCase
     private val pubkey = "aa".repeat(32)
@@ -67,10 +69,14 @@ class JoinGroupUseCaseTest {
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
 
         every { identity.getPublicKeyHex() } returns pubkey
+        every { settings.displayName } returns ""
         coEvery { groupRepo.getById(any()) } returns null
 
         useCase =
-            JoinGroupUseCase(groupRepo, identity, nostrClient, signer, encryption, eventPublisher, selfHeal, syncEngine)
+            JoinGroupUseCase(
+                groupRepo, identity, nostrClient, signer, encryption,
+                eventPublisher, selfHeal, syncEngine, settings
+            )
     }
 
     @After
@@ -148,5 +154,23 @@ class JoinGroupUseCaseTest {
     @Test
     fun `invoke with non-expired link succeeds`() = runBlocking {
         assertNotNull(useCase(buildInviteUri()))
+    }
+
+    @Test
+    fun `invoke includes joiner display name in local meta update`() = runBlocking {
+        every { settings.displayName } returns "Bob"
+        val groupId = java.util.UUID.randomUUID().toString()
+        useCase(buildInviteUri(groupId = groupId))
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                any(),
+                any(),
+                any(),
+                0,
+                "",
+                match { it[pubkey] == "Bob" }
+            )
+        }
     }
 }

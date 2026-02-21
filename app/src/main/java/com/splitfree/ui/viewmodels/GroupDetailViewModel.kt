@@ -34,6 +34,7 @@ data class GroupDetailUiState(
     val groupName: String = "",
     val memberCount: Int = 1,
     val members: List<String> = emptyList(),
+    val memberNames: Map<String, String> = emptyMap(),
     val createdBy: String = "",
     val myPubkey: String = "",
     val debts: List<DebtTransaction> = emptyList(),
@@ -81,6 +82,7 @@ constructor(
                         groupName = group?.name ?: "Group",
                         memberCount = group?.members?.size ?: 1,
                         members = group?.members ?: emptyList(),
+                        memberNames = group?.memberNames ?: emptyMap(),
                         createdBy = group?.createdBy ?: "",
                         myPubkey = myPub
                     )

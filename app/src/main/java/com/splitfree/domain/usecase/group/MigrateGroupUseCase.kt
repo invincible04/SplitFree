@@ -68,7 +68,8 @@ constructor(
                     createdBy = myPubkey,
                     createdAt = System.currentTimeMillis() / 1000,
                     members = remainingMembers,
-                    relays = oldGroup.relays
+                    relays = oldGroup.relays,
+                    memberNames = oldGroup.memberNames.filterKeys { it in remainingMembers }
                 )
 
             // Encrypt the new group key individually for each remaining member
@@ -125,7 +126,8 @@ constructor(
                         createdBy = newGroup.createdBy,
                         createdAt = newGroup.createdAt,
                         members = newGroup.members,
-                        relays = newGroup.relays
+                        relays = newGroup.relays,
+                        memberNames = newGroup.memberNames
                     )
                 )
             val metaEncrypted = encryption.encrypt(metaJson, newGroupKey)
@@ -217,7 +219,8 @@ constructor(
                 createdBy = authorPubkey,
                 createdAt = System.currentTimeMillis() / 1000,
                 members = migration.members,
-                relays = oldGroup.relays
+                relays = oldGroup.relays,
+                memberNames = oldGroup.memberNames.filterKeys { it in migration.members }
             )
         groupRepo.save(newGroup, newGroupKey)
         Log.i(TAG, "Auto-joined migrated group ${newGroup.id} (removed: ${migration.removedMember})")

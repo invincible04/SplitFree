@@ -25,6 +25,12 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
             prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply()
         }
 
+    override var displayName: String
+        get() = prefs.getString(KEY_DISPLAY_NAME, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_DISPLAY_NAME, value.take(50).trim()).apply()
+        }
+
     override fun getCustomRelays(): List<String> {
         val raw = prefs.getString(KEY_CUSTOM_RELAYS, null) ?: return emptyList()
         return raw.split(",").filter { it.startsWith("wss://") }
@@ -37,6 +43,7 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
 
     companion object {
         private const val KEY_GIFT_WRAP = "gift_wrap_enabled"
+        private const val KEY_DISPLAY_NAME = "display_name"
         private const val KEY_CUSTOM_RELAYS = "custom_relays"
     }
 }

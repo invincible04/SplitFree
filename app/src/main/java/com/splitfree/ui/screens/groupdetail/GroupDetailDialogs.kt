@@ -1,6 +1,9 @@
 package com.splitfree.ui.screens.groupdetail
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,11 +23,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.QrGenerator
+import com.splitfree.util.CurrencyFormatter
 
 @Composable
 fun ShareWarningDialog(inviteLink: String?, onShare: (String) -> Unit, onDismiss: () -> Unit) {
@@ -85,7 +92,12 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-fun SettleDialog(debt: DebtTransaction, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun SettleDialog(
+    debt: DebtTransaction,
+    memberNames: Map<String, String> = emptyMap(),
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Settle Up") },
@@ -94,14 +106,13 @@ fun SettleDialog(debt: DebtTransaction, onConfirm: () -> Unit, onDismiss: () -> 
                 Text("Record payment:")
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    PubkeyChip(debt.from)
+                    PubkeyChip(debt.from, memberNames)
                     Text(" → ", style = MaterialTheme.typography.titleMedium)
-                    PubkeyChip(debt.to)
+                    PubkeyChip(debt.to, memberNames)
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    com.splitfree.util.CurrencyFormatter
-                        .format(debt.amount, debt.currency),
+                    CurrencyFormatter.format(debt.amount, debt.currency),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -118,15 +129,19 @@ fun SettleDialog(debt: DebtTransaction, onConfirm: () -> Unit, onDismiss: () -> 
 }
 
 @Composable
-fun RemoveMemberDialog(pubkey: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun RemoveMemberDialog(
+    pubkey: String,
+    memberNames: Map<String, String> = emptyMap(),
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val name = memberNames[pubkey]?.ifBlank { null } ?: (pubkey.take(8) + "…")
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Remove Member") },
         text = {
             Text(
-                "Remove ${pubkey.take(
-                    8
-                )}…? This creates a new group without them. All remaining members will be migrated automatically."
+                "Remove $name? This creates a new group without them. All remaining members will be migrated automatically."
             )
         },
         confirmButton = {
@@ -138,18 +153,40 @@ fun RemoveMemberDialog(pubkey: String, onConfirm: () -> Unit, onDismiss: () -> U
     )
 }
 
+/** Compact chip showing a member's display name or truncated pubkey with avatar initial. */
 @Composable
-fun PubkeyChip(pubkey: String) {
+fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
+    val name = memberNames[pubkey]?.ifBlank { null }
+    val label = name ?: (pubkey.take(6) + "…")
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.secondaryContainer,
         tonalElevation = 1.dp
     ) {
-        Text(
-            text = pubkey.take(6) + "…",
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer
-        )
+        Row(
+            modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    name?.first()?.uppercase() ?: "#",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        }
     }
 }

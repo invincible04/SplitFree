@@ -46,6 +46,7 @@ interface GroupRepositoryContract {
      * @param relays updated relay URL list
      * @param eventTimestamp the `createdAt` of the incoming group_meta event
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
+     * @param memberNames optional map of member pubkey -> display name
      */
     suspend fun updateFromMeta(
         groupId: String,
@@ -53,6 +54,7 @@ interface GroupRepositoryContract {
         members: List<String>,
         relays: List<String>,
         eventTimestamp: Long = 0,
-        createdBy: String = ""
+        createdBy: String = "",
+        memberNames: Map<String, String> = emptyMap()
     )
 }

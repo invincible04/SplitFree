@@ -48,7 +48,12 @@ class MigrateGroupUseCaseTest {
             createdBy = myPubkey,
             createdAt = 1000,
             members = listOf(myPubkey, memberPubkey, removePubkey),
-            relays = listOf("wss://relay.test")
+            relays = listOf("wss://relay.test"),
+            memberNames = mapOf(
+                myPubkey to "Me",
+                memberPubkey to "Member",
+                removePubkey to "Removed"
+            )
         )
 
     private val fakeEvent =
@@ -96,6 +101,7 @@ class MigrateGroupUseCaseTest {
     fun `invoke creates new group without removed member`() = runBlocking {
         val newGroup = useCase(oldGroupId, removePubkey)
         assertEquals(listOf(myPubkey, memberPubkey), newGroup.members)
+        assertEquals(mapOf(myPubkey to "Me", memberPubkey to "Member"), newGroup.memberNames)
         assertEquals("Trip", newGroup.name)
         assertNotEquals(oldGroupId, newGroup.id)
     }
@@ -165,7 +171,17 @@ class MigrateGroupUseCaseTest {
                 removedMember = removePubkey
             )
         useCase.handleMigration(Json.encodeToString(GroupMigration.serializer(), migration), myPubkey, oldGroupId)
-        coVerify { groupRepo.save(match { it.id == newId }, any()) }
+        coVerify {
+            groupRepo.save(
+                match {
+                    it.id == newId &&
+                        it.memberNames[myPubkey] == "Me" &&
+                        it.memberNames[memberPubkey] == "Member" &&
+                        !it.memberNames.containsKey(removePubkey)
+                },
+                any()
+            )
+        }
     }
 
     @Test

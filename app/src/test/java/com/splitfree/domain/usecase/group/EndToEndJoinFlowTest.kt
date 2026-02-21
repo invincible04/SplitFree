@@ -117,7 +117,8 @@ class EndToEndJoinFlowTest {
                 phone1Encryption,
                 phone1Identity,
                 phone1Signer,
-                phone1EventPublisher
+                phone1EventPublisher,
+                mockk(relaxed = true)
             )
 
         // --- Phone 2 setup ---
@@ -141,7 +142,8 @@ class EndToEndJoinFlowTest {
                 phone2Encryption,
                 phone2EventPublisher,
                 phone2SelfHeal,
-                phone2SyncEngine
+                phone2SyncEngine,
+                mockk(relaxed = true)
             )
     }
 

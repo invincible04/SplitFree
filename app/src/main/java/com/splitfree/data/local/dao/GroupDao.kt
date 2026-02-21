@@ -40,7 +40,7 @@ interface GroupDao {
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 
     @Query(
-        "UPDATE `groups` SET name = :name, members = :members, relays = :relays, " +
+        "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END " +
             "WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp"
     )
@@ -50,15 +50,23 @@ interface GroupDao {
         members: String,
         relays: String,
         createdBy: String,
-        eventTimestamp: Long
+        eventTimestamp: Long,
+        memberNames: String = "{}"
     ): Int
 
     @Query(
-        "UPDATE `groups` SET name = :name, members = :members, relays = :relays, " +
+        "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END " +
             "WHERE groupId = :groupId"
     )
-    suspend fun updateMeta(groupId: String, name: String, members: String, relays: String, createdBy: String)
+    suspend fun updateMeta(
+        groupId: String,
+        name: String,
+        members: String,
+        relays: String,
+        createdBy: String,
+        memberNames: String = "{}"
+    )
 
     @Query("UPDATE `groups` SET lastMetaTimestamp = :timestamp WHERE groupId = :groupId")
     suspend fun updateLastMetaTimestamp(groupId: String, timestamp: Long)

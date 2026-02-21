@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
  * @property createdBy pubkey of the group creator (has elevated privileges for group_meta)
  * @property members list of member pubkeys
  * @property relays Nostr relay URLs where this group's events are published
+ * @property memberNames optional map of member pubkey -> display name
  */
 @Serializable
 data class Group(
@@ -18,5 +19,6 @@ data class Group(
     val createdBy: String,
     val createdAt: Long,
     val members: List<String>,
-    val relays: List<String>
+    val relays: List<String>,
+    val memberNames: Map<String, String> = emptyMap()
 )

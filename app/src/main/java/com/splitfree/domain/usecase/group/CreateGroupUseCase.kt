@@ -7,6 +7,7 @@ import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import java.util.UUID
@@ -22,7 +23,8 @@ constructor(
     private val encryption: GroupEncryption,
     private val identity: IdentityContract,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisherContract
+    private val eventPublisher: EventPublisherContract,
+    private val settings: SettingsContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -38,6 +40,8 @@ constructor(
         require(name.isNotBlank() && name.length <= 100) { "Group name must be 1-100 characters" }
         val groupKey = encryption.generateGroupKey()
         val pubkey = identity.getPublicKeyHex()
+        val myName = settings.displayName
+        val names = if (myName.isNotBlank()) mapOf(pubkey to myName) else emptyMap()
         val group =
             Group(
                 id = UUID.randomUUID().toString(),
@@ -45,7 +49,8 @@ constructor(
                 createdBy = pubkey,
                 createdAt = System.currentTimeMillis() / 1000,
                 members = listOf(pubkey),
-                relays = relays
+                relays = relays,
+                memberNames = names
             )
         groupRepo.save(group, groupKey)
         Log.i(TAG, "Created group: ${group.id} name=$name creator=${pubkey.take(8)}")
@@ -56,7 +61,8 @@ constructor(
             createdBy = group.createdBy,
             createdAt = group.createdAt,
             members = group.members,
-            relays = group.relays
+            relays = group.relays,
+            memberNames = names
         )
         val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
         val encrypted = encryption.encrypt(metaJson, groupKey)

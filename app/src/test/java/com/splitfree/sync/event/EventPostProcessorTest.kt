@@ -94,6 +94,52 @@ class EventPostProcessorTest {
     }
 
     @Test
+    fun `handle group_meta non-creator cannot overwrite other member names`() = runBlocking {
+        val stranger = "bb".repeat(32)
+        val namedGroup = group.copy(memberNames = mapOf(pubkey to "Creator"))
+        coEvery { groupRepo.getById(groupId) } returns namedGroup
+        val meta =
+            """{"name":"Test","members":["$pubkey","$stranger"],""" +
+                """"relays":["wss://r"],"member_names":{"$pubkey":"Spoofed","$stranger":"Joiner"}}"""
+        processor.handle("group_meta", meta, stranger, groupId, 2000, false)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                match { stranger in it && pubkey in it },
+                listOf("wss://r"),
+                2000,
+                "",
+                match { names ->
+                    names[pubkey] == "Creator" &&
+                        names[stranger] == "Joiner"
+                }
+            )
+        }
+    }
+
+    @Test
+    fun `handle group_meta creator event preserves names when member_names is missing`() = runBlocking {
+        val namedGroup = group.copy(memberNames = mapOf(pubkey to "Creator"))
+        coEvery { groupRepo.getById(groupId) } returns namedGroup
+        val meta =
+            """{"name":"New","description":"","created_by":"$pubkey",""" +
+                """"created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "New",
+                listOf(pubkey),
+                listOf("wss://r"),
+                2000,
+                pubkey,
+                mapOf(pubkey to "Creator")
+            )
+        }
+    }
+
+    @Test
     fun `handle group_migrate delegates to MigrateGroupUseCase`() = runBlocking {
         processor.handle("group_migrate", """{"data":"x"}""", pubkey, groupId, 1000, false)
         coVerify { migrateGroup.handleMigration("""{"data":"x"}""", pubkey, groupId) }

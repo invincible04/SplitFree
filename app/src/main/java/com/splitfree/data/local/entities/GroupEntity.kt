@@ -8,6 +8,7 @@ import androidx.room.PrimaryKey
  *
  * @property members JSON array of member pubkeys
  * @property relays JSON array of relay URLs
+ * @property memberNames JSON map of pubkey → display name
  * @property lastSyncTimestamp unix timestamp of the last successful relay sync
  * @property lastMetaTimestamp `createdAt` of the most recent group_meta event applied
  */
@@ -20,6 +21,7 @@ data class GroupEntity(
     val createdAt: Long,
     val members: String,
     val relays: String,
+    val memberNames: String = "{}",
     val lastSyncTimestamp: Long = 0,
     val lastMetaTimestamp: Long = 0
 )

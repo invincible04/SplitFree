@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.data.util.CompressionUtil
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
@@ -55,8 +56,8 @@ class RealRelayIntegrationTest {
     private lateinit var phone2Client: NostrClient
 
     // Real crypto
-    private val phone1Encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
-    private val phone2Encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
+    private val phone1Encryption = GroupEncryption(CompressionUtil)
+    private val phone2Encryption = GroupEncryption(CompressionUtil)
 
     // Real keys (generated fresh each test)
     private lateinit var phone1PrivKey: ByteArray
@@ -252,7 +253,8 @@ class RealRelayIntegrationTest {
                 phone2Encryption,
                 phone2EventPublisher,
                 phone2SelfHeal,
-                phone2SyncEngine
+                phone2SyncEngine,
+                mockk(relaxed = true)
             )
 
         val joinedGroup = joinUseCase(inviteLink)

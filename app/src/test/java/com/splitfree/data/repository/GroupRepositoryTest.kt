@@ -9,6 +9,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -97,6 +98,25 @@ class GroupRepositoryTest {
     }
 
     @Test
+    fun `save sanitizes member names before persisting`() = runBlocking {
+        val captured = slot<GroupEntity>()
+        val group =
+            Group(
+                "g1",
+                "Test",
+                "",
+                "pub1",
+                1000,
+                listOf("pub1"),
+                listOf("wss://r"),
+                memberNames = mapOf("pub1" to "  Alice  ", "pub2" to "Ignored")
+            )
+        repo.save(group, "key123")
+        coVerify { groupDao.insert(capture(captured)) }
+        assertEquals("""{"pub1":"Alice"}""", captured.captured.memberNames)
+    }
+
+    @Test
     fun `deleteGroupKey removes from storage`() {
         keyStore.putString("g1", "key")
         repo.deleteGroupKey("g1")
@@ -164,6 +184,20 @@ class GroupRepositoryTest {
     fun `updateFromMeta passes createdBy when provided`() = runBlocking {
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), createdBy = "creator")
         coVerify { groupDao.updateMeta("g1", "name", any(), any(), "creator") }
+    }
+
+    @Test
+    fun `updateFromMeta sanitizes member names`() = runBlocking {
+        val namesJson = slot<String>()
+        repo.updateFromMeta(
+            "g1",
+            "name",
+            listOf("pub1"),
+            listOf("wss://r"),
+            memberNames = mapOf("pub1" to "  Alice  ", "pub2" to "Ignored")
+        )
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", capture(namesJson)) }
+        assertEquals("""{"pub1":"Alice"}""", namesJson.captured)
     }
 
     @Test

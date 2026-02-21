@@ -38,6 +38,14 @@ constructor(
     private val _customRelays = MutableStateFlow(userPreferences.getCustomRelays())
     val customRelays: StateFlow<List<String>> = _customRelays
 
+    private val _displayName = MutableStateFlow(userPreferences.displayName)
+    val displayName: StateFlow<String> = _displayName
+
+    fun setDisplayName(name: String) {
+        userPreferences.displayName = name
+        _displayName.value = userPreferences.displayName
+    }
+
     var giftWrapEnabled: Boolean
         get() = giftWrap.enabled
         set(value) {

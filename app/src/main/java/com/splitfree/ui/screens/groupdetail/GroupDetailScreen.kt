@@ -40,13 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.domain.model.expense.DebtTransaction
-import com.splitfree.ui.screens.groupdetail.BalancesTab
-import com.splitfree.ui.screens.groupdetail.ExpensesTab
-import com.splitfree.ui.screens.groupdetail.MembersTab
-import com.splitfree.ui.screens.groupdetail.QrDialog
-import com.splitfree.ui.screens.groupdetail.RemoveMemberDialog
-import com.splitfree.ui.screens.groupdetail.SettleDialog
-import com.splitfree.ui.screens.groupdetail.ShareWarningDialog
 import com.splitfree.ui.viewmodels.GroupDetailViewModel
 import kotlinx.coroutines.launch
 
@@ -127,12 +120,13 @@ fun GroupDetailScreen(
                                 uiState.debts,
                                 hasExpenses = uiState.expenses.isNotEmpty(),
                                 myPubkey = uiState.myPubkey,
+                                memberNames = uiState.memberNames,
                                 onSettle = { showSettleDialog = it }
                             )
                         }
 
                         1 -> {
-                            ExpensesTab(uiState.expenses)
+                            ExpensesTab(uiState.expenses, memberNames = uiState.memberNames)
                         }
 
                         2 -> {
@@ -142,6 +136,7 @@ fun GroupDetailScreen(
                                 isCreator =
                                 uiState.myPubkey == uiState.createdBy,
                                 myPubkey = uiState.myPubkey,
+                                memberNames = uiState.memberNames,
                                 onRemove = { showRemoveDialog = it }
                             )
                         }
@@ -178,6 +173,7 @@ fun GroupDetailScreen(
     showSettleDialog?.let { debt ->
         SettleDialog(
             debt = debt,
+            memberNames = uiState.memberNames,
             onConfirm = {
                 viewModel.recordSettlement(debt)
                 showSettleDialog = null
@@ -188,6 +184,7 @@ fun GroupDetailScreen(
     showRemoveDialog?.let { pubkey ->
         RemoveMemberDialog(
             pubkey = pubkey,
+            memberNames = uiState.memberNames,
             onConfirm = {
                 showRemoveDialog = null
                 viewModel.removeMember(pubkey) { onNavigateToGroup(it) }

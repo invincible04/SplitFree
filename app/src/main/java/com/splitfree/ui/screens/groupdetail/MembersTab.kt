@@ -1,12 +1,16 @@
 package com.splitfree.ui.screens.groupdetail
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material3.Icon
@@ -18,6 +22,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -26,17 +32,36 @@ fun MembersTab(
     createdBy: String,
     isCreator: Boolean,
     myPubkey: String,
+    memberNames: Map<String, String> = emptyMap(),
     onRemove: (String) -> Unit
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
         items(members) { pubkey ->
+            val displayName = memberNames[pubkey]?.ifBlank { null }
+            val shortKey = pubkey.take(8) + "…" + pubkey.takeLast(4)
             ListItem(
+                leadingContent = {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondaryContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            displayName?.first()?.uppercase() ?: "#",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                },
                 headlineContent = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(pubkey.take(8) + "…" + pubkey.takeLast(4))
+                        Text(displayName ?: shortKey)
                         if (pubkey == createdBy) {
                             Surface(
                                 shape = MaterialTheme.shapes.extraSmall,
@@ -62,6 +87,17 @@ fun MembersTab(
                             }
                         }
                     }
+                },
+                supportingContent = if (displayName != null) {
+                    {
+                        Text(
+                            shortKey,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                } else {
+                    null
                 },
                 trailingContent = {
                     if (isCreator && pubkey != myPubkey) {

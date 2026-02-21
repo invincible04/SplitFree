@@ -51,11 +51,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.splitfree.ui.screens.settings.DangerZoneSection
-import com.splitfree.ui.screens.settings.IdentitySection
-import com.splitfree.ui.screens.settings.KeyBackupSection
-import com.splitfree.ui.screens.settings.PrivacySection
-import com.splitfree.ui.screens.settings.SectionHeader
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
@@ -96,6 +91,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         }
     }
     val customRelays by viewModel.customRelays.collectAsStateWithLifecycle()
+    val displayName by viewModel.displayName.collectAsStateWithLifecycle()
     var showRelayEditor by remember { mutableStateOf(false) }
     var relayInput by remember { mutableStateOf("") }
 
@@ -110,6 +106,14 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         Column(
             modifier = Modifier.padding(padding).fillMaxWidth().verticalScroll(rememberScrollState())
         ) {
+            // Profile — display name at the very top
+            ProfileSection(
+                displayName = displayName,
+                onNameChange = { viewModel.setDisplayName(it.take(50)) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
             IdentitySection(npub = npub, onCopy = { copyToClipboard(context, "npub", npub) })
 
             KeyBackupSection(

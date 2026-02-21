@@ -79,12 +79,16 @@ constructor(
                     val groupKey = groupRepo.getGroupKey(group.id) ?: continue
                     val updatedMembers = group.members.map { if (it == oldPubkey) newPubkey else it }
                     val newCreatedBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy
+                    val updatedNames = group.memberNames.toMutableMap().apply {
+                        remove(oldPubkey)?.let { put(newPubkey, it) }
+                    }
                     groupRepo.updateFromMeta(
                         group.id,
                         group.name,
                         updatedMembers,
                         group.relays,
-                        createdBy = newCreatedBy
+                        createdBy = newCreatedBy,
+                        memberNames = updatedNames
                     )
 
                     val metaPayload =
@@ -96,7 +100,8 @@ constructor(
                                 createdBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy,
                                 createdAt = group.createdAt,
                                 members = updatedMembers,
-                                relays = group.relays
+                                relays = group.relays,
+                                memberNames = updatedNames
                             )
                         )
                     val metaEncrypted = encryption.encrypt(metaPayload, groupKey)
@@ -189,7 +194,20 @@ constructor(
                 } else {
                     group.members - revocation.oldPubkey
                 }
-            groupRepo.updateFromMeta(groupId, group.name, updated, group.relays)
+            val updatedNames = group.memberNames.toMutableMap().apply {
+                if (revocation.newPubkey.isNotEmpty()) {
+                    remove(revocation.oldPubkey)?.let { put(revocation.newPubkey, it) }
+                } else {
+                    remove(revocation.oldPubkey)
+                }
+            }
+            groupRepo.updateFromMeta(
+                groupId,
+                group.name,
+                updated,
+                group.relays,
+                memberNames = updatedNames
+            )
             Log.i(
                 TAG,
                 "Processed key revocation ${revocation.oldPubkey.take(

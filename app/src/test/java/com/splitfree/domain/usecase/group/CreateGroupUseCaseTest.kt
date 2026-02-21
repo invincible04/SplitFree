@@ -7,6 +7,7 @@ import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
 import io.mockk.coVerify
 import io.mockk.every
@@ -26,6 +27,7 @@ class CreateGroupUseCaseTest {
     private val encryption = mockk<GroupEncryption>()
     private val identity = mockk<IdentityContract>()
     private val signer = mockk<EventSigner>()
+    private val settings = mockk<SettingsContract>(relaxed = true)
     private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
 
     private lateinit var useCase: CreateGroupUseCase
@@ -55,8 +57,9 @@ class CreateGroupUseCaseTest {
         every { identity.getPublicKeyHex() } returns fakePubkey
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
+        every { settings.displayName } returns ""
         useCase =
-            CreateGroupUseCase(groupRepo, encryption, identity, signer, eventPublisher)
+            CreateGroupUseCase(groupRepo, encryption, identity, signer, eventPublisher, settings)
     }
 
     @After
@@ -70,7 +73,15 @@ class CreateGroupUseCaseTest {
         assertEquals("Trip to Goa", group.name)
         assertEquals(fakePubkey, group.createdBy)
         assertEquals(listOf(fakePubkey), group.members)
-        assertEquals(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS, group.relays)
+        assertEquals(RelayDefaults.DEFAULT_RELAYS, group.relays)
+    }
+
+    @Test
+    fun `invoke includes creator display name when available`() = runBlocking {
+        every { settings.displayName } returns "Alice"
+        val group = useCase("Trip to Goa")
+        assertEquals(mapOf(fakePubkey to "Alice"), group.memberNames)
+        coVerify { groupRepo.save(match { it.memberNames[fakePubkey] == "Alice" }, fakeGroupKey) }
     }
 
     @Test
@@ -114,12 +125,12 @@ class CreateGroupUseCaseTest {
 
     @Test
     fun `DEFAULT_RELAYS contains expected relay URLs`() {
-        assertTrue(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS.all { it.startsWith("wss://") })
-        assertTrue(com.splitfree.domain.util.RelayDefaults.DEFAULT_RELAYS.size >= 3)
+        assertTrue(RelayDefaults.DEFAULT_RELAYS.all { it.startsWith("wss://") })
+        assertTrue(RelayDefaults.DEFAULT_RELAYS.size >= 3)
     }
 
     @Test
     fun `MAX_GROUP_MEMBERS is 50`() {
-        assertEquals(50, com.splitfree.domain.util.RelayDefaults.MAX_GROUP_MEMBERS)
+        assertEquals(50, RelayDefaults.MAX_GROUP_MEMBERS)
     }
 }

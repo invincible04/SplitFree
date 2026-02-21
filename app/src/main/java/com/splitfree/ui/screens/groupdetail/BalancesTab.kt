@@ -25,12 +25,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.util.CurrencyFormatter
 
 @Composable
 fun BalancesTab(
     debts: List<DebtTransaction>,
     hasExpenses: Boolean,
     myPubkey: String = "",
+    memberNames: Map<String, String> = emptyMap(),
     onSettle: (DebtTransaction) -> Unit
 ) {
     if (debts.isEmpty()) {
@@ -71,7 +73,12 @@ fun BalancesTab(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(debts) { debt ->
-                DebtCard(debt, showSettle = debt.from == myPubkey || debt.to == myPubkey, onSettle = { onSettle(debt) })
+                DebtCard(
+                    debt,
+                    showSettle = debt.from == myPubkey || debt.to == myPubkey,
+                    memberNames = memberNames,
+                    onSettle = { onSettle(debt) }
+                )
             }
             item { Spacer(Modifier.height(80.dp)) }
         }
@@ -79,7 +86,12 @@ fun BalancesTab(
 }
 
 @Composable
-fun DebtCard(debt: DebtTransaction, showSettle: Boolean = true, onSettle: () -> Unit) {
+fun DebtCard(
+    debt: DebtTransaction,
+    showSettle: Boolean = true,
+    memberNames: Map<String, String> = emptyMap(),
+    onSettle: () -> Unit
+) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(16.dp).fillMaxWidth(),
@@ -90,14 +102,13 @@ fun DebtCard(debt: DebtTransaction, showSettle: Boolean = true, onSettle: () -> 
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    PubkeyChip(debt.from)
+                    PubkeyChip(debt.from, memberNames)
                     Text("owes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                    PubkeyChip(debt.to)
+                    PubkeyChip(debt.to, memberNames)
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    com.splitfree.util.CurrencyFormatter
-                        .format(debt.amount, debt.currency),
+                    CurrencyFormatter.format(debt.amount, debt.currency),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.error
                 )

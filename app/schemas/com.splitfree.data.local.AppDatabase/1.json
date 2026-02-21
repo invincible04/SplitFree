@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "b004a9f565241d01668b16813db42931",
+    "identityHash": "eadbdc1c96ed1ad5cfc5577522e95f70",
     "entities": [
       {
         "tableName": "events",
@@ -113,7 +113,7 @@
       },
       {
         "tableName": "groups",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `createdBy` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `members` TEXT NOT NULL, `relays` TEXT NOT NULL, `lastSyncTimestamp` INTEGER NOT NULL, `lastMetaTimestamp` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `createdBy` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `members` TEXT NOT NULL, `relays` TEXT NOT NULL, `memberNames` TEXT NOT NULL, `lastSyncTimestamp` INTEGER NOT NULL, `lastMetaTimestamp` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
         "fields": [
           {
             "fieldPath": "groupId",
@@ -154,6 +154,12 @@
           {
             "fieldPath": "relays",
             "columnName": "relays",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "memberNames",
+            "columnName": "memberNames",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -221,7 +227,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b004a9f565241d01668b16813db42931')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'eadbdc1c96ed1ad5cfc5577522e95f70')"
     ]
   }
 }

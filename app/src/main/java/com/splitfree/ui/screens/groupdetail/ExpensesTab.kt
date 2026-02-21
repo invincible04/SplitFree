@@ -27,9 +27,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.util.CurrencyFormatter
 
 @Composable
-fun ExpensesTab(expenses: List<Expense>) {
+fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = emptyMap()) {
     if (expenses.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize().padding(48.dp),
@@ -62,7 +63,7 @@ fun ExpensesTab(expenses: List<Expense>) {
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             items(expenses) { expense ->
-                ExpenseRow(expense)
+                ExpenseRow(expense, memberNames)
             }
             item { Spacer(Modifier.height(80.dp)) }
         }
@@ -70,7 +71,7 @@ fun ExpensesTab(expenses: List<Expense>) {
 }
 
 @Composable
-private fun ExpenseRow(expense: Expense) {
+private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = emptyMap()) {
     val categoryEmoji =
         when (expense.category.lowercase()) {
             "food" -> "🍕"
@@ -89,7 +90,7 @@ private fun ExpenseRow(expense: Expense) {
         },
         supportingContent = {
             Text(
-                "Paid by ${expense.paidBy.take(6)}…",
+                "Paid by ${memberNames[expense.paidBy]?.ifBlank { null } ?: (expense.paidBy.take(6) + "…")}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline
             )
@@ -108,8 +109,7 @@ private fun ExpenseRow(expense: Expense) {
         },
         trailingContent = {
             Text(
-                com.splitfree.util.CurrencyFormatter
-                    .format(expense.amount, expense.currency),
+                CurrencyFormatter.format(expense.amount, expense.currency),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold
             )
