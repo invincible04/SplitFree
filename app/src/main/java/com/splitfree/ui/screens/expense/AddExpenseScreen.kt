@@ -64,6 +64,11 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
     var categoryExpanded by remember { mutableStateOf(false) }
 
     val currencies = listOf("INR", "USD", "EUR", "GBP", "JPY", "AUD", "CAD")
+
+    fun displayName(pk: String): String = when (pk) {
+        uiState.myPubkey -> "Me"
+        else -> uiState.memberNames[pk]?.takeIf { it.isNotBlank() } ?: (pk.take(6) + "…")
+    }
     val categories =
         listOf(
             "" to "None",
@@ -205,10 +210,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                             onClick = { paidBy = pk },
                             shape = SegmentedButtonDefaults.itemShape(index, uiState.members.size)
                         ) {
-                            Text(
-                                if (pk == uiState.myPubkey) "Me" else pk.take(6) + "…",
-                                maxLines = 1
-                            )
+                            Text(displayName(pk), maxLines = 1)
                         }
                     }
                 }
@@ -258,11 +260,10 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         uiState.members.forEach { pk ->
-                            val displayName = if (pk == uiState.myPubkey) "Me" else pk.take(8) + "…"
                             OutlinedTextField(
                                 value = memberInputs[pk] ?: "",
                                 onValueChange = { memberInputs = memberInputs + (pk to it) },
-                                label = { Text("$displayName — $label") },
+                                label = { Text("${displayName(pk)} — $label") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
  */
 data class AddExpenseUiState(
     val members: List<String> = emptyList(),
+    val memberNames: Map<String, String> = emptyMap(),
     val myPubkey: String = "",
     val error: String? = null,
     val saved: Boolean = false
@@ -50,6 +51,7 @@ constructor(
             _uiState.value =
                 AddExpenseUiState(
                     members = group.members,
+                    memberNames = group.memberNames,
                     myPubkey = identity.getPublicKeyHex()
                 )
         }

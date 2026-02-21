@@ -6,16 +6,23 @@ import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 /**
  * Drives the settings screen: identity display, key backup/restore, relay config,
  * privacy toggles (gift wrap), and key revocation.
  */
+@OptIn(FlowPreview::class)
 @HiltViewModel
 class SettingsViewModel
 @Inject
@@ -23,7 +30,8 @@ constructor(
     private val identity: IdentityContract,
     private val giftWrap: GiftWrapService,
     private val userPreferences: SettingsContract,
-    private val revokeKeyUseCase: RevokeKeyUseCase
+    private val revokeKeyUseCase: RevokeKeyUseCase,
+    private val updateDisplayName: UpdateDisplayNameUseCase
 ) : ViewModel() {
     private val _npub = MutableStateFlow(if (identity.hasIdentity()) identity.getPublicKeyHex() else "")
     val npub: StateFlow<String> = _npub
@@ -40,6 +48,19 @@ constructor(
 
     private val _displayName = MutableStateFlow(userPreferences.displayName)
     val displayName: StateFlow<String> = _displayName
+
+    init {
+        // Debounce name changes to avoid spamming relays on every keystroke
+        _displayName
+            .debounce(800)
+            .drop(1) // skip initial value
+            .onEach { name ->
+                try {
+                    updateDisplayName(name)
+                } catch (_: Exception) { }
+            }
+            .launchIn(viewModelScope)
+    }
 
     fun setDisplayName(name: String) {
         userPreferences.displayName = name
