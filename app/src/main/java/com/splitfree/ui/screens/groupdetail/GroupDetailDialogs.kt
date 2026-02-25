@@ -190,3 +190,52 @@ fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
         }
     }
 }
+
+@Composable
+fun RelayDialog(
+    relays: List<String>,
+    relayStatuses: Map<String, com.splitfree.ui.components.RelayCheckStatus>,
+    isCreator: Boolean,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onCheck: (String) -> Unit,
+    onSave: (() -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Group Relays") },
+        text = {
+            Column {
+                Text(
+                    if (isCreator) {
+                        "Manage relays for this group. Changes are broadcast to all members."
+                    } else {
+                        "Relays this group syncs through. Only the group creator can edit."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                com.splitfree.ui.components.RelayEditor(
+                    relays = relays,
+                    relayStatuses = relayStatuses,
+                    onAdd = onAdd,
+                    onRemove = onRemove,
+                    onCheck = onCheck,
+                    editable = isCreator
+                )
+            }
+        },
+        confirmButton = {
+            if (isCreator) {
+                TextButton(onClick = { onSave { onDismiss() } }) { Text("Save") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+        },
+        dismissButton = {
+            if (isCreator) TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}

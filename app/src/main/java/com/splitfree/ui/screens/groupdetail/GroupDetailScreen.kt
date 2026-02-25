@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.PersonAdd
@@ -60,6 +61,8 @@ fun GroupDetailScreen(
     val inviteLink by viewModel.inviteLink.collectAsStateWithLifecycle()
     var showShareWarning by remember { mutableStateOf(false) }
     var showRemoveDialog by remember { mutableStateOf<String?>(null) }
+    var showRelayDialog by remember { mutableStateOf(false) }
+    val relayStatuses by viewModel.relayStatuses.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -70,6 +73,12 @@ fun GroupDetailScreen(
                 },
                 actions = {
                     val scope = rememberCoroutineScope()
+                    IconButton(onClick = {
+                        showRelayDialog = true
+                        viewModel.checkAllRelays()
+                    }) {
+                        Icon(Icons.Default.CellTower, "Relays")
+                    }
                     IconButton(onClick = { onNearbySync(uiState.groupId) }) {
                         Icon(Icons.Default.Bluetooth, "Nearby sync")
                     }
@@ -194,6 +203,18 @@ fun GroupDetailScreen(
                 viewModel.removeMember(pubkey) { onNavigateToGroup(it) }
             },
             onDismiss = { showRemoveDialog = null }
+        )
+    }
+    if (showRelayDialog) {
+        RelayDialog(
+            relays = uiState.relays,
+            relayStatuses = relayStatuses,
+            isCreator = uiState.myPubkey == uiState.createdBy,
+            onAdd = viewModel::addRelay,
+            onRemove = viewModel::removeRelay,
+            onCheck = viewModel::checkRelay,
+            onSave = viewModel::saveRelays,
+            onDismiss = { showRelayDialog = false }
         )
     }
 }

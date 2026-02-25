@@ -3,6 +3,7 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
@@ -15,6 +16,8 @@ import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
 import com.splitfree.domain.usecase.group.MigrateGroupUseCase
+import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
+import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
@@ -37,6 +40,7 @@ data class GroupDetailUiState(
     val memberNames: Map<String, String> = emptyMap(),
     val createdBy: String = "",
     val myPubkey: String = "",
+    val relays: List<String> = emptyList(),
     val debts: List<DebtTransaction> = emptyList(),
     val expenses: List<Expense> = emptyList()
 )
@@ -58,7 +62,9 @@ constructor(
     private val migrateGroup: MigrateGroupUseCase,
     private val identity: IdentityContract,
     private val getExpenses: GetExpensesUseCase,
-    private val createInviteLink: CreateInviteLinkUseCase
+    private val createInviteLink: CreateInviteLinkUseCase,
+    private val updateGroupRelays: UpdateGroupRelaysUseCase,
+    private val relayHealthMonitor: RelayHealthMonitor
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
 
@@ -67,6 +73,9 @@ constructor(
 
     private val _inviteLink = MutableStateFlow<String?>(null)
     val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
+
+    private val _relayStatuses = MutableStateFlow<Map<String, RelayCheckStatus>>(emptyMap())
+    val relayStatuses: StateFlow<Map<String, RelayCheckStatus>> = _relayStatuses.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -84,7 +93,8 @@ constructor(
                         members = group?.members ?: emptyList(),
                         memberNames = group?.memberNames ?: emptyMap(),
                         createdBy = group?.createdBy ?: "",
-                        myPubkey = myPub
+                        myPubkey = myPub,
+                        relays = group?.relays ?: emptyList()
                     )
                 }
                 if (inviteLinkLoaded.compareAndSet(false, true)) {
@@ -148,6 +158,41 @@ constructor(
                 onMigrated(newGroup.id)
             } catch (e: Exception) {
                 Log.w(TAG, "Remove member failed: ${e.message}")
+            }
+        }
+    }
+
+    fun addRelay(url: String) {
+        _uiState.update { it.copy(relays = (it.relays + url).distinct()) }
+    }
+
+    fun removeRelay(url: String) {
+        val current = _uiState.value.relays
+        if (current.size > 1) _uiState.update { it.copy(relays = current - url) }
+    }
+
+    fun checkRelay(url: String) {
+        viewModelScope.launch {
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
+            relayHealthMonitor.checkRelays(listOf(url))
+            val online = relayHealthMonitor.statuses[url]?.online == true
+            _relayStatuses.value = _relayStatuses.value +
+                (url to if (online) RelayCheckStatus.ONLINE else RelayCheckStatus.OFFLINE)
+        }
+    }
+
+    fun checkAllRelays() {
+        _uiState.value.relays.forEach { checkRelay(it) }
+    }
+
+    fun saveRelays(onDone: () -> Unit) {
+        viewModelScope.launch {
+            try {
+                updateGroupRelays(groupId, _uiState.value.relays)
+                onDone()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to update relays: ${e.message}")
+                _error.value = e.message ?: "Failed to update relays"
             }
         }
     }

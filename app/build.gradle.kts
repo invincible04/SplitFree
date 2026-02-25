@@ -68,6 +68,12 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.systemProperty("REAL_RELAY_TEST", System.getProperty("REAL_RELAY_TEST") ?: "false")
+            if (System.getProperty("REAL_RELAY_TEST") != "true") {
+                it.exclude("**/*IntegrationTest*")
+            }
+        }
     }
 
     packaging {
