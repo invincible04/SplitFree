@@ -2,6 +2,7 @@ package com.splitfree.ui.viewmodels
 
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.usecase.group.CreateGroupUseCase
 import com.splitfree.domain.util.RelayDefaults
@@ -28,6 +29,7 @@ import org.junit.Test
 class CreateGroupViewModelTest {
     private val createGroup = mockk<CreateGroupUseCase>()
     private val relayHealthMonitor = mockk<RelayHealthMonitor>(relaxed = true)
+    private val eventSigner = mockk<EventSigner>(relaxed = true)
     private val testDispatcher = UnconfinedTestDispatcher()
 
     private lateinit var vm: CreateGroupViewModel
@@ -48,7 +50,7 @@ class CreateGroupViewModelTest {
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
 
-        vm = CreateGroupViewModel(createGroup, relayHealthMonitor)
+        vm = CreateGroupViewModel(createGroup, relayHealthMonitor, eventSigner)
     }
 
     @After
@@ -96,22 +98,25 @@ class CreateGroupViewModelTest {
 
     @Test
     fun `checkRelay sets CHECKING then ONLINE`() = runTest {
+        val url = RelayDefaults.DEFAULT_RELAYS.first()
         every { relayHealthMonitor.statuses } returns
-            mapOf("wss://test" to RelayStatus("wss://test", online = true, latencyMs = 50))
+            mapOf(url to RelayStatus(url, online = true, latencyMs = 50))
 
-        vm.checkRelay("wss://test")
+        vm.checkRelay(url)
 
-        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value["wss://test"])
+        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value[url])
     }
 
     @Test
     fun `checkRelay sets OFFLINE for unreachable relay`() = runTest {
+        val url = "wss://custom.bad.relay"
         every { relayHealthMonitor.statuses } returns
-            mapOf("wss://bad" to RelayStatus("wss://bad", online = false))
+            mapOf(url to RelayStatus(url, online = false))
 
-        vm.checkRelay("wss://bad")
+        vm.addRelay(url)
+        vm.checkRelay(url)
 
-        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value["wss://bad"])
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
     }
 
     @Test

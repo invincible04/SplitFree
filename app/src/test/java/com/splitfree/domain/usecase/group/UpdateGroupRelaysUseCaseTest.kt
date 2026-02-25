@@ -23,6 +23,7 @@ class UpdateGroupRelaysUseCaseTest {
     private val encryption = mockk<GroupEncryption>()
     private val signer = mockk<EventSigner>()
     private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
+    private val identity = mockk<com.splitfree.domain.repository.IdentityContract>()
 
     private lateinit var useCase: UpdateGroupRelaysUseCase
 
@@ -55,11 +56,21 @@ class UpdateGroupRelaysUseCaseTest {
 
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
+        every { identity.getPublicKeyHex() } returns pubkey
 
         coEvery { groupRepo.getById("g1") } returns group
         coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
 
-        useCase = UpdateGroupRelaysUseCase(groupRepo, encryption, signer, eventPublisher)
+        useCase =
+            UpdateGroupRelaysUseCase(
+                groupRepo,
+                encryption,
+                signer,
+                eventPublisher,
+                mockk(relaxed = true),
+                mockk(relaxed = true),
+                identity
+            )
     }
 
     @After
@@ -150,5 +161,12 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", listOf("wss://r"))
 
         verify { signer.createSignedEvent("g1", "group_meta", "encrypted", isNull()) }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `invoke rejects non-creator`() = runBlocking {
+        every { identity.getPublicKeyHex() } returns "bb".repeat(32)
+        useCase("g1", listOf("wss://r"))
+        Unit
     }
 }

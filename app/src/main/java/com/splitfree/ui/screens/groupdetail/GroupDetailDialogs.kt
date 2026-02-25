@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -195,6 +197,7 @@ fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
 fun RelayDialog(
     relays: List<String>,
     relayStatuses: Map<String, com.splitfree.ui.components.RelayCheckStatus>,
+    relayInfo: Map<String, com.splitfree.ui.components.RelayInfo> = emptyMap(),
     isCreator: Boolean,
     onAdd: (String) -> Unit,
     onRemove: (String) -> Unit,
@@ -204,9 +207,9 @@ fun RelayDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Group Relays") },
+        title = { Text("Group Relays (${relays.size})") },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     if (isCreator) {
                         "Manage relays for this group. Changes are broadcast to all members."
@@ -220,6 +223,7 @@ fun RelayDialog(
                 com.splitfree.ui.components.RelayEditor(
                     relays = relays,
                     relayStatuses = relayStatuses,
+                    relayInfo = relayInfo,
                     onAdd = onAdd,
                     onRemove = onRemove,
                     onCheck = onCheck,

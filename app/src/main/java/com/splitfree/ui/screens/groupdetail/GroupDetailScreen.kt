@@ -24,10 +24,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,8 +66,20 @@ fun GroupDetailScreen(
     var showRemoveDialog by remember { mutableStateOf<String?>(null) }
     var showRelayDialog by remember { mutableStateOf(false) }
     val relayStatuses by viewModel.relayStatuses.collectAsStateWithLifecycle()
+    val relayInfo by viewModel.relayInfo.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackScope = rememberCoroutineScope()
+
+    LaunchedEffect(error) {
+        error?.let {
+            snackScope.launch { snackbarHostState.showSnackbar(it) }
+            viewModel.clearError()
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(uiState.groupName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -209,6 +224,7 @@ fun GroupDetailScreen(
         RelayDialog(
             relays = uiState.relays,
             relayStatuses = relayStatuses,
+            relayInfo = relayInfo,
             isCreator = uiState.myPubkey == uiState.createdBy,
             onAdd = viewModel::addRelay,
             onRemove = viewModel::removeRelay,

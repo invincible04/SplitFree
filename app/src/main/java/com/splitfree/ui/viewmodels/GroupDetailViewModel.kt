@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
@@ -17,7 +18,9 @@ import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
 import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
+import com.splitfree.ui.components.RelayInfo
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
@@ -64,7 +67,8 @@ constructor(
     private val getExpenses: GetExpensesUseCase,
     private val createInviteLink: CreateInviteLinkUseCase,
     private val updateGroupRelays: UpdateGroupRelaysUseCase,
-    private val relayHealthMonitor: RelayHealthMonitor
+    private val relayHealthMonitor: RelayHealthMonitor,
+    private val eventSigner: EventSigner
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
 
@@ -76,6 +80,9 @@ constructor(
 
     private val _relayStatuses = MutableStateFlow<Map<String, RelayCheckStatus>>(emptyMap())
     val relayStatuses: StateFlow<Map<String, RelayCheckStatus>> = _relayStatuses.asStateFlow()
+
+    private val _relayInfo = MutableStateFlow<Map<String, RelayInfo>>(emptyMap())
+    val relayInfo: StateFlow<Map<String, RelayInfo>> = _relayInfo.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -166,18 +173,53 @@ constructor(
         _uiState.update { it.copy(relays = (it.relays + url).distinct()) }
     }
 
+    fun clearError() {
+        _error.value = null
+    }
+
     fun removeRelay(url: String) {
         val current = _uiState.value.relays
         if (current.size > 1) _uiState.update { it.copy(relays = current - url) }
     }
 
     fun checkRelay(url: String) {
+        val isKnown = url in RelayDefaults.DEFAULT_RELAYS || url in RelayDefaults.FALLBACK_RELAYS
+        val host = url.removePrefix("wss://")
         viewModelScope.launch {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
             relayHealthMonitor.checkRelays(listOf(url))
-            val online = relayHealthMonitor.statuses[url]?.online == true
-            _relayStatuses.value = _relayStatuses.value +
-                (url to if (online) RelayCheckStatus.ONLINE else RelayCheckStatus.OFFLINE)
+            val status = relayHealthMonitor.statuses[url]
+            if (status?.online == true) {
+                _relayInfo.value = _relayInfo.value +
+                    (
+                        url to
+                            RelayInfo(
+                                paid = status.paid,
+                                supportsGiftWrap = status.supportsGiftWrap,
+                                latencyMs = status.latencyMs
+                            )
+                        )
+            }
+            if (isKnown) {
+                _relayStatuses.value = _relayStatuses.value +
+                    (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
+                return@launch
+            }
+            if (status?.online != true) {
+                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
+                _uiState.update { it.copy(relays = it.relays - url) }
+                _error.value = "$host is offline or unreachable"
+                return@launch
+            }
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
+            val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
+            if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
+                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
+                _uiState.update { it.copy(relays = it.relays - url) }
+                _error.value = "$host can't store events — write+read failed"
+                return@launch
+            }
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
         }
     }
 

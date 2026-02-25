@@ -30,22 +30,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE }
+/** Live health check status for a relay, driven by [RelayHealthMonitor][com.splitfree.data.nostr.relay.RelayHealthMonitor]. */
+enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE, VERIFYING, REJECTED }
 
 /**
- * Reusable relay list editor with add/remove and per-relay status indicators.
+ * NIP-11 capability info for a relay, extracted after a successful health check.
  *
- * @param relays current relay URLs
- * @param relayStatuses map of relay URL → check status
+ * @property paid `true` if the relay requires payment (`limitation.payment_required`)
+ * @property supportsGiftWrap `true` if `59` is in `supported_nips` (NIP-59 gift wrap).
+ *   Note: most relays accept kind 1059 events without explicitly advertising NIP-59.
+ */
+data class RelayInfo(val paid: Boolean = false, val supportsGiftWrap: Boolean = false, val latencyMs: Long = 0)
+
+/**
+ * Reusable relay list editor with add/remove and per-relay live status indicators.
+ *
+ * Each relay row shows:
+ * - A colored dot: ✅ green (online), ❌ red (offline), ⏳ spinner (checking), ⚪ grey (idle)
+ * - The relay hostname (stripped of `wss://` prefix)
+ * - NIP-11 tags when online: `💰 Paid` (red) and/or `🎁 NIP-59` if advertised
+ * - A remove button (when [editable] and more than one relay remains)
+ *
+ * The add field validates `wss://` prefix, minimum length, and deduplication.
+ *
+ * @param relays current relay URLs (full `wss://` format)
+ * @param relayStatuses map of relay URL → live check status
+ * @param relayInfo map of relay URL → NIP-11 capability info
  * @param onAdd called when user adds a new relay URL
  * @param onRemove called when user removes a relay URL
  * @param onCheck called to trigger a health check for a relay URL
- * @param editable whether add/remove controls are shown
+ * @param editable whether add/remove controls are shown (false for non-creator members)
  */
 @Composable
 fun RelayEditor(
     relays: List<String>,
     relayStatuses: Map<String, RelayCheckStatus> = emptyMap(),
+    relayInfo: Map<String, RelayInfo> = emptyMap(),
     onAdd: (String) -> Unit = {},
     onRemove: (String) -> Unit = {},
     onCheck: (String) -> Unit = {},
@@ -59,6 +79,7 @@ fun RelayEditor(
             RelayRow(
                 url = url,
                 status = relayStatuses[url] ?: RelayCheckStatus.IDLE,
+                info = relayInfo[url],
                 onRemove = if (editable && relays.size > 1) ({ onRemove(url) }) else null
             )
         }
@@ -75,7 +96,7 @@ fun RelayEditor(
                         error = null
                     },
                     modifier = Modifier.weight(1f),
-                    label = { Text("wss://relay.example.com") },
+                    placeholder = { Text("wss://relay.example.com", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                     isError = error != null,
                     supportingText = error?.let { { Text(it) } },
@@ -104,8 +125,9 @@ fun RelayEditor(
     }
 }
 
+/** Single relay row with status dot, hostname, NIP-11 tags, and optional remove button. */
 @Composable
-private fun RelayRow(url: String, status: RelayCheckStatus, onRemove: (() -> Unit)?) {
+private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, onRemove: (() -> Unit)?) {
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -117,11 +139,39 @@ private fun RelayRow(url: String, status: RelayCheckStatus, onRemove: (() -> Uni
         ) {
             StatusDot(status)
             Spacer(Modifier.width(8.dp))
-            Text(
-                url.removePrefix("wss://"),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(url.removePrefix("wss://"), style = MaterialTheme.typography.bodyMedium)
+                if (status == RelayCheckStatus.VERIFYING) {
+                    Text(
+                        "Verifying write+read…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else if (status == RelayCheckStatus.REJECTED) {
+                    Text(
+                        "⚠️ Relay can't store events",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else if (info != null && status == RelayCheckStatus.ONLINE) {
+                    val tags = buildList {
+                        if (info.paid) add("💰 Paid")
+                        if (info.supportsGiftWrap) add("🎁 NIP-59")
+                        if (info.latencyMs > 0) add("${info.latencyMs}ms")
+                    }
+                    if (tags.isNotEmpty()) {
+                        Text(
+                            tags.joinToString(" · "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (info.paid) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
+            }
             if (onRemove != null) {
                 IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
                     Icon(Icons.Default.Close, "Remove", modifier = Modifier.size(16.dp))
@@ -131,10 +181,11 @@ private fun RelayRow(url: String, status: RelayCheckStatus, onRemove: (() -> Uni
     }
 }
 
+/** Animated status dot: green (online), red (offline/rejected), grey (idle), or a small spinner (checking/verifying). */
 @Composable
 private fun StatusDot(status: RelayCheckStatus) {
     when (status) {
-        RelayCheckStatus.CHECKING -> CircularProgressIndicator(
+        RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING -> CircularProgressIndicator(
             modifier = Modifier.size(10.dp),
             strokeWidth = 1.5.dp
         )
@@ -142,7 +193,7 @@ private fun StatusDot(status: RelayCheckStatus) {
             val color by animateColorAsState(
                 when (status) {
                     RelayCheckStatus.ONLINE -> Color(0xFF4CAF50)
-                    RelayCheckStatus.OFFLINE -> MaterialTheme.colorScheme.error
+                    RelayCheckStatus.OFFLINE, RelayCheckStatus.REJECTED -> MaterialTheme.colorScheme.error
                     else -> MaterialTheme.colorScheme.outlineVariant
                 },
                 label = "statusColor"

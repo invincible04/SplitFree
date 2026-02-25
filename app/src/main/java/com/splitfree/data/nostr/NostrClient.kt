@@ -263,7 +263,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         filters: List<NostrFilter>,
         timeoutMs: Long = 15_000,
         dedup: (NostrEvent, MutableList<NostrEvent>) -> Boolean = { event, list ->
-            addSeen(event.id)
+            list.none { it.id == event.id }
         }
     ): List<NostrEvent> {
         if (relays.isEmpty()) return emptyList()

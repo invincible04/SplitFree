@@ -3,6 +3,7 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
+import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseRepositoryContract
@@ -15,6 +16,7 @@ import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
 import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -51,6 +53,7 @@ class GroupDetailViewModelTest {
     private val createInviteLink = mockk<CreateInviteLinkUseCase>(relaxed = true)
     private val updateGroupRelays = mockk<UpdateGroupRelaysUseCase>(relaxed = true)
     private val relayHealthMonitor = mockk<RelayHealthMonitor>(relaxed = true)
+    private val eventSigner = mockk<EventSigner>(relaxed = true)
 
     private val pubkey = "aa".repeat(32)
     private val group = Group(
@@ -83,7 +86,7 @@ class GroupDetailViewModelTest {
             SavedStateHandle(mapOf("groupId" to "g1")),
             groupRepo, expenseRepo, computeBalances, simplifyDebts,
             exportGroup, migrateGroup, identity, getExpenses,
-            createInviteLink, updateGroupRelays, relayHealthMonitor
+            createInviteLink, updateGroupRelays, relayHealthMonitor, eventSigner
         )
     }
 
@@ -127,22 +130,25 @@ class GroupDetailViewModelTest {
 
     @Test
     fun `checkRelay sets ONLINE status`() = runTest {
+        val url = RelayDefaults.DEFAULT_RELAYS.first()
         every { relayHealthMonitor.statuses } returns
-            mapOf("wss://relay.one" to RelayStatus("wss://relay.one", online = true, latencyMs = 42))
+            mapOf(url to RelayStatus(url, online = true, latencyMs = 42))
 
-        vm.checkRelay("wss://relay.one")
+        vm.checkRelay(url)
 
-        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value["wss://relay.one"])
+        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value[url])
     }
 
     @Test
     fun `checkRelay sets OFFLINE status`() = runTest {
+        val url = "wss://custom.bad.relay"
         every { relayHealthMonitor.statuses } returns
-            mapOf("wss://relay.one" to RelayStatus("wss://relay.one", online = false))
+            mapOf(url to RelayStatus(url, online = false))
 
-        vm.checkRelay("wss://relay.one")
+        vm.addRelay(url)
+        vm.checkRelay(url)
 
-        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value["wss://relay.one"])
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
     }
 
     @Test
