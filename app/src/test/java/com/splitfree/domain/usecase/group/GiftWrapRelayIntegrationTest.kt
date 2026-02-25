@@ -27,6 +27,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
@@ -39,7 +40,7 @@ import org.junit.Test
  * This tests the exact bug: gift-wrapped events weren't being received because
  * the outer wrapper lacked a p tag for relay routing.
  */
-class GiftWrapRelayTest {
+class GiftWrapRelayIntegrationTest {
     private lateinit var phone1: NostrClient
     private lateinit var phone2: NostrClient
     private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
@@ -59,6 +60,7 @@ class GiftWrapRelayTest {
 
     @Before
     fun setup() {
+        Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
         mockkStatic(android.util.Log::class)
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0

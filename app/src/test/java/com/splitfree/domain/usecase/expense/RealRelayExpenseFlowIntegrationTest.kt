@@ -27,6 +27,7 @@ import kotlinx.serialization.json.putJsonArray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
@@ -39,7 +40,7 @@ import org.junit.Test
  * Real: secp256k1 keys, NIP-44 encryption, Schnorr signatures, WebSocket relay connections
  * Mocked: Android Log only
  */
-class RealRelayExpenseFlowTest {
+class RealRelayExpenseFlowIntegrationTest {
     private lateinit var phone1Client: NostrClient
     private lateinit var phone2Client: NostrClient
 
@@ -64,6 +65,7 @@ class RealRelayExpenseFlowTest {
 
     @Before
     fun setup() {
+        Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
         mockkStatic(android.util.Log::class)
         every { android.util.Log.i(any<String>(), any<String>()) } answers {
             val tag = firstArg<String>()

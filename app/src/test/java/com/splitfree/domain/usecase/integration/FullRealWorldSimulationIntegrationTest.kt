@@ -31,6 +31,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
@@ -54,7 +55,7 @@ import org.junit.Test
  * All crypto, signing, encryption, relay I/O is REAL.
  * Only Android framework (Log) is mocked.
  */
-class FullRealWorldSimulationTest {
+class FullRealWorldSimulationIntegrationTest {
     private lateinit var phone1: NostrClient
     private lateinit var phone2: NostrClient
     private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
@@ -74,6 +75,7 @@ class FullRealWorldSimulationTest {
 
     @Before
     fun setup() {
+        Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
         mockkStatic(android.util.Log::class)
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0

@@ -22,12 +22,19 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume
+import org.junit.Before
 import org.junit.Test
 
 /**
  * Integration test: publish signed events to REAL public Nostr relays
- * and verify they come back via subscription.
+ * using raw OkHttp WebSocket — validates that our NostrEvent serialization
+ * and signing is wire-compatible with real Nostr relay infrastructure.
  *
+ * Uses raw WebSocket intentionally (not NostrClient) to independently verify
+ * the protocol implementation.
+ *
+ * Run: `./gradlew test -DREAL_RELAY_TEST=true --tests "*.NostrRelayIntegrationTest"`
  * Closes the last gap: proving our from-scratch NIP-01/NIP-44 implementation
  * is wire-compatible with real Nostr infrastructure.
  *
@@ -52,6 +59,11 @@ class NostrRelayIntegrationTest {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
+
+    @Before
+    fun setup() {
+        Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
+    }
 
     @Test
     fun `publish event to real relay and read it back`() {

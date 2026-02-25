@@ -25,6 +25,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
@@ -52,6 +53,10 @@ class RelayIntegrationTest {
 
     @Before
     fun setup() {
+        Assume.assumeTrue(
+            "Skipped: set -DREAL_RELAY_TEST=true to run integration tests",
+            System.getProperty("REAL_RELAY_TEST") == "true"
+        )
         mockkStatic(android.util.Log::class)
         every { Log.d(any<String>(), any<String>()) } returns 0
         every { Log.i(any<String>(), any<String>()) } returns 0

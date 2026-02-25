@@ -246,9 +246,13 @@ app/src/main/java/com/splitfree/
 Comprehensive unit tests across every layer of the app.
 
 ```bash
-./gradlew test                                                    # Run all
-./gradlew testDebugUnitTest jacocoTestReport                      # With coverage
+./gradlew test                                                    # Unit tests only
+./gradlew testDebugUnitTest app:createDebugUnitTestCoverageReport # With coverage
 ./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test" # Specific class
+
+# Integration tests (real Nostr relays — excluded by default)
+./gradlew test -DREAL_RELAY_TEST=true                             # All tests including integration
+./gradlew test -DREAL_RELAY_TEST=true --tests "*IntegrationTest"  # Integration tests only
 ```
 
 | Area | What's Tested |
@@ -259,7 +263,7 @@ Comprehensive unit tests across every layer of the app.
 | Sync | SyncEngine pull/flush, power management modes, boot receiver, self-heal republishing |
 | BLE | Binary protocol encode/decode, fragmentation/reassembly, handshake authentication, payload processing |
 | Validation | Timestamp bounds, rate limiting, content safety (nesting depth, size), author authorization, tombstone checks |
-| Integration | Full relay round-trips, end-to-end expense lifecycle, multi-phone simulation |
+| Integration | Full relay round-trips, end-to-end expense lifecycle, multi-phone simulation (`*IntegrationTest.kt` — excluded by default, run with `-DREAL_RELAY_TEST=true`) |
 
 ## Contributing
 

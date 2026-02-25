@@ -139,18 +139,27 @@ The project has comprehensive unit tests across every layer. New code should inc
 ### Running Tests
 
 ```bash
-# All tests
+# Unit tests only (integration tests excluded by default)
 ./gradlew test
 
-# With coverage report
-./gradlew testDebugUnitTest jacocoTestReport
+# With coverage report (opens app/build/reports/coverage/test/debug/index.html)
+./gradlew testDebugUnitTest app:createDebugUnitTestCoverageReport
 
 # Specific test class
 ./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test"
 
 # Specific test method
 ./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test.encrypt then decrypt round-trip"
+
+# Integration tests (real Nostr relays — requires network)
+./gradlew test -DREAL_RELAY_TEST=true                             # All tests including integration
+./gradlew test -DREAL_RELAY_TEST=true --tests "*IntegrationTest"  # Integration tests only
 ```
+
+### Test Naming Convention
+
+- Unit tests: `*Test.kt` — run by default, no network required
+- Integration tests: `*IntegrationTest.kt` — excluded by default, require `-DREAL_RELAY_TEST=true`
 
 ### Test Organization
 
@@ -175,7 +184,7 @@ The project has comprehensive unit tests across every layer. New code should inc
 - Use backtick-quoted test names: `` fun `descriptive test name`() ``
 - Use `MockK` for mocking dependencies
 - Use `Robolectric` when Android framework classes are needed
-- Integration tests (`*IntegrationTest.kt`, `*RelayTest.kt`) hit live relays — run manually, not in CI
+- Integration tests (`*IntegrationTest.kt`) hit live relays — excluded by default, run with `-DREAL_RELAY_TEST=true`
 
 ## Commit Messages
 
