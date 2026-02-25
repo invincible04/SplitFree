@@ -8,7 +8,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * User preferences backed by plain SharedPreferences (relay config, privacy toggles).
+ * User preferences backed by plain SharedPreferences (privacy toggles).
  * No sensitive data — Android FBE protects at rest.
  */
 @Singleton
@@ -31,19 +31,8 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
             prefs.edit().putString(KEY_DISPLAY_NAME, value.take(50).trim()).apply()
         }
 
-    override fun getCustomRelays(): List<String> {
-        val raw = prefs.getString(KEY_CUSTOM_RELAYS, null) ?: return emptyList()
-        return raw.split(",").filter { it.startsWith("wss://") }
-    }
-
-    override fun setCustomRelays(relays: List<String>) {
-        val safe = relays.filter { it.startsWith("wss://") }
-        prefs.edit().putString(KEY_CUSTOM_RELAYS, safe.joinToString(",")).apply()
-    }
-
     companion object {
         private const val KEY_GIFT_WRAP = "gift_wrap_enabled"
         private const val KEY_DISPLAY_NAME = "display_name"
-        private const val KEY_CUSTOM_RELAYS = "custom_relays"
     }
 }

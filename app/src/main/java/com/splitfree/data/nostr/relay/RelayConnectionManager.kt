@@ -3,14 +3,13 @@ package com.splitfree.data.nostr.relay
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Resolves the relay set (custom → group → default + fallbacks) and ensures
+ * Resolves the relay set (group → default + fallbacks) and ensures
  * [NostrClient] is connected before sync operations begin.
  */
 @Singleton
@@ -20,7 +19,6 @@ constructor(
     private val nostrClient: NostrClient,
     private val groupRepo: GroupRepositoryContract,
     private val relayHealthMonitor: RelayHealthMonitor,
-    private val userPreferences: SettingsContract,
     private val signer: EventSigner
 ) {
     /**
@@ -47,11 +45,8 @@ constructor(
         return allRelays
     }
 
-    /** Resolve primary relays: custom > group > default. */
+    /** Resolve primary relays: group > default. */
     suspend fun resolvePrimaryRelays(): List<String> {
-        val custom = userPreferences.getCustomRelays()
-        if (custom.isNotEmpty()) return custom
-
         val groupRelays = groupRepo.getAll().flatMap { it.relays }.distinct()
         return groupRelays.ifEmpty { RelayDefaults.DEFAULT_RELAYS }
     }

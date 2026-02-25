@@ -1,8 +1,7 @@
 package com.splitfree.domain.repository
 
 /**
- * Domain contract for user preferences (privacy toggles, relay config).
- * Provides access to user-configurable privacy toggles and relay settings.
+ * Domain contract for user preferences (privacy toggles).
  */
 interface SettingsContract {
     /** Whether NIP-59 gift wrapping is enabled for outgoing events. */
@@ -10,10 +9,4 @@ interface SettingsContract {
 
     /** User's chosen display name (shared with group members via group_meta). */
     var displayName: String
-
-    /** @return user-configured custom relay URLs (only `wss://` are kept) */
-    fun getCustomRelays(): List<String>
-
-    /** Persist custom relay URLs. Non-`wss://` URLs are silently filtered. */
-    fun setCustomRelays(relays: List<String>)
 }

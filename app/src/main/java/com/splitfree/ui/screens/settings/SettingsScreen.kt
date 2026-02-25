@@ -30,7 +30,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -90,10 +89,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             if (showSeedPhrase) viewModel.revealSeedPhrase()
         }
     }
-    val customRelays by viewModel.customRelays.collectAsStateWithLifecycle()
     val displayName by viewModel.displayName.collectAsStateWithLifecycle()
-    var showRelayEditor by remember { mutableStateOf(false) }
-    var relayInput by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -170,11 +166,6 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 onGiftWrapChange = {
                     giftWrapEnabled = it
                     viewModel.giftWrapEnabled = it
-                },
-                customRelayCount = customRelays.size,
-                onEditRelays = {
-                    relayInput = customRelays.joinToString("\n")
-                    showRelayEditor = true
                 }
             )
 
@@ -238,36 +229,6 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 viewModel.revokeKey()
             },
             onDismiss = { showRevokeDialog = false }
-        )
-    }
-    if (showRelayEditor) {
-        AlertDialog(
-            onDismissRequest = { showRelayEditor = false },
-            title = { Text("Custom Relays") },
-            text = {
-                Column {
-                    Text(
-                        "Enter one wss:// relay URL per line. Leave empty to use defaults.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = relayInput,
-                        onValueChange = { relayInput = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("wss://relay.example.com") },
-                        minLines = 3,
-                        maxLines = 6
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    viewModel.setCustomRelays(relayInput.lines().map { it.trim() }.filter { it.startsWith("wss://") })
-                    showRelayEditor = false
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { showRelayEditor = false }) { Text("Cancel") } }
         )
     }
 }

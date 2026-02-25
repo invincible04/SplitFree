@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 /**
- * Drives the settings screen: identity display, key backup/restore, relay config,
+ * Drives the settings screen: identity display, key backup/restore,
  * privacy toggles (gift wrap), and key revocation.
  */
 @OptIn(FlowPreview::class)
@@ -42,9 +42,6 @@ constructor(
 
     private val _seedPhrase = MutableStateFlow<List<String>>(emptyList())
     val seedPhrase: StateFlow<List<String>> = _seedPhrase
-
-    private val _customRelays = MutableStateFlow(userPreferences.getCustomRelays())
-    val customRelays: StateFlow<List<String>> = _customRelays
 
     private val _displayName = MutableStateFlow(userPreferences.displayName)
     val displayName: StateFlow<String> = _displayName
@@ -72,11 +69,6 @@ constructor(
         set(value) {
             giftWrap.setEnabled(value)
         }
-
-    fun setCustomRelays(relays: List<String>) {
-        userPreferences.setCustomRelays(relays)
-        _customRelays.value = userPreferences.getCustomRelays()
-    }
 
     private val _revokeState = MutableStateFlow<RevokeState>(RevokeState.Idle)
     val revokeState: StateFlow<RevokeState> = _revokeState
