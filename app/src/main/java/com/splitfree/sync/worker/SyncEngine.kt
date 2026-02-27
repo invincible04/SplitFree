@@ -100,7 +100,10 @@ constructor(
                 published++
             } else {
                 outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
-                if (event.retryCount >= WARN_RETRY_THRESHOLD) {
+                if (event.retryCount >= MAX_RETRIES) {
+                    Log.w(TAG, "Evicting event ${event.eventId} after ${event.retryCount} failed retries")
+                    outboxDao.delete(event.eventId)
+                } else if (event.retryCount >= WARN_RETRY_THRESHOLD) {
                     Log.w(TAG, "Event ${event.eventId} has failed ${event.retryCount} retries")
                 }
             }
@@ -111,5 +114,6 @@ constructor(
     companion object {
         private const val TAG = "SyncEngine"
         private const val WARN_RETRY_THRESHOLD = 10
+        private const val MAX_RETRIES = 50
     }
 }

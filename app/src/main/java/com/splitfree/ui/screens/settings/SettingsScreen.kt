@@ -50,6 +50,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.BuildConfig
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
@@ -183,12 +184,14 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                     Text("Decentralized expense splitting over Nostr.")
                 }
             )
-            ListItem(
-                headlineContent = { Text("Debug Logs") },
-                supportingContent = { Text("View live app logs for troubleshooting") },
-                leadingContent = { Icon(Icons.Outlined.Info, contentDescription = null) },
-                trailingContent = { FilledTonalButton(onClick = onDebugLog) { Text("Open") } }
-            )
+            if (BuildConfig.DEBUG) {
+                ListItem(
+                    headlineContent = { Text("Debug Logs") },
+                    supportingContent = { Text("View live app logs for troubleshooting") },
+                    leadingContent = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                    trailingContent = { FilledTonalButton(onClick = onDebugLog) { Text("Open") } }
+                )
+            }
             Spacer(Modifier.height(32.dp))
         }
     }

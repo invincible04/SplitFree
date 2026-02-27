@@ -1,6 +1,7 @@
 package com.splitfree.util
 
 import android.util.Log as AndroidLog
+import com.splitfree.BuildConfig
 import com.splitfree.util.DebugLog.MAX_ENTRIES
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -11,6 +12,7 @@ import java.util.concurrent.ConcurrentLinkedDeque
  * In-app log buffer that mirrors android.util.Log API.
  * Stores last [MAX_ENTRIES] log lines in a ring buffer for the debug screen.
  * Also forwards to Android logcat so adb logcat still works.
+ * Buffer is only active in debug builds to avoid metadata leakage in release.
  */
 object DebugLog {
     private const val MAX_ENTRIES = 500
@@ -37,6 +39,7 @@ object DebugLog {
         private set
 
     private fun add(level: Char, tag: String, msg: String) {
+        if (!BuildConfig.DEBUG) return
         buffer.addLast(Entry(level = level, tag = tag, message = msg))
         while (buffer.size > MAX_ENTRIES) buffer.pollFirst()
         revision++

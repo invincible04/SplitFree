@@ -61,8 +61,9 @@ class SplitFreeApp :
             }
             try {
                 revokeKeyUseCase.resumeIfNeeded()
-            } catch (_: java.security.KeyStoreException) {
-                // AndroidKeyStore unavailable in test environments (Robolectric)
+            } catch (_: java.security.GeneralSecurityException) {
+                // Covers KeyStoreException (Robolectric) and KeyPermanentlyInvalidatedException
+                // (biometric change / lock screen disabled while key revocation was pending)
             }
         }
     }
