@@ -58,10 +58,14 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             while (!identity.hasIdentity()) delay(1000)
             val serviceIntent = Intent(this@MainActivity, com.splitfree.sync.worker.ForegroundSyncService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start sync service: ${e.message}")
             }
         }
 

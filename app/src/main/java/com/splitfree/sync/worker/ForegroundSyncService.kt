@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -56,6 +57,8 @@ class ForegroundSyncService : Service() {
         startRealtimeSync()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -81,12 +84,22 @@ class ForegroundSyncService : Service() {
                     groupRepo.observeAll().first { it.isNotEmpty() }
                 }
 
-            try {
-                relayConnectionManager.ensureConnected()
-                connectionAcquired = true
-                connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to connect: ${e.message}")
+            var connected = false
+            for (attempt in 1..5) {
+                try {
+                    relayConnectionManager.ensureConnected()
+                    connectionAcquired = true
+                    connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
+                    connected = true
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "Connect attempt $attempt failed: ${e.message}")
+                    delay(minOf(30_000L * attempt, 120_000L))
+                }
+            }
+            if (!connected) {
+                Log.e(TAG, "All connect attempts failed — stopping service")
+                stopSelf()
                 return@launch
             }
 
@@ -125,6 +138,26 @@ class ForegroundSyncService : Service() {
                         if (subscribedGroups.add(group.id)) {
                             nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
                             Log.i(TAG, "Subscribed to new group: ${group.name}")
+                        }
+                    }
+                }
+            }
+
+            // Monitor connection state — reconnect if all relays drop
+            scope.launch {
+                nostrClient.connectionState.collect { isConnected ->
+                    if (!isConnected && connectionAcquired) {
+                        Log.w(TAG, "Lost all relay connections — attempting reconnect")
+                        delay(5_000)
+                        try {
+                            relayConnectionManager.ensureConnected(forceReconnect = true)
+                            connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
+                            val currentNow = System.currentTimeMillis() / 1000
+                            for (group in groupRepo.getAll()) {
+                                nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Reconnect failed: ${e.message}")
                         }
                     }
                 }
