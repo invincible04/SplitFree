@@ -292,12 +292,20 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
 }
 
 private fun requiredNearbyPermissions(): List<String> = buildList {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.BLUETOOTH_SCAN)
         add(Manifest.permission.BLUETOOTH_ADVERTISE)
         add(Manifest.permission.BLUETOOTH_CONNECT)
-    } else {
+        add(Manifest.permission.NEARBY_WIFI_DEVICES)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_SCAN)
+        add(Manifest.permission.BLUETOOTH_ADVERTISE)
+        add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.ACCESS_FINE_LOCATION)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+    } else {
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 }
 

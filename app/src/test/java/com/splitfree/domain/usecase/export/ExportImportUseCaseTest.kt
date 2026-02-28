@@ -420,4 +420,26 @@ class ExportImportUseCaseTest {
         assertEquals("uuid1", inserted.captured.expenseUuid)
         coVerify(exactly = 1) { eventRepo.insert(any<EventSnapshot>()) }
     }
+
+    @Test
+    fun `import does not drop valid historical events due to live rate limits`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        every { encryption.decrypt(any(), any()) } returns "decrypted"
+        coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
+
+        val events = (1..31).map { i ->
+            buildSignedExportedEvent(
+                eventType = "expense",
+                expenseUuid = "uuid-$i",
+                contentEncrypted = "enc-$i",
+                createdAt = 1700000000L + i
+            )
+        }
+
+        val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator())
+        val count = useCase(buildExportJson(events))
+        assertEquals(31, count)
+    }
 }

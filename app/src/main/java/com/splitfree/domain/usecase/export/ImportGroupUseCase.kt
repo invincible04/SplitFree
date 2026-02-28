@@ -90,7 +90,8 @@ constructor(
                 if (!eventValidator.isCorrectionAuthorValid(eventType, pubkey, originalCreator)) continue
             }
 
-            if (!eventValidator.isWithinRateLimit(pubkey)) continue
+            // Import is a local, integrity-checked batch operation; relay runtime rate limits
+            // would incorrectly drop valid historical events from the same author.
 
             val decrypted = try {
                 encryption.decrypt(contentEncrypted, groupKey)

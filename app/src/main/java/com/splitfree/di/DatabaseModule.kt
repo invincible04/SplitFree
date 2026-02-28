@@ -24,7 +24,6 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase = Room
         .databaseBuilder(context, AppDatabase::class.java, "splitfree.db")
-        .fallbackToDestructiveMigration()
         .build()
 
     @Provides fun provideEventDao(db: AppDatabase): EventDao = db.eventDao()

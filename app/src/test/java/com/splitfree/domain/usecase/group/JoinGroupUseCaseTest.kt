@@ -152,6 +152,18 @@ class JoinGroupUseCaseTest {
     }
 
     @Test
+    fun `invoke still publishes join announcement when offline connect fails`() = runBlocking {
+        val groupId = java.util.UUID.randomUUID().toString()
+        every { nostrClient.isConnected } returns false
+        coEvery { nostrClient.connect(any()) } throws RuntimeException("offline")
+
+        val group = useCase(buildInviteUri(groupId = groupId))
+
+        assertEquals(groupId, group.id)
+        coVerify { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+    }
+
+    @Test
     fun `invoke with non-expired link succeeds`() = runBlocking {
         assertNotNull(useCase(buildInviteUri()))
     }
