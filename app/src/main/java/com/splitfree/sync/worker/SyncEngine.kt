@@ -100,7 +100,11 @@ constructor(
                 published++
             } else {
                 outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
-                if (event.retryCount >= MAX_RETRIES) {
+                // Never evict critical events (group_meta, key_rotation, key_revocation)
+                val isCritical = event.eventJson.contains("\"group_meta\"") ||
+                    event.eventJson.contains("\"key_rotation\"") ||
+                    event.eventJson.contains("\"key_revocation\"")
+                if (!isCritical && event.retryCount >= MAX_RETRIES) {
                     Log.w(TAG, "Evicting event ${event.eventId} after ${event.retryCount} failed retries")
                     outboxDao.delete(event.eventId)
                 } else if (event.retryCount >= WARN_RETRY_THRESHOLD) {

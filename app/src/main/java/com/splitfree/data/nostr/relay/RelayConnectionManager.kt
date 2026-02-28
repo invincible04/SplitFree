@@ -7,6 +7,8 @@ import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Resolves the relay set (group → default + fallbacks) and ensures
@@ -23,6 +25,7 @@ constructor(
 ) {
     /**
      * Connect [NostrClient] to the resolved relay set if not already connected.
+     * Waits up to [CONNECT_TIMEOUT_MS] for at least one relay to reach CONNECTED state.
      *
      * @param forceReconnect if true, disconnects and reconnects even if already connected
      * @return list of relay URLs that were connected
@@ -40,8 +43,19 @@ constructor(
         val allRelays = (onlineRelays + RelayDefaults.FALLBACK_RELAYS).distinct()
 
         nostrClient.connect(allRelays)
+
+        // Wait for at least one relay to actually connect before returning
+        if (!nostrClient.isConnected) {
+            withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                nostrClient.connectionState.first { it }
+            } ?: Log.w(TAG, "Timed out waiting for relay connection (${CONNECT_TIMEOUT_MS}ms)")
+        }
+
         nostrClient.acquireConnection()
-        Log.i(TAG, "Connected to ${allRelays.size} relays (${onlineRelays.size} primary + fallbacks)")
+        Log.i(
+            TAG,
+            "Connected to ${allRelays.size} relays (${onlineRelays.size} primary + fallbacks), ready=${nostrClient.isConnected}"
+        )
         return allRelays
     }
 
@@ -56,5 +70,6 @@ constructor(
 
     companion object {
         private const val TAG = "RelayConnectionManager"
+        private const val CONNECT_TIMEOUT_MS = 5_000L
     }
 }

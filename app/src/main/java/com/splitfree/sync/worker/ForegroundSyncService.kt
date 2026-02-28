@@ -16,6 +16,7 @@ import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,24 +46,36 @@ class ForegroundSyncService : Service() {
 
     @Inject lateinit var relayConnectionManager: RelayConnectionManager
 
+    @Inject lateinit var syncEngine: SyncEngine
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectionAcquired = false
 
     @Volatile private var connectedRelaySet = emptySet<String>()
 
+    @Volatile private var syncRunning = false
+
+    private val syncStartInProgress = AtomicBoolean(false)
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        startRealtimeSync()
+        triggerRealtimeSyncIfNeeded()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Re-trigger sync if previous attempt failed (e.g. was offline, now network callback restarted us)
+        triggerRealtimeSyncIfNeeded()
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         scope.cancel()
+        syncRunning = false
+        syncStartInProgress.set(false)
         if (connectionAcquired) {
             nostrClient.releaseConnection()
             connectionAcquired = false
@@ -70,125 +83,153 @@ class ForegroundSyncService : Service() {
         super.onDestroy()
     }
 
+    private fun triggerRealtimeSyncIfNeeded() {
+        if (syncRunning) return
+        if (!syncStartInProgress.compareAndSet(false, true)) return
+        startRealtimeSync()
+    }
+
     private fun startRealtimeSync() {
         scope.launch {
-            if (!identity.hasIdentity()) {
-                Log.w(TAG, "No identity — skipping sync")
-                return@launch
-            }
-
-            // Wait until at least one group exists (handles fresh install)
-            val groups =
-                groupRepo.getAll().ifEmpty {
-                    Log.i(TAG, "No groups yet — waiting for first group")
-                    groupRepo.observeAll().first { it.isNotEmpty() }
+            try {
+                if (!identity.hasIdentity()) {
+                    Log.w(TAG, "No identity — skipping sync")
+                    return@launch
                 }
 
-            var connected = false
-            for (attempt in 1..5) {
+                // Wait until at least one group exists (handles fresh install)
+                val groups =
+                    groupRepo.getAll().ifEmpty {
+                        Log.i(TAG, "No groups yet — waiting for first group")
+                        groupRepo.observeAll().first { it.isNotEmpty() }
+                    }
+
+                var connected = false
+                for (attempt in 1..5) {
+                    try {
+                        relayConnectionManager.ensureConnected()
+                        connectionAcquired = true
+                        connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
+                        connected = true
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Connect attempt $attempt failed: ${e.message}")
+                        delay(minOf(30_000L * attempt, 120_000L))
+                    }
+                }
+                if (!connected) {
+                    Log.w(TAG, "All connect attempts failed — waiting for network callback to retry")
+                    return@launch
+                }
+
+                syncRunning = true
+
+                // Flush any pending outbox events (e.g. group_meta from offline join)
                 try {
-                    relayConnectionManager.ensureConnected()
-                    connectionAcquired = true
-                    connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
-                    connected = true
-                    break
+                    syncEngine.flushOutbox()
                 } catch (e: Exception) {
-                    Log.w(TAG, "Connect attempt $attempt failed: ${e.message}")
-                    delay(minOf(30_000L * attempt, 120_000L))
+                    Log.w(TAG, "Initial outbox flush failed: ${e.message}")
                 }
-            }
-            if (!connected) {
-                Log.e(TAG, "All connect attempts failed — stopping service")
-                stopSelf()
-                return@launch
-            }
 
-            val subscribedGroups = mutableSetOf<String>()
-            val now = System.currentTimeMillis() / 1000
-            val myPubkey = identity.getPublicKeyHex()
-            for (group in groups) {
-                nostrClient.subscribe(group.id, now - 3600, myPubkey)
-                subscribedGroups.add(group.id)
-            }
+                val subscribedGroups = mutableSetOf<String>()
+                val now = System.currentTimeMillis() / 1000
+                val myPubkey = identity.getPublicKeyHex()
+                for (group in groups) {
+                    nostrClient.subscribe(group.id, now - 3600, myPubkey)
+                    subscribedGroups.add(group.id)
+                }
 
-            // Observe group list for newly joined groups AND relay changes
-            scope.launch {
-                groupRepo.observeAll().collect { currentGroups ->
-                    val currentNow = System.currentTimeMillis() / 1000
+                // Observe group list for newly joined groups AND relay changes
+                scope.launch {
+                    groupRepo.observeAll().collect { currentGroups ->
+                        val currentNow = System.currentTimeMillis() / 1000
 
-                    // Check if relay set has changed (compare group relays only, excluding fallbacks)
-                    val currentRelaySet = currentGroups.flatMap { it.relays }.toSet()
-                    val previousRelaySet =
-                        connectedRelaySet - RelayDefaults.FALLBACK_RELAYS.toSet()
-                    if (currentRelaySet != previousRelaySet) {
-                        Log.i(TAG, "Relay set changed, reconnecting...")
-                        try {
-                            relayConnectionManager.ensureConnected(forceReconnect = true)
-                            connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
-                            // Re-subscribe all groups on new connections
-                            for (group in currentGroups) {
-                                nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                        // Check if relay set has changed (compare group relays only, excluding fallbacks)
+                        val currentRelaySet = currentGroups.flatMap { it.relays }.toSet()
+                        val previousRelaySet =
+                            connectedRelaySet - RelayDefaults.FALLBACK_RELAYS.toSet()
+                        if (currentRelaySet != previousRelaySet) {
+                            Log.i(TAG, "Relay set changed, reconnecting...")
+                            try {
+                                relayConnectionManager.ensureConnected(forceReconnect = true)
+                                connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
+                                // Re-subscribe all groups on new connections
+                                for (group in currentGroups) {
+                                    nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Reconnect failed: ${e.message}")
                             }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Reconnect failed: ${e.message}")
                         }
-                    }
 
-                    for (group in currentGroups) {
-                        if (subscribedGroups.add(group.id)) {
-                            nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
-                            Log.i(TAG, "Subscribed to new group: ${group.name}")
-                        }
-                    }
-                }
-            }
-
-            // Monitor connection state — reconnect if all relays drop
-            scope.launch {
-                nostrClient.connectionState.collect { isConnected ->
-                    if (!isConnected && connectionAcquired) {
-                        Log.w(TAG, "Lost all relay connections — attempting reconnect")
-                        delay(5_000)
-                        try {
-                            relayConnectionManager.ensureConnected(forceReconnect = true)
-                            connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
-                            val currentNow = System.currentTimeMillis() / 1000
-                            for (group in groupRepo.getAll()) {
+                        for (group in currentGroups) {
+                            if (subscribedGroups.add(group.id)) {
                                 nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                                Log.i(TAG, "Subscribed to new group: ${group.name}")
+                                // Flush outbox so pending events (e.g. join announcement) get published
+                                try {
+                                    syncEngine.flushOutbox()
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Outbox flush on new group failed: ${e.message}")
+                                }
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Reconnect failed: ${e.message}")
                         }
                     }
                 }
-            }
 
-            nostrClient.startListening()
-            Log.i(TAG, "Listening for incoming events...")
-            nostrClient.incomingEvents.collect { event ->
-                Log.d(TAG, "Received event ${event.id.take(8)} kind=${event.kind} from=${event.pubkey.take(8)}")
-                try {
-                    val result =
-                        eventProcessor.process(
-                            rawEvent = event,
-                            nonCancellable = true
-                        )
-                    if (result.stored) {
-                        Log.i(
-                            TAG,
-                            "Processed: ${result.eventType} from ${result.authorHex?.take(8)} in ${result.groupName}"
-                        )
-                        ExpenseNotifier.notifyIfNeeded(
-                            this@ForegroundSyncService,
-                            result.eventType!!,
-                            result.decrypted,
-                            result.authorHex!!,
-                            identity.getPublicKeyHex(),
-                            result.groupName ?: "Group"
-                        )
+                // Monitor connection state — reconnect if all relays drop
+                scope.launch {
+                    nostrClient.connectionState.collect { isConnected ->
+                        if (!isConnected && connectionAcquired) {
+                            Log.w(TAG, "Lost all relay connections — attempting reconnect")
+                            delay(5_000)
+                            try {
+                                relayConnectionManager.ensureConnected(forceReconnect = true)
+                                connectedRelaySet = relayConnectionManager.resolvePrimaryRelays().toSet()
+                                val currentNow = System.currentTimeMillis() / 1000
+                                for (group in groupRepo.getAll()) {
+                                    nostrClient.subscribe(group.id, currentNow - 3600, myPubkey)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Reconnect failed: ${e.message}")
+                            }
+                        }
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to process event: ${e.message}")
+                }
+
+                nostrClient.startListening()
+                Log.i(TAG, "Listening for incoming events...")
+                nostrClient.incomingEvents.collect { event ->
+                    Log.d(TAG, "Received event ${event.id.take(8)} kind=${event.kind} from=${event.pubkey.take(8)}")
+                    try {
+                        val result =
+                            eventProcessor.process(
+                                rawEvent = event,
+                                nonCancellable = true
+                            )
+                        if (result.stored) {
+                            Log.i(
+                                TAG,
+                                "Processed: ${result.eventType} from ${result.authorHex?.take(
+                                    8
+                                )} in ${result.groupName}"
+                            )
+                            ExpenseNotifier.notifyIfNeeded(
+                                this@ForegroundSyncService,
+                                result.eventType!!,
+                                result.decrypted,
+                                result.authorHex!!,
+                                identity.getPublicKeyHex(),
+                                result.groupName ?: "Group"
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to process event: ${e.message}")
+                    }
+                }
+            } finally {
+                if (!syncRunning) {
+                    syncStartInProgress.set(false)
                 }
             }
         }
