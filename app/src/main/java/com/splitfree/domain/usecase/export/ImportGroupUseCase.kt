@@ -80,7 +80,7 @@ constructor(
 
             if (group != null &&
                 pubkey !in group.members &&
-                eventType !in setOf("group_meta", "group_migrate", "key_revocation")
+                eventType !in setOf("group_meta", "key_rotation", "key_revocation")
             ) {
                 continue
             }
@@ -106,7 +106,8 @@ constructor(
                     contentEncrypted = contentEncrypted, eventType = eventType,
                     expenseUuid = expenseUuid, sig = sig,
                     receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = originalJson
+                    originalEventJson = originalJson,
+                    keyEpoch = event.keyEpoch
                 )
             )
             knownEventIds += eventId

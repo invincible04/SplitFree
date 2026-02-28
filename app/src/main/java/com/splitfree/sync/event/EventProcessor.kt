@@ -114,15 +114,32 @@ constructor(
             return ProcessResult(false)
         }
 
-        // 6. Decrypt
+        // 6. Decrypt — try current epoch key first, then fall back to older epochs
+        var decrypted: String? = null
+        var decryptedEpoch = group.keyEpoch
         val groupKey = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: return ProcessResult(false)
-        val decrypted = try {
+        decrypted = try {
             encryption.decrypt(inner.content, groupKey)
         } catch (_: Exception) {
             null
         }
+        if (decrypted == null && group.keyEpoch > 0) {
+            // Event may have been encrypted with an older epoch key (race condition)
+            for (epoch in (group.keyEpoch - 1) downTo 0) {
+                val oldKey = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+                decrypted = try {
+                    encryption.decrypt(inner.content, oldKey)
+                } catch (_: Exception) {
+                    null
+                }
+                if (decrypted != null) {
+                    decryptedEpoch = epoch
+                    break
+                }
+            }
+        }
 
-        if (decrypted == null && eventType in setOf("group_migrate", "key_revocation", "group_meta")) {
+        if (decrypted == null && eventType in setOf("key_rotation", "key_revocation", "group_meta")) {
             Log.w(TAG, "Rejecting undecryptable $eventType from $authorHex in group $groupId")
             return ProcessResult(false)
         }
@@ -157,7 +174,8 @@ constructor(
                     eventId = inner.id, groupId = groupId, pubkey = authorHex,
                     createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
                     eventType = eventType, expenseUuid = expenseUuid, sig = inner.sig,
-                    receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson()
+                    receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson(),
+                    keyEpoch = decryptedEpoch
                 )
             )
         ) {
@@ -207,8 +225,8 @@ constructor(
                 }
             }
         }
-        if (eventType == "group_migrate" && group.createdBy.isNotEmpty() && authorHex != group.createdBy) {
-            Log.w(TAG, "Rejecting group_migrate from non-creator $authorHex in group $groupId")
+        if (eventType == "key_rotation" && group.createdBy.isNotEmpty() && authorHex != group.createdBy) {
+            Log.w(TAG, "Rejecting key_rotation from non-creator $authorHex in group $groupId")
             return false
         }
         return true

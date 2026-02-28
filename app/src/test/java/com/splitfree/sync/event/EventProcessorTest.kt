@@ -277,19 +277,19 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process handles group_migrate side effect`() = runBlocking {
-        val migrateJson =
-            """{"newGroupId":"new-id",""" +
-                """"encryptedKeys":{},""" +
+    fun `process handles key_rotation side effect`() = runBlocking {
+        val rotationJson =
+            """{"epoch":1,""" +
+                """"encrypted_keys":{},""" +
                 """"members":["$pubkey"],""" +
-                """"removedMember":"removed"}"""
-        every { encryption.decrypt(any(), groupKey) } returns migrateJson
+                """"removed_member":"removed"}"""
+        every { encryption.decrypt(any(), groupKey) } returns rotationJson
         val result = processor.process(
-            makeEvent(eventType = "group_migrate", expenseUuid = null),
+            makeEvent(eventType = "key_rotation", expenseUuid = null),
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("group_migrate"), any(), eq(pubkey), eq(groupId), any(), any()) }
+        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any()) }
     }
 
     @Test
@@ -398,16 +398,16 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process group_migrate exception is caught`() = runBlocking {
+    fun `process key_rotation exception is caught`() = runBlocking {
         // Exception handling is now in EventPostProcessor, not EventProcessor.
         // Verify EventProcessor delegates correctly.
         every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
         val result = processor.process(
-            makeEvent(eventType = "group_migrate", expenseUuid = null),
+            makeEvent(eventType = "key_rotation", expenseUuid = null),
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("group_migrate"), any(), eq(pubkey), eq(groupId), any(), any()) }
+        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any()) }
     }
 
     @Test
@@ -497,16 +497,16 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process with nonCancellable true runs group_migrate`() = runBlocking {
+    fun `process with nonCancellable true runs key_rotation`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
         val result =
             processor.process(
-                makeEvent(eventType = "group_migrate", expenseUuid = null),
+                makeEvent(eventType = "key_rotation", expenseUuid = null),
                 knownGroupKey = groupKey,
                 nonCancellable = true
             )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("group_migrate"), any(), eq(pubkey), eq(groupId), any(), any()) }
+        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any()) }
     }
 
     @Test
@@ -549,14 +549,14 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects group_migrate from member who is not creator`() = runBlocking {
+    fun `process rejects key_rotation from member who is not creator`() = runBlocking {
         val member = "cc".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, member))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
         every { encryption.decrypt(any(), groupKey) } returns
-            """{"newGroupId":"n","encryptedKeys":{},"members":["$pubkey"]}"""
+            """{"epoch":1,"encrypted_keys":{},"members":["$pubkey"],"removed_member":"$member"}"""
         val result = processor.process(
-            makeEvent(eventType = "group_migrate", author = member, expenseUuid = null),
+            makeEvent(eventType = "key_rotation", author = member, expenseUuid = null),
             knownGroupKey = groupKey
         )
         assertFalse(result.stored)
@@ -648,9 +648,9 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process group_migrate CancellationException is rethrown`() {
+    fun `process key_rotation CancellationException is rethrown`() {
         coEvery {
-            postProcessor.handle(eq("group_migrate"), any(), any(), any(), any(), any())
+            postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any())
         } throws kotlinx.coroutines.CancellationException("cancel")
         every {
             encryption.decrypt(any(), groupKey)
@@ -659,7 +659,7 @@ class EventProcessorTest {
             runBlocking {
                 processor.process(
                     makeEvent(
-                        eventType = "group_migrate",
+                        eventType = "key_rotation",
                         expenseUuid = null
                     ),
                     knownGroupKey = groupKey

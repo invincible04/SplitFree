@@ -48,7 +48,16 @@ constructor(
 
     override fun observeById(groupId: String): Flow<Group?> = groupDao.observeById(groupId).map { it?.toDomain() }
 
-    override suspend fun getGroupKey(groupId: String): String? = keyStore.getString(groupId, null)
+    override suspend fun getGroupKey(groupId: String): String? {
+        val group = groupDao.getById(groupId)
+        val epoch = group?.keyEpoch ?: 0
+        return keyStore.getString("$groupId:$epoch", null)
+            ?: keyStore.getString(groupId, null) // fallback for epoch-0 legacy keys
+    }
+
+    override suspend fun getGroupKeyForEpoch(groupId: String, epoch: Int): String? =
+        keyStore.getString("$groupId:$epoch", null)
+            ?: if (epoch == 0) keyStore.getString(groupId, null) else null
 
     override suspend fun getMembers(groupId: String): List<String> = getById(groupId)?.members ?: emptyList()
 
@@ -60,7 +69,9 @@ constructor(
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
 
     override suspend fun save(group: Group, groupKey: String) {
-        keyStore.putString(group.id, groupKey)
+        keyStore.putString("${group.id}:${group.keyEpoch}", groupKey)
+        // Also store under plain groupId for backward compat at epoch 0
+        if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
         val safeMemberNames = sanitizeMemberNames(group.memberNames, group.members)
         groupDao.insert(
             GroupEntity(
@@ -71,9 +82,18 @@ constructor(
                 createdAt = group.createdAt,
                 members = json.encodeToString(stringListSerializer, group.members),
                 relays = json.encodeToString(stringListSerializer, group.relays),
-                memberNames = json.encodeToString(nameMapSerializer, safeMemberNames)
+                memberNames = json.encodeToString(nameMapSerializer, safeMemberNames),
+                keyEpoch = group.keyEpoch
             )
         )
+    }
+
+    override suspend fun saveGroupKeyForEpoch(groupId: String, epoch: Int, groupKey: String) {
+        keyStore.putString("$groupId:$epoch", groupKey)
+    }
+
+    override suspend fun updateKeyEpoch(groupId: String, epoch: Int) {
+        groupDao.updateKeyEpoch(groupId, epoch)
     }
 
     override suspend fun updateLastSync(groupId: String, timestamp: Long) {
@@ -143,7 +163,8 @@ constructor(
             createdAt = createdAt,
             members = decodedMembers,
             relays = decodedRelays,
-            memberNames = sanitizeMemberNames(decodedNames, decodedMembers)
+            memberNames = sanitizeMemberNames(decodedNames, decodedMembers),
+            keyEpoch = keyEpoch
         )
     }
 

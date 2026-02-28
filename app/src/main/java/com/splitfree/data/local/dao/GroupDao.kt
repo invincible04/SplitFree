@@ -73,4 +73,7 @@ interface GroupDao {
 
     @Delete
     suspend fun delete(group: GroupEntity)
+
+    @Query("UPDATE `groups` SET keyEpoch = :epoch WHERE groupId = :groupId")
+    suspend fun updateKeyEpoch(groupId: String, epoch: Int)
 }

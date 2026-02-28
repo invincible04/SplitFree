@@ -17,8 +17,11 @@ interface GroupRepositoryContract {
 
     fun observeById(groupId: String): Flow<Group?>
 
-    /** @return base64-encoded symmetric group key from encrypted storage, or null */
+    /** @return base64-encoded symmetric group key for the current epoch, or null */
     suspend fun getGroupKey(groupId: String): String?
+
+    /** @return base64-encoded symmetric group key for a specific epoch, or null */
+    suspend fun getGroupKeyForEpoch(groupId: String, epoch: Int): String?
 
     /** @return list of member pubkeys for the group */
     suspend fun getMembers(groupId: String): List<String>
@@ -33,6 +36,12 @@ interface GroupRepositoryContract {
      * @param groupKey base64-encoded symmetric key stored in Keystore-backed encrypted storage
      */
     suspend fun save(group: Group, groupKey: String)
+
+    /** Save a group key for a specific epoch. */
+    suspend fun saveGroupKeyForEpoch(groupId: String, epoch: Int, groupKey: String)
+
+    /** Update the group's current key epoch. */
+    suspend fun updateKeyEpoch(groupId: String, epoch: Int)
 
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 

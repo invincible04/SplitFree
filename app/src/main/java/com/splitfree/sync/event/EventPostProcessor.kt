@@ -3,8 +3,8 @@ package com.splitfree.sync.event
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -16,14 +16,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 /**
- * Handles post-storage side effects for `group_meta`, `group_migrate`, and `key_revocation` events.
+ * Handles post-storage side effects for `group_meta`, `key_rotation`, and `key_revocation` events.
  */
 @Singleton
 class EventPostProcessor
 @Inject
 constructor(
     private val groupRepo: GroupRepositoryContract,
-    private val migrateGroup: MigrateGroupUseCase,
+    private val rotateGroupKey: RotateGroupKeyUseCase,
     private val revokeKey: RevokeKeyUseCase,
     private val selfHeal: SelfHealUseCase,
     @ApplicationScope private val appScope: CoroutineScope
@@ -33,7 +33,7 @@ constructor(
     /**
      * Process a post-storage side effect.
      *
-     * @param eventType one of `group_meta`, `group_migrate`, `key_revocation`
+     * @param eventType one of `group_meta`, `key_rotation`, `key_revocation`
      * @param decrypted decrypted event content JSON, or null to skip
      * @param authorHex pubkey of the event author
      * @param groupId target group UUID
@@ -52,8 +52,8 @@ constructor(
 
         when (eventType) {
             "group_meta" -> handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable)
-            "group_migrate" -> runSafe(nonCancellable, "group_migrate", groupId) {
-                migrateGroup.handleMigration(decrypted, authorHex, groupId)
+            "key_rotation" -> runSafe(nonCancellable, "key_rotation", groupId) {
+                rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId)
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
                 revokeKey.handleRevocation(decrypted, authorHex, groupId)

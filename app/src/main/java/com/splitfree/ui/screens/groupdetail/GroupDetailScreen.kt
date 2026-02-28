@@ -52,7 +52,6 @@ import kotlinx.coroutines.launch
 fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
     onNearbySync: (String) -> Unit = {},
-    onNavigateToGroup: (String) -> Unit = {},
     onBack: () -> Unit,
     viewModel: GroupDetailViewModel = hiltViewModel()
 ) {
@@ -215,7 +214,7 @@ fun GroupDetailScreen(
             memberNames = uiState.memberNames,
             onConfirm = {
                 showRemoveDialog = null
-                viewModel.removeMember(pubkey) { onNavigateToGroup(it) }
+                viewModel.removeMember(pubkey)
             },
             onDismiss = { showRemoveDialog = null }
         )

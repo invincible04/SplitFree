@@ -20,5 +20,6 @@ data class Group(
     val createdAt: Long,
     val members: List<String>,
     val relays: List<String>,
-    val memberNames: Map<String, String> = emptyMap()
+    val memberNames: Map<String, String> = emptyMap(),
+    val keyEpoch: Int = 0
 )

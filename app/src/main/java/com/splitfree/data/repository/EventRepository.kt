@@ -51,13 +51,15 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
         eventId = eventId, groupId = groupId, pubkey = pubkey,
         createdAt = createdAt, kind = kind, contentEncrypted = contentEncrypted,
         eventType = eventType, expenseUuid = expenseUuid, sig = sig,
-        receivedAt = receivedAt, originalEventJson = originalEventJson
+        receivedAt = receivedAt, originalEventJson = originalEventJson,
+        keyEpoch = keyEpoch
     )
 
     private fun EventSnapshot.toEntity() = EventEntity(
         eventId = eventId, groupId = groupId, pubkey = pubkey,
         createdAt = createdAt, kind = kind, contentEncrypted = contentEncrypted,
         eventType = eventType, expenseUuid = expenseUuid, sig = sig,
-        receivedAt = receivedAt, originalEventJson = originalEventJson
+        receivedAt = receivedAt, originalEventJson = originalEventJson,
+        keyEpoch = keyEpoch
     )
 }

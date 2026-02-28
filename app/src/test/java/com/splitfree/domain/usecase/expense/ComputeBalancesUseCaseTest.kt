@@ -23,6 +23,7 @@ class ComputeBalancesUseCaseTest {
 
     private fun groupRepo() = mockk<GroupRepositoryContract>(relaxed = true).also {
         coEvery { it.getGroupKey("g1") } returns groupKey
+        coEvery { it.getGroupKeyForEpoch("g1", any()) } returns groupKey
     }
 
     /** Mock encryption returns contentEncrypted as-is. */

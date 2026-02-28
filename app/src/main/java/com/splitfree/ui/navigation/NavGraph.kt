@@ -96,11 +96,6 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
                 onNearbySync = { groupId ->
                     navController.navigate(Screen.NearbySync.withGroupId(groupId))
                 },
-                onNavigateToGroup = { newGroupId ->
-                    navController.navigate(Screen.GroupDetail.withId(newGroupId)) {
-                        popUpTo(Screen.GroupsList.route)
-                    }
-                },
                 onBack = { navController.popBackStack() }
             )
         }

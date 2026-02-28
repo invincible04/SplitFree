@@ -15,5 +15,6 @@ data class ExportedEvent(
     val eventType: String,
     val expenseUuid: String? = null,
     val sig: String,
-    val originalEventJson: String? = null
+    val originalEventJson: String? = null,
+    val keyEpoch: Int = 0
 )

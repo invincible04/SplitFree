@@ -98,6 +98,7 @@ constructor(
         eventType: String,
         expenseUuid: String?
     ) {
+        val epoch = groupRepo.getById(groupId)?.keyEpoch ?: 0
         eventDao.insert(
             EventEntity(
                 eventId = event.id,
@@ -110,7 +111,8 @@ constructor(
                 expenseUuid = expenseUuid,
                 sig = event.sig,
                 receivedAt = System.currentTimeMillis() / 1000,
-                originalEventJson = event.toJson()
+                originalEventJson = event.toJson(),
+                keyEpoch = epoch
             )
         )
     }

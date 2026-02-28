@@ -4,8 +4,8 @@ import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.balance.SnapshotBalance
-import com.splitfree.domain.model.group.GroupMigration
 import com.splitfree.domain.model.group.KeyRevocation
+import com.splitfree.domain.model.group.KeyRotation
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -38,26 +38,26 @@ class UseCaseSerializationTest {
         assertEquals("", d.newPubkey)
     }
 
-    // --- GroupMigration ---
+    // --- KeyRotation ---
 
     @Test
-    fun `GroupMigration round-trip`() {
-        val gm =
-            GroupMigration(
-                newGroupId = "new-id",
+    fun `KeyRotation round-trip`() {
+        val kr =
+            KeyRotation(
+                epoch = 1,
                 encryptedKeys = mapOf("pub1" to "enc1", "pub2" to "enc2"),
                 members = listOf("pub1", "pub2"),
                 removedMember = "pub3"
             )
-        val s = json.encodeToString(GroupMigration.serializer(), gm)
-        val d = json.decodeFromString<GroupMigration>(s)
-        assertEquals(gm, d)
+        val s = json.encodeToString(KeyRotation.serializer(), kr)
+        val d = json.decodeFromString<KeyRotation>(s)
+        assertEquals(kr, d)
     }
 
     @Test
-    fun `GroupMigration preserves encrypted keys map`() {
-        val gm = GroupMigration("id", mapOf("a" to "x", "b" to "y"), listOf("a", "b"), "c")
-        val d = json.decodeFromString<GroupMigration>(json.encodeToString(GroupMigration.serializer(), gm))
+    fun `KeyRotation preserves encrypted keys map`() {
+        val kr = KeyRotation(2, mapOf("a" to "x", "b" to "y"), listOf("a", "b"), "c")
+        val d = json.decodeFromString<KeyRotation>(json.encodeToString(KeyRotation.serializer(), kr))
         assertEquals(2, d.encryptedKeys.size)
         assertEquals("x", d.encryptedKeys["a"])
         assertEquals("y", d.encryptedKeys["b"])

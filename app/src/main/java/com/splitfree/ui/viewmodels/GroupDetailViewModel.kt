@@ -16,7 +16,7 @@ import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
-import com.splitfree.domain.usecase.group.MigrateGroupUseCase
+import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
@@ -62,7 +62,7 @@ constructor(
     private val computeBalances: ComputeBalancesUseCase,
     private val simplifyDebts: SimplifyDebtsUseCase,
     private val exportGroup: ExportGroupUseCase,
-    private val migrateGroup: MigrateGroupUseCase,
+    private val rotateGroupKey: RotateGroupKeyUseCase,
     private val identity: IdentityContract,
     private val getExpenses: GetExpensesUseCase,
     private val createInviteLink: CreateInviteLinkUseCase,
@@ -158,13 +158,13 @@ constructor(
 
     suspend fun exportGroupData(): String = exportGroup(groupId)
 
-    fun removeMember(pubkey: String, onMigrated: (String) -> Unit) {
+    fun removeMember(pubkey: String) {
         viewModelScope.launch {
             try {
-                val newGroup = migrateGroup(groupId, pubkey)
-                onMigrated(newGroup.id)
+                rotateGroupKey(groupId, pubkey)
             } catch (e: Exception) {
                 Log.w(TAG, "Remove member failed: ${e.message}")
+                _error.value = e.message ?: "Failed to remove member"
             }
         }
     }

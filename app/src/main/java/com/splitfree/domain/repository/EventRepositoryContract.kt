@@ -52,7 +52,7 @@ interface EventRepositoryContract {
  * @property groupId UUID of the group this event belongs to
  * @property pubkey author's public key hex
  * @property contentEncrypted NIP-44 encrypted payload
- * @property eventType one of `expense`, `settlement`, `group_meta`, `group_migrate`, `key_revocation`, `snapshot`
+ * @property eventType one of `expense`, `settlement`, `group_meta`, `key_rotation`, `key_revocation`, `snapshot`
  * @property expenseUuid optional expense/settlement UUID for dedup and correction tracking
  * @property originalEventJson original signed JSON for self-heal republishing
  */
@@ -67,5 +67,6 @@ data class EventSnapshot(
     val expenseUuid: String? = null,
     val sig: String = "",
     val receivedAt: Long = 0,
-    val originalEventJson: String? = null
+    val originalEventJson: String? = null,
+    val keyEpoch: Int = 0
 )

@@ -26,11 +26,16 @@ constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Decrypt event content on-the-fly. Returns null if key missing or decryption fails. */
-    private fun decrypt(event: EventSnapshot, groupKey: String): String? = try {
-        encryption.decrypt(event.contentEncrypted, groupKey)
-    } catch (_: Exception) {
-        null
+    /** Decrypt event content on-the-fly using epoch-aware key lookup. Returns null if key missing or decryption fails. */
+    private suspend fun decrypt(event: EventSnapshot, groupId: String, keyCache: MutableMap<Int, String?>): String? {
+        val key = keyCache.getOrPut(event.keyEpoch) {
+            groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch)
+        } ?: return null
+        return try {
+            encryption.decrypt(event.contentEncrypted, key)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -41,8 +46,8 @@ constructor(
      * @return [BalanceResult] with per-member balances and excluded expense UUIDs
      */
     suspend fun computeWithExclusions(groupId: String): BalanceResult {
-        val groupKey = groupRepo.getGroupKey(groupId) ?: return BalanceResult(emptyList(), emptySet())
         val events = eventRepo.getEventsByGroup(groupId)
+        val keyCache = mutableMapOf<Int, String?>()
         // Key: (pubkey, currency) -> net amount
         val balances = mutableMapOf<Pair<String, String>, Long>()
         val deleted = mutableSetOf<String>()
@@ -60,7 +65,7 @@ constructor(
                             (group.createdBy.isEmpty() && snapshotEvent.pubkey in group.members)
                         )
                 ) {
-                    val content = decrypt(snapshotEvent, groupKey)
+                    val content = decrypt(snapshotEvent, groupId, keyCache)
                     if (content != null) {
                         val snap = json.decodeFromString<BalanceSnapshot>(content)
                         val localIds = eventRepo.getEventIds(groupId).toSet()
@@ -104,7 +109,7 @@ constructor(
         }
 
         for (e in relevantEvents) {
-            val content = decrypt(e, groupKey) ?: continue
+            val content = decrypt(e, groupId, keyCache) ?: continue
             when (e.eventType) {
                 "expense" -> {
                     val uuid = e.expenseUuid ?: continue

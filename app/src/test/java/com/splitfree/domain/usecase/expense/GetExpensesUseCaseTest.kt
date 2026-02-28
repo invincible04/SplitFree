@@ -32,12 +32,14 @@ class GetExpensesUseCaseTest {
     @Before
     fun setup() {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns groupKey
         useCase = GetExpensesUseCase(eventRepo, groupRepo, encryption)
     }
 
     @Test
     fun `observe returns empty when no group key`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns null
         every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(listOf(makeEntity("e1")))
 
         val result = useCase.observe(groupId).first()

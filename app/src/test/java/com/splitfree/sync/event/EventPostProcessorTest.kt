@@ -2,8 +2,8 @@ package com.splitfree.sync.event
 
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.model.group.Group
-import com.splitfree.domain.usecase.group.MigrateGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -21,7 +21,7 @@ import org.junit.Test
 
 class EventPostProcessorTest {
     private val groupRepo = mockk<GroupRepository>(relaxed = true)
-    private val migrateGroup = mockk<MigrateGroupUseCase>(relaxed = true)
+    private val rotateGroupKey = mockk<RotateGroupKeyUseCase>(relaxed = true)
     private val revokeKey = mockk<RevokeKeyUseCase>(relaxed = true)
     private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -38,7 +38,7 @@ class EventPostProcessorTest {
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { android.util.Log.e(any(), any(), any()) } returns 0
         coEvery { groupRepo.getById(groupId) } returns group
-        processor = EventPostProcessor(groupRepo, migrateGroup, revokeKey, selfHeal, appScope)
+        processor = EventPostProcessor(groupRepo, rotateGroupKey, revokeKey, selfHeal, appScope)
     }
 
     @After
@@ -54,7 +54,7 @@ class EventPostProcessorTest {
     fun `handle unknown event type is no-op`() = runBlocking {
         processor.handle("expense", """{"data":"x"}""", pubkey, groupId, 1000, false)
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { migrateGroup.handleMigration(any(), any(), any()) }
+        coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any()) }
         coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any()) }
     }
 
@@ -168,9 +168,9 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle group_migrate delegates to MigrateGroupUseCase`() = runBlocking {
-        processor.handle("group_migrate", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        coVerify { migrateGroup.handleMigration("""{"data":"x"}""", pubkey, groupId) }
+    fun `handle key_rotation delegates to RotateGroupKeyUseCase`() = runBlocking {
+        processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
+        coVerify { rotateGroupKey.handleKeyRotation("""{"data":"x"}""", pubkey, groupId) }
     }
 
     @Test
@@ -180,18 +180,18 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle catches exception from migrateGroup`() = runBlocking {
-        coEvery { migrateGroup.handleMigration(any(), any(), any()) } throws RuntimeException("boom")
-        processor.handle("group_migrate", """{"data":"x"}""", pubkey, groupId, 1000, false)
+    fun `handle catches exception from rotateGroupKey`() = runBlocking {
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any()) } throws RuntimeException("boom")
+        processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
         // Should not throw — exception is caught internally
     }
 
     @Test
     fun `handle rethrows CancellationException`() {
-        coEvery { migrateGroup.handleMigration(any(), any(), any()) } throws
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any()) } throws
             kotlinx.coroutines.CancellationException("cancel")
         try {
-            runBlocking { processor.handle("group_migrate", """{"data":"x"}""", pubkey, groupId, 1000, false) }
+            runBlocking { processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false) }
             org.junit.Assert.fail("Expected CancellationException")
         } catch (_: kotlinx.coroutines.CancellationException) { /* expected */ }
     }

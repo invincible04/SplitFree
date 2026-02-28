@@ -42,6 +42,7 @@ class EventPublisherTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { identity.getPublicKeyHex() } returns myPub
         coEvery { outboxDao.count() } returns 0
+        coEvery { groupRepo.getById(any()) } returns null
         publisher = EventPublisher(eventDao, outboxDao, throttler, giftWrap, groupRepo, identity)
     }
 

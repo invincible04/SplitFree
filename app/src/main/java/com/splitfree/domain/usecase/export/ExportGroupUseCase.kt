@@ -33,7 +33,8 @@ constructor(
             ExportedEvent(
                 eventId = e.eventId, pubkey = e.pubkey, createdAt = e.createdAt, kind = e.kind,
                 contentEncrypted = e.contentEncrypted, eventType = e.eventType,
-                expenseUuid = e.expenseUuid, sig = e.sig, originalEventJson = e.originalEventJson
+                expenseUuid = e.expenseUuid, sig = e.sig, originalEventJson = e.originalEventJson,
+                keyEpoch = e.keyEpoch
             )
         }
         val eventsJson = Json.encodeToString(exportedEvents)

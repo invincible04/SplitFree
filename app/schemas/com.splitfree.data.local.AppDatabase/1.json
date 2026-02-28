@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "eadbdc1c96ed1ad5cfc5577522e95f70",
+    "identityHash": "02433b32e7c2018abc4f7408dafee8fa",
     "entities": [
       {
         "tableName": "events",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `pubkey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `contentEncrypted` TEXT NOT NULL, `eventType` TEXT NOT NULL, `expenseUuid` TEXT, `sig` TEXT NOT NULL, `receivedAt` INTEGER NOT NULL, `originalEventJson` TEXT, PRIMARY KEY(`eventId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `pubkey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `contentEncrypted` TEXT NOT NULL, `eventType` TEXT NOT NULL, `expenseUuid` TEXT, `sig` TEXT NOT NULL, `receivedAt` INTEGER NOT NULL, `originalEventJson` TEXT, `keyEpoch` INTEGER NOT NULL, PRIMARY KEY(`eventId`))",
         "fields": [
           {
             "fieldPath": "eventId",
@@ -71,6 +71,12 @@
             "fieldPath": "originalEventJson",
             "columnName": "originalEventJson",
             "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "keyEpoch",
+            "columnName": "keyEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -113,7 +119,7 @@
       },
       {
         "tableName": "groups",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `createdBy` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `members` TEXT NOT NULL, `relays` TEXT NOT NULL, `memberNames` TEXT NOT NULL, `lastSyncTimestamp` INTEGER NOT NULL, `lastMetaTimestamp` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `createdBy` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `members` TEXT NOT NULL, `relays` TEXT NOT NULL, `memberNames` TEXT NOT NULL, `lastSyncTimestamp` INTEGER NOT NULL, `lastMetaTimestamp` INTEGER NOT NULL, `keyEpoch` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
         "fields": [
           {
             "fieldPath": "groupId",
@@ -174,6 +180,12 @@
             "columnName": "lastMetaTimestamp",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "keyEpoch",
+            "columnName": "keyEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -227,7 +239,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'eadbdc1c96ed1ad5cfc5577522e95f70')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '02433b32e7c2018abc4f7408dafee8fa')"
     ]
   }
 }

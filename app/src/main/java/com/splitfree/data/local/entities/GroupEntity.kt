@@ -23,5 +23,6 @@ data class GroupEntity(
     val relays: String,
     val memberNames: String = "{}",
     val lastSyncTimestamp: Long = 0,
-    val lastMetaTimestamp: Long = 0
+    val lastMetaTimestamp: Long = 0,
+    val keyEpoch: Int = 0
 )

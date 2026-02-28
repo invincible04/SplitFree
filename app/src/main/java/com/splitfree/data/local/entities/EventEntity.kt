@@ -36,7 +36,8 @@ data class EventEntity(
     val expenseUuid: String? = null,
     val sig: String,
     val receivedAt: Long,
-    val originalEventJson: String? = null
+    val originalEventJson: String? = null,
+    val keyEpoch: Int = 0
 ) {
     /**
      * Decrypt content on-the-fly. Never persisted — call each time content is needed.

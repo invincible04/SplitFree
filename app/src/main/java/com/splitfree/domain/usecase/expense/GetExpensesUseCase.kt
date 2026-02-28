@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 
 /**
  * Observes and decrypts expenses for a group as a reactive [Flow].
+ * Supports epoch-based key rotation — each event is decrypted with its epoch's key.
  */
 class GetExpensesUseCase
 @Inject
@@ -28,16 +29,19 @@ constructor(
      * @return reactive [Flow] of expenses; emits empty list if group key is unavailable
      */
     fun observe(groupId: String): Flow<List<Expense>> = eventRepo.observeEventsByGroup(groupId).map { events ->
-        val groupKey = groupRepo.getGroupKey(groupId) ?: return@map emptyList()
+        // Build a cache of epoch -> key to avoid repeated lookups
+        val keyCache = mutableMapOf<Int, String?>()
         events
             .filter { it.eventType == "expense" && it.expenseUuid != null }
             .mapNotNull { e ->
-                val content =
-                    try {
-                        encryption.decrypt(e.contentEncrypted, groupKey)
-                    } catch (_: Exception) {
-                        null
-                    }
+                val key = keyCache.getOrPut(e.keyEpoch) {
+                    groupRepo.getGroupKeyForEpoch(groupId, e.keyEpoch)
+                } ?: return@mapNotNull null
+                val content = try {
+                    encryption.decrypt(e.contentEncrypted, key)
+                } catch (_: Exception) {
+                    null
+                }
                 content?.let { runCatching { json.decodeFromString<Expense>(it) }.getOrNull() }
             }.sortedByDescending { it.timestamp }
     }
