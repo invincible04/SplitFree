@@ -62,6 +62,16 @@ class EventProcessorTest {
         sig = "sig"
     )
 
+    private fun settlementJson(
+        id: String = "s1",
+        from: String = pubkey,
+        to: String = "bb".repeat(32),
+        amount: Long = 100,
+        currency: String = "USD",
+        timestamp: Long = 1000
+    ): String =
+        """{"id":"$id","from":"$from","to":"$to","amount":$amount,"currency":"$currency","timestamp":$timestamp}"""
+
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)
@@ -488,12 +498,35 @@ class EventProcessorTest {
 
     @Test
     fun `process settlement type skips tombstone and backdating checks`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson()
         val result = processor.process(
             makeEvent(eventType = "settlement", expenseUuid = null),
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
         coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
+    }
+
+    @Test
+    fun `process rejects settlement with unparseable content`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns "not-valid-settlement-json"
+        val result = processor.process(
+            makeEvent(eventType = "settlement", expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects settlement not authored by participant`() = runBlocking {
+        val alice = "aa".repeat(32)
+        val bob = "bb".repeat(32)
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(from = alice, to = bob)
+        val result = processor.process(
+            makeEvent(eventType = "settlement", author = "cc".repeat(32), expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
     }
 
     @Test

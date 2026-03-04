@@ -15,6 +15,7 @@ import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
 import com.splitfree.util.DebugLog as Log
+import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -59,6 +60,7 @@ class ForegroundSyncService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ProcessHealthTracker.heartbeat(this, "fg_service_create")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
         triggerRealtimeSyncIfNeeded()
@@ -73,6 +75,7 @@ class ForegroundSyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        ProcessHealthTracker.heartbeat(this, "fg_service_destroy")
         scope.cancel()
         syncRunning = false
         syncStartInProgress.set(false)
@@ -94,6 +97,7 @@ class ForegroundSyncService : Service() {
             try {
                 if (!identity.hasIdentity()) {
                     Log.w(TAG, "No identity — skipping sync")
+                    ProcessHealthTracker.heartbeat(this@ForegroundSyncService, "fg_sync_skip_no_identity")
                     return@launch
                 }
 
@@ -119,8 +123,10 @@ class ForegroundSyncService : Service() {
                 }
                 if (!connected) {
                     Log.w(TAG, "All connect attempts failed — waiting for network callback to retry")
+                    ProcessHealthTracker.heartbeat(this@ForegroundSyncService, "fg_connect_failed_all")
                     return@launch
                 }
+                ProcessHealthTracker.heartbeat(this@ForegroundSyncService, "fg_connected")
 
                 syncRunning = true
 

@@ -25,6 +25,7 @@ import com.splitfree.sync.worker.ForegroundSyncService
 import com.splitfree.sync.worker.PowerManager
 import com.splitfree.sync.worker.SyncScheduler
 import com.splitfree.util.DebugLog as Log
+import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.HiltAndroidApp
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -77,6 +78,7 @@ class SplitFreeApp :
                 if (!::identity.isInitialized || !identity.hasIdentity()) return
                 if (!networkSyncInProgress.compareAndSet(false, true)) return
                 Log.i(TAG, "Network available — triggering immediate sync")
+                ProcessHealthTracker.heartbeat(this@SplitFreeApp, "network_available")
                 ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
                     var acquiredConnection = false
                     try {
@@ -84,8 +86,14 @@ class SplitFreeApp :
                         relayConnectionManager.ensureConnected()
                         acquiredConnection = true
                         syncEngine.flushOutbox()
+                        ProcessHealthTracker.heartbeat(this@SplitFreeApp, "network_flush_ok")
                     } catch (e: Exception) {
                         Log.w(TAG, "Network-triggered outbox flush failed: ${e.message}")
+                        ProcessHealthTracker.heartbeat(
+                            this@SplitFreeApp,
+                            "network_flush_fail",
+                            e.javaClass.simpleName
+                        )
                     } finally {
                         if (acquiredConnection) nostrClient.releaseConnection()
                         networkSyncInProgress.set(false)
@@ -107,6 +115,8 @@ class SplitFreeApp :
 
     override fun onCreate() {
         super.onCreate()
+        ProcessHealthTracker.install(this)
+        ProcessHealthTracker.heartbeat(this, "app_on_create")
         SyncScheduler.schedulePeriodicSync(this, powerManager.syncIntervalHours())
         SyncScheduler.scheduleMidnightSync(this)
         registerBatteryStateReceiver()

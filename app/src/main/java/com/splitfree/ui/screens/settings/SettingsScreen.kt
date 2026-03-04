@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Warning
@@ -56,6 +57,7 @@ import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
+import com.splitfree.util.ProcessHealthTracker
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -182,6 +184,19 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 headlineContent = { Text("SplitFree v1.1.0") },
                 supportingContent = {
                     Text("Decentralized expense splitting over Nostr.")
+                }
+            )
+            ListItem(
+                headlineContent = { Text("Diagnostics Report") },
+                supportingContent = { Text("Copy crash/ANR and background sync health report") },
+                leadingContent = { Icon(Icons.Outlined.BugReport, contentDescription = null) },
+                trailingContent = {
+                    FilledTonalButton(
+                        onClick = {
+                            val report = ProcessHealthTracker.buildReport(context)
+                            copyToClipboard(context, "diagnostics", report)
+                        }
+                    ) { Text("Copy") }
                 }
             )
             if (BuildConfig.DEBUG) {

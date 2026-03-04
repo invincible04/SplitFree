@@ -11,6 +11,7 @@ import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.usecase.expense.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
+import com.splitfree.util.ProcessHealthTracker
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
@@ -36,6 +37,7 @@ constructor(
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         var acquiredConnection = false
+        ProcessHealthTracker.heartbeat(applicationContext, "sync_worker_start")
         return try {
             if (!identity.hasIdentity()) return Result.success()
             relayConnectionManager.ensureConnected()
@@ -50,9 +52,11 @@ constructor(
                 selfHeal(group.id)
                 createSnapshot(group.id)
             }
+            ProcessHealthTracker.heartbeat(applicationContext, "sync_worker_success")
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Sync failed: ${e.message}")
+            ProcessHealthTracker.heartbeat(applicationContext, "sync_worker_fail", e.javaClass.simpleName)
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         } finally {
             if (acquiredConnection) nostrClient.releaseConnection()

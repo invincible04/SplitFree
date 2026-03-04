@@ -31,6 +31,7 @@ import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
 import com.splitfree.util.DebugLog as Log
+import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.delay
@@ -50,6 +51,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ProcessHealthTracker.heartbeat(this, "main_activity_create")
         ThemePreference.init(this)
         sanitizeIntent(intent)
         handleDeepLink(intent)
@@ -148,6 +150,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        ProcessHealthTracker.heartbeat(this, "main_activity_new_intent")
         sanitizeIntent(intent)
         handleDeepLink(intent)
     }

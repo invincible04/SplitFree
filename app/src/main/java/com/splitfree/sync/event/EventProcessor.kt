@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -154,17 +155,38 @@ constructor(
             return ProcessResult(false)
         }
 
-        // 7b. Validate expense amounts from remote peers
-        if (decrypted != null && (eventType == "expense" || eventType == "expense_correction")) {
-            try {
-                val expense = json.decodeFromString<Expense>(decrypted)
-                if (!eventValidator.isExpenseAmountValid(expense.amount, expense.splitAmong.map { it.share })) {
-                    Log.w(TAG, "Rejecting $eventType with invalid amount/splits: ${inner.id}")
-                    return ProcessResult(false)
+        // 7b. Validate remote payloads before storing
+        if (decrypted != null) {
+            when (eventType) {
+                "expense", "expense_correction" -> {
+                    try {
+                        val expense = json.decodeFromString<Expense>(decrypted)
+                        if (!eventValidator.isExpenseAmountValid(expense.amount, expense.splitAmong.map { it.share })) {
+                            Log.w(TAG, "Rejecting $eventType with invalid amount/splits: ${inner.id}")
+                            return ProcessResult(false)
+                        }
+                    } catch (_: Exception) {
+                        Log.w(TAG, "Rejecting $eventType with unparseable content: ${inner.id}")
+                        return ProcessResult(false)
+                    }
                 }
-            } catch (_: Exception) {
-                Log.w(TAG, "Rejecting $eventType with unparseable content: ${inner.id}")
-                return ProcessResult(false)
+
+                "settlement" -> {
+                    try {
+                        val settlement = json.decodeFromString<Settlement>(decrypted)
+                        if (!eventValidator.isExpenseAmountValid(settlement.amount, listOf(settlement.amount))) {
+                            Log.w(TAG, "Rejecting settlement with invalid amount: ${inner.id}")
+                            return ProcessResult(false)
+                        }
+                        if (authorHex != settlement.from && authorHex != settlement.to) {
+                            Log.w(TAG, "Rejecting settlement not authored by a participant: ${inner.id}")
+                            return ProcessResult(false)
+                        }
+                    } catch (_: Exception) {
+                        Log.w(TAG, "Rejecting settlement with unparseable content: ${inner.id}")
+                        return ProcessResult(false)
+                    }
+                }
             }
         }
 

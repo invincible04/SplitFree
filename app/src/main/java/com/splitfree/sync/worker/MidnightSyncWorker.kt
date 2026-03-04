@@ -17,6 +17,7 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
+import com.splitfree.util.ProcessHealthTracker
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.util.Calendar
@@ -46,6 +47,7 @@ constructor(
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         var acquired = false
+        ProcessHealthTracker.heartbeat(applicationContext, "midnight_worker_start")
         return try {
             if (!identity.hasIdentity()) return Result.success()
             relayConnectionManager.ensureConnected(forceReconnect = true)
@@ -61,9 +63,11 @@ constructor(
             // Cleanup old outbox entries (self-heal has covered them by now)
             outboxDao.deleteOlderThan(System.currentTimeMillis() / 1000 - 30 * 86400)
             reschedule()
+            ProcessHealthTracker.heartbeat(applicationContext, "midnight_worker_success")
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Midnight sync failed: ${e.message}")
+            ProcessHealthTracker.heartbeat(applicationContext, "midnight_worker_fail", e.javaClass.simpleName)
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         } finally {
             if (acquired) nostrClient.releaseConnection()

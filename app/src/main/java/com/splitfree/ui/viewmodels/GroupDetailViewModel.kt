@@ -29,6 +29,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -110,12 +111,17 @@ constructor(
             }
         }
         viewModelScope.launch {
-            getExpenses.observe(groupId).collect { allExpenses ->
-                val result = computeBalances.computeWithExclusions(groupId)
-                val debts = simplifyDebts(result.balances)
-                val excluded = result.excludedExpenseUuids
-                val expenses = allExpenses.filter { e -> e.id !in excluded }
-                _uiState.update { it.copy(debts = debts, expenses = expenses) }
+            getExpenses.observe(groupId).collectLatest { allExpenses ->
+                try {
+                    val result = computeBalances.computeWithExclusions(groupId)
+                    val excluded = result.excludedExpenseUuids
+                    val debts = simplifyDebts(result.balances)
+                    val expenses = allExpenses.filter { e -> e.id !in excluded }
+                    _uiState.update { it.copy(debts = debts, expenses = expenses) }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to compute balances: ${e.message}", e)
+                    _error.value = e.message ?: "Failed to compute balances"
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.viewModelScope
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
 import com.splitfree.domain.crypto.EventSigner
@@ -26,6 +27,7 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -74,13 +76,14 @@ class GroupDetailViewModelTest {
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.d(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
 
         every { identity.getPublicKeyHex() } returns pubkey
         every { groupRepo.observeById("g1") } returns flowOf(group)
         every { getExpenses.observe("g1") } returns flowOf(emptyList())
         coEvery { computeBalances.computeWithExclusions("g1") } returns
             BalanceResult(emptyList(), emptySet())
-        coEvery { simplifyDebts(any()) } returns emptyList()
+        every { simplifyDebts(any()) } returns emptyList()
 
         vm = GroupDetailViewModel(
             SavedStateHandle(mapOf("groupId" to "g1")),
@@ -92,6 +95,7 @@ class GroupDetailViewModelTest {
 
     @After
     fun teardown() {
+        vm.viewModelScope.cancel()
         Dispatchers.resetMain()
         unmockkStatic(android.util.Log::class)
     }

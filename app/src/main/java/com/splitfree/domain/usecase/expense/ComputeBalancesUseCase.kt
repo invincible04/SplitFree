@@ -12,6 +12,8 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.util.HashUtil
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 /**
@@ -45,7 +47,7 @@ constructor(
      * @param groupId target group UUID
      * @return [BalanceResult] with per-member balances and excluded expense UUIDs
      */
-    suspend fun computeWithExclusions(groupId: String): BalanceResult {
+    suspend fun computeWithExclusions(groupId: String): BalanceResult = withContext(Dispatchers.Default) {
         val events = eventRepo.getEventsByGroup(groupId)
         val keyCache = mutableMapOf<Int, String?>()
         // Key: (pubkey, currency) -> net amount
@@ -108,35 +110,60 @@ constructor(
             }
         }
 
-        for (e in relevantEvents) {
+        eventLoop@ for (e in relevantEvents) {
             val content = decrypt(e, groupId, keyCache) ?: continue
             when (e.eventType) {
                 "expense" -> {
                     val uuid = e.expenseUuid ?: continue
                     if (uuid in deleted || uuid in latestCorrection) continue
-                    applyExpense(json.decodeFromString<Expense>(content), balances)
+                    val expense =
+                        try {
+                            json.decodeFromString<Expense>(content)
+                        } catch (ex: Exception) {
+                            Log.w(TAG, "Skipping malformed expense event ${e.eventId}: ${ex.message}")
+                            continue@eventLoop
+                        }
+                    if (!applyExpense(expense, balances)) continue@eventLoop
                 }
 
                 "expense_correction" -> {
                     val originalUuid = e.expenseUuid ?: continue
                     if (originalUuid in deleted) continue
                     if (latestCorrection[originalUuid] != e.eventId) continue
-                    applyExpense(json.decodeFromString<Expense>(content), balances)
+                    val corrected =
+                        try {
+                            json.decodeFromString<Expense>(content)
+                        } catch (ex: Exception) {
+                            Log.w(TAG, "Skipping malformed correction ${e.eventId}: ${ex.message}")
+                            continue@eventLoop
+                        }
+                    if (!applyExpense(corrected, balances)) continue@eventLoop
                 }
 
                 "settlement" -> {
-                    val s = json.decodeFromString<Settlement>(content)
+                    val s =
+                        try {
+                            json.decodeFromString<Settlement>(content)
+                        } catch (ex: Exception) {
+                            Log.w(TAG, "Skipping malformed settlement ${e.eventId}: ${ex.message}")
+                            continue@eventLoop
+                        }
                     if (e.pubkey != s.from && e.pubkey != s.to) continue
                     if (!seenSettlementIds.add(s.id)) continue
                     val cur = s.currency.uppercase().trim()
-                    balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
-                    balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)
+                    try {
+                        balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
+                        balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)
+                    } catch (ex: ArithmeticException) {
+                        Log.w(TAG, "Skipping overflow settlement ${e.eventId}: ${ex.message}")
+                        continue@eventLoop
+                    }
                 }
             }
         }
 
         val excluded = deleted + latestCorrection.keys
-        return BalanceResult(
+        BalanceResult(
             balances = balances.map { (key, net) -> Balance(key.first, net, key.second) },
             excludedExpenseUuids = excluded
         )
@@ -144,16 +171,22 @@ constructor(
 
     suspend operator fun invoke(groupId: String): List<Balance> = computeWithExclusions(groupId).balances
 
-    private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>) {
+    private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>): Boolean {
         val cur = expense.currency.uppercase().trim()
-        if (expense.splitAmong.any { it.share < 0 }) return
-        for (split in expense.splitAmong) {
-            if (split.pubkey != expense.paidBy) {
-                val payerKey = expense.paidBy to cur
-                val debtorKey = split.pubkey to cur
-                balances[payerKey] = Math.addExact(balances[payerKey] ?: 0L, split.share)
-                balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
+        if (expense.splitAmong.any { it.share < 0 }) return false
+        return try {
+            for (split in expense.splitAmong) {
+                if (split.pubkey != expense.paidBy) {
+                    val payerKey = expense.paidBy to cur
+                    val debtorKey = split.pubkey to cur
+                    balances[payerKey] = Math.addExact(balances[payerKey] ?: 0L, split.share)
+                    balances[debtorKey] = Math.addExact(balances[debtorKey] ?: 0L, -split.share)
+                }
             }
+            true
+        } catch (e: ArithmeticException) {
+            Log.w(TAG, "Skipping overflow expense ${expense.id}: ${e.message}")
+            false
         }
     }
 

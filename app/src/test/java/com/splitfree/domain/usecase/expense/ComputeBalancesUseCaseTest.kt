@@ -290,6 +290,90 @@ class ComputeBalancesUseCaseTest {
     }
 
     @Test
+    fun `malformed settlement payload is skipped`() = runTest {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    pubkey = "alice",
+                    content = expenseJson(
+                        "u1",
+                        100,
+                        splits = ab50
+                    )
+                ),
+                makeEvent(
+                    "e2",
+                    type = "settlement",
+                    pubkey = "bob",
+                    content = "not-json"
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val useCase = ComputeBalancesUseCase(dao, repo, encryption())
+        val balances = useCase("g1")
+
+        val alice = balances.find { it.pubkey == "alice" }
+        val bob = balances.find { it.pubkey == "bob" }
+        assertEquals(50L, alice?.net)
+        assertEquals(-50L, bob?.net)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `overflowing settlement is skipped without crashing`() = runTest {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "settlement",
+                    pubkey = "bob",
+                    content = settlementJson(
+                        "s1",
+                        "bob",
+                        "alice",
+                        Long.MAX_VALUE,
+                        timestamp = 1
+                    )
+                ),
+                makeEvent(
+                    "e2",
+                    type = "settlement",
+                    pubkey = "bob",
+                    content = settlementJson(
+                        "s2",
+                        "bob",
+                        "alice",
+                        Long.MAX_VALUE,
+                        timestamp = 2
+                    )
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val useCase = ComputeBalancesUseCase(dao, repo, encryption())
+        val balances = useCase("g1")
+
+        val bob = balances.find { it.pubkey == "bob" }
+        val alice = balances.find { it.pubkey == "alice" }
+        assertEquals(Long.MAX_VALUE, bob?.net)
+        assertEquals(-Long.MAX_VALUE, alice?.net)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
     fun `duplicate settlement IDs are deduplicated`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()

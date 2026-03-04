@@ -5,7 +5,9 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 
@@ -44,5 +46,5 @@ constructor(
                 }
                 content?.let { runCatching { json.decodeFromString<Expense>(it) }.getOrNull() }
             }.sortedByDescending { it.timestamp }
-    }
+    }.flowOn(Dispatchers.Default)
 }
