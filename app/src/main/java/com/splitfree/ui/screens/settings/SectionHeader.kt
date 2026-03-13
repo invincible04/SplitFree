@@ -10,16 +10,36 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 @Composable
 fun SectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
     Row(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier.padding(
+            horizontal = tokens.screenPaddingHorizontal,
+            vertical = tokens.sectionHeaderVerticalPadding
+        ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-        Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(tokens.iconMedium),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = title,
+            style = if (adaptive.isCompact) {
+                MaterialTheme.typography.titleSmall
+            } else {
+                MaterialTheme.typography.titleMedium
+            },
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }

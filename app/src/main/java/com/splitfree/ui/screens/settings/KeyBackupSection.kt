@@ -24,7 +24,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 @Composable
 fun KeyBackupSection(
@@ -39,18 +40,25 @@ fun KeyBackupSection(
     onHideSeed: () -> Unit,
     onCopySeed: () -> Unit
 ) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+    val seedColumns = if (adaptive.isCompact) 2 else 3
+
     SectionHeader(icon = Icons.Outlined.Key, title = "Key Backup")
 
     Card(
-        modifier = Modifier.padding(horizontal = 16.dp),
+        modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f))
     ) {
-        Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.padding(tokens.cardPadding),
+            horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
+        ) {
             Icon(
                 Icons.Outlined.Warning,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(tokens.iconMedium)
             )
             Text(
                 "Your private key is your identity. If you lose it, you lose access to all your groups forever. Back it up now.",
@@ -60,7 +68,7 @@ fun KeyBackupSection(
         }
     }
 
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(tokens.itemSpacing))
 
     if (showKey) {
         ListItem(
@@ -70,7 +78,9 @@ fun KeyBackupSection(
             },
             trailingContent = { FilledTonalButton(onClick = onCopyKey) { Text("Copy") } }
         )
-        TextButton(onClick = onHideKey, modifier = Modifier.padding(start = 16.dp)) { Text("Hide Key") }
+        TextButton(onClick = onHideKey, modifier = Modifier.padding(start = tokens.screenPaddingHorizontal)) {
+            Text("Hide Key")
+        }
     } else {
         ListItem(
             headlineContent = { Text("Show Private Key") },
@@ -80,15 +90,18 @@ fun KeyBackupSection(
         )
     }
 
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(tokens.denseSpacing))
 
     if (showSeedPhrase) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal)) {
             Text("Seed Phrase", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            for (rowStart in seedPhrase.indices step 3) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (i in rowStart until minOf(rowStart + 3, seedPhrase.size)) {
+            Spacer(Modifier.height(tokens.itemSpacing))
+            for (rowStart in seedPhrase.indices step seedColumns) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
+                ) {
+                    for (i in rowStart until minOf(rowStart + seedColumns, seedPhrase.size)) {
                         Surface(
                             modifier = Modifier.weight(1f),
                             shape = MaterialTheme.shapes.small,
@@ -96,17 +109,20 @@ fun KeyBackupSection(
                         ) {
                             Text(
                                 "${i + 1}. ${seedPhrase[i]}",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(
+                                    horizontal = tokens.itemSpacing,
+                                    vertical = tokens.seedWordVerticalPadding
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onErrorContainer
                             )
                         }
                     }
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(tokens.denseSpacing))
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(tokens.itemSpacing))
+            Row(horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)) {
                 TextButton(onClick = onHideSeed) { Text("Hide") }
                 FilledTonalButton(onClick = onCopySeed) { Text("Copy") }
             }

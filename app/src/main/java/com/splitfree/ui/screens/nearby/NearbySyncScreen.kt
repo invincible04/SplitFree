@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,17 +55,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.NearbySyncViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
     val context = LocalContext.current
     val requiredPermissions = remember { requiredNearbyPermissions() }
     var permissionsGranted by remember {
@@ -77,6 +82,14 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
         mutableStateOf(isBluetoothEnabled(context, btAdapter))
     }
     var pendingScanAfterEnable by remember { mutableStateOf(false) }
+    val horizontalPadding = tokens.screenPaddingHorizontal
+    val sectionSpacing = tokens.sectionSpacing
+    val buttonHeight = tokens.buttonHeight
+    val cardTextStyle = if (adaptive.isCompact) {
+        MaterialTheme.typography.bodySmall
+    } else {
+        MaterialTheme.typography.bodyMedium
+    }
 
     val btEnableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -142,8 +155,11 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
             }
 
             Column(
-                modifier = Modifier.padding(20.dp).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier.padding(
+                    horizontal = horizontalPadding,
+                    vertical = tokens.nearbyTopSectionVerticalPadding
+                ).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(sectionSpacing)
             ) {
                 // Explanation card
                 Card(
@@ -153,18 +169,18 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                     )
                 ) {
                     Row(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.padding(tokens.cardPadding),
+                        horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                     ) {
                         Icon(
                             Icons.Default.Bluetooth,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(tokens.iconMedium)
                         )
                         Text(
                             "Sync expenses with nearby group members over Bluetooth — no internet needed.",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = cardTextStyle,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
@@ -193,12 +209,16 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                                 viewModel.startScan()
                             }
                         },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        modifier = Modifier.fillMaxWidth().height(buttonHeight),
                         enabled = bluetoothSupported,
                         shape = MaterialTheme.shapes.large
                     ) {
-                        Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            Icons.Default.Bluetooth,
+                            contentDescription = null,
+                            modifier = Modifier.size(tokens.iconMedium)
+                        )
+                        Spacer(Modifier.width(tokens.itemSpacing))
                         Text(
                             when {
                                 !bluetoothSupported -> "Bluetooth unavailable"
@@ -206,7 +226,14 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                                 !bluetoothEnabled -> "Enable Bluetooth"
                                 else -> "Scan for nearby members"
                             },
-                            style = MaterialTheme.typography.titleMedium
+                            style = if (adaptive.isCompact) {
+                                MaterialTheme.typography.titleSmall
+                            } else {
+                                MaterialTheme.typography.titleMedium
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     if (!permissionsGranted) {
@@ -221,7 +248,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                 } else {
                     OutlinedButton(
                         onClick = { viewModel.stopScan() },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        modifier = Modifier.fillMaxWidth().height(buttonHeight),
                         shape = MaterialTheme.shapes.large
                     ) {
                         Text("Stop scanning")
@@ -233,39 +260,54 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
             if (uiState.peers.isNotEmpty()) {
                 Text(
                     "Found ${uiState.peers.size} peer${if (uiState.peers.size != 1) "s" else ""}",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.bodyLarge
+                    } else {
+                        MaterialTheme.typography.titleSmall
+                    },
+                    modifier = Modifier.padding(
+                        horizontal = horizontalPadding,
+                        vertical = tokens.nearbyPeersHeaderVerticalPadding
+                    )
                 )
                 LazyColumn(
-                    contentPadding = PaddingValues(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    contentPadding = PaddingValues(horizontal = horizontalPadding),
+                    verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                 ) {
                     items(uiState.peers) { peer ->
                         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                             Row(
-                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.padding(tokens.cardPadding).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
-                                    Text("Peer ${peer.name}", style = MaterialTheme.typography.titleSmall)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Peer ${peer.name}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                     Text(
                                         "Tap Sync to exchange expenses",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.outline
+                                        color = MaterialTheme.colorScheme.outline,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                                 FilledTonalButton(
                                     onClick = { viewModel.connectToPeer(peer.endpointId) },
-                                    enabled = !uiState.syncing
+                                    enabled = !uiState.syncing,
+                                    modifier = Modifier.heightIn(min = tokens.inlineButtonMinHeight)
                                 ) {
                                     Icon(
                                         Icons.Outlined.SyncAlt,
                                         contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(tokens.iconSmall)
                                     )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Sync")
+                                    Spacer(Modifier.width(tokens.denseSpacing))
+                                    Text("Sync", maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -273,12 +315,15 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                 }
             } else if (uiState.scanning) {
                 Box(
-                    modifier = Modifier.fillMaxWidth().padding(48.dp),
+                    modifier = Modifier.fillMaxWidth().padding(tokens.emptyStatePadding),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
-                        Spacer(Modifier.height(12.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(tokens.nearbyProgressIndicatorSize),
+                            strokeWidth = tokens.nearbyProgressStrokeWidth
+                        )
+                        Spacer(Modifier.height(tokens.sectionSpacing))
                         Text(
                             "Looking for nearby SplitFree users…",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

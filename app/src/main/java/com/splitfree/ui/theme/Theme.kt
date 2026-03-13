@@ -9,11 +9,16 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.splitfree.ui.util.LocalAdaptiveLayoutInfo
+import com.splitfree.ui.util.LocalAdaptiveSizeTokens
+import com.splitfree.ui.util.rememberAdaptiveLayoutInfo
+import com.splitfree.ui.util.rememberAdaptiveSizeTokens
 
 // SplitFree brand colors — green/teal for money
 private val Green40 = Color(0xFF1B8C5A)
@@ -109,9 +114,17 @@ fun SplitFreeTheme(
                 LightColors
             }
         }
+    val adaptiveInfo = rememberAdaptiveLayoutInfo()
+    val adaptiveTokens = rememberAdaptiveSizeTokens(adaptiveInfo)
+
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = SplitFreeTypography,
-        content = content
-    )
+        typography = SplitFreeTypography
+    ) {
+        CompositionLocalProvider(
+            LocalAdaptiveLayoutInfo provides adaptiveInfo,
+            LocalAdaptiveSizeTokens provides adaptiveTokens,
+            content = content
+        )
+    }
 }

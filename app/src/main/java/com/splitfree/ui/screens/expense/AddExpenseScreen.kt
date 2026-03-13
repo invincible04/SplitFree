@@ -39,10 +39,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.AddExpenseViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,6 +52,8 @@ import com.splitfree.ui.viewmodels.AddExpenseViewModel
 fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: AddExpenseViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var description by remember { mutableStateOf("") }
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
 
     LaunchedEffect(uiState.saved) {
         if (uiState.saved) onExpenseAdded()
@@ -107,17 +111,17 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
             modifier =
             Modifier
                 .padding(padding)
-                .padding(horizontal = 20.dp)
+                .padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.screenPaddingVertical)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(tokens.sectionSpacing)
         ) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(tokens.denseSpacing))
 
             // Amount + Currency row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(tokens.fieldSpacing)
             ) {
                 OutlinedTextField(
                     value = amount,
@@ -132,7 +136,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                 ExposedDropdownMenuBox(
                     expanded = currencyExpanded,
                     onExpandedChange = { currencyExpanded = it },
-                    modifier = Modifier.width(110.dp)
+                    modifier = Modifier.width(tokens.dropdownWidth)
                 ) {
                     OutlinedTextField(
                         value = currency,
@@ -202,7 +206,15 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
 
             // Paid by
             if (uiState.members.size > 1) {
-                Text("Paid by", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Paid by",
+                    style =
+                    if (adaptive.isCompact) {
+                        MaterialTheme.typography.labelMedium
+                    } else {
+                        MaterialTheme.typography.labelLarge
+                    }
+                )
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     uiState.members.forEachIndexed { index, pk ->
                         SegmentedButton(
@@ -210,14 +222,25 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                             onClick = { paidBy = pk },
                             shape = SegmentedButtonDefaults.itemShape(index, uiState.members.size)
                         ) {
-                            Text(displayName(pk), maxLines = 1)
+                            Text(
+                                text = displayName(pk),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
             }
 
             // Split type
-            Text("Split type", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Split type",
+                style = if (adaptive.isCompact) {
+                    MaterialTheme.typography.labelMedium
+                } else {
+                    MaterialTheme.typography.labelLarge
+                }
+            )
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 val labels =
                     mapOf(
@@ -235,7 +258,11 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                         },
                         shape = SegmentedButtonDefaults.itemShape(index, SplitType.entries.size)
                     ) {
-                        Text(labels[type] ?: type.name, maxLines = 1)
+                        Text(
+                            text = labels[type] ?: type.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -256,8 +283,8 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                     )
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.padding(tokens.cardPadding),
+                        verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                     ) {
                         uiState.members.forEach { pk ->
                             OutlinedTextField(
@@ -281,7 +308,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                 ) {
                     Text(
                         it,
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.padding(tokens.cardPadding),
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -302,13 +329,20 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                         viewModel.addExpense(description, amountCents, currency, paidBy, splitType, inputs)
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
+                modifier = Modifier.fillMaxWidth().height(tokens.buttonHeight),
                 enabled = amount.isNotBlank() && description.isNotBlank(),
                 shape = MaterialTheme.shapes.large
             ) {
-                Text("Add Expense", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Add Expense",
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.titleSmall
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    }
+                )
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(tokens.screenBottomSpacer))
         }
     }
 }

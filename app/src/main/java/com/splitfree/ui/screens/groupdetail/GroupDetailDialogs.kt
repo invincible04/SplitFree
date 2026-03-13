@@ -27,11 +27,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.QrGenerator
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.CurrencyFormatter
 
 @Composable
@@ -58,6 +60,14 @@ fun ShareWarningDialog(inviteLink: String?, onShare: (String) -> Unit, onDismiss
 
 @Composable
 fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+    val configuration = LocalConfiguration.current
+    val effectiveWidthDp = configuration.screenWidthDp / adaptive.fontScale
+    val qrSize =
+        ((effectiveWidthDp * if (adaptive.isCompact) 0.62f else 0.7f).dp)
+            .coerceIn(180.dp, 320.dp)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Invite QR Code") },
@@ -68,17 +78,21 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
                     Image(
                         bitmap = qrBitmap.asImageBitmap(),
                         contentDescription = "Invite QR code",
-                        modifier = Modifier.size(256.dp)
+                        modifier = Modifier.size(qrSize)
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(tokens.itemSpacing))
                     Text(
                         "Scan to join $groupName",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = if (adaptive.isCompact) {
+                            MaterialTheme.typography.labelMedium
+                        } else {
+                            MaterialTheme.typography.bodySmall
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
-                    CircularProgressIndicator(modifier = Modifier.padding(32.dp))
-                    Spacer(Modifier.height(8.dp))
+                    CircularProgressIndicator(modifier = Modifier.padding(tokens.dialogProgressPadding))
+                    Spacer(Modifier.height(tokens.itemSpacing))
                     Text(
                         "Generating invite link…",
                         style = MaterialTheme.typography.bodySmall,
@@ -100,19 +114,20 @@ fun SettleDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val tokens = adaptiveSizeTokens()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Settle Up") },
         text = {
             Column {
                 Text("Record payment:")
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(tokens.itemSpacing))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PubkeyChip(debt.from, memberNames)
                     Text(" → ", style = MaterialTheme.typography.titleMedium)
                     PubkeyChip(debt.to, memberNames)
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(tokens.itemSpacing))
                 Text(
                     CurrencyFormatter.format(debt.amount, debt.currency),
                     style = MaterialTheme.typography.headlineSmall,
@@ -158,6 +173,7 @@ fun RemoveMemberDialog(
 /** Compact chip showing a member's display name or truncated pubkey with avatar initial. */
 @Composable
 fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
+    val tokens = adaptiveSizeTokens()
     val name = memberNames[pubkey]?.ifBlank { null }
     val label = name ?: (pubkey.take(6) + "…")
     Surface(
@@ -166,13 +182,13 @@ fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
         tonalElevation = 1.dp
     ) {
         Row(
-            modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = tokens.denseSpacing),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(tokens.denseSpacing)
         ) {
             Box(
                 modifier = Modifier
-                    .size(18.dp)
+                    .size(tokens.pubkeyChipAvatarSize)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center
@@ -180,7 +196,7 @@ fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
                 Text(
                     name?.first()?.uppercase() ?: "#",
                     style = MaterialTheme.typography.labelSmall,
-                    fontSize = 10.sp,
+                    maxLines = 1,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
             }
@@ -205,6 +221,7 @@ fun RelayDialog(
     onSave: (() -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val tokens = adaptiveSizeTokens()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Group Relays (${relays.size})") },
@@ -219,7 +236,7 @@ fun RelayDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(tokens.sectionSpacing))
                 com.splitfree.ui.components.RelayEditor(
                     relays = relays,
                     relayStatuses = relayStatuses,

@@ -43,6 +43,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.DebugLog
 import kotlinx.coroutines.delay
 
@@ -50,6 +52,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun DebugLogScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
     var filterTag by remember { mutableStateOf("") }
     var showFilter by remember { mutableStateOf(false) }
 
@@ -118,11 +122,11 @@ fun DebugLogScreen(onBack: () -> Unit) {
                 Modifier
                     .fillMaxSize()
                     .background(Color(0xFF1E1E1E))
-                    .padding(horizontal = 8.dp),
-                contentPadding = PaddingValues(vertical = 4.dp)
+                    .padding(horizontal = tokens.itemSpacing),
+                contentPadding = PaddingValues(vertical = tokens.denseSpacing)
             ) {
                 items(entries.size, key = { it }) { index ->
-                    LogLine(entries[index])
+                    LogLine(entry = entries[index], compact = adaptive.isCompact)
                 }
             }
         }
@@ -132,9 +136,11 @@ fun DebugLogScreen(onBack: () -> Unit) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FilterBar(tags: List<String>, selected: String, onSelect: (String) -> Unit) {
+    val tokens = adaptiveSizeTokens()
+
     FlowRow(
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = tokens.denseSpacing),
+        horizontalArrangement = Arrangement.spacedBy(tokens.denseSpacing)
     ) {
         FilterChip(
             selected = selected.isBlank(),
@@ -152,7 +158,7 @@ private fun FilterBar(tags: List<String>, selected: String, onSelect: (String) -
 }
 
 @Composable
-private fun LogLine(entry: DebugLog.Entry) {
+private fun LogLine(entry: DebugLog.Entry, compact: Boolean) {
     val color =
         when (entry.level) {
             'E' -> Color(0xFFFF6B6B)
@@ -161,11 +167,14 @@ private fun LogLine(entry: DebugLog.Entry) {
             'D' -> Color(0xFF8B8B8B)
             else -> Color(0xFFCCCCCC)
         }
+    val fontSize = if (compact) 10.sp else 11.sp
+    val lineHeight = if (compact) 14.sp else 15.sp
+
     Text(
         text = entry.format(),
         fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        lineHeight = 15.sp,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
         color = color,
         modifier =
         Modifier

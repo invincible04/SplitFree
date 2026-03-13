@@ -40,10 +40,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.GroupDetailViewModel
 import kotlinx.coroutines.launch
 
@@ -56,6 +57,8 @@ fun GroupDetailScreen(
     viewModel: GroupDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
     val context = LocalContext.current
     var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
     val pagerState = rememberPagerState(pageCount = { 3 })
@@ -132,7 +135,16 @@ fun GroupDetailScreen(
                         Tab(
                             selected = pagerState.currentPage == i,
                             onClick = { scope.launch { pagerState.animateScrollToPage(i) } },
-                            text = { Text(title) }
+                            text = {
+                                Text(
+                                    text = title,
+                                    style = if (adaptive.isCompact) {
+                                        MaterialTheme.typography.labelLarge
+                                    } else {
+                                        MaterialTheme.typography.titleSmall
+                                    }
+                                )
+                            }
                         )
                     }
                 }
@@ -168,7 +180,7 @@ fun GroupDetailScreen(
             }
             SmallFloatingActionButton(
                 onClick = { showShareWarning = true },
-                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(tokens.screenPaddingHorizontal),
                 containerColor = MaterialTheme.colorScheme.secondaryContainer
             ) { Icon(Icons.Outlined.PersonAdd, contentDescription = "Invite members") }
         }

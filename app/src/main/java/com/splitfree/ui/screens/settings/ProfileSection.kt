@@ -20,20 +20,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 /** Profile card at the top of Settings — avatar initial + editable display name. */
 @Composable
 fun ProfileSection(displayName: String, onNameChange: (String) -> Unit) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
     Row(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier.fillMaxWidth().padding(tokens.cardPadding),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+        horizontalArrangement = Arrangement.spacedBy(tokens.sectionSpacing)
     ) {
         // Avatar circle with initial
         Box(
             modifier = Modifier
-                .size(56.dp)
+                .size(tokens.avatarSize)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center
@@ -50,7 +54,7 @@ fun ProfileSection(displayName: String, onNameChange: (String) -> Unit) {
                 Icon(
                     Icons.Outlined.Person,
                     contentDescription = null,
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(tokens.avatarFallbackIconSize),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
@@ -63,7 +67,7 @@ fun ProfileSection(displayName: String, onNameChange: (String) -> Unit) {
                 placeholder = { Text("How friends see you") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                shape = MaterialTheme.shapes.medium
+                shape = if (adaptive.isCompact) MaterialTheme.shapes.small else MaterialTheme.shapes.medium
             )
         }
     }

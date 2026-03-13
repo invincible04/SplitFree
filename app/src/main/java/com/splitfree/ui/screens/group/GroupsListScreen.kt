@@ -53,10 +53,12 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.domain.model.group.Group
+import com.splitfree.ui.util.AdaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.GroupsListViewModel
 import com.splitfree.util.DebugLog as Log
 import kotlinx.coroutines.launch
@@ -85,17 +87,21 @@ fun GroupsListScreen(
 ) {
     val groups by viewModel.groups.collectAsStateWithLifecycle(initialValue = emptyList())
     val isConnected by viewModel.isConnected.collectAsStateWithLifecycle()
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
+    val listHorizontalPadding = tokens.screenPaddingHorizontal
+    val listVerticalPadding = tokens.itemSpacing
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("SplitFree")
-                        Spacer(Modifier.width(8.dp))
+                        Text("SplitFree", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(tokens.itemSpacing))
                         ConnectionDot(isConnected)
                     }
                 },
@@ -117,17 +123,20 @@ fun GroupsListScreen(
         }
     ) { padding ->
         if (groups.isEmpty()) {
-            EmptyGroupsState(modifier = Modifier.fillMaxSize().padding(padding))
+            EmptyGroupsState(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                adaptive = adaptive
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.padding(padding),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                contentPadding = PaddingValues(horizontal = listHorizontalPadding, vertical = listVerticalPadding),
+                verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
             ) {
                 items(groups, key = { it.id }) { group ->
                     GroupCard(group = group, onClick = { onGroupClick(group.id) })
                 }
-                item { Spacer(Modifier.height(80.dp)) }
+                item { Spacer(Modifier.height(tokens.listBottomSpacer)) }
             }
         }
     }
@@ -189,28 +198,42 @@ private fun ScanQrButton(context: android.content.Context, onScanResult: (String
 
 /** Placeholder shown when the user has no groups yet. */
 @Composable
-private fun EmptyGroupsState(modifier: Modifier = Modifier) {
+private fun EmptyGroupsState(modifier: Modifier = Modifier, adaptive: AdaptiveLayoutInfo) {
+    val tokens = adaptiveSizeTokens()
+    val contentPadding = tokens.emptyStatePadding
+    val iconSize = tokens.emptyStateIcon
+    val titleStyle = if (adaptive.isCompact) {
+        MaterialTheme.typography.titleSmall
+    } else {
+        MaterialTheme.typography.titleMedium
+    }
+    val bodyStyle = if (adaptive.isCompact) {
+        MaterialTheme.typography.bodySmall
+    } else {
+        MaterialTheme.typography.bodyMedium
+    }
+
     Column(
-        modifier = modifier.padding(48.dp),
+        modifier = modifier.padding(contentPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
             imageVector = Icons.Outlined.Group,
             contentDescription = null,
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier.size(iconSize),
             tint = MaterialTheme.colorScheme.outlineVariant
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(tokens.fieldSpacing))
         Text(
             "No groups yet",
-            style = MaterialTheme.typography.titleMedium,
+            style = titleStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(tokens.denseSpacing))
         Text(
             "Create a group to start splitting expenses\nwith friends, family, or roommates.",
-            style = MaterialTheme.typography.bodyMedium,
+            style = bodyStyle,
             color = MaterialTheme.colorScheme.outline,
             textAlign = TextAlign.Center
         )
@@ -220,17 +243,22 @@ private fun EmptyGroupsState(modifier: Modifier = Modifier) {
 /** Single group row with avatar, name, and member count. */
 @Composable
 private fun GroupCard(group: Group, onClick: () -> Unit) {
+    val tokens = adaptiveSizeTokens()
+    val cardPadding = tokens.cardPadding
+    val avatarSize = tokens.avatarSize
+    val rowSpacing = tokens.fieldSpacing
+
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(cardPadding),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(rowSpacing)
         ) {
             Box(
-                modifier = Modifier.size(48.dp).clip(CircleShape)
+                modifier = Modifier.size(avatarSize).clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
@@ -247,7 +275,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(tokens.denseSpacing))
                 Text(
                     text = "${group.members.size} member${if (group.members.size != 1) "s" else ""}",
                     style = MaterialTheme.typography.bodySmall,
@@ -258,7 +286,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
                 imageVector = Icons.AutoMirrored.Outlined.CallSplit,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.outline,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(tokens.iconMedium)
             )
         }
     }
@@ -267,6 +295,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
 /** Animated dot indicating relay connection status (green = connected, grey pulsing = disconnected). */
 @Composable
 private fun ConnectionDot(connected: Boolean) {
+    val tokens = adaptiveSizeTokens()
     val color by animateColorAsState(
         targetValue = if (connected) Color(0xFF4CAF50) else Color(0xFFBDBDBD),
         animationSpec = tween(600),
@@ -284,7 +313,7 @@ private fun ConnectionDot(connected: Boolean) {
         remember { mutableFloatStateOf(1f) }
     }
     Box(
-        modifier = Modifier.size(8.dp).clip(CircleShape)
+        modifier = Modifier.size(tokens.iconTiny).clip(CircleShape)
             .background(color.copy(alpha = alpha))
     )
 }

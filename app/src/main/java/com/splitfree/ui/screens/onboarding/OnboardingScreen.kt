@@ -2,14 +2,19 @@ package com.splitfree.ui.screens.onboarding
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Person
@@ -31,136 +36,175 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.ui.util.HeightClass
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.OnboardingViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hiltViewModel()) {
     var showImport by remember { mutableStateOf(false) }
     var importInput by remember { mutableStateOf("") }
     var nameInput by remember { mutableStateOf("") }
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
+    val horizontalPadding = tokens.screenPaddingHorizontal
+    val verticalPadding = tokens.screenPaddingVertical
+    val buttonHeight = tokens.buttonHeight
+    val iconSize = tokens.iconLarge
+    val heroSpacing = tokens.sectionSpacing
+    val controlsSpacing = tokens.sectionSpacing
+    val titleStyle =
+        if (adaptive.isCompact) {
+            MaterialTheme.typography.headlineMedium
+        } else {
+            MaterialTheme.typography.headlineLarge
+        }
+    val subtitleStyle =
+        if (adaptive.isCompact) {
+            MaterialTheme.typography.bodyMedium
+        } else {
+            MaterialTheme.typography.bodyLarge
+        }
+    val chipSpacing = tokens.chipSpacing
+    val chipMinHeight = if (adaptive.isCompact) 30.dp else 34.dp
+    val chipTextStyle =
+        if (adaptive.isCompact) {
+            MaterialTheme.typography.labelSmall
+        } else {
+            MaterialTheme.typography.labelMedium
+        }
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier =
-            Modifier
-                .fillMaxSize()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            // App icon
-            Icon(
-                imageVector = Icons.AutoMirrored.Outlined.CallSplit,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "SplitFree",
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Split expenses with anyone.\nNo accounts. No servers. No cost.",
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 24.sp
-            )
-            Spacer(Modifier.height(12.dp))
-            // Feature chips
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = horizontalPadding, vertical = verticalPadding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement =
+                if (adaptive.heightClass == HeightClass.Compact) Arrangement.Top else Arrangement.Center
             ) {
-                listOf("🔒 Encrypted", "🌐 Decentralized", "💸 Free").forEach { label ->
-                    SuggestionChip(
-                        onClick = {},
-                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(48.dp))
-
-            AnimatedContent(targetState = showImport, label = "onboarding") { importing ->
-                Column(
+                // App icon
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                    contentDescription = null,
+                    modifier = Modifier.size(iconSize),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(heroSpacing))
+                Text(
+                    text = "SplitFree",
+                    style = titleStyle,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(tokens.denseSpacing))
+                Text(
+                    text = "Split expenses with anyone.\nNo accounts. No servers. No cost.",
+                    style = subtitleStyle,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(tokens.itemSpacing))
+                // Feature chips
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalArrangement = Arrangement.spacedBy(chipSpacing, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(chipSpacing)
                 ) {
-                    if (!importing) {
-                        OutlinedTextField(
-                            value = nameInput,
-                            onValueChange = { nameInput = it.take(50) },
-                            label = { Text("Your name") },
-                            placeholder = { Text("How friends will see you") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.Person, contentDescription = null)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = MaterialTheme.shapes.medium
+                    listOf("🔒 Encrypted", "🌐 Decentralized", "💸 Free").forEach { label ->
+                        SuggestionChip(
+                            onClick = {},
+                            modifier = Modifier.heightIn(min = chipMinHeight),
+                            label = { Text(label, style = chipTextStyle) }
                         )
-                        Spacer(Modifier.height(16.dp))
-                        Button(
-                            onClick = {
-                                viewModel.generateIdentity(nameInput.trim())
-                                onComplete()
-                            },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = MaterialTheme.shapes.large
-                        ) {
-                            Text("Get Started", style = MaterialTheme.typography.titleMedium)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedButton(
-                            onClick = { showImport = true },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = MaterialTheme.shapes.large
-                        ) {
-                            Text("I have an existing key")
-                        }
-                    } else {
-                        OutlinedTextField(
-                            value = importInput,
-                            onValueChange = {
-                                importInput = it
+                    }
+                }
+
+                Spacer(Modifier.height(controlsSpacing))
+
+                AnimatedContent(targetState = showImport, label = "onboarding") { importing ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (!importing) {
+                            OutlinedTextField(
+                                value = nameInput,
+                                onValueChange = { nameInput = it.take(50) },
+                                label = { Text("Your name") },
+                                placeholder = { Text("How friends will see you") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Person, contentDescription = null)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                shape = MaterialTheme.shapes.medium
+                            )
+                            Spacer(Modifier.height(tokens.fieldSpacing))
+                            Button(
+                                onClick = {
+                                    viewModel.generateIdentity(nameInput.trim())
+                                    onComplete()
+                                },
+                                modifier = Modifier.fillMaxWidth().height(buttonHeight),
+                                shape = MaterialTheme.shapes.large
+                            ) {
+                                Text("Get Started", style = MaterialTheme.typography.titleMedium)
+                            }
+                            Spacer(Modifier.height(tokens.itemSpacing))
+                            OutlinedButton(
+                                onClick = { showImport = true },
+                                modifier = Modifier.fillMaxWidth().height(buttonHeight),
+                                shape = MaterialTheme.shapes.large
+                            ) {
+                                Text("I have an existing key")
+                            }
+                        } else {
+                            OutlinedTextField(
+                                value = importInput,
+                                onValueChange = {
+                                    importInput = it
+                                    viewModel.clearError()
+                                },
+                                label = { Text("Private key or seed phrase") },
+                                placeholder = { Text("nsec / hex key / 24 words") },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 3,
+                                maxLines = 5,
+                                isError = error != null,
+                                supportingText =
+                                error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
+                                    ?: { Text("Hex private key or 24 words separated by spaces") },
+                                shape = MaterialTheme.shapes.medium
+                            )
+                            Spacer(Modifier.height(tokens.fieldSpacing))
+                            Button(
+                                onClick = {
+                                    if (viewModel.importKey(importInput)) onComplete()
+                                },
+                                modifier = Modifier.fillMaxWidth().height(buttonHeight),
+                                shape = MaterialTheme.shapes.large,
+                                enabled = importInput.isNotBlank()
+                            ) {
+                                Text("Import Key")
+                            }
+                            Spacer(Modifier.height(tokens.itemSpacing))
+                            TextButton(onClick = {
+                                showImport = false
+                                importInput = ""
                                 viewModel.clearError()
-                            },
-                            label = { Text("Private key or seed phrase") },
-                            placeholder = { Text("nsec / hex key / 24 words") },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 3,
-                            maxLines = 5,
-                            isError = error != null,
-                            supportingText =
-                            error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
-                                ?: { Text("Hex private key or 24 words separated by spaces") },
-                            shape = MaterialTheme.shapes.medium
-                        )
-                        Spacer(Modifier.height(16.dp))
-                        Button(
-                            onClick = {
-                                if (viewModel.importKey(importInput)) onComplete()
-                            },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = MaterialTheme.shapes.large,
-                            enabled = importInput.isNotBlank()
-                        ) {
-                            Text("Import Key")
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = {
-                            showImport = false
-                            importInput = ""
-                            viewModel.clearError()
-                        }) {
-                            Text("Back")
+                            }) {
+                                Text("Back")
+                            }
                         }
                     }
                 }

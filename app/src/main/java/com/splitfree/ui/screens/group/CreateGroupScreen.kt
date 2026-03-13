@@ -36,10 +36,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.ui.components.RelayEditor
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.CreateGroupViewModel
 import kotlinx.coroutines.launch
 
@@ -58,6 +59,8 @@ fun CreateGroupScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
 
     LaunchedEffect(error) {
         error?.let {
@@ -83,14 +86,18 @@ fun CreateGroupScreen(
         Column(
             modifier = Modifier
                 .padding(padding)
-                .padding(24.dp)
+                .padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.screenPaddingVertical)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(tokens.sectionSpacing)
         ) {
             Text(
                 "Create a group to start splitting expenses with friends.",
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (adaptive.isCompact) {
+                    MaterialTheme.typography.bodySmall
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
@@ -111,7 +118,7 @@ fun CreateGroupScreen(
                     Icon(
                         if (showRelays) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = null,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(tokens.iconMedium)
                     )
                 }
             }
@@ -120,10 +127,14 @@ fun CreateGroupScreen(
                 Column {
                     Text(
                         "Choose which Nostr relays this group syncs through. Default relays work for most users.",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = if (adaptive.isCompact) {
+                            MaterialTheme.typography.labelMedium
+                        } else {
+                            MaterialTheme.typography.bodySmall
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(tokens.itemSpacing))
                     RelayEditor(
                         relays = relays,
                         relayStatuses = relayStatuses,
@@ -135,14 +146,21 @@ fun CreateGroupScreen(
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(tokens.denseSpacing))
             Button(
                 onClick = { viewModel.createGroup(name) { onGroupCreated(it) } },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
+                modifier = Modifier.fillMaxWidth().height(tokens.buttonHeight),
                 enabled = name.isNotBlank(),
                 shape = MaterialTheme.shapes.large
             ) {
-                Text("Create Group", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Create Group",
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.titleSmall
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    }
+                )
             }
         }
     }

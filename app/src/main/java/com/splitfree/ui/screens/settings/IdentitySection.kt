@@ -10,10 +10,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 @Composable
 fun IdentitySection(npub: String, onCopy: () -> Unit) {
+    val tokens = adaptiveSizeTokens()
+
     SectionHeader(icon = Icons.Outlined.Person, title = "Identity")
     ListItem(
         headlineContent = { Text("Public Key") },
@@ -28,5 +30,5 @@ fun IdentitySection(npub: String, onCopy: () -> Unit) {
             FilledTonalButton(onClick = onCopy) { Text("Copy") }
         }
     )
-    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+    HorizontalDivider(modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal))
 }

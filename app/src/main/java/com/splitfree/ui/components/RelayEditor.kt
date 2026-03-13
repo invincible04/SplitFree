@@ -29,6 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 /** Live health check status for a relay, driven by [RelayHealthMonitor][com.splitfree.data.nostr.relay.RelayHealthMonitor]. */
 enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE, VERIFYING, REJECTED }
@@ -73,8 +75,10 @@ fun RelayEditor(
 ) {
     var input by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(tokens.denseSpacing)) {
         relays.forEach { url ->
             RelayRow(
                 url = url,
@@ -86,7 +90,7 @@ fun RelayEditor(
 
         if (editable) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = tokens.denseSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
@@ -102,7 +106,7 @@ fun RelayEditor(
                     supportingText = error?.let { { Text(it) } },
                     shape = MaterialTheme.shapes.medium
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(tokens.itemSpacing))
                 TextButton(onClick = {
                     val url = input.trim().lowercase()
                     when {
@@ -116,9 +120,17 @@ fun RelayEditor(
                         }
                     }
                 }) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Add")
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(tokens.iconSmall))
+                    Spacer(Modifier.width(tokens.chipContentSpacing))
+                    Text(
+                        text = "Add",
+                        style =
+                        if (adaptive.isCompact) {
+                            MaterialTheme.typography.labelLarge
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        }
+                    )
                 }
             }
         }
@@ -128,17 +140,19 @@ fun RelayEditor(
 /** Single relay row with status dot, hostname, NIP-11 tags, and optional remove button. */
 @Composable
 private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, onRemove: (() -> Unit)?) {
+    val tokens = adaptiveSizeTokens()
+
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = tokens.cardPadding, vertical = tokens.itemSpacing),
             verticalAlignment = Alignment.CenterVertically
         ) {
             StatusDot(status)
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(tokens.itemSpacing))
             Column(modifier = Modifier.weight(1f)) {
                 Text(url.removePrefix("wss://"), style = MaterialTheme.typography.bodyMedium)
                 if (status == RelayCheckStatus.VERIFYING) {
@@ -173,8 +187,8 @@ private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, on
                 }
             }
             if (onRemove != null) {
-                IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
-                    Icon(Icons.Default.Close, "Remove", modifier = Modifier.size(16.dp))
+                IconButton(onClick = onRemove, modifier = Modifier.size(tokens.relayRemoveButtonSize)) {
+                    Icon(Icons.Default.Close, "Remove", modifier = Modifier.size(tokens.iconSmall))
                 }
             }
         }
@@ -184,9 +198,11 @@ private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, on
 /** Animated status dot: green (online), red (offline/rejected), grey (idle), or a small spinner (checking/verifying). */
 @Composable
 private fun StatusDot(status: RelayCheckStatus) {
+    val tokens = adaptiveSizeTokens()
+
     when (status) {
         RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING -> CircularProgressIndicator(
-            modifier = Modifier.size(10.dp),
+            modifier = Modifier.size(tokens.relayStatusDotSize),
             strokeWidth = 1.5.dp
         )
         else -> {
@@ -201,7 +217,7 @@ private fun StatusDot(status: RelayCheckStatus) {
             Surface(
                 shape = MaterialTheme.shapes.extraSmall,
                 color = color,
-                modifier = Modifier.size(10.dp),
+                modifier = Modifier.size(tokens.relayStatusDotSize),
                 content = {}
             )
         }

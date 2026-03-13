@@ -48,13 +48,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.BuildConfig
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
 import com.splitfree.util.ProcessHealthTracker
@@ -63,6 +65,8 @@ import com.splitfree.util.ProcessHealthTracker
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: SettingsViewModel = hiltViewModel()) {
     val context = LocalContext.current
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
     val nsec by viewModel.nsec.collectAsStateWithLifecycle()
     val npub by viewModel.npub.collectAsStateWithLifecycle()
     val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
@@ -111,7 +115,9 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 onNameChange = { viewModel.setDisplayName(it.take(50)) }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
 
             IdentitySection(npub = npub, onCopy = { copyToClipboard(context, "npub", npub) })
 
@@ -140,12 +146,16 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 onCopySeed = { showCopySeedWarning = true }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
 
             // Appearance
             SectionHeader(icon = Icons.Outlined.Palette, title = "Appearance")
             val themeMode by ThemePreference.mode.collectAsStateWithLifecycle()
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal).fillMaxWidth()
+            ) {
                 ThemeMode.entries.forEachIndexed { index, mode ->
                     SegmentedButton(
                         selected = themeMode == mode,
@@ -157,12 +167,21 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                             }
                         },
                         shape = SegmentedButtonDefaults.itemShape(index, ThemeMode.entries.size)
-                    ) { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    ) {
+                        Text(
+                            text = mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(tokens.itemSpacing))
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
 
             PrivacySection(
                 giftWrapEnabled = giftWrapEnabled,
@@ -172,18 +191,29 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
 
             DangerZoneSection(revokeState = revokeState, onRevoke = { showRevokeDialog = true })
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
 
             // About
             SectionHeader(icon = Icons.Outlined.Info, title = "About")
             ListItem(
                 headlineContent = { Text("SplitFree v1.1.0") },
                 supportingContent = {
-                    Text("Decentralized expense splitting over Nostr.")
+                    Text(
+                        text = "Decentralized expense splitting over Nostr.",
+                        style = if (adaptive.isCompact) {
+                            MaterialTheme.typography.bodySmall
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        }
+                    )
                 }
             )
             ListItem(
@@ -207,7 +237,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                     trailingContent = { FilledTonalButton(onClick = onDebugLog) { Text("Open") } }
                 )
             }
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(tokens.screenBottomSpacer))
         }
     }
 

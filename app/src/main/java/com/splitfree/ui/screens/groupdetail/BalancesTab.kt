@@ -23,8 +23,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.CurrencyFormatter
 
 @Composable
@@ -35,32 +36,43 @@ fun BalancesTab(
     memberNames: Map<String, String> = emptyMap(),
     onSettle: (DebtTransaction) -> Unit
 ) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
     if (debts.isEmpty()) {
         Box(
-            modifier = Modifier.fillMaxSize().padding(48.dp),
+            modifier = Modifier.fillMaxSize().padding(tokens.emptyStatePadding),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     Icons.Outlined.CheckCircle,
                     contentDescription = null,
-                    modifier = Modifier.size(56.dp),
+                    modifier = Modifier.size(tokens.emptyStateIcon),
                     tint = if (hasExpenses) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.outlineVariant
                     }
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(tokens.fieldSpacing))
                 Text(
                     if (hasExpenses) "All settled up! 🎉" else "No balances yet",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.titleSmall
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (!hasExpenses) {
                     Text(
                         "Add an expense to see balances",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = if (adaptive.isCompact) {
+                            MaterialTheme.typography.labelMedium
+                        } else {
+                            MaterialTheme.typography.bodySmall
+                        },
                         color = MaterialTheme.colorScheme.outline
                     )
                 }
@@ -69,8 +81,8 @@ fun BalancesTab(
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(tokens.screenPaddingHorizontal),
+            verticalArrangement = Arrangement.spacedBy(tokens.fieldSpacing)
         ) {
             items(debts) { debt ->
                 DebtCard(
@@ -80,7 +92,7 @@ fun BalancesTab(
                     onSettle = { onSettle(debt) }
                 )
             }
-            item { Spacer(Modifier.height(80.dp)) }
+            item { Spacer(Modifier.height(tokens.listBottomSpacer)) }
         }
     }
 }
@@ -92,21 +104,23 @@ fun DebtCard(
     memberNames: Map<String, String> = emptyMap(),
     onSettle: () -> Unit
 ) {
+    val tokens = adaptiveSizeTokens()
+
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            modifier = Modifier.padding(tokens.cardPadding).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                 ) {
                     PubkeyChip(debt.from, memberNames)
                     Text("owes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                     PubkeyChip(debt.to, memberNames)
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(tokens.itemSpacing))
                 Text(
                     CurrencyFormatter.format(debt.amount, debt.currency),
                     style = MaterialTheme.typography.titleLarge,

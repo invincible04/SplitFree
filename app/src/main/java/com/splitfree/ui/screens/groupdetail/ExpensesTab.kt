@@ -25,33 +25,45 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.CurrencyFormatter
 
 @Composable
 fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = emptyMap()) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
     if (expenses.isEmpty()) {
         Box(
-            modifier = Modifier.fillMaxSize().padding(48.dp),
+            modifier = Modifier.fillMaxSize().padding(tokens.emptyStatePadding),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     Icons.Outlined.Receipt,
                     contentDescription = null,
-                    modifier = Modifier.size(56.dp),
+                    modifier = Modifier.size(tokens.emptyStateIcon),
                     tint = MaterialTheme.colorScheme.outlineVariant
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(tokens.fieldSpacing))
                 Text(
                     "No expenses yet",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.titleSmall
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     "Tap + to add the first expense",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = if (adaptive.isCompact) {
+                        MaterialTheme.typography.labelMedium
+                    } else {
+                        MaterialTheme.typography.bodySmall
+                    },
                     color = MaterialTheme.colorScheme.outline
                 )
             }
@@ -59,19 +71,21 @@ fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = empt
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            contentPadding = PaddingValues(tokens.screenPaddingHorizontal),
+            verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
         ) {
             items(expenses) { expense ->
                 ExpenseRow(expense, memberNames)
             }
-            item { Spacer(Modifier.height(80.dp)) }
+            item { Spacer(Modifier.height(tokens.listBottomSpacer)) }
         }
     }
 }
 
 @Composable
 private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = emptyMap()) {
+    val tokens = adaptiveSizeTokens()
+
     val categoryEmoji =
         when (expense.category.lowercase()) {
             "food" -> "🍕"
@@ -99,7 +113,7 @@ private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = empt
             Box(
                 modifier =
                 Modifier
-                    .size(40.dp)
+                    .size(tokens.listAvatarSize)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.secondaryContainer),
                 contentAlignment = Alignment.Center

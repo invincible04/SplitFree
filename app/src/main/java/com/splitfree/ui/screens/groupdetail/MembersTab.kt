@@ -24,7 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.util.adaptiveSizeTokens
 
 @Composable
 fun MembersTab(
@@ -35,7 +38,13 @@ fun MembersTab(
     memberNames: Map<String, String> = emptyMap(),
     onRemove: (String) -> Unit
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
+    val adaptive = adaptiveLayoutInfo()
+    val tokens = adaptiveSizeTokens()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(vertical = tokens.itemSpacing)
+    ) {
         items(members) { pubkey ->
             val displayName = memberNames[pubkey]?.ifBlank { null }
             val shortKey = pubkey.take(8) + "…" + pubkey.takeLast(4)
@@ -43,7 +52,7 @@ fun MembersTab(
                 leadingContent = {
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(tokens.listAvatarSize)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                         contentAlignment = Alignment.Center
@@ -59,9 +68,13 @@ fun MembersTab(
                 headlineContent = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                     ) {
-                        Text(displayName ?: shortKey)
+                        Text(
+                            text = displayName ?: shortKey,
+                            maxLines = if (adaptive.isCompact) 1 else 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         if (pubkey == createdBy) {
                             Surface(
                                 shape = MaterialTheme.shapes.extraSmall,
@@ -69,7 +82,7 @@ fun MembersTab(
                             ) {
                                 Text(
                                     "Creator",
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall
                                 )
                             }
@@ -81,7 +94,7 @@ fun MembersTab(
                             ) {
                                 Text(
                                     "You",
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall
                                 )
                             }
