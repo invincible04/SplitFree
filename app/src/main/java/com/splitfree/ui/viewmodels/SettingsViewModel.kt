@@ -3,8 +3,10 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.domain.crypto.GiftWrapService
+import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
+import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,7 +33,9 @@ constructor(
     private val giftWrap: GiftWrapService,
     private val userPreferences: SettingsContract,
     private val revokeKeyUseCase: RevokeKeyUseCase,
-    private val updateDisplayName: UpdateDisplayNameUseCase
+    private val updateDisplayName: UpdateDisplayNameUseCase,
+    private val groupRepo: GroupRepositoryContract,
+    private val exportGroup: ExportGroupUseCase
 ) : ViewModel() {
     private val _npub = MutableStateFlow(if (identity.hasIdentity()) identity.getPublicKeyHex() else "")
     val npub: StateFlow<String> = _npub
@@ -103,6 +107,16 @@ constructor(
 
     fun hideSeedPhrase() {
         _seedPhrase.value = emptyList()
+    }
+
+    /**
+     * Export all groups as a JSON array of individual exports.
+     * Each element is a complete self-contained group backup.
+     */
+    suspend fun exportAllGroups(): String {
+        val groups = groupRepo.getAll()
+        val exports = groups.map { exportGroup(it.id) }
+        return "[${exports.joinToString(",")}]"
     }
 
     fun revokeKey() {

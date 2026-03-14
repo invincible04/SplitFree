@@ -13,7 +13,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -102,17 +101,6 @@ fun GroupDetailScreen(
                     IconButton(onClick = { showQrDialog = true }) {
                         Icon(Icons.Outlined.QrCode2, "Show QR")
                     }
-                    IconButton(onClick = {
-                        scope.launch {
-                            val json = viewModel.exportGroupData()
-                            val intent =
-                                Intent(Intent.ACTION_SEND).apply {
-                                    type = "application/json"
-                                    putExtra(Intent.EXTRA_TEXT, json)
-                                }
-                            context.startActivity(Intent.createChooser(intent, "Export group data"))
-                        }
-                    }) { Icon(Icons.Outlined.FileDownload, "Export") }
                     IconButton(onClick = { showShareWarning = true }) {
                         Icon(Icons.Default.Share, "Share invite")
                     }

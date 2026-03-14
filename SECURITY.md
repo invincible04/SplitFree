@@ -56,7 +56,7 @@ SplitFree's security model is built on several layers:
 - **Key storage**: Private keys stored in Android Keystore (AES-256-GCM, hardware-backed).
 - **Event validation**: Signature verification, timestamp bounds, rate limiting, content size limits, nesting depth checks.
 - **BLE authentication**: Challenge-response handshake before any data exchange over Bluetooth.
-- **Export security**: HMAC-SHA256 authentication on all exported data.
+- **Export security**: HMAC-SHA256 integrity verification on all exported data. Group keys NIP-44 encrypted to the exporter's own pubkey.
 - **ProGuard/R8**: Code shrinking and obfuscation enabled for release builds.
 
 ## Responsible Disclosure

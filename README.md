@@ -65,7 +65,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol — an op
 
 ### 🎨 User Experience
 - **Material 3 + circular reveal theme switching** — light/dark theme with smooth animation
-- **Export / Import** — HMAC-authenticated JSON export for backup and cross-device transfer
+- **Export / Import** — self-contained encrypted backup (`.splitfree` files) with HMAC integrity verification for cross-device transfer
 - **QR code sharing** — scan to join groups instantly
 - **Debug log** — real-time protocol event viewer for developers
 
@@ -118,8 +118,8 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │   Use Cases: CreateGroup, JoinGroup, AddExpense,            │
 │     ComputeBalances, SimplifyDebts, CreateSnapshot,         │
 │     RevokeKey, MigrateGroup, Export/Import, SelfHeal        │
-│   Crypto: NostrEvent, Nip44, Nip59, GroupEncryption,        │
-│           IdentityManager, EventSigner, Bip39               │
+│   Crypto: NostrEvent, GroupEncryption,                      │
+│           EventSigner, Bip39                                │
 │   Validation: EventValidator (timestamps, rate limits,      │
 │              content safety, author checks)                 │
 ├─────────────────────────────────────────────────────────────┤
@@ -129,7 +129,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │          RelayHealthMonitor, RelayConnectionManager         │
 │   BLE: NearbySync, BleTransfer, BleProtocol (binary framing)│
 │   Sync: SyncEngine, SyncWorker, ForegroundSyncService,      │
-│         MidnightSyncWorker, PowerManager                    │
+│         MidnightSyncWorker, SyncScheduler, PowerManager     │
 │   Settings: Android Keystore (AES-256-GCM)                  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -208,13 +208,14 @@ RELEASE_KEY_PASSWORD=<your-key-password>
 app/src/main/java/com/splitfree/
 ├── data/
 │   ├── ble/              # BLE sync (NearbySync, BleTransfer, BleProtocol)
+│   ├── identity/         # IdentityManager (keypair management)
 │   ├── local/            # Room database, DAOs, entities
 │   ├── nostr/            # NostrClient, Relay, RelayConfig, EventThrottler
 │   │   ├── protocol/     # ClientMessage, RelayMessage, NostrFilter
 │   │   └── relay/        # RelayConnectionManager, RelayHealthMonitor
 │   ├── repository/       # GroupRepository, ExpenseRepository
 │   ├── settings/         # UserPreferences (plain SharedPreferences)
-│   └── util/             # Compression, hashing, encrypted prefs factory
+│   └── util/             # Compression, Keystore-backed encrypted storage
 ├── di/                   # Hilt modules (Database, Repository)
 ├── domain/
 │   ├── crypto/           # NostrEvent, GroupEncryption, IdentityManager, EventSigner
@@ -227,16 +228,17 @@ app/src/main/java/com/splitfree/
 │   │   ├── export/       # Export/Import with HMAC verification
 │   │   ├── group/        # CreateGroup, JoinGroup, MigrateGroup, RevokeKey
 │   │   └── sync/         # SelfHeal
+│   ├── util/             # HexUtil, HashUtil, RelayDefaults, CompressionProvider
 │   └── validation/       # EventValidator (timestamps, rate limits, content safety)
 ├── sync/
-│   ├── event/            # EventProcessor, EventPublisher, EventPostProcessor, Notifier
+│   ├── event/            # EventProcessor, EventPublisher, EventPostProcessor, ExpenseNotifier
 │   └── worker/           # SyncWorker, SyncEngine, ForegroundService, PowerManager
 ├── ui/
 │   ├── navigation/       # NavGraph, Screen definitions
 │   ├── screens/          # Compose screens (onboarding, groups, expenses, settings, etc.)
 │   ├── theme/            # Material 3 theme, circular reveal animation
 │   └── util/             # QR code generator
-├── util/                 # DebugLog, HexUtil, CurrencyFormatter
+├── util/                 # DebugLog, CurrencyFormatter, ProcessHealthTracker
 ├── MainActivity.kt       # Deep link handling, intent sanitization
 └── SplitFreeApp.kt       # Application class, WorkManager config, battery receiver
 ```

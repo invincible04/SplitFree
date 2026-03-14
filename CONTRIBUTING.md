@@ -46,7 +46,7 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 
 | Requirement | Version |
 |-------------|---------|
-| Android Studio | Ladybug (2024.2+) |
+| Android Studio | Meerkat (2024.3+) |
 | JDK | 17 |
 | Android SDK | 35 (compile), 26+ (min) |
 | Kotlin | 2.1 |

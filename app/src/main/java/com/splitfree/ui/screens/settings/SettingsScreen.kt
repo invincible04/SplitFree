@@ -8,6 +8,8 @@ import android.os.Looper
 import android.os.PersistableBundle
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +37,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -44,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -60,6 +65,9 @@ import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
 import com.splitfree.util.ProcessHealthTracker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,6 +80,23 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
     var showKey by remember { mutableStateOf(false) }
     var showSeedPhrase by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var pendingExportJson by remember { mutableStateOf<String?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        val json = pendingExportJson ?: return@rememberLauncherForActivityResult
+        pendingExportJson = null
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(json) }
+            }
+            snackbarHostState.showSnackbar("Backup exported successfully")
+        }
+    }
 
     // FLAG_SECURE: prevent screenshots/recording when private key or seed phrase is visible
     val view = LocalView.current
@@ -99,6 +124,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val displayName by viewModel.displayName.collectAsStateWithLifecycle()
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
@@ -190,6 +216,18 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                     viewModel.giftWrapEnabled = it
                 }
             )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
+            )
+
+            BackupSection(onExportAll = {
+                scope.launch {
+                    val json = withContext(Dispatchers.IO) { viewModel.exportAllGroups() }
+                    pendingExportJson = json
+                    exportLauncher.launch("splitfree-backup.splitfree")
+                }
+            })
 
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)

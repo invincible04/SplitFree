@@ -13,7 +13,6 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
-import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
@@ -48,7 +47,6 @@ class GroupDetailViewModelTest {
     private val expenseRepo = mockk<ExpenseRepositoryContract>(relaxed = true)
     private val computeBalances = mockk<ComputeBalancesUseCase>(relaxed = true)
     private val simplifyDebts = mockk<SimplifyDebtsUseCase>(relaxed = true)
-    private val exportGroup = mockk<ExportGroupUseCase>(relaxed = true)
     private val rotateGroupKey = mockk<RotateGroupKeyUseCase>(relaxed = true)
     private val identity = mockk<IdentityContract>()
     private val getExpenses = mockk<GetExpensesUseCase>(relaxed = true)
@@ -88,7 +86,7 @@ class GroupDetailViewModelTest {
         vm = GroupDetailViewModel(
             SavedStateHandle(mapOf("groupId" to "g1")),
             groupRepo, expenseRepo, computeBalances, simplifyDebts,
-            exportGroup, rotateGroupKey, identity, getExpenses,
+            rotateGroupKey, identity, getExpenses,
             createInviteLink, updateGroupRelays, relayHealthMonitor, eventSigner
         )
     }

@@ -14,7 +14,6 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
-import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
@@ -62,7 +61,6 @@ constructor(
     private val expenseRepo: ExpenseRepositoryContract,
     private val computeBalances: ComputeBalancesUseCase,
     private val simplifyDebts: SimplifyDebtsUseCase,
-    private val exportGroup: ExportGroupUseCase,
     private val rotateGroupKey: RotateGroupKeyUseCase,
     private val identity: IdentityContract,
     private val getExpenses: GetExpensesUseCase,
@@ -161,8 +159,6 @@ constructor(
             }
         }
     }
-
-    suspend fun exportGroupData(): String = exportGroup(groupId)
 
     fun removeMember(pubkey: String) {
         viewModelScope.launch {

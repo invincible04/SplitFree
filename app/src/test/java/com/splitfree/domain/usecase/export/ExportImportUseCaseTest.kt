@@ -8,6 +8,7 @@ import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.validation.EventValidator
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -16,6 +17,7 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
+import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
@@ -42,7 +44,7 @@ class ExportImportUseCaseTest {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val groupKey =
-        java.util.Base64
+        Base64
             .getEncoder()
             .encodeToString(ByteArray(32) { 1 })
     private val groupId = "test-group-id"
@@ -114,8 +116,15 @@ class ExportImportUseCaseTest {
     @Test
     fun `export produces valid JSON with HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getById(groupId) } returns group
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
-        val useCase = ExportGroupUseCase(eventRepo, groupRepo)
+        val identity = mockk<IdentityContract>()
+        every { identity.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
+        every { identity.getPublicKeyBytes() } returns memberPubkey.let { hex ->
+            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        }
+        val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
@@ -125,24 +134,37 @@ class ExportImportUseCaseTest {
         assertEquals(1, export.events.size)
         assertEquals("evt1", export.events[0].eventId)
         assertTrue(export.hmac.isNotEmpty())
+        assertTrue(export.encryptedGroupKey.isNotEmpty())
+        assertEquals("Test", export.groupName)
+        assertEquals(listOf("wss://relay.test"), export.relays)
     }
 
     @Test
     fun `export with no group key produces empty HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getById(groupId) } returns null
         coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
-        val useCase = ExportGroupUseCase(eventRepo, groupRepo)
+        val identity = mockk<IdentityContract>()
+        val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
         assertEquals("", export.hmac)
+        assertEquals("", export.encryptedGroupKey)
     }
 
     @Test
     fun `export with empty events`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getById(groupId) } returns group
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventsByGroup(groupId) } returns emptyList()
-        val useCase = ExportGroupUseCase(eventRepo, groupRepo)
+        val identity = mockk<IdentityContract>()
+        every { identity.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
+        every { identity.getPublicKeyBytes() } returns memberPubkey.let { hex ->
+            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        }
+        val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
@@ -155,7 +177,7 @@ class ExportImportUseCaseTest {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(
             SecretKeySpec(
-                java.util.Base64
+                Base64
                     .getDecoder()
                     .decode(key),
                 "HmacSHA256"
@@ -169,8 +191,16 @@ class ExportImportUseCaseTest {
             .ListSerializer(ExportedEvent.serializer())
         val eventsJson = Json.encodeToString(serializer, events)
         val h = if (hmac.isEmpty()) computeHmac(eventsJson, groupKey) else hmac
-        val export = SplitFreeExport(groupId = groupId, exportedAt = 1700000000, events = events, hmac = h)
+        val export = SplitFreeExport(version = 1, groupId = groupId, exportedAt = 1700000000, events = events, hmac = h)
         return Json.encodeToString(SplitFreeExport.serializer(), export)
+    }
+
+    private val identityMock = mockk<IdentityContract>().also {
+        every { it.getPublicKeyHex() } returns memberPubkey
+        every { it.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
+        every { it.getPublicKeyBytes() } returns memberPubkey.let { hex ->
+            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        }
     }
 
     @Test
@@ -182,7 +212,7 @@ class ExportImportUseCaseTest {
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
 
         val events = listOf(buildSignedExportedEvent())
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         val count = importUseCase(buildExportJson(events))
         assertEquals(1, count)
     }
@@ -195,7 +225,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns group
 
         val events = listOf(existingEvent)
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         val count = importUseCase(buildExportJson(events))
         assertEquals(0, count)
     }
@@ -207,7 +237,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getById(groupId) } returns group
 
         val events = listOf(buildSignedExportedEvent(privateKey = strangerPrivKey))
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         val count = importUseCase(buildExportJson(events))
         assertEquals(0, count)
     }
@@ -230,7 +260,7 @@ class ExportImportUseCaseTest {
                 expenseUuid = null
             )
         )
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         val count = importUseCase(buildExportJson(events))
         assertEquals(1, count)
     }
@@ -239,7 +269,7 @@ class ExportImportUseCaseTest {
     fun `import rejects unsupported version`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         val badJson = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         importUseCase(badJson)
         Unit
     }
@@ -247,7 +277,7 @@ class ExportImportUseCaseTest {
     @Test(expected = IllegalStateException::class)
     fun `import rejects unknown group`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         importUseCase(buildExportJson(emptyList()))
         Unit
     }
@@ -256,7 +286,7 @@ class ExportImportUseCaseTest {
     fun `import rejects missing HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         val noHmac = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         importUseCase(noHmac)
         Unit
     }
@@ -270,7 +300,7 @@ class ExportImportUseCaseTest {
         val eventsJson = Json.encodeToString(serializer, events)
         val badHmac = "ff".repeat(32)
         val export = SplitFreeExport(groupId = groupId, exportedAt = 0, events = events, hmac = badHmac)
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
         importUseCase(Json.encodeToString(SplitFreeExport.serializer(), export))
         Unit
     }
@@ -279,7 +309,7 @@ class ExportImportUseCaseTest {
     fun `import rejects invalid HMAC hex`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         val badJson = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
-        ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(badJson)
+        ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(badJson)
         Unit
     }
 
@@ -306,7 +336,8 @@ class ExportImportUseCaseTest {
                         """"kind":1,"tags":[],"content":"x","sig":"badsig"}"""
                 )
             )
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(buildExportJson(events))
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(events))
         assertEquals(0, count)
     }
 
@@ -328,7 +359,8 @@ class ExportImportUseCaseTest {
         val events = listOf(
             buildSignedExportedEvent(eventType = "expense_correction", expenseUuid = "uuid1")
         )
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(buildExportJson(events))
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(events))
         assertEquals(0, count)
     }
 
@@ -342,7 +374,8 @@ class ExportImportUseCaseTest {
         every { eventValidator.isWithinRateLimit(any()) } returns true
 
         val events = listOf(buildSignedExportedEvent())
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(buildExportJson(events))
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(events))
         assertEquals(1, count) // still imported, decrypted is null
     }
 
@@ -356,7 +389,8 @@ class ExportImportUseCaseTest {
         every { eventValidator.isWithinRateLimit(any()) } returns true
 
         val events = listOf(buildSignedExportedEvent())
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(buildExportJson(events))
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(events))
         assertEquals(1, count)
     }
 
@@ -377,7 +411,7 @@ class ExportImportUseCaseTest {
             sig = "sig",
             originalEventJson = null
         )
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
             buildExportJson(listOf(unsignedWrapper))
         )
         assertEquals(0, count)
@@ -407,7 +441,14 @@ class ExportImportUseCaseTest {
             }
         )
 
-        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator)(buildExportJson(listOf(event)))
+        val count =
+            ImportGroupUseCase(
+                eventRepo,
+                groupRepo,
+                encryption,
+                eventValidator,
+                identityMock
+            )(buildExportJson(listOf(event)))
         assertEquals(1, count)
         val parsed = NostrEvent.fromJson(event.originalEventJson!!)!!
         assertEquals(parsed.id, inserted.captured.eventId)
@@ -438,7 +479,7 @@ class ExportImportUseCaseTest {
             )
         }
 
-        val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator())
+        val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)
         val count = useCase(buildExportJson(events))
         assertEquals(31, count)
     }
