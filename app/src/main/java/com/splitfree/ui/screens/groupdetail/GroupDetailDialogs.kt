@@ -28,8 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.QrGenerator
 import com.splitfree.ui.util.adaptiveLayoutInfo
@@ -40,20 +42,18 @@ import com.splitfree.util.CurrencyFormatter
 fun ShareWarningDialog(inviteLink: String?, onShare: (String) -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Share invite link?") },
+        title = { Text(stringResource(R.string.share_invite_title)) },
         text = {
-            Text(
-                "This link contains the group encryption key. Anyone with this link can join and read all expenses. Share only via private messages — avoid public channels or group chats where bots may preview the URL."
-            )
+            Text(stringResource(R.string.share_invite_warning))
         },
         confirmButton = {
             TextButton(onClick = {
                 onDismiss()
                 if (inviteLink != null) onShare(inviteLink)
-            }) { Text("Share") }
+            }) { Text(stringResource(R.string.share)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }
@@ -70,19 +70,19 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Invite QR Code") },
+        title = { Text(stringResource(R.string.invite_qr_code)) },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                 if (inviteLink != null) {
                     val qrBitmap = remember(inviteLink) { QrGenerator.encode(inviteLink) }
                     Image(
                         bitmap = qrBitmap.asImageBitmap(),
-                        contentDescription = "Invite QR code",
+                        contentDescription = stringResource(R.string.invite_qr_content_desc),
                         modifier = Modifier.size(qrSize)
                     )
                     Spacer(Modifier.height(tokens.itemSpacing))
                     Text(
-                        "Scan to join $groupName",
+                        stringResource(R.string.scan_to_join, groupName),
                         style = if (adaptive.isCompact) {
                             MaterialTheme.typography.labelMedium
                         } else {
@@ -94,7 +94,7 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
                     CircularProgressIndicator(modifier = Modifier.padding(tokens.dialogProgressPadding))
                     Spacer(Modifier.height(tokens.itemSpacing))
                     Text(
-                        "Generating invite link…",
+                        stringResource(R.string.generating_invite_link),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -102,7 +102,7 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Done") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.done)) }
         }
     )
 }
@@ -117,10 +117,10 @@ fun SettleDialog(
     val tokens = adaptiveSizeTokens()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Settle Up") },
+        title = { Text(stringResource(R.string.settle_up)) },
         text = {
             Column {
-                Text("Record payment:")
+                Text(stringResource(R.string.record_payment))
                 Spacer(Modifier.height(tokens.itemSpacing))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PubkeyChip(debt.from, memberNames)
@@ -137,10 +137,10 @@ fun SettleDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm) { Text("Confirm Payment") }
+            Button(onClick = onConfirm) { Text(stringResource(R.string.confirm_payment)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }
@@ -155,17 +155,17 @@ fun RemoveMemberDialog(
     val name = memberNames[pubkey]?.ifBlank { null } ?: (pubkey.take(8) + "…")
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Remove Member") },
+        title = { Text(stringResource(R.string.remove_member_title)) },
         text = {
-            Text(
-                "Remove $name? This creates a new group without them. All remaining members will be migrated automatically."
-            )
+            Text(stringResource(R.string.remove_member_body, name))
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.remove), color = MaterialTheme.colorScheme.error)
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }
@@ -224,14 +224,14 @@ fun RelayDialog(
     val tokens = adaptiveSizeTokens()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Group Relays (${relays.size})") },
+        title = { Text(stringResource(R.string.group_relays_title, relays.size)) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     if (isCreator) {
-                        "Manage relays for this group. Changes are broadcast to all members."
+                        stringResource(R.string.relay_editor_hint_creator)
                     } else {
-                        "Relays this group syncs through. Only the group creator can edit."
+                        stringResource(R.string.relay_editor_hint_member)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -250,13 +250,13 @@ fun RelayDialog(
         },
         confirmButton = {
             if (isCreator) {
-                TextButton(onClick = { onSave { onDismiss() } }) { Text("Save") }
+                TextButton(onClick = { onSave { onDismiss() } }) { Text(stringResource(R.string.save)) }
             } else {
-                TextButton(onClick = onDismiss) { Text("Done") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.done)) }
             }
         },
         dismissButton = {
-            if (isCreator) TextButton(onClick = onDismiss) { Text("Cancel") }
+            if (isCreator) TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }

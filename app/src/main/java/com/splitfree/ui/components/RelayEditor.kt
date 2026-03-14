@@ -28,7 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 
@@ -100,19 +102,24 @@ fun RelayEditor(
                         error = null
                     },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("wss://relay.example.com", style = MaterialTheme.typography.bodySmall) },
+                    placeholder = {
+                        Text(stringResource(R.string.relay_placeholder), style = MaterialTheme.typography.bodySmall)
+                    },
                     singleLine = true,
                     isError = error != null,
                     supportingText = error?.let { { Text(it) } },
                     shape = MaterialTheme.shapes.medium
                 )
                 Spacer(Modifier.width(tokens.itemSpacing))
+                val errMustWss = stringResource(R.string.relay_must_start_wss)
+                val errTooShort = stringResource(R.string.relay_url_too_short)
+                val errDuplicate = stringResource(R.string.relay_already_added)
                 TextButton(onClick = {
                     val url = input.trim().lowercase()
                     when {
-                        !url.startsWith("wss://") -> error = "Must start with wss://"
-                        url.length < 10 -> error = "URL too short"
-                        url in relays -> error = "Already added"
+                        !url.startsWith("wss://") -> error = errMustWss
+                        url.length < 10 -> error = errTooShort
+                        url in relays -> error = errDuplicate
                         else -> {
                             onAdd(url)
                             onCheck(url)
@@ -120,10 +127,14 @@ fun RelayEditor(
                         }
                     }
                 }) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(tokens.iconSmall))
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = stringResource(R.string.add_relay),
+                        modifier = Modifier.size(tokens.iconSmall)
+                    )
                     Spacer(Modifier.width(tokens.chipContentSpacing))
                     Text(
-                        text = "Add",
+                        text = stringResource(R.string.add),
                         style =
                         if (adaptive.isCompact) {
                             MaterialTheme.typography.labelLarge
@@ -157,13 +168,13 @@ private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, on
                 Text(url.removePrefix("wss://"), style = MaterialTheme.typography.bodyMedium)
                 if (status == RelayCheckStatus.VERIFYING) {
                     Text(
-                        "Verifying write+read…",
+                        stringResource(R.string.relay_verifying),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else if (status == RelayCheckStatus.REJECTED) {
                     Text(
-                        "⚠️ Relay can't store events",
+                        stringResource(R.string.relay_rejected),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -188,7 +199,11 @@ private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, on
             }
             if (onRemove != null) {
                 IconButton(onClick = onRemove, modifier = Modifier.size(tokens.relayRemoveButtonSize)) {
-                    Icon(Icons.Default.Close, "Remove", modifier = Modifier.size(tokens.iconSmall))
+                    Icon(
+                        Icons.Default.Close,
+                        stringResource(R.string.relay_remove),
+                        modifier = Modifier.size(tokens.iconSmall)
+                    )
                 }
             }
         }

@@ -54,12 +54,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.NearbySyncViewModel
@@ -136,12 +138,12 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Nearby Sync") },
+                title = { Text(stringResource(R.string.nearby_sync_title)) },
                 navigationIcon = {
                     IconButton(onClick = {
                         viewModel.stopScan()
                         onBack()
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
                 }
             )
         }
@@ -174,12 +176,12 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                     ) {
                         Icon(
                             Icons.Default.Bluetooth,
-                            contentDescription = null,
+                            contentDescription = stringResource(R.string.cd_bluetooth_icon),
                             tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(tokens.iconMedium)
                         )
                         Text(
-                            "Sync expenses with nearby group members over Bluetooth — no internet needed.",
+                            stringResource(R.string.nearby_explanation),
                             style = cardTextStyle,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -221,10 +223,10 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                         Spacer(Modifier.width(tokens.itemSpacing))
                         Text(
                             when {
-                                !bluetoothSupported -> "Bluetooth unavailable"
-                                !permissionsGranted -> "Permissions required"
-                                !bluetoothEnabled -> "Enable Bluetooth"
-                                else -> "Scan for nearby members"
+                                !bluetoothSupported -> stringResource(R.string.bluetooth_unavailable)
+                                !permissionsGranted -> stringResource(R.string.permissions_required)
+                                !bluetoothEnabled -> stringResource(R.string.enable_bluetooth)
+                                else -> stringResource(R.string.scan_for_nearby)
                             },
                             style = if (adaptive.isCompact) {
                                 MaterialTheme.typography.titleSmall
@@ -238,7 +240,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                     }
                     if (!permissionsGranted) {
                         Text(
-                            "Bluetooth permissions are required for nearby sync. Tap the button to grant access.",
+                            stringResource(R.string.permissions_hint),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline,
                             textAlign = TextAlign.Center,
@@ -251,7 +253,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                         modifier = Modifier.fillMaxWidth().height(buttonHeight),
                         shape = MaterialTheme.shapes.large
                     ) {
-                        Text("Stop scanning")
+                        Text(stringResource(R.string.stop_scanning))
                     }
                 }
             }
@@ -259,7 +261,13 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
             // Peers list
             if (uiState.peers.isNotEmpty()) {
                 Text(
-                    "Found ${uiState.peers.size} peer${if (uiState.peers.size != 1) "s" else ""}",
+                    if (uiState.peers.size !=
+                        1
+                    ) {
+                        stringResource(R.string.found_peers_plural, uiState.peers.size)
+                    } else {
+                        stringResource(R.string.found_peers, uiState.peers.size)
+                    },
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.bodyLarge
                     } else {
@@ -283,13 +291,13 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Peer ${peer.name}",
+                                        text = stringResource(R.string.peer_name, peer.name),
                                         style = MaterialTheme.typography.titleSmall,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        "Tap Sync to exchange expenses",
+                                        stringResource(R.string.tap_sync),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.outline,
                                         maxLines = 2,
@@ -303,11 +311,11 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                                 ) {
                                     Icon(
                                         Icons.Outlined.SyncAlt,
-                                        contentDescription = null,
+                                        contentDescription = stringResource(R.string.cd_sync_icon),
                                         modifier = Modifier.size(tokens.iconSmall)
                                     )
                                     Spacer(Modifier.width(tokens.denseSpacing))
-                                    Text("Sync", maxLines = 1, softWrap = false)
+                                    Text(stringResource(R.string.sync), maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -325,7 +333,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                         )
                         Spacer(Modifier.height(tokens.sectionSpacing))
                         Text(
-                            "Looking for nearby SplitFree users…",
+                            stringResource(R.string.looking_for_nearby),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium
                         )

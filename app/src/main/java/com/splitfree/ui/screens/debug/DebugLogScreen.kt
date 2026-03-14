@@ -40,9 +40,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.DebugLog
@@ -86,27 +88,28 @@ fun DebugLogScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Debug Logs (${entries.size})") },
+                title = { Text(stringResource(R.string.debug_logs_title, entries.size)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
                     }
                 },
                 actions = {
                     IconButton(onClick = { showFilter = !showFilter }) {
-                        Icon(Icons.Outlined.FilterList, "Filter")
+                        Icon(Icons.Outlined.FilterList, stringResource(R.string.filter))
                     }
+                    val copiedMsg = stringResource(R.string.copied_log_lines, entries.size)
                     IconButton(onClick = {
                         val text = entries.joinToString("\n") { it.format() }
                         val clip = ClipData.newPlainText("debug_logs", text)
                         (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                             .setPrimaryClip(clip)
-                        Toast.makeText(context, "Copied ${entries.size} log lines", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, copiedMsg, Toast.LENGTH_SHORT).show()
                     }) {
-                        Icon(Icons.Outlined.ContentCopy, "Copy All")
+                        Icon(Icons.Outlined.ContentCopy, stringResource(R.string.copy_all))
                     }
                     IconButton(onClick = { DebugLog.clear() }) {
-                        Icon(Icons.Outlined.Delete, "Clear")
+                        Icon(Icons.Outlined.Delete, stringResource(R.string.clear))
                     }
                 }
             )
@@ -145,7 +148,7 @@ private fun FilterBar(tags: List<String>, selected: String, onSelect: (String) -
         FilterChip(
             selected = selected.isBlank(),
             onClick = { onSelect("") },
-            label = { Text("All", style = MaterialTheme.typography.labelSmall) }
+            label = { Text(stringResource(R.string.all), style = MaterialTheme.typography.labelSmall) }
         )
         tags.forEach { tag ->
             FilterChip(

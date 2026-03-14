@@ -23,8 +23,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -49,7 +51,7 @@ fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = empt
                 )
                 Spacer(Modifier.height(tokens.fieldSpacing))
                 Text(
-                    "No expenses yet",
+                    stringResource(R.string.no_expenses_yet),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.titleSmall
                     } else {
@@ -58,7 +60,7 @@ fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = empt
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "Tap + to add the first expense",
+                    stringResource(R.string.tap_add_first_expense),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.labelMedium
                     } else {
@@ -104,7 +106,10 @@ private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = empt
         },
         supportingContent = {
             Text(
-                "Paid by ${memberNames[expense.paidBy]?.ifBlank { null } ?: (expense.paidBy.take(6) + "…")}",
+                stringResource(
+                    R.string.paid_by,
+                    memberNames[expense.paidBy]?.ifBlank { null } ?: (expense.paidBy.take(6) + "…")
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline
             )

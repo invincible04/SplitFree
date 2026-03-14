@@ -53,10 +53,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.BuildConfig
+import com.splitfree.R
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
@@ -83,6 +85,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingExportJson by remember { mutableStateOf<String?>(null) }
+    val backupExportedMsg = stringResource(R.string.backup_exported)
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -94,7 +97,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             withContext(Dispatchers.IO) {
                 context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(json) }
             }
-            snackbarHostState.showSnackbar("Backup exported successfully")
+            snackbarHostState.showSnackbar(backupExportedMsg)
         }
     }
 
@@ -127,8 +130,12 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }
+                title = { Text(stringResource(R.string.settings)) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
+                    }
+                }
             )
         }
     ) { padding ->
@@ -177,7 +184,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             )
 
             // Appearance
-            SectionHeader(icon = Icons.Outlined.Palette, title = "Appearance")
+            SectionHeader(icon = Icons.Outlined.Palette, title = stringResource(R.string.appearance))
             val themeMode by ThemePreference.mode.collectAsStateWithLifecycle()
             SingleChoiceSegmentedButtonRow(
                 modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal).fillMaxWidth()
@@ -240,12 +247,12 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             )
 
             // About
-            SectionHeader(icon = Icons.Outlined.Info, title = "About")
+            SectionHeader(icon = Icons.Outlined.Info, title = stringResource(R.string.about))
             ListItem(
-                headlineContent = { Text("SplitFree v1.1.0") },
+                headlineContent = { Text(stringResource(R.string.app_version)) },
                 supportingContent = {
                     Text(
-                        text = "Decentralized expense splitting over Nostr.",
+                        text = stringResource(R.string.app_description),
                         style = if (adaptive.isCompact) {
                             MaterialTheme.typography.bodySmall
                         } else {
@@ -255,24 +262,30 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 }
             )
             ListItem(
-                headlineContent = { Text("Diagnostics Report") },
-                supportingContent = { Text("Copy crash/ANR and background sync health report") },
-                leadingContent = { Icon(Icons.Outlined.BugReport, contentDescription = null) },
+                headlineContent = { Text(stringResource(R.string.diagnostics_report)) },
+                supportingContent = { Text(stringResource(R.string.diagnostics_supporting)) },
+                leadingContent = {
+                    Icon(Icons.Outlined.BugReport, contentDescription = stringResource(R.string.cd_diagnostics_icon))
+                },
                 trailingContent = {
                     FilledTonalButton(
                         onClick = {
                             val report = ProcessHealthTracker.buildReport(context)
                             copyToClipboard(context, "diagnostics", report)
                         }
-                    ) { Text("Copy") }
+                    ) { Text(stringResource(R.string.copy)) }
                 }
             )
             if (BuildConfig.DEBUG) {
                 ListItem(
-                    headlineContent = { Text("Debug Logs") },
-                    supportingContent = { Text("View live app logs for troubleshooting") },
-                    leadingContent = { Icon(Icons.Outlined.Info, contentDescription = null) },
-                    trailingContent = { FilledTonalButton(onClick = onDebugLog) { Text("Open") } }
+                    headlineContent = { Text(stringResource(R.string.debug_logs)) },
+                    supportingContent = { Text(stringResource(R.string.debug_logs_supporting)) },
+                    leadingContent = {
+                        Icon(Icons.Outlined.Info, contentDescription = stringResource(R.string.cd_info_icon))
+                    },
+                    trailingContent = {
+                        FilledTonalButton(onClick = onDebugLog) { Text(stringResource(R.string.open)) }
+                    }
                 )
             }
             Spacer(Modifier.height(tokens.screenBottomSpacer))
@@ -282,9 +295,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     // Dialogs
     if (showCopyWarning) {
         SecurityWarningDialog(
-            text = "Your private key will be copied to the clipboard. " +
-                "Other apps may be able to read it. " +
-                "Only do this to back up your key, then clear your clipboard.",
+            text = stringResource(R.string.copy_key_warning),
             onConfirm = {
                 copyToClipboard(context, "nsec", nsec)
                 showCopyWarning = false
@@ -294,9 +305,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     }
     if (showCopySeedWarning) {
         SecurityWarningDialog(
-            text = "Your seed phrase will be copied to the clipboard. " +
-                "Anyone with these 24 words can access your identity. " +
-                "Write them down on paper instead if possible.",
+            text = stringResource(R.string.copy_seed_warning),
             onConfirm = {
                 copyToClipboard(context, "seed", seedPhrase.joinToString(" "))
                 showCopySeedWarning = false
@@ -306,10 +315,9 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     }
     if (showRevokeDialog) {
         SecurityWarningDialog(
-            title = "Revoke Key?",
-            text = "This will generate a new identity and notify all your groups. " +
-                "Your old key will be invalidated. This cannot be undone.",
-            confirmText = "Revoke Key",
+            title = stringResource(R.string.revoke_key_title),
+            text = stringResource(R.string.revoke_key_warning),
+            confirmText = stringResource(R.string.revoke_key),
             onConfirm = {
                 showRevokeDialog = false
                 viewModel.revokeKey()
@@ -321,15 +329,21 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
 
 @Composable
 private fun SecurityWarningDialog(
-    title: String = "Security Warning",
+    title: String = stringResource(R.string.security_warning),
     text: String,
-    confirmText: String = "Copy Anyway",
+    confirmText: String = stringResource(R.string.copy_anyway),
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+        icon = {
+            Icon(
+                Icons.Outlined.Warning,
+                contentDescription = stringResource(R.string.cd_warning_icon),
+                tint = MaterialTheme.colorScheme.error
+            )
+        },
         title = { Text(title) },
         text = { Text(text) },
         confirmButton = {
@@ -338,7 +352,7 @@ private fun SecurityWarningDialog(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
             ) { Text(confirmText) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } }
     )
 }
 
@@ -350,7 +364,7 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
             putBoolean("android.content.extra.IS_SENSITIVE", true)
         }
     clipboard.setPrimaryClip(clip)
-    Toast.makeText(context, "Copied — clipboard will auto-clear in 30s", Toast.LENGTH_SHORT).show()
+    Toast.makeText(context, context.getString(R.string.clipboard_copied_30s), Toast.LENGTH_SHORT).show()
     if (label == "nsec" || label == "seed") {
         Handler(Looper.getMainLooper()).postDelayed({
             try {

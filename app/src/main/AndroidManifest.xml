@@ -26,6 +26,7 @@
     <application
         android:name=".SplitFreeApp"
         android:allowBackup="false"
+        android:fullBackupContent="@xml/full_backup_content"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher"

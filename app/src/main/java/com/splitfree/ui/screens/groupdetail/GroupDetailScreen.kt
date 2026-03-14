@@ -38,9 +38,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -85,7 +87,9 @@ fun GroupDetailScreen(
             TopAppBar(
                 title = { Text(uiState.groupName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
+                    }
                 },
                 actions = {
                     val scope = rememberCoroutineScope()
@@ -93,16 +97,16 @@ fun GroupDetailScreen(
                         showRelayDialog = true
                         viewModel.checkAllRelays()
                     }) {
-                        Icon(Icons.Default.CellTower, "Relays")
+                        Icon(Icons.Default.CellTower, stringResource(R.string.relays))
                     }
                     IconButton(onClick = { onNearbySync(uiState.groupId) }) {
-                        Icon(Icons.Default.Bluetooth, "Nearby sync")
+                        Icon(Icons.Default.Bluetooth, stringResource(R.string.nearby_sync))
                     }
                     IconButton(onClick = { showQrDialog = true }) {
-                        Icon(Icons.Outlined.QrCode2, "Show QR")
+                        Icon(Icons.Outlined.QrCode2, stringResource(R.string.show_qr))
                     }
                     IconButton(onClick = { showShareWarning = true }) {
-                        Icon(Icons.Default.Share, "Share invite")
+                        Icon(Icons.Default.Share, stringResource(R.string.share_invite))
                     }
                 }
             )
@@ -110,8 +114,8 @@ fun GroupDetailScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { onAddExpense(uiState.groupId) },
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("Add Expense") }
+                icon = { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_expense)) },
+                text = { Text(stringResource(R.string.add_expense)) }
             )
         }
     ) { padding ->
@@ -119,7 +123,11 @@ fun GroupDetailScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 val scope = rememberCoroutineScope()
                 PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
-                    listOf("Balances", "Expenses", "Members").forEachIndexed { i, title ->
+                    listOf(
+                        stringResource(R.string.tab_balances),
+                        stringResource(R.string.tab_expenses),
+                        stringResource(R.string.tab_members)
+                    ).forEachIndexed { i, title ->
                         Tab(
                             selected = pagerState.currentPage == i,
                             onClick = { scope.launch { pagerState.animateScrollToPage(i) } },
@@ -170,7 +178,7 @@ fun GroupDetailScreen(
                 onClick = { showShareWarning = true },
                 modifier = Modifier.align(Alignment.BottomStart).padding(tokens.screenPaddingHorizontal),
                 containerColor = MaterialTheme.colorScheme.secondaryContainer
-            ) { Icon(Icons.Outlined.PersonAdd, contentDescription = "Invite members") }
+            ) { Icon(Icons.Outlined.PersonAdd, contentDescription = stringResource(R.string.invite_members)) }
         }
     }
 

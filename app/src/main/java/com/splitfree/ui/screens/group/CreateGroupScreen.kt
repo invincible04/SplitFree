@@ -36,8 +36,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.ui.components.RelayEditor
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -73,10 +75,10 @@ fun CreateGroupScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New Group") },
+                title = { Text(stringResource(R.string.new_group)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
                     }
                 }
             )
@@ -92,7 +94,7 @@ fun CreateGroupScreen(
             verticalArrangement = Arrangement.spacedBy(tokens.sectionSpacing)
         ) {
             Text(
-                "Create a group to start splitting expenses with friends.",
+                stringResource(R.string.create_group_hint),
                 style = if (adaptive.isCompact) {
                     MaterialTheme.typography.bodySmall
                 } else {
@@ -104,8 +106,8 @@ fun CreateGroupScreen(
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Group name") },
-                placeholder = { Text("e.g., Goa Trip 2026") },
+                label = { Text(stringResource(R.string.group_name)) },
+                placeholder = { Text(stringResource(R.string.group_name_placeholder)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = MaterialTheme.shapes.medium
@@ -114,7 +116,7 @@ fun CreateGroupScreen(
             // Expandable relay section
             TextButton(onClick = { showRelays = !showRelays }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Relays (${relays.size})")
+                    Text(stringResource(R.string.relays_count, relays.size))
                     Icon(
                         if (showRelays) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = null,
@@ -126,7 +128,7 @@ fun CreateGroupScreen(
             AnimatedVisibility(visible = showRelays) {
                 Column {
                     Text(
-                        "Choose which Nostr relays this group syncs through. Default relays work for most users.",
+                        stringResource(R.string.relay_section_hint),
                         style = if (adaptive.isCompact) {
                             MaterialTheme.typography.labelMedium
                         } else {
@@ -154,7 +156,7 @@ fun CreateGroupScreen(
                 shape = MaterialTheme.shapes.large
             ) {
                 Text(
-                    text = "Create Group",
+                    text = stringResource(R.string.create_group),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.titleSmall
                     } else {

@@ -23,6 +23,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -57,7 +59,7 @@ fun BalancesTab(
                 )
                 Spacer(Modifier.height(tokens.fieldSpacing))
                 Text(
-                    if (hasExpenses) "All settled up! 🎉" else "No balances yet",
+                    if (hasExpenses) stringResource(R.string.all_settled) else stringResource(R.string.no_balances_yet),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.titleSmall
                     } else {
@@ -67,7 +69,7 @@ fun BalancesTab(
                 )
                 if (!hasExpenses) {
                     Text(
-                        "Add an expense to see balances",
+                        stringResource(R.string.add_expense_to_see_balances),
                         style = if (adaptive.isCompact) {
                             MaterialTheme.typography.labelMedium
                         } else {
@@ -117,7 +119,11 @@ fun DebtCard(
                     horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                 ) {
                     PubkeyChip(debt.from, memberNames)
-                    Text("owes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        stringResource(R.string.owes),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
                     PubkeyChip(debt.to, memberNames)
                 }
                 Spacer(Modifier.height(tokens.itemSpacing))
@@ -129,7 +135,7 @@ fun DebtCard(
             }
             if (showSettle) {
                 FilledTonalButton(onClick = onSettle) {
-                    Text("Settle")
+                    Text(stringResource(R.string.settle))
                 }
             }
         }

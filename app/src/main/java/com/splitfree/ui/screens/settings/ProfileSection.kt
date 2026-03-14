@@ -19,7 +19,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 
@@ -53,7 +55,7 @@ fun ProfileSection(displayName: String, onNameChange: (String) -> Unit) {
             } else {
                 Icon(
                     Icons.Outlined.Person,
-                    contentDescription = null,
+                    contentDescription = stringResource(R.string.cd_person_icon),
                     modifier = Modifier.size(tokens.avatarFallbackIconSize),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -63,8 +65,8 @@ fun ProfileSection(displayName: String, onNameChange: (String) -> Unit) {
             OutlinedTextField(
                 value = displayName,
                 onValueChange = onNameChange,
-                label = { Text("Display name") },
-                placeholder = { Text("How friends see you") },
+                label = { Text(stringResource(R.string.display_name)) },
+                placeholder = { Text(stringResource(R.string.display_name_placeholder)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = if (adaptive.isCompact) MaterialTheme.shapes.small else MaterialTheme.shapes.medium

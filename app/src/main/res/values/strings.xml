@@ -1,3 +1,229 @@
 <resources>
     <string name="app_name">SplitFree</string>
+
+    <!-- Common -->
+    <string name="back">Back</string>
+    <string name="cancel">Cancel</string>
+    <string name="copy">Copy</string>
+    <string name="done">Done</string>
+    <string name="save">Save</string>
+    <string name="skip">Skip</string>
+    <string name="settings">Settings</string>
+    <string name="add">Add</string>
+    <string name="remove">Remove</string>
+
+    <!-- GroupsListScreen -->
+    <string name="new_group">New Group</string>
+    <string name="no_groups_yet">No groups yet</string>
+    <string name="no_groups_body">Create a group to start splitting expenses\nwith friends, family, or roommates.</string>
+    <string name="paste_invite_link">Paste invite link</string>
+    <string name="scan_qr">Scan QR code</string>
+    <string name="member_count">%1$d member</string>
+    <string name="members_count">%1$d members</string>
+
+    <!-- GroupDetailScreen -->
+    <string name="relays">Relays</string>
+    <string name="nearby_sync">Nearby sync</string>
+    <string name="show_qr">Show QR code</string>
+    <string name="share_invite">Share invite</string>
+    <string name="add_expense">Add Expense</string>
+    <string name="invite_members">Invite members</string>
+    <string name="tab_balances">Balances</string>
+    <string name="tab_expenses">Expenses</string>
+    <string name="tab_members">Members</string>
+
+    <!-- BalancesTab -->
+    <string name="all_settled">All settled up! 🎉</string>
+    <string name="no_balances_yet">No balances yet</string>
+    <string name="add_expense_to_see_balances">Add an expense to see balances</string>
+    <string name="settle">Settle</string>
+    <string name="owes">owes</string>
+
+    <!-- ExpensesTab -->
+    <string name="no_expenses_yet">No expenses yet</string>
+    <string name="tap_add_first_expense">Tap + to add the first expense</string>
+    <string name="paid_by">Paid by %1$s</string>
+
+    <!-- MembersTab -->
+    <string name="creator_badge">Creator</string>
+    <string name="you_badge">You</string>
+    <string name="remove_member">Remove member</string>
+
+    <!-- GroupDetailDialogs -->
+    <string name="share_invite_title">Share invite link?</string>
+    <string name="share_invite_warning">This link contains the group encryption key. Anyone with this link can join and read all expenses. Share only via private messages — avoid public channels or group chats where bots may preview the URL.</string>
+    <string name="share">Share</string>
+    <string name="invite_qr_code">Invite QR Code</string>
+    <string name="invite_qr_content_desc">Invite QR code</string>
+    <string name="scan_to_join">Scan to join %1$s</string>
+    <string name="generating_invite_link">Generating invite link…</string>
+    <string name="settle_up">Settle Up</string>
+    <string name="record_payment">Record payment:</string>
+    <string name="confirm_payment">Confirm Payment</string>
+    <string name="remove_member_title">Remove Member</string>
+    <string name="remove_member_body">Remove %1$s? This creates a new group without them. All remaining members will be migrated automatically.</string>
+    <string name="group_relays_title">Group Relays (%1$d)</string>
+    <string name="relay_editor_hint_creator">Manage relays for this group. Changes are broadcast to all members.</string>
+    <string name="relay_editor_hint_member">Relays this group syncs through. Only the group creator can edit.</string>
+
+    <!-- AddExpenseScreen -->
+    <string name="amount">Amount</string>
+    <string name="amount_placeholder">0.00</string>
+    <string name="currency">Currency</string>
+    <string name="description">Description</string>
+    <string name="description_placeholder">What was this for?</string>
+    <string name="category">Category</string>
+    <string name="category_none">None</string>
+    <string name="category_food">🍕 Food</string>
+    <string name="category_transport">🚗 Transport</string>
+    <string name="category_shopping">🛍️ Shopping</string>
+    <string name="category_entertainment">🎬 Entertainment</string>
+    <string name="category_utilities">💡 Utilities</string>
+    <string name="category_rent">🏠 Rent</string>
+    <string name="category_health">💊 Health</string>
+    <string name="category_other">💰 Other</string>
+    <string name="paid_by_label">Paid by</string>
+    <string name="split_type_label">Split type</string>
+    <string name="split_equal">Equal</string>
+    <string name="split_exact">Exact</string>
+    <string name="split_percent">Percent</string>
+    <string name="split_shares">Shares</string>
+    <string name="split_amount_label">Amount</string>
+    <string name="split_percentage_label">Percentage</string>
+    <string name="split_shares_label">Shares</string>
+    <string name="me">Me</string>
+
+    <!-- OnboardingScreen -->
+    <string name="onboarding_subtitle">Split expenses with anyone.\nNo accounts. No servers. No cost.</string>
+    <string name="chip_encrypted">🔒 Encrypted</string>
+    <string name="chip_decentralized">🌐 Decentralized</string>
+    <string name="chip_free">💸 Free</string>
+    <string name="your_name">Your name</string>
+    <string name="your_name_placeholder">How friends will see you</string>
+    <string name="get_started">Get Started</string>
+    <string name="existing_key">I have an existing key</string>
+    <string name="private_key_or_seed">Private key or seed phrase</string>
+    <string name="key_placeholder">nsec / hex key / 24 words</string>
+    <string name="key_supporting_text">Hex private key or 24 words separated by spaces</string>
+    <string name="import_key">Import Key</string>
+    <string name="key_imported">Key imported ✓</string>
+    <string name="import_backup_hint">If you have a .splitfree backup file, import it now to restore your groups.</string>
+    <string name="import_backup_file">Import Backup File</string>
+    <string name="continue_button">Continue</string>
+
+    <!-- SettingsScreen -->
+    <string name="appearance">Appearance</string>
+    <string name="about">About</string>
+    <string name="app_version">SplitFree v1.1.0</string>
+    <string name="app_description">Decentralized expense splitting over Nostr.</string>
+    <string name="diagnostics_report">Diagnostics Report</string>
+    <string name="diagnostics_supporting">Copy crash/ANR and background sync health report</string>
+    <string name="debug_logs">Debug Logs</string>
+    <string name="debug_logs_supporting">View live app logs for troubleshooting</string>
+    <string name="open">Open</string>
+    <string name="clipboard_copied_30s">Copied — clipboard will auto-clear in 30s</string>
+
+    <!-- SettingsScreen - Security Dialogs -->
+    <string name="security_warning">Security Warning</string>
+    <string name="copy_key_warning">Your private key will be copied to the clipboard. Other apps may be able to read it. Only do this to back up your key, then clear your clipboard.</string>
+    <string name="copy_seed_warning">Your seed phrase will be copied to the clipboard. Anyone with these 24 words can access your identity. Write them down on paper instead if possible.</string>
+    <string name="copy_anyway">Copy Anyway</string>
+    <string name="revoke_key_title">Revoke Key?</string>
+    <string name="revoke_key_warning">This will generate a new identity and notify all your groups. Your old key will be invalidated. This cannot be undone.</string>
+
+    <!-- IdentitySection -->
+    <string name="identity">Identity</string>
+    <string name="public_key">Public Key</string>
+
+    <!-- KeyBackupSection -->
+    <string name="key_backup">Key Backup</string>
+    <string name="key_backup_warning">Your private key is your identity. If you lose it, you lose access to all your groups forever. Back it up now.</string>
+    <string name="private_key">Private Key</string>
+    <string name="show_private_key">Show Private Key</string>
+    <string name="tap_to_reveal_key">Tap to reveal your secret key</string>
+    <string name="reveal">Reveal</string>
+    <string name="hide_key">Hide Key</string>
+    <string name="seed_phrase">Seed Phrase</string>
+    <string name="show_seed_phrase">Show Seed Phrase</string>
+    <string name="seed_phrase_hint">24 words to recover your identity on any device</string>
+    <string name="hide">Hide</string>
+
+    <!-- PrivacySection -->
+    <string name="privacy">Privacy</string>
+    <string name="nip59_gift_wrap">NIP-59 Gift Wrap</string>
+    <string name="gift_wrap_hint">Hide your identity from relay operators. Increases event size.</string>
+
+    <!-- BackupSection -->
+    <string name="backup">Backup</string>
+    <string name="export_all_groups">Export All Groups</string>
+    <string name="export_hint">Save all groups to a .splitfree backup file.</string>
+    <string name="export">Export</string>
+    <string name="backup_exported">Backup exported successfully</string>
+
+    <!-- DangerZoneSection -->
+    <string name="danger_zone">Danger Zone</string>
+    <string name="revoke_key">Revoke Key</string>
+    <string name="revoke_key_hint">If your key is compromised, revoke it and generate a new identity. All groups will be updated.</string>
+    <string name="revoking">Revoking…</string>
+    <string name="revoke">Revoke</string>
+    <string name="key_revoked">Key revoked successfully</string>
+    <string name="new_pubkey">New pubkey: %1$s…</string>
+
+    <!-- ProfileSection -->
+    <string name="display_name">Display name</string>
+    <string name="display_name_placeholder">How friends see you</string>
+
+    <!-- NearbySyncScreen -->
+    <string name="nearby_sync_title">Nearby Sync</string>
+    <string name="nearby_explanation">Sync expenses with nearby group members over Bluetooth — no internet needed.</string>
+    <string name="bluetooth_unavailable">Bluetooth unavailable</string>
+    <string name="permissions_required">Permissions required</string>
+    <string name="enable_bluetooth">Enable Bluetooth</string>
+    <string name="scan_for_nearby">Scan for nearby members</string>
+    <string name="stop_scanning">Stop scanning</string>
+    <string name="permissions_hint">Bluetooth permissions are required for nearby sync. Tap the button to grant access.</string>
+    <string name="found_peers">Found %1$d peer</string>
+    <string name="found_peers_plural">Found %1$d peers</string>
+    <string name="peer_name">Peer %1$s</string>
+    <string name="tap_sync">Tap Sync to exchange expenses</string>
+    <string name="sync">Sync</string>
+    <string name="looking_for_nearby">Looking for nearby SplitFree users…</string>
+
+    <!-- CreateGroupScreen -->
+    <string name="create_group">Create Group</string>
+    <string name="create_group_hint">Create a group to start splitting expenses with friends.</string>
+    <string name="group_name">Group name</string>
+    <string name="group_name_placeholder">e.g., Goa Trip 2026</string>
+    <string name="relays_count">Relays (%1$d)</string>
+    <string name="relay_section_hint">Choose which Nostr relays this group syncs through. Default relays work for most users.</string>
+
+    <!-- DebugLogScreen -->
+    <string name="debug_logs_title">Debug Logs (%1$d)</string>
+    <string name="filter">Filter</string>
+    <string name="copy_all">Copy all logs</string>
+    <string name="clear">Clear logs</string>
+    <string name="all">All</string>
+    <string name="copied_log_lines">Copied %1$d log lines</string>
+
+    <!-- RelayEditor -->
+    <string name="relay_placeholder">wss://relay.example.com</string>
+    <string name="relay_must_start_wss">Must start with wss://</string>
+    <string name="relay_url_too_short">URL too short</string>
+    <string name="relay_already_added">Already added</string>
+    <string name="relay_verifying">Verifying write+read…</string>
+    <string name="relay_rejected">⚠️ Relay can\'t store events</string>
+    <string name="relay_remove">Remove relay</string>
+    <string name="add_relay">Add relay</string>
+
+    <!-- Accessibility -->
+    <string name="cd_warning_icon">Warning</string>
+    <string name="cd_diagnostics_icon">Diagnostics</string>
+    <string name="cd_info_icon">Information</string>
+    <string name="cd_export_icon">Export</string>
+    <string name="cd_show_key_icon">Show key</string>
+    <string name="cd_show_seed_icon">Show seed phrase</string>
+    <string name="cd_bluetooth_icon">Bluetooth</string>
+    <string name="cd_sync_icon">Sync</string>
+    <string name="cd_person_icon">Person</string>
+    <string name="cd_theme_overlay">Theme transition overlay</string>
 </resources>

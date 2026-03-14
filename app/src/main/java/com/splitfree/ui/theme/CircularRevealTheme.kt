@@ -24,9 +24,11 @@ import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.drawToBitmap
+import com.splitfree.R
 import com.splitfree.ui.theme.ThemeTransitionState.captureAndChange
 import kotlin.math.hypot
 
@@ -105,7 +107,7 @@ fun CircularRevealTheme(content: @Composable () -> Unit) {
             if (!bmp.isRecycled) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
-                    contentDescription = null,
+                    contentDescription = stringResource(R.string.cd_theme_overlay),
                     modifier =
                     Modifier
                         .fillMaxSize()

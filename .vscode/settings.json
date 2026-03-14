@@ -1,0 +1,8 @@
+{
+    "kotlin.languageServer.enabled": true,
+    "kotlin.indexing.enabled": true,
+    "java.project.sourcePaths": [
+        "app/src/main/java",
+        "app/build/generated/source/r/debug"
+    ]
+}

@@ -38,10 +38,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -69,21 +71,22 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
 
     val currencies = listOf("INR", "USD", "EUR", "GBP", "JPY", "AUD", "CAD")
 
+    val meLabel = stringResource(R.string.me)
     fun displayName(pk: String): String = when (pk) {
-        uiState.myPubkey -> "Me"
+        uiState.myPubkey -> meLabel
         else -> uiState.memberNames[pk]?.takeIf { it.isNotBlank() } ?: (pk.take(6) + "…")
     }
     val categories =
         listOf(
-            "" to "None",
-            "food" to "🍕 Food",
-            "transport" to "🚗 Transport",
-            "shopping" to "🛍️ Shopping",
-            "entertainment" to "🎬 Entertainment",
-            "utilities" to "💡 Utilities",
-            "rent" to "🏠 Rent",
-            "health" to "💊 Health",
-            "other" to "💰 Other"
+            "" to stringResource(R.string.category_none),
+            "food" to stringResource(R.string.category_food),
+            "transport" to stringResource(R.string.category_transport),
+            "shopping" to stringResource(R.string.category_shopping),
+            "entertainment" to stringResource(R.string.category_entertainment),
+            "utilities" to stringResource(R.string.category_utilities),
+            "rent" to stringResource(R.string.category_rent),
+            "health" to stringResource(R.string.category_health),
+            "other" to stringResource(R.string.category_other)
         )
 
     LaunchedEffect(uiState.myPubkey) {
@@ -98,10 +101,10 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Add Expense") },
+                title = { Text(stringResource(R.string.add_expense)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
                     }
                 }
             )
@@ -126,8 +129,8 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it },
-                    label = { Text("Amount") },
-                    placeholder = { Text("0.00") },
+                    label = { Text(stringResource(R.string.amount)) },
+                    placeholder = { Text(stringResource(R.string.amount_placeholder)) },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -142,7 +145,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                         value = currency,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Currency") },
+                        label = { Text(stringResource(R.string.currency)) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = currencyExpanded) },
                         modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
                         shape = MaterialTheme.shapes.medium
@@ -167,8 +170,8 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
-                label = { Text("Description") },
-                placeholder = { Text("What was this for?") },
+                label = { Text(stringResource(R.string.description)) },
+                placeholder = { Text(stringResource(R.string.description_placeholder)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = MaterialTheme.shapes.medium
@@ -183,7 +186,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                     value = categories.find { it.first == category }?.second ?: "None",
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text("Category") },
+                    label = { Text(stringResource(R.string.category)) },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
                     modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
                     shape = MaterialTheme.shapes.medium
@@ -207,7 +210,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
             // Paid by
             if (uiState.members.size > 1) {
                 Text(
-                    "Paid by",
+                    stringResource(R.string.paid_by_label),
                     style =
                     if (adaptive.isCompact) {
                         MaterialTheme.typography.labelMedium
@@ -234,7 +237,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
 
             // Split type
             Text(
-                "Split type",
+                stringResource(R.string.split_type_label),
                 style = if (adaptive.isCompact) {
                     MaterialTheme.typography.labelMedium
                 } else {
@@ -244,10 +247,10 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 val labels =
                     mapOf(
-                        SplitType.EQUAL to "Equal",
-                        SplitType.EXACT to "Exact",
-                        SplitType.PERCENTAGE to "Percent",
-                        SplitType.SHARES to "Shares"
+                        SplitType.EQUAL to stringResource(R.string.split_equal),
+                        SplitType.EXACT to stringResource(R.string.split_exact),
+                        SplitType.PERCENTAGE to stringResource(R.string.split_percent),
+                        SplitType.SHARES to stringResource(R.string.split_shares)
                     )
                 SplitType.entries.forEachIndexed { index, type ->
                     SegmentedButton(
@@ -271,9 +274,9 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
             if (splitType != SplitType.EQUAL && uiState.members.isNotEmpty()) {
                 val label =
                     when (splitType) {
-                        SplitType.EXACT -> "Amount"
-                        SplitType.PERCENTAGE -> "Percentage"
-                        SplitType.SHARES -> "Shares"
+                        SplitType.EXACT -> stringResource(R.string.split_amount_label)
+                        SplitType.PERCENTAGE -> stringResource(R.string.split_percentage_label)
+                        SplitType.SHARES -> stringResource(R.string.split_shares_label)
                         else -> ""
                     }
                 Card(
@@ -334,7 +337,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                 shape = MaterialTheme.shapes.large
             ) {
                 Text(
-                    text = "Add Expense",
+                    text = stringResource(R.string.add_expense),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.titleSmall
                     } else {

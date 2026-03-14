@@ -24,6 +24,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 
@@ -44,7 +46,7 @@ fun KeyBackupSection(
     val tokens = adaptiveSizeTokens()
     val seedColumns = if (adaptive.isCompact) 2 else 3
 
-    SectionHeader(icon = Icons.Outlined.Key, title = "Key Backup")
+    SectionHeader(icon = Icons.Outlined.Key, title = stringResource(R.string.key_backup))
 
     Card(
         modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal),
@@ -56,12 +58,12 @@ fun KeyBackupSection(
         ) {
             Icon(
                 Icons.Outlined.Warning,
-                contentDescription = null,
+                contentDescription = stringResource(R.string.cd_warning_icon),
                 tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(tokens.iconMedium)
             )
             Text(
-                "Your private key is your identity. If you lose it, you lose access to all your groups forever. Back it up now.",
+                stringResource(R.string.key_backup_warning),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
@@ -72,21 +74,23 @@ fun KeyBackupSection(
 
     if (showKey) {
         ListItem(
-            headlineContent = { Text("Private Key") },
+            headlineContent = { Text(stringResource(R.string.private_key)) },
             supportingContent = {
                 Text(nsec, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             },
-            trailingContent = { FilledTonalButton(onClick = onCopyKey) { Text("Copy") } }
+            trailingContent = { FilledTonalButton(onClick = onCopyKey) { Text(stringResource(R.string.copy)) } }
         )
         TextButton(onClick = onHideKey, modifier = Modifier.padding(start = tokens.screenPaddingHorizontal)) {
-            Text("Hide Key")
+            Text(stringResource(R.string.hide_key))
         }
     } else {
         ListItem(
-            headlineContent = { Text("Show Private Key") },
-            supportingContent = { Text("Tap to reveal your secret key") },
-            leadingContent = { Icon(Icons.Outlined.Visibility, contentDescription = null) },
-            trailingContent = { FilledTonalButton(onClick = onRevealKey) { Text("Reveal") } }
+            headlineContent = { Text(stringResource(R.string.show_private_key)) },
+            supportingContent = { Text(stringResource(R.string.tap_to_reveal_key)) },
+            leadingContent = {
+                Icon(Icons.Outlined.Visibility, contentDescription = stringResource(R.string.cd_show_key_icon))
+            },
+            trailingContent = { FilledTonalButton(onClick = onRevealKey) { Text(stringResource(R.string.reveal)) } }
         )
     }
 
@@ -94,7 +98,7 @@ fun KeyBackupSection(
 
     if (showSeedPhrase) {
         Column(modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal)) {
-            Text("Seed Phrase", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.seed_phrase), style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(tokens.itemSpacing))
             for (rowStart in seedPhrase.indices step seedColumns) {
                 Row(
@@ -123,16 +127,18 @@ fun KeyBackupSection(
             }
             Spacer(Modifier.height(tokens.itemSpacing))
             Row(horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)) {
-                TextButton(onClick = onHideSeed) { Text("Hide") }
-                FilledTonalButton(onClick = onCopySeed) { Text("Copy") }
+                TextButton(onClick = onHideSeed) { Text(stringResource(R.string.hide)) }
+                FilledTonalButton(onClick = onCopySeed) { Text(stringResource(R.string.copy)) }
             }
         }
     } else {
         ListItem(
-            headlineContent = { Text("Show Seed Phrase") },
-            supportingContent = { Text("24 words to recover your identity on any device") },
-            leadingContent = { Icon(Icons.Outlined.GridView, contentDescription = null) },
-            trailingContent = { FilledTonalButton(onClick = onRevealSeed) { Text("Reveal") } }
+            headlineContent = { Text(stringResource(R.string.show_seed_phrase)) },
+            supportingContent = { Text(stringResource(R.string.seed_phrase_hint)) },
+            leadingContent = {
+                Icon(Icons.Outlined.GridView, contentDescription = stringResource(R.string.cd_show_seed_icon))
+            },
+            trailingContent = { FilledTonalButton(onClick = onRevealSeed) { Text(stringResource(R.string.reveal)) } }
         )
     }
 }

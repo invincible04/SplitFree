@@ -23,9 +23,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 
@@ -81,7 +83,7 @@ fun MembersTab(
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Text(
-                                    "Creator",
+                                    stringResource(R.string.creator_badge),
                                     modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall
                                 )
@@ -93,7 +95,7 @@ fun MembersTab(
                                 color = MaterialTheme.colorScheme.tertiaryContainer
                             ) {
                                 Text(
-                                    "You",
+                                    stringResource(R.string.you_badge),
                                     modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall
                                 )
@@ -117,7 +119,7 @@ fun MembersTab(
                         IconButton(onClick = { onRemove(pubkey) }) {
                             Icon(
                                 Icons.Outlined.PersonRemove,
-                                "Remove member",
+                                stringResource(R.string.remove_member),
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }

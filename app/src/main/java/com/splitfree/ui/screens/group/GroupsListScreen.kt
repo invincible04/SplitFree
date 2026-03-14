@@ -51,10 +51,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.domain.model.group.Group
 import com.splitfree.ui.util.AdaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveLayoutInfo
@@ -100,7 +102,7 @@ fun GroupsListScreen(
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("SplitFree", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.app_name), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(tokens.itemSpacing))
                         ConnectionDot(isConnected)
                     }
@@ -109,7 +111,7 @@ fun GroupsListScreen(
                     PasteInviteButton { scope.launch { extractInviteLink(clipboard)?.let(onScanResult) } }
                     ScanQrButton(context, onScanResult)
                     IconButton(onClick = onSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings))
                     }
                 }
             )
@@ -117,8 +119,8 @@ fun GroupsListScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onCreateGroup,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("New Group") }
+                icon = { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.new_group)) },
+                text = { Text(stringResource(R.string.new_group)) }
             )
         }
     ) { padding ->
@@ -167,7 +169,7 @@ private suspend fun extractInviteLink(clipboard: androidx.compose.ui.platform.Cl
 @Composable
 private fun PasteInviteButton(onClick: () -> Unit) {
     IconButton(onClick = onClick) {
-        Icon(Icons.Outlined.ContentPaste, contentDescription = "Paste invite link")
+        Icon(Icons.Outlined.ContentPaste, contentDescription = stringResource(R.string.paste_invite_link))
     }
 }
 
@@ -190,7 +192,7 @@ private fun ScanQrButton(context: android.content.Context, onScanResult: (String
                 Log.w(TAG, "QR scan failed: ${e.message}")
             }
     }) {
-        Icon(Icons.Outlined.QrCodeScanner, contentDescription = "Scan QR")
+        Icon(Icons.Outlined.QrCodeScanner, contentDescription = stringResource(R.string.scan_qr))
     }
 }
 
@@ -226,13 +228,13 @@ private fun EmptyGroupsState(modifier: Modifier = Modifier, adaptive: AdaptiveLa
         )
         Spacer(Modifier.height(tokens.fieldSpacing))
         Text(
-            "No groups yet",
+            stringResource(R.string.no_groups_yet),
             style = titleStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(tokens.denseSpacing))
         Text(
-            "Create a group to start splitting expenses\nwith friends, family, or roommates.",
+            stringResource(R.string.no_groups_body),
             style = bodyStyle,
             color = MaterialTheme.colorScheme.outline,
             textAlign = TextAlign.Center
@@ -277,7 +279,13 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
                 )
                 Spacer(Modifier.height(tokens.denseSpacing))
                 Text(
-                    text = "${group.members.size} member${if (group.members.size != 1) "s" else ""}",
+                    text = if (group.members.size !=
+                        1
+                    ) {
+                        stringResource(R.string.members_count, group.members.size)
+                    } else {
+                        stringResource(R.string.member_count, group.members.size)
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

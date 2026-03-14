@@ -38,10 +38,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.splitfree.R
 import com.splitfree.ui.util.HeightClass
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -125,13 +127,13 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                 )
                 Spacer(Modifier.height(heroSpacing))
                 Text(
-                    text = "SplitFree",
+                    text = stringResource(R.string.app_name),
                     style = titleStyle,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(tokens.denseSpacing))
                 Text(
-                    text = "Split expenses with anyone.\nNo accounts. No servers. No cost.",
+                    text = stringResource(R.string.onboarding_subtitle),
                     style = subtitleStyle,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -143,7 +145,11 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                     horizontalArrangement = Arrangement.spacedBy(chipSpacing, Alignment.CenterHorizontally),
                     verticalArrangement = Arrangement.spacedBy(chipSpacing)
                 ) {
-                    listOf("🔒 Encrypted", "🌐 Decentralized", "💸 Free").forEach { label ->
+                    listOf(
+                        stringResource(R.string.chip_encrypted),
+                        stringResource(R.string.chip_decentralized),
+                        stringResource(R.string.chip_free)
+                    ).forEach { label ->
                         SuggestionChip(
                             onClick = {},
                             modifier = Modifier.heightIn(min = chipMinHeight),
@@ -173,8 +179,8 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                 OutlinedTextField(
                                     value = nameInput,
                                     onValueChange = { nameInput = it.take(50) },
-                                    label = { Text("Your name") },
-                                    placeholder = { Text("How friends will see you") },
+                                    label = { Text(stringResource(R.string.your_name)) },
+                                    placeholder = { Text(stringResource(R.string.your_name_placeholder)) },
                                     leadingIcon = {
                                         Icon(Icons.Outlined.Person, contentDescription = null)
                                     },
@@ -191,7 +197,10 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
                                     shape = MaterialTheme.shapes.large
                                 ) {
-                                    Text("Get Started", style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        stringResource(R.string.get_started),
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
                                 }
                                 Spacer(Modifier.height(tokens.itemSpacing))
                                 OutlinedButton(
@@ -199,7 +208,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
                                     shape = MaterialTheme.shapes.large
                                 ) {
-                                    Text("I have an existing key")
+                                    Text(stringResource(R.string.existing_key))
                                 }
                             }
                             "key" -> {
@@ -209,15 +218,15 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                         importInput = it
                                         viewModel.clearError()
                                     },
-                                    label = { Text("Private key or seed phrase") },
-                                    placeholder = { Text("nsec / hex key / 24 words") },
+                                    label = { Text(stringResource(R.string.private_key_or_seed)) },
+                                    placeholder = { Text(stringResource(R.string.key_placeholder)) },
                                     modifier = Modifier.fillMaxWidth(),
                                     minLines = 3,
                                     maxLines = 5,
                                     isError = error != null,
                                     supportingText =
                                     error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
-                                        ?: { Text("Hex private key or 24 words separated by spaces") },
+                                        ?: { Text(stringResource(R.string.key_supporting_text)) },
                                     shape = MaterialTheme.shapes.medium
                                 )
                                 Spacer(Modifier.height(tokens.fieldSpacing))
@@ -227,7 +236,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     shape = MaterialTheme.shapes.large,
                                     enabled = importInput.isNotBlank()
                                 ) {
-                                    Text("Import Key")
+                                    Text(stringResource(R.string.import_key))
                                 }
                                 Spacer(Modifier.height(tokens.itemSpacing))
                                 TextButton(onClick = {
@@ -235,18 +244,18 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     importInput = ""
                                     viewModel.clearError()
                                 }) {
-                                    Text("Back")
+                                    Text(stringResource(R.string.back))
                                 }
                             }
                             "backup" -> {
                                 Text(
-                                    "Key imported ✓",
+                                    stringResource(R.string.key_imported),
                                     style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Spacer(Modifier.height(tokens.fieldSpacing))
                                 Text(
-                                    "If you have a .splitfree backup file, import it now to restore your groups.",
+                                    stringResource(R.string.import_backup_hint),
                                     style = subtitleStyle,
                                     textAlign = TextAlign.Center,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -257,7 +266,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
                                     shape = MaterialTheme.shapes.large
                                 ) {
-                                    Text("Import Backup File")
+                                    Text(stringResource(R.string.import_backup_file))
                                 }
                                 importStatus?.let {
                                     Spacer(Modifier.height(tokens.itemSpacing))
@@ -277,11 +286,14 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
                                     shape = MaterialTheme.shapes.large
                                 ) {
-                                    Text("Continue", style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        stringResource(R.string.continue_button),
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
                                 }
                                 Spacer(Modifier.height(tokens.itemSpacing))
                                 TextButton(onClick = onComplete) {
-                                    Text("Skip")
+                                    Text(stringResource(R.string.skip))
                                 }
                             }
                         }
