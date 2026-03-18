@@ -67,9 +67,10 @@ constructor(
                 privKey.fill(0)
             }
 
-            // Publish key_rotation event encrypted with CURRENT epoch key
-            val currentGroupKey = groupRepo.getGroupKey(groupId)
-                ?: error("Current group key not found")
+            // Publish key_rotation event encrypted per-member so the removed
+            // member cannot decrypt the outer envelope and learn group metadata.
+            // Each remaining member receives a dedicated event they can decrypt
+            // with their NIP-44 conversation key.
             val rotationPayload = json.encodeToString(
                 KeyRotation.serializer(),
                 KeyRotation(
@@ -79,13 +80,22 @@ constructor(
                     removedMember = removePubkey
                 )
             )
-            val rotationEncrypted = encryption.encrypt(rotationPayload, currentGroupKey)
-            val rotationEvent = signer.createSignedEvent(
-                groupId = groupId,
-                eventType = "key_rotation",
-                encryptedContent = rotationEncrypted
-            )
-            eventPublisher.publishDirect(rotationEvent, groupId, rotationEncrypted, "key_rotation")
+            val privKeyForWrap = identity.getPrivateKeyBytes()
+            try {
+                for (memberPubHex in remainingMembers) {
+                    val memberPubBytes = memberPubHex.hexToBytes()
+                    val convKey = Nip44.getConversationKey(privKeyForWrap, memberPubBytes)
+                    val perMemberEncrypted = Nip44.encrypt(rotationPayload, convKey)
+                    val rotationEvent = signer.createSignedEvent(
+                        groupId = groupId,
+                        eventType = "key_rotation",
+                        encryptedContent = perMemberEncrypted
+                    )
+                    eventPublisher.publishDirect(rotationEvent, groupId, perMemberEncrypted, "key_rotation")
+                }
+            } finally {
+                privKeyForWrap.fill(0)
+            }
 
             // Update local state
             groupRepo.saveGroupKeyForEpoch(groupId, newEpoch, newGroupKey)

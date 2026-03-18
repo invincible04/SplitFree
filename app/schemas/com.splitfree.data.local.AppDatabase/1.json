@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "02433b32e7c2018abc4f7408dafee8fa",
+    "identityHash": "42e63e49719e7b1c9f1cdd1952e96b97",
     "entities": [
       {
         "tableName": "events",
@@ -197,7 +197,7 @@
       },
       {
         "tableName": "outbox",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `eventJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `retryCount` INTEGER NOT NULL, `lastRetryAt` INTEGER, PRIMARY KEY(`eventId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `eventJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `retryCount` INTEGER NOT NULL, `lastRetryAt` INTEGER, `eventType` TEXT, PRIMARY KEY(`eventId`))",
         "fields": [
           {
             "fieldPath": "eventId",
@@ -227,6 +227,11 @@
             "fieldPath": "lastRetryAt",
             "columnName": "lastRetryAt",
             "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT"
           }
         ],
         "primaryKey": {
@@ -239,7 +244,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '02433b32e7c2018abc4f7408dafee8fa')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '42e63e49719e7b1c9f1cdd1952e96b97')"
     ]
   }
 }

@@ -92,9 +92,40 @@ constructor(
     }
 
     /**
-     * Send handshake response: includes our signature over the peer's challenge.
+     * Send handshake response: includes our signature over the peer's challenge
+     * AND a new challenge for the peer to sign (mutual authentication).
      */
     fun sendHandshakeResponse(endpointId: String, pubkey: String, groupIds: List<String>, peerChallenge: String) {
+        val challengeBytes2 = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        val ourChallenge = challengeBytes2.toHex()
+        pendingChallenges[endpointId] = ourChallenge
+
+        val privKey = identity.getPrivateKeyBytes()
+        val signature: String
+        try {
+            val challengeBytes =
+                java.security.MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(peerChallenge.toByteArray(Charsets.UTF_8))
+            val auxRand = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+            val sig =
+                fr.acinq.secp256k1.Secp256k1
+                    .signSchnorr(challengeBytes, privKey, auxRand)
+            signature = sig.toHex()
+        } finally {
+            privKey.fill(0)
+        }
+        val hs = json.encodeToString(
+            BleHandshake.serializer(),
+            BleHandshake(pubkey, emptyList(), challenge = ourChallenge, challengeResponse = signature)
+        )
+        nearbySync.sendPayload(endpointId, byteArrayOf(MSG_HANDSHAKE) + hs.toByteArray())
+    }
+
+    /**
+     * Send the final handshake leg: sign the responder's challenge to complete mutual auth.
+     */
+    fun sendChallengeResponse(endpointId: String, pubkey: String, peerChallenge: String) {
         val privKey = identity.getPrivateKeyBytes()
         val signature: String
         try {
@@ -179,6 +210,12 @@ constructor(
             Log.w(TAG, "Refusing to send events to unauthenticated peer $endpointId")
             return
         }
+        val peerPubkey = authenticatedPeers[endpointId]
+        val group = groupRepo.getById(groupId)
+        if (peerPubkey == null || group == null || peerPubkey !in group.members) {
+            Log.w(TAG, "Refusing to send events: peer $endpointId is not a member of group $groupId")
+            return
+        }
         val localEvents = eventDao.getEventsByGroup(groupId)
         var sent = 0
         for (event in localEvents) {
@@ -250,6 +287,12 @@ constructor(
     ) {
         if (!isAuthenticated(endpointId)) {
             Log.w(TAG, "Refusing to send binary events to unauthenticated peer $endpointId")
+            return
+        }
+        val peerPubkey = authenticatedPeers[endpointId]
+        val group = groupRepo.getById(groupId)
+        if (peerPubkey == null || group == null || peerPubkey !in group.members) {
+            Log.w(TAG, "Refusing to send binary events: peer $endpointId is not a member of group $groupId")
             return
         }
         val localEvents = eventDao.getEventsByGroup(groupId)

@@ -2,7 +2,6 @@ package com.splitfree.di
 
 import android.content.Context
 import androidx.room.Room
-import androidx.room.migration.Migration
 import com.splitfree.data.local.AppDatabase
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
@@ -35,7 +34,7 @@ import javax.inject.Singleton
  * ### Adding a schema change
  *
  * - Bump `version` in [AppDatabase]
- * - Add a `Migration(N, N+1)` to [MIGRATIONS]
+ * - Add a `Migration(N, N+1)` in [AppDatabase.Companion] and register it here
  * - Prefer `ALTER TABLE … ADD COLUMN` over destructive changes
  * - Validate with `MigrationTestHelper` against the exported JSON schemas
  */
@@ -43,14 +42,10 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
-    /** Ordered list of Room migrations applied at database open. */
-    internal val MIGRATIONS: Array<Migration> = arrayOf()
-
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase = Room
         .databaseBuilder(context, AppDatabase::class.java, "splitfree.db")
-        .addMigrations(*MIGRATIONS)
         .build()
 
     @Provides fun provideEventDao(db: AppDatabase): EventDao = db.eventDao()

@@ -110,13 +110,20 @@ constructor(
     }
 
     /**
-     * Export all groups as a JSON array of individual exports.
-     * Each element is a complete self-contained group backup.
+     * Export all groups as a JSON array, streaming each group directly to [out]
+     * to avoid holding the entire export in memory.
      */
-    suspend fun exportAllGroups(): String {
-        val groups = groupRepo.getAll()
-        val exports = groups.map { exportGroup(it.id) }
-        return "[${exports.joinToString(",")}]"
+    suspend fun exportAllGroups(out: java.io.OutputStream) {
+        out.bufferedWriter().use { writer ->
+            val groups = groupRepo.getAll()
+            writer.write("[")
+            groups.forEachIndexed { i, group ->
+                if (i > 0) writer.write(",")
+                writer.write(exportGroup(group.id))
+                writer.flush()
+            }
+            writer.write("]")
+        }
     }
 
     fun revokeKey() {

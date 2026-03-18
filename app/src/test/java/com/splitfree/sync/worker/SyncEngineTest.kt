@@ -107,7 +107,16 @@ class SyncEngineTest {
 
     @Test
     fun `flushOutbox does not evict critical group_meta after repeated failures`() = runBlocking {
-        val pending = listOf(OutboxEntity("e1", """{"id":"e1","tags":[["t","group_meta"]]}""", 100, retryCount = 999))
+        val pending =
+            listOf(
+                OutboxEntity(
+                    "e1",
+                    """{"id":"e1","tags":[["t","group_meta"]]}""",
+                    100,
+                    retryCount = 999,
+                    eventType = "group_meta"
+                )
+            )
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns false
 

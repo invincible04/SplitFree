@@ -19,7 +19,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -312,7 +311,6 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         relays.values.forEach { it.subscribe(subId, filters) }
         try {
             withTimeout(timeoutMs) { allEose.await() }
-            delay(500)
         } catch (_: TimeoutCancellationException) {
             // Timeout waiting for EOSE — proceed with whatever events we collected
         }

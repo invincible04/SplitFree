@@ -7,8 +7,25 @@ package com.splitfree.util
  * to avoid floating-point rounding errors.
  */
 object CurrencyFormatter {
+    /** Number of decimal (minor unit) digits for a currency. */
+    fun minorDigits(currency: String): Int = when (currency.uppercase()) {
+        "JPY", "KRW", "VND" -> 0
+        "KWD", "BHD", "OMR" -> 3
+        else -> 2
+    }
+
+    /** Multiplier to convert major units to smallest units. */
+    fun minorMultiplier(currency: String): Long {
+        val digits = minorDigits(currency)
+        var m = 1L
+        repeat(digits) { m *= 10 }
+        return m
+    }
+
     fun format(amountSmallest: Long, currency: String): String {
-        val major = amountSmallest / 100.0
+        val digits = minorDigits(currency)
+        val divisor = minorMultiplier(currency).toDouble()
+        val major = amountSmallest / divisor
         val symbol =
             when (currency.uppercase()) {
                 "INR" -> "₹"
@@ -18,6 +35,6 @@ object CurrencyFormatter {
                 "JPY" -> "¥"
                 else -> currency
             }
-        return "$symbol${"%.2f".format(major)}"
+        return "$symbol${"%,.${digits}f".format(major)}"
     }
 }

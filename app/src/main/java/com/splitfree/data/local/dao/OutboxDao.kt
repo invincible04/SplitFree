@@ -28,9 +28,7 @@ interface OutboxDao {
 
     @Query(
         "DELETE FROM outbox WHERE createdAt < :cutoff" +
-            " AND eventJson NOT LIKE '%\"group_meta\"%'" +
-            " AND eventJson NOT LIKE '%\"key_rotation\"%'" +
-            " AND eventJson NOT LIKE '%\"key_revocation\"%'"
+            " AND (eventType IS NULL OR eventType NOT IN ('group_meta', 'key_rotation', 'key_revocation'))"
     )
     suspend fun deleteOlderThan(cutoff: Long)
 

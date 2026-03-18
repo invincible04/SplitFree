@@ -48,6 +48,7 @@ import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.AddExpenseViewModel
+import com.splitfree.util.CurrencyFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -324,7 +325,7 @@ fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: 
                     val amountCents =
                         amount
                             .toBigDecimalOrNull()
-                            ?.multiply(java.math.BigDecimal(100))
+                            ?.multiply(java.math.BigDecimal(CurrencyFormatter.minorMultiplier(currency)))
                             ?.toLong()
                             ?: 0L
                     if (amountCents > 0 && description.isNotBlank()) {

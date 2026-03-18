@@ -5,10 +5,12 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.balance.Balance
+import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -29,10 +31,12 @@ class CreateSnapshotUseCaseTest {
     private val encryption = mockk<GroupEncryption>()
     private val signer = mockk<EventSigner>()
     private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
+    private val identity = mockk<IdentityContract>()
 
     private lateinit var useCase: CreateSnapshotUseCase
     private val groupId = "group-1"
     private val groupKey = "key1"
+    private val myPubkey = "pub"
     private val fakeEvent = NostrEvent("evt1", "pub", 1000, 30078, emptyList(), "enc", "sig")
 
     @Before
@@ -44,13 +48,23 @@ class CreateSnapshotUseCaseTest {
         }
 
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getById(groupId) } returns Group(
+            id = groupId,
+            name = "Test",
+            createdBy = myPubkey,
+            createdAt = 1000,
+            members = listOf(myPubkey),
+            relays = emptyList()
+        )
+        every { identity.getPublicKeyHex() } returns myPubkey
         coEvery { computeBalances(groupId) } returns listOf(Balance("pub1", 100), Balance("pub2", -100))
         coEvery { eventRepo.getEventIds(groupId) } returns listOf("e1", "e2")
         every { encryption.encrypt(any(), groupKey) } returns "encrypted"
         every { encryption.decrypt(any(), groupKey) } answers { firstArg() }
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
 
-        useCase = CreateSnapshotUseCase(eventRepo, groupRepo, computeBalances, encryption, signer, eventPublisher)
+        useCase =
+            CreateSnapshotUseCase(eventRepo, groupRepo, computeBalances, encryption, signer, eventPublisher, identity)
     }
 
     @After

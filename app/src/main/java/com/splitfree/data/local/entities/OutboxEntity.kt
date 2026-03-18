@@ -15,5 +15,6 @@ data class OutboxEntity(
     val eventJson: String,
     val createdAt: Long,
     val retryCount: Int = 0,
-    val lastRetryAt: Long? = null
+    val lastRetryAt: Long? = null,
+    val eventType: String? = null
 )

@@ -128,7 +128,7 @@ constructor(
                     }
                 allocated += share
                 SplitEntry(pk, share)
-            }
+            }.filter { it.share > 0 }
         }
 
         SplitType.SHARES -> {
@@ -146,7 +146,7 @@ constructor(
                     }
                 allocated += share
                 SplitEntry(pk, share)
-            }
+            }.filter { it.share > 0 }
         }
     }
 }

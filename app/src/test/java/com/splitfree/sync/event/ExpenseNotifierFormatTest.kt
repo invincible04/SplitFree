@@ -57,8 +57,8 @@ class ExpenseNotifierFormatTest {
     }
 
     @Test
-    fun `formatAmount unknown currency`() {
-        assertEquals("¥5.00", fmt(500L, "JPY"))
+    fun `formatAmount JPY zero decimal currency`() {
+        assertEquals("¥500", fmt(500L, "JPY"))
     }
 
     @Test
@@ -68,7 +68,7 @@ class ExpenseNotifierFormatTest {
 
     @Test
     fun `formatAmount large amount`() {
-        assertEquals("₹100000.00", fmt(10000000L, "INR"))
+        assertEquals("₹100,000.00", fmt(10000000L, "INR"))
     }
 
     // --- sanitize ---

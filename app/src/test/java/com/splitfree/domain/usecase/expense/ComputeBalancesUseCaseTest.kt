@@ -531,7 +531,7 @@ class ComputeBalancesUseCaseTest {
     // --- Snapshot tests ---
 
     @Test
-    fun `snapshot from creator with empty hashes applies balances`() = runTest {
+    fun `snapshot from creator with empty hashes is rejected as unverifiable`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
         coEvery { repo.getById("g1") } returns group("alice")
@@ -567,13 +567,12 @@ class ComputeBalancesUseCaseTest {
             )
         val useCase = ComputeBalancesUseCase(dao, repo, encryption())
         val balances = useCase("g1")
-        // Snapshot: alice=50, bob=-50
-        // Post-snapshot: alice owes bob 100
-        // alice net=50-100=-50, bob net=-50+100=50
+        // Empty-hash snapshot is rejected — balances computed from events only
+        // bob paid 200, split equally: alice owes bob 100
         val alice = balances.find { it.pubkey == "alice" }
         val bob = balances.find { it.pubkey == "bob" }
-        assertEquals(-50L, alice?.net)
-        assertEquals(50L, bob?.net)
+        assertEquals(-100L, alice?.net)
+        assertEquals(100L, bob?.net)
     }
 
     @Test

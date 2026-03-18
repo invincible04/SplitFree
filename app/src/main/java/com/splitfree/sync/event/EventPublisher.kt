@@ -53,11 +53,11 @@ constructor(
             val myPubkey = identity.getPublicKeyHex()
             for (memberPubHex in members.filter { it != myPubkey }.shuffled()) {
                 val wrapped = giftWrap.wrapIfEnabled(event, memberPubHex)
-                enqueueOutbox(wrapped)
+                enqueueOutbox(wrapped, eventType)
                 throttler.enqueue(wrapped)
             }
         } else {
-            enqueueOutbox(event)
+            enqueueOutbox(event, eventType)
             throttler.enqueue(event)
         }
     }
@@ -73,7 +73,7 @@ constructor(
         expenseUuid: String?
     ) {
         saveEvent(event, groupId, encrypted, eventType, expenseUuid)
-        enqueueOutbox(event)
+        enqueueOutbox(event, eventType)
         throttler.enqueue(event)
     }
 
@@ -88,7 +88,7 @@ constructor(
         expenseUuid: String?
     ) {
         saveEvent(event, groupId, encrypted, eventType, expenseUuid)
-        enqueueOutbox(event)
+        enqueueOutbox(event, eventType)
     }
 
     private suspend fun saveEvent(
@@ -117,13 +117,14 @@ constructor(
         )
     }
 
-    private suspend fun enqueueOutbox(event: NostrEvent) {
+    private suspend fun enqueueOutbox(event: NostrEvent, eventType: String? = null) {
         if (outboxDao.count() < MAX_OUTBOX_SIZE) {
             outboxDao.insert(
                 OutboxEntity(
                     eventId = event.id,
                     eventJson = event.toJson(),
-                    createdAt = event.createdAt
+                    createdAt = event.createdAt,
+                    eventType = eventType
                 )
             )
         } else {

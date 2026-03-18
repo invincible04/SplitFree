@@ -213,8 +213,10 @@ class Relay(
             Log.w(TAG, "Pausing reconnect to $url after $MAX_RECONNECT_ATTEMPTS attempts")
             return
         }
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s cap
-        val delayMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
+        // Exponential backoff with jitter: base * 2^attempt + random 0-25%
+        val baseMs = minOf(1000L * (1L shl minOf(attempt, 6)), 60_000L)
+        val jitterMs = (baseMs * java.util.concurrent.ThreadLocalRandom.current().nextDouble(0.25)).toLong()
+        val delayMs = baseMs + jitterMs
         reconnectJob =
             scope.launch {
                 delay(delayMs)

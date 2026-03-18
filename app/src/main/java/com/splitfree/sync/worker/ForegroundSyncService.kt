@@ -234,9 +234,8 @@ class ForegroundSyncService : Service() {
                     }
                 }
             } finally {
-                if (!syncRunning) {
-                    syncStartInProgress.set(false)
-                }
+                syncRunning = false
+                syncStartInProgress.set(false)
             }
         }
     }

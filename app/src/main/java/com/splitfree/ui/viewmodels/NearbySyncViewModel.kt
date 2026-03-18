@@ -93,10 +93,21 @@ constructor(
                             is BleHandshake -> {
                                 peerHandshakes[event.endpointId] = result
 
-                                if (result.challengeResponse.isNotEmpty()) {
-                                    // This is a response — verify their signature
+                                if (result.challengeResponse.isNotEmpty() && result.challenge.isNotEmpty()) {
+                                    // Response with counter-challenge (leg 2): verify their sig, then sign their challenge
                                     if (bleTransfer.verifyHandshake(event.endpointId, result)) {
-                                        // Peer authenticated — send our group IDs
+                                        bleTransfer.sendChallengeResponse(
+                                            event.endpointId,
+                                            identity.getPublicKeyHex(),
+                                            result.challenge
+                                        )
+                                        startSyncIfReady(event.endpointId, result)
+                                    } else {
+                                        _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                    }
+                                } else if (result.challengeResponse.isNotEmpty()) {
+                                    // Final response (leg 3): verify initiator's sig to complete mutual auth
+                                    if (bleTransfer.verifyHandshake(event.endpointId, result)) {
                                         startSyncIfReady(event.endpointId, result)
                                     } else {
                                         _uiState.value = _uiState.value.copy(status = "Peer authentication failed")

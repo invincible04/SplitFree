@@ -7,6 +7,7 @@ import com.splitfree.domain.model.balance.SnapshotBalance
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.HashUtil
 import java.util.UUID
 import javax.inject.Inject
@@ -24,7 +25,8 @@ constructor(
     private val computeBalances: ComputeBalancesUseCase,
     private val encryption: GroupEncryption,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisherContract
+    private val eventPublisher: EventPublisherContract,
+    private val identity: IdentityContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -36,6 +38,11 @@ constructor(
      */
     suspend operator fun invoke(groupId: String): Boolean {
         return eventRepo.withTransaction {
+            val group = groupRepo.getById(groupId) ?: return@withTransaction false
+            if (group.createdBy.isNotEmpty()) {
+                val myPubkey = identity.getPublicKeyHex()
+                if (myPubkey != group.createdBy) return@withTransaction false
+            }
             val eventCount = eventRepo.getEventCount(groupId)
             val groupKey = groupRepo.getGroupKey(groupId) ?: return@withTransaction false
             val lastSnapshot = eventRepo.getLatestEventByType(groupId, "snapshot")

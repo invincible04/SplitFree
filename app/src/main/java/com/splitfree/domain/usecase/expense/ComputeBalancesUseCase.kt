@@ -85,10 +85,8 @@ constructor(
                                 snapshotTimestamp = snap.as_of_timestamp
                             }
                         } else {
-                            for (b in snap.balances) {
-                                balances[b.pubkey to b.currency] = b.net
-                            }
-                            snapshotTimestamp = snap.as_of_timestamp
+                            // Reject snapshots without event hashes — they cannot be verified
+                            Log.w(TAG, "Snapshot has empty event_hashes — ignoring unverifiable snapshot")
                         }
                     }
                 }

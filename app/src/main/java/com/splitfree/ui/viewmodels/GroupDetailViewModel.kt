@@ -209,7 +209,6 @@ constructor(
             }
             if (status?.online != true) {
                 _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-                _uiState.update { it.copy(relays = it.relays - url) }
                 _error.value = "$host is offline or unreachable"
                 return@launch
             }
@@ -217,7 +216,6 @@ constructor(
             val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
             if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
                 _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-                _uiState.update { it.copy(relays = it.relays - url) }
                 _error.value = "$host can't store events — write+read failed"
                 return@launch
             }

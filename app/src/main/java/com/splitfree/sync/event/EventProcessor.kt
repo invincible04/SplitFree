@@ -7,11 +7,13 @@ import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
+import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -101,9 +103,8 @@ constructor(
             return ProcessResult(false)
         }
 
-        if (!validateMembership(eventType, authorHex, group, knownGroupKey, groupId, inner)) {
-            return ProcessResult(false)
-        }
+        val membershipResult = validateMembership(eventType, authorHex, group, knownGroupKey, groupId, inner)
+        if (!membershipResult.allowed) return ProcessResult(false)
 
         // 5. Rate limits
         if (!eventValidator.isWithinRateLimit(authorHex)) {
@@ -115,28 +116,46 @@ constructor(
             return ProcessResult(false)
         }
 
-        // 6. Decrypt — try current epoch key first, then fall back to older epochs
-        var decrypted: String? = null
+        // 6. Decrypt — use cached self-join decryption if available, else try epoch keys
+        var decrypted: String? = membershipResult.cachedDecrypted
         var decryptedEpoch = group.keyEpoch
-        val groupKey = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: return ProcessResult(false)
-        decrypted = try {
-            encryption.decrypt(inner.content, groupKey)
-        } catch (_: Exception) {
-            null
+        if (decrypted == null) {
+            val groupKey = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: return ProcessResult(false)
+            decrypted = try {
+                encryption.decrypt(inner.content, groupKey)
+            } catch (_: Exception) {
+                null
+            }
+            if (decrypted == null && group.keyEpoch > 0) {
+                // Event may have been encrypted with an older epoch key (race condition)
+                for (epoch in (group.keyEpoch - 1) downTo 0) {
+                    val oldKey = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+                    decrypted = try {
+                        encryption.decrypt(inner.content, oldKey)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (decrypted != null) {
+                        decryptedEpoch = epoch
+                        break
+                    }
+                }
+            }
         }
-        if (decrypted == null && group.keyEpoch > 0) {
-            // Event may have been encrypted with an older epoch key (race condition)
-            for (epoch in (group.keyEpoch - 1) downTo 0) {
-                val oldKey = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
-                decrypted = try {
-                    encryption.decrypt(inner.content, oldKey)
-                } catch (_: Exception) {
-                    null
+
+        // key_rotation events are encrypted per-member with NIP-44 conversation keys
+        if (decrypted == null && eventType == "key_rotation") {
+            decrypted = try {
+                val privKey = identity.getPrivateKeyBytes()
+                try {
+                    val creatorPubBytes = authorHex.hexToBytes()
+                    val convKey = Nip44.getConversationKey(privKey, creatorPubBytes)
+                    Nip44.decrypt(inner.content, convKey)
+                } finally {
+                    privKey.fill(0)
                 }
-                if (decrypted != null) {
-                    decryptedEpoch = epoch
-                    break
-                }
+            } catch (_: Exception) {
+                null
             }
         }
 
@@ -211,6 +230,9 @@ constructor(
         return ProcessResult(true, group.name, eventType, decrypted, authorHex)
     }
 
+    /** Result of membership validation, optionally carrying a cached decryption. */
+    private data class MembershipResult(val allowed: Boolean, val cachedDecrypted: String? = null)
+
     private suspend fun validateMembership(
         eventType: String,
         authorHex: String,
@@ -218,40 +240,51 @@ constructor(
         knownGroupKey: String?,
         groupId: String,
         inner: NostrEvent
-    ): Boolean {
+    ): MembershipResult {
         if (authorHex !in group.members) {
             if (eventType != "group_meta") {
                 Log.w(TAG, "Rejecting $eventType from non-member $authorHex in group $groupId")
-                return false
+                return MembershipResult(false)
             }
         }
         if (eventType == "group_meta") {
             val isCreator = group.createdBy.isNotEmpty() && authorHex == group.createdBy
             if (!isCreator && authorHex !in group.members) {
+                val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
+                val decryptedContent = try {
+                    encryption.decrypt(inner.content, key)
+                } catch (_: Exception) {
+                    null
+                }
                 val isSelfJoin = try {
-                    val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
-                    val meta = json.decodeFromString<GroupMeta>(encryption.decrypt(inner.content, key))
-                    val current = group.members.toSet()
-                    val proposed = meta.members.toSet()
-                    (proposed - current) == setOf(authorHex) &&
-                        (current - proposed).isEmpty() &&
-                        meta.name == group.name &&
-                        meta.relays.toSet() == group.relays.toSet()
+                    if (decryptedContent == null) {
+                        false
+                    } else {
+                        val meta = json.decodeFromString<GroupMeta>(decryptedContent)
+                        val current = group.members.toSet()
+                        val proposed = meta.members.toSet()
+                        (proposed - current) == setOf(authorHex) &&
+                            (current - proposed).isEmpty() &&
+                            meta.name == group.name &&
+                            meta.relays.toSet() == group.relays.toSet()
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Self-join check failed for $authorHex in $groupId: ${e.message}")
                     false
                 }
                 if (!isSelfJoin) {
                     Log.w(TAG, "Rejecting group_meta from non-creator $authorHex in group $groupId")
-                    return false
+                    return MembershipResult(false)
                 }
+                // Return cached decryption to avoid re-decrypting later
+                return MembershipResult(true, decryptedContent)
             }
         }
         if (eventType == "key_rotation" && group.createdBy.isNotEmpty() && authorHex != group.createdBy) {
             Log.w(TAG, "Rejecting key_rotation from non-creator $authorHex in group $groupId")
-            return false
+            return MembershipResult(false)
         }
-        return true
+        return MembershipResult(true)
     }
 
     private suspend fun validateBusinessRules(

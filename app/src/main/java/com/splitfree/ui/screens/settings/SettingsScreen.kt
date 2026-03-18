@@ -84,19 +84,18 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     var showSeedPhrase by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    var pendingExportJson by remember { mutableStateOf<String?>(null) }
+    var pendingExport by remember { mutableStateOf(false) }
     val backupExportedMsg = stringResource(R.string.backup_exported)
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        val json = pendingExportJson ?: return@rememberLauncherForActivityResult
-        pendingExportJson = null
         scope.launch {
             withContext(Dispatchers.IO) {
-                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(json) }
+                context.contentResolver.openOutputStream(uri)?.use { viewModel.exportAllGroups(it) }
             }
+            pendingExport = false
             snackbarHostState.showSnackbar(backupExportedMsg)
         }
     }
@@ -229,11 +228,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             )
 
             BackupSection(onExportAll = {
-                scope.launch {
-                    val json = withContext(Dispatchers.IO) { viewModel.exportAllGroups() }
-                    pendingExportJson = json
-                    exportLauncher.launch("splitfree-backup.splitfree")
-                }
+                exportLauncher.launch("splitfree-backup.splitfree")
             })
 
             HorizontalDivider(
@@ -366,14 +361,19 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
     clipboard.setPrimaryClip(clip)
     Toast.makeText(context, context.getString(R.string.clipboard_copied_30s), Toast.LENGTH_SHORT).show()
     if (label == "nsec" || label == "seed") {
+        val copiedText = text
         Handler(Looper.getMainLooper()).postDelayed({
             try {
-                if (android.os.Build.VERSION.SDK_INT >= 28) {
-                    clipboard.clearPrimaryClip()
-                } else {
-                    clipboard.setPrimaryClip(
-                        ClipData.newPlainText("", "")
-                    )
+                // Only clear if clipboard still contains the sensitive data we copied
+                val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+                if (current == copiedText) {
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        clipboard.clearPrimaryClip()
+                    } else {
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("", "")
+                        )
+                    }
                 }
             } catch (_: Exception) {
             }
