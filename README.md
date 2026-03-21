@@ -302,6 +302,10 @@ SplitFree takes security seriously:
 
 If you discover a security vulnerability, please **do not** open a public issue. Instead, [report it privately via GitHub](https://github.com/invincible04/SplitFree/security/advisories/new) and we'll address it promptly. See [SECURITY.md](SECURITY.md) for full details.
 
+## Privacy
+
+SplitFree collects no personal data. All expense data is end-to-end encrypted and stored only on your device. See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
