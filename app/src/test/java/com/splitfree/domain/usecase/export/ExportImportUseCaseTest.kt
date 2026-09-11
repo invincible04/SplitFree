@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.export
 
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
@@ -10,6 +11,7 @@ import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -28,6 +30,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -45,6 +48,8 @@ class ExportImportUseCaseTest {
             every { isContentSafe(any()) } returns true
             every { isCorrectionAuthorValid(any(), any(), any()) } returns true
             every { isDeletedExpense(any(), any(), any()) } returns false
+            every { isExpenseValid(any(), any()) } returns true
+            every { isSettlementValid(any(), any(), any()) } returns true
         }
 
     @Before
@@ -54,6 +59,12 @@ class ExportImportUseCaseTest {
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
+        // The relaxed repo would otherwise swallow the transaction body; run it like Room does.
+        coEvery { eventRepo.withTransaction(captureLambda<suspend () -> Int>()) } coAnswers {
+            lambda<suspend () -> Int>().captured.invoke()
+        }
+        // Import decrypts with the epoch key of each row when available; default to "not stored".
+        coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
     }
 
     @After
@@ -95,6 +106,11 @@ class ExportImportUseCaseTest {
             members = listOf(memberPubkey, "pub2"),
             relays = listOf("wss://relay.test")
         )
+
+    /** A decrypted expense payload that is valid for [paidBy] as long as they are a member. */
+    private fun expenseJson(id: String = "uuid1", paidBy: String = memberPubkey, amount: Long = 100): String =
+        """{"id":"$id","amount":$amount,"currency":"USD","description":"test","paid_by":"$paidBy",""" +
+            """"split_type":"equal","split_among":[{"pubkey":"$paidBy","share":$amount}],"timestamp":1000}"""
 
     private fun buildSignedExportedEvent(
         privateKey: ByteArray = memberPrivKey,
@@ -217,7 +233,8 @@ class ExportImportUseCaseTest {
 
     private val identityMock = mockk<IdentityContract>().also {
         every { it.getPublicKeyHex() } returns memberPubkey
-        every { it.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
+        // Callers zero the key after use, so hand out a fresh copy on every call like IdentityManager does.
+        every { it.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         every { it.getPublicKeyBytes() } returns memberPubkey.let { hex ->
             ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
         }
@@ -228,7 +245,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
-        every { encryption.decrypt(any(), any()) } returns "decrypted"
+        every { encryption.decrypt(any(), any()) } returns expenseJson()
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
 
         val events = listOf(buildSignedExportedEvent())
@@ -404,7 +421,8 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns null
-        every { encryption.decrypt(any(), any()) } returns "dec"
+        coEvery { groupRepo.save(any(), any()) } just Runs
+        every { encryption.decrypt(any(), any()) } returns expenseJson()
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
         every { eventValidator.isWithinRateLimit(any()) } returns true
 
@@ -442,7 +460,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
-        every { encryption.decrypt(any(), any()) } returns "decrypted"
+        every { encryption.decrypt(any(), any()) } returns expenseJson()
         val inserted = slot<EventSnapshot>()
         coEvery { eventRepo.insert(capture(inserted)) } just Runs
 
@@ -487,7 +505,10 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
-        every { encryption.decrypt(any(), any()) } returns "decrypted"
+        // Each row decrypts to a payload whose id matches its own x tag.
+        every { encryption.decrypt(any(), any()) } answers {
+            expenseJson(id = "uuid-" + firstArg<String>().removePrefix("enc-"))
+        }
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
 
         val events = (1..31).map { i ->
@@ -640,5 +661,384 @@ class ExportImportUseCaseTest {
         coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), not(""), any()) }
         verify { android.util.Log.w("ImportGroupUseCase", match<String> { it.contains("creator stays unknown") }) }
+    }
+
+    // --- ImportGroupUseCase: gift-wrapped rumors (seal-authenticated rows) ---
+
+    private val sealMarker = EventSnapshot.SEAL_SIG_PREFIX + "ab".repeat(64)
+
+    /**
+     * An exported row as EventProcessor stores a received gift wrap: the rumor itself is unsigned
+     * (`sig == ""`, id self-consistent) and the row's `sig` column holds the `seal:` marker.
+     */
+    private fun buildSealedRumorExportedEvent(
+        privateKey: ByteArray = strangerPrivKey,
+        eventType: String = "expense",
+        expenseUuid: String? = "uuid1",
+        contentEncrypted: String = "enc",
+        createdAt: Long = 1700000000,
+        gid: String = groupId,
+        rowSig: String = sealMarker,
+        mutateRumor: (NostrEvent) -> NostrEvent = { it }
+    ): ExportedEvent {
+        val pubkey = NostrEvent.pubkeyFromPrivkey(privateKey)
+        val unsigned = NostrEvent(
+            pubkey = pubkey,
+            createdAt = createdAt,
+            kind = 30078,
+            tags = buildList {
+                add(listOf("g", gid))
+                add(listOf("t", eventType))
+                if (expenseUuid != null) add(listOf("x", expenseUuid))
+            },
+            content = contentEncrypted,
+            sig = ""
+        )
+        val rumor = mutateRumor(unsigned.copy(id = unsigned.computeId().toHex()))
+        return ExportedEvent(
+            eventId = rumor.id,
+            pubkey = rumor.pubkey,
+            createdAt = rumor.createdAt,
+            kind = rumor.kind,
+            contentEncrypted = rumor.content,
+            eventType = eventType,
+            expenseUuid = expenseUuid,
+            sig = rowSig,
+            originalEventJson = rumor.toJson()
+        )
+    }
+
+    private val strangerGroup = group.copy(members = listOf(memberPubkey, strangerPubkey))
+
+    @Test
+    fun `import accepts unsigned rumor whose exported row carries a seal marker`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns strangerGroup
+        every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
+        val inserted = slot<EventSnapshot>()
+        coEvery { eventRepo.insert(capture(inserted)) } just Runs
+
+        val rumorRow = buildSealedRumorExportedEvent()
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+                buildExportJson(listOf(rumorRow))
+            )
+
+        assertEquals(1, count)
+        assertEquals(strangerPubkey, inserted.captured.pubkey)
+        // The marker survives the round trip so the restored row is still not forwarded as signed.
+        assertEquals(sealMarker, inserted.captured.sig)
+        assertFalse(EventSnapshot.isThirdPartyVerifiable(inserted.captured.sig))
+        assertEquals(rumorRow.originalEventJson, inserted.captured.originalEventJson)
+    }
+
+    @Test
+    fun `import rejects unsigned rumor without a seal marker`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns strangerGroup
+        every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
+
+        val rows = listOf(
+            buildSealedRumorExportedEvent(rowSig = ""),
+            buildSealedRumorExportedEvent(rowSig = "sig1", contentEncrypted = "enc2"),
+            // A marker on the row cannot resurrect a *signed* event whose signature is bad.
+            buildSealedRumorExportedEvent(contentEncrypted = "enc3", mutateRumor = { it.copy(sig = "ff".repeat(64)) })
+        )
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(rows))
+
+        assertEquals(0, count)
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
+    }
+
+    @Test
+    fun `import rejects seal-marked rumor whose id is not self-consistent`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns strangerGroup
+        every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
+
+        val forged = buildSealedRumorExportedEvent(mutateRumor = { it.copy(id = "f".repeat(64)) })
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+                buildExportJson(listOf(forged))
+            )
+
+        assertEquals(0, count)
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
+    }
+
+    @Test
+    fun `import still enforces membership for seal-marked rumors`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group // stranger is not a member
+        every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
+
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+                buildExportJson(listOf(buildSealedRumorExportedEvent()))
+            )
+
+        assertEquals(0, count)
+    }
+
+    @Test
+    fun `import applies payload validation to decryptable expenses`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns strangerGroup
+        // Payload id disagrees with the x tag. EventProcessor rejects this, so import must too.
+        every { encryption.decrypt(any(), any()) } returns expenseJson(id = "other-uuid", paidBy = strangerPubkey)
+
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+                buildExportJson(listOf(buildSealedRumorExportedEvent(expenseUuid = "uuid1")))
+            )
+
+        assertEquals(0, count)
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
+    }
+
+    @Test
+    fun `import rejects expense that fails validator`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        every { encryption.decrypt(any(), any()) } returns expenseJson()
+        every { eventValidator.isExpenseValid(any(), any()) } returns false
+
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+                buildExportJson(listOf(buildSignedExportedEvent()))
+            )
+
+        assertEquals(0, count)
+        verify { eventValidator.isExpenseValid(any(), eq(group.members.toSet())) }
+    }
+
+    // --- ImportGroupUseCase: fresh-device restore reconstructs membership before filtering ---
+
+    private val thirdPrivKey = ByteArray(32) { 3 }
+    private val thirdPubkey = NostrEvent.pubkeyFromPrivkey(thirdPrivKey)
+
+    /** In-memory stand-ins for Room so a multi-pass import can observe its own writes. */
+    private class FakeStore {
+        val events = mutableListOf<EventSnapshot>()
+        var group: Group? = null
+        val epochKeys = mutableMapOf<Int, String>()
+    }
+
+    private fun wireFakeStore(gid: String, store: FakeStore) {
+        coEvery { eventRepo.insert(any<EventSnapshot>()) } answers { store.events += firstArg<EventSnapshot>() }
+        coEvery { eventRepo.getEventIds(gid) } answers { store.events.map { it.eventId } }
+        coEvery { eventRepo.getEventsByGroup(gid) } answers { store.events.toList() }
+        coEvery { eventRepo.getExpenseByUuid(any(), gid) } answers {
+            store.events.firstOrNull { it.eventType == "expense" && it.expenseUuid == firstArg<String>() }
+        }
+
+        coEvery { groupRepo.getById(gid) } answers { store.group }
+        coEvery { groupRepo.save(any(), any()) } answers {
+            store.group = firstArg()
+            store.epochKeys[firstArg<Group>().keyEpoch] = secondArg()
+        }
+        coEvery { groupRepo.getGroupKey(gid) } answers { store.group?.let { store.epochKeys[it.keyEpoch] } }
+        coEvery { groupRepo.getGroupKeyForEpoch(gid, any()) } answers { store.epochKeys[secondArg()] }
+        coEvery { groupRepo.saveGroupKeyForEpoch(gid, any(), any()) } answers {
+            store.epochKeys[secondArg()] = thirdArg()
+        }
+        coEvery { groupRepo.updateCreator(gid, any(), any()) } answers {
+            store.group = store.group?.copy(createdBy = secondArg(), createdAt = thirdArg())
+        }
+        coEvery { groupRepo.updateFromMeta(gid, any(), any(), any(), any(), any(), any()) } answers {
+            val createdBy = arg<String>(5)
+            store.group = store.group?.copy(
+                name = secondArg(),
+                members = thirdArg(),
+                relays = arg(3),
+                createdBy = createdBy.ifEmpty { store.group!!.createdBy },
+                memberNames = arg(6)
+            )
+        }
+    }
+
+    private fun encryptKeyToSelf(key: String): String {
+        val convKey = Nip44.getConversationKey(memberPrivKey, identityMock.getPublicKeyBytes())
+        return Nip44.encrypt(key, convKey)
+    }
+
+    private fun buildFreshDeviceExport(events: List<ExportedEvent>, gid: String, groupName: String): String {
+        val serializer = kotlinx.serialization.builtins.ListSerializer(ExportedEvent.serializer())
+        val eventsJson = Json.encodeToString(serializer, events)
+        val export = SplitFreeExport(
+            version = 1,
+            groupId = gid,
+            exportedAt = 1700000100,
+            events = events,
+            hmac = computeHmac(eventsJson, groupKey),
+            encryptedGroupKey = encryptKeyToSelf(groupKey),
+            groupName = groupName,
+            relays = listOf("wss://relay.test"),
+            keyEpoch = 0,
+            encryptedEpochKeys = mapOf("0" to encryptKeyToSelf(groupKey))
+        )
+        return Json.encodeToString(SplitFreeExport.serializer(), export)
+    }
+
+    @Test
+    fun `fresh-device import restores events from every member by rebuilding membership first`() = runBlocking {
+        // The stranger created the group; I (memberPubkey) and a third person joined later.
+        val createdAt = 1_690_000_000L
+        val gid = GroupIdentity.derive(strangerPubkey, createdAt)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        // Creator's group_meta arrived direct (signed). Its position in the file is AFTER the
+        // expenses, which is exactly what defeats a single-pass importer.
+        val creatorMeta = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta",
+            createdAt = createdAt + 5,
+            gid = gid
+        )
+        // My own expense (signed by me).
+        val mine = buildSignedExportedEvent(
+            privateKey = memberPrivKey,
+            expenseUuid = "u-me",
+            contentEncrypted = "enc-me",
+            createdAt = createdAt + 10,
+            gid = gid
+        )
+        // Expenses from the two others arrived gift-wrapped: unsigned rumors, seal-marked rows.
+        val strangers = buildSealedRumorExportedEvent(
+            privateKey = strangerPrivKey,
+            expenseUuid = "u-stranger",
+            contentEncrypted = "enc-stranger",
+            createdAt = createdAt + 20,
+            gid = gid
+        )
+        val thirds = buildSealedRumorExportedEvent(
+            privateKey = thirdPrivKey,
+            expenseUuid = "u-third",
+            contentEncrypted = "enc-third",
+            createdAt = createdAt + 30,
+            gid = gid
+        )
+        every { encryption.decrypt("enc-meta", any()) } returns
+            metaJson(strangerPubkey, createdAt, listOf(strangerPubkey, memberPubkey, thirdPubkey), name = "Trip")
+        every { encryption.decrypt("enc-me", any()) } returns expenseJson(id = "u-me", paidBy = memberPubkey)
+        every { encryption.decrypt("enc-stranger", any()) } returns
+            expenseJson(id = "u-stranger", paidBy = strangerPubkey)
+        every { encryption.decrypt("enc-third", any()) } returns expenseJson(id = "u-third", paidBy = thirdPubkey)
+
+        val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)
+        val count = useCase(buildFreshDeviceExport(listOf(mine, strangers, thirds, creatorMeta), gid, groupName = ""))
+
+        assertEquals(4, count)
+        assertEquals(
+            setOf(memberPubkey, strangerPubkey, thirdPubkey),
+            store.events.filter { it.eventType == "expense" }.map { it.pubkey }.toSet()
+        )
+        // Membership and creator were reconstructed from the meta before the expenses were filtered.
+        val restored = store.group!!
+        assertEquals(setOf(strangerPubkey, memberPubkey, thirdPubkey), restored.members.toSet())
+        assertEquals(strangerPubkey, restored.createdBy)
+        assertEquals("Trip", restored.name)
+        // Rumor rows keep their seal marker; my own event keeps its real signature.
+        assertEquals(sealMarker, store.events.single { it.pubkey == strangerPubkey && it.eventType == "expense" }.sig)
+        assertEquals(sealMarker, store.events.single { it.pubkey == thirdPubkey }.sig)
+        assertTrue(EventSnapshot.isThirdPartyVerifiable(store.events.single { it.pubkey == memberPubkey }.sig))
+    }
+
+    @Test
+    fun `fresh-device import runs both passes inside one transaction`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        every { encryption.decrypt("enc-meta", any()) } returns
+            metaJson(strangerPubkey, 1_690_000_000L, listOf(strangerPubkey, memberPubkey))
+        every { encryption.decrypt("enc-me", any()) } returns expenseJson(id = "u-me", paidBy = memberPubkey)
+
+        // Track the transaction boundary and assert every write (and the replay) happens inside it.
+        var inTransaction = false
+        var transactions = 0
+        coEvery { eventRepo.withTransaction(captureLambda<suspend () -> Int>()) } coAnswers {
+            transactions++
+            inTransaction = true
+            try {
+                lambda<suspend () -> Int>().captured.invoke()
+            } finally {
+                inTransaction = false
+            }
+        }
+        coEvery { eventRepo.insert(any<EventSnapshot>()) } answers {
+            assertTrue("insert must run inside the import transaction", inTransaction)
+            store.events += firstArg<EventSnapshot>()
+        }
+        coEvery { groupRepo.updateFromMeta(gid, any(), any(), any(), any(), any(), any()) } answers {
+            assertTrue("membership replay must run inside the import transaction", inTransaction)
+            store.group = store.group?.copy(name = secondArg(), members = thirdArg())
+        }
+
+        val meta = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta",
+            createdAt = 1_690_000_005L,
+            gid = gid
+        )
+        val mine = buildSignedExportedEvent(expenseUuid = "u-me", contentEncrypted = "enc-me", gid = gid)
+        val count =
+            ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+                buildFreshDeviceExport(listOf(mine, meta), gid, groupName = "Trip")
+            )
+
+        assertEquals(2, count)
+        assertEquals(1, transactions)
+        assertEquals(2, store.events.size)
+    }
+
+    @Test
+    fun `import with blank group name still creates the group as Imported group`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        every { encryption.decrypt(any(), any()) } returns expenseJson(id = "u-me", paidBy = memberPubkey)
+
+        val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
+        val count = useCase(
+            buildFreshDeviceExport(
+                listOf(buildSignedExportedEvent(expenseUuid = "u-me", gid = gid)),
+                gid,
+                groupName = "   "
+            )
+        )
+
+        // A blank name must still create the group so the events are not orphaned.
+        assertEquals(1, count)
+        val created = store.group!!
+        assertEquals("Imported group", created.name)
+        assertEquals(listOf(memberPubkey), created.members)
+        assertEquals(listOf("wss://relay.test"), created.relays)
+        assertEquals("", created.createdBy)
+        coVerify(exactly = 1) { groupRepo.save(match { it.id == gid && it.name == "Imported group" }, groupKey) }
+    }
+
+    @Test
+    fun `import uses the exported group name when present`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(
+            buildFreshDeviceExport(emptyList(), gid, groupName = "Ski weekend")
+        )
+
+        assertEquals("Ski weekend", store.group!!.name)
     }
 }

@@ -3,6 +3,9 @@ package com.splitfree.domain.usecase.export
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
+import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
@@ -11,6 +14,7 @@ import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
 import java.security.MessageDigest
@@ -20,8 +24,16 @@ import kotlinx.serialization.json.Json
 /**
  * Import group events from a `.splitfree` JSON export.
  *
- * Decrypts the embedded group key using the user's private key,
- * creates the group if needed, restores all epoch keys, then imports all events.
+ * Decrypts the embedded group key using the user's private key, creates the group if needed,
+ * restores all epoch keys, then imports events in two passes inside one transaction:
+ *
+ * 1. `group_meta` / `key_rotation` / `key_revocation` events are stored and replayed so the
+ *    member list, creator, name and relays are reconstructed first.
+ * 2. Everything else is stored, filtered against the *reconstructed* membership and validated
+ *    the same way [com.splitfree.sync.event.EventProcessor] validates live events.
+ *
+ * On a fresh device the group starts with `members = [me]`; filtering before replay would drop
+ * every event authored by anyone else, which is exactly what a restore must not do.
  */
 class ImportGroupUseCase
 @Inject
@@ -55,11 +67,13 @@ constructor(
             "Export file integrity check failed — file may have been tampered with"
         }
 
-        // Create the group if it doesn't exist locally
-        if (groupRepo.getById(groupId) == null && export.groupName.isNotEmpty()) {
+        // Create the group if it doesn't exist locally. The name is cosmetic and replayPostImport
+        // overwrites it from the creator's group_meta anyway, so a blank name is no reason to
+        // skip creation (which would leave every imported event orphaned).
+        if (groupRepo.getById(groupId) == null) {
             val group = Group(
                 id = groupId,
-                name = export.groupName.ifEmpty { "Imported Group" },
+                name = export.groupName.ifBlank { DEFAULT_GROUP_NAME },
                 createdBy = "",
                 createdAt = export.exportedAt,
                 members = listOf(identity.getPublicKeyHex()),
@@ -88,85 +102,168 @@ constructor(
             }
         }
 
-        val knownEventIds = eventRepo.getEventIds(groupId).toMutableSet()
-        var imported = 0
-        val group = groupRepo.getById(groupId)
+        val candidates = export.events.mapNotNull { toCandidate(it) }
+        val (structural, content) = candidates.partition { it.eventType in STRUCTURAL_TYPES }
 
-        for (event in export.events) {
-            val originalJson = event.originalEventJson ?: continue
-            val parsed = NostrEvent.fromJson(originalJson) ?: continue
-            if (!parsed.verify()) continue
-            if (!eventValidator.isTimestampValidLenient(parsed.createdAt)) continue
+        return eventRepo.withTransaction {
+            val knownEventIds = eventRepo.getEventIds(groupId).toMutableSet()
+            var imported = 0
 
-            val eventId = parsed.id
-            if (eventId in knownEventIds) continue
-
-            val pubkey = parsed.pubkey
-            val createdAt = parsed.createdAt
-            val contentEncrypted = parsed.content
-            val sig = parsed.sig
-            val kind = parsed.kind
-
-            var eventType = "unknown"
-            var expenseUuid: String? = null
-            for (tag in parsed.tags) {
-                if (tag.size >= 2) {
-                    when (tag[0]) {
-                        "t" -> eventType = tag[1]
-                        "x" -> expenseUuid = tag[1]
-                    }
-                }
+            // Pass 1: membership-defining events, then rebuild the group from them.
+            for (candidate in structural) {
+                if (candidate.eventId in knownEventIds) continue
+                val decrypted = decryptForValidation(candidate, groupId, groupKey)
+                if (decrypted != null && !eventValidator.isContentSafe(decrypted)) continue
+                eventRepo.insert(candidate.toSnapshot(groupId))
+                knownEventIds += candidate.eventId
+                imported++
             }
-
-            if (group != null &&
-                pubkey !in group.members &&
-                eventType !in setOf("group_meta", "key_rotation", "key_revocation")
-            ) {
-                continue
-            }
-
-            if (eventType == "expense_correction" || eventType == "expense_delete") {
-                val originalCreator = expenseUuid?.let { eventRepo.getExpenseByUuid(it, groupId)?.pubkey }
-                if (!eventValidator.isCorrectionAuthorValid(eventType, pubkey, originalCreator)) continue
-            }
-
-            // Import is a local, integrity-checked batch operation; relay runtime rate limits
-            // would incorrectly drop valid historical events from the same author.
-
-            val decrypted = try {
-                encryption.decrypt(contentEncrypted, groupKey)
-            } catch (_: Exception) {
-                null
-            }
-            if (decrypted != null && !eventValidator.isContentSafe(decrypted)) continue
-
-            eventRepo.insert(
-                EventSnapshot(
-                    eventId = eventId, groupId = groupId, pubkey = pubkey,
-                    createdAt = createdAt, kind = kind,
-                    contentEncrypted = contentEncrypted, eventType = eventType,
-                    expenseUuid = expenseUuid, sig = sig,
-                    receivedAt = System.currentTimeMillis() / 1000,
-                    originalEventJson = originalJson,
-                    keyEpoch = event.keyEpoch
-                )
-            )
-            knownEventIds += eventId
-            imported++
-        }
-
-        // Replay group_meta events so member list, name, relays, and display names
-        // are reconstructed. Epoch keys are already restored from encryptedEpochKeys.
-        if (imported > 0) {
             replayPostImport(groupId)
-        }
 
-        return imported
+            // Pass 2: everything else, filtered against the reconstructed membership.
+            val group = groupRepo.getById(groupId)
+            val members = group?.members?.toSet()
+            for (candidate in content) {
+                if (candidate.eventId in knownEventIds) continue
+                if (members != null && candidate.pubkey !in members) continue
+
+                val eventType = candidate.eventType
+                val expenseUuid = candidate.expenseUuid
+                if (eventType == "expense_correction" || eventType == "expense_delete") {
+                    val originalCreator = expenseUuid?.let { eventRepo.getExpenseByUuid(it, groupId)?.pubkey }
+                    if (!eventValidator.isCorrectionAuthorValid(eventType, candidate.pubkey, originalCreator)) continue
+                }
+
+                // Import is a local, integrity-checked batch operation; relay runtime rate limits
+                // would incorrectly drop valid historical events from the same author.
+
+                val decrypted = decryptForValidation(candidate, groupId, groupKey)
+                if (decrypted != null) {
+                    if (!eventValidator.isContentSafe(decrypted)) continue
+                    if (!isPayloadValid(candidate, decrypted, members ?: emptySet())) continue
+                }
+
+                eventRepo.insert(candidate.toSnapshot(groupId))
+                knownEventIds += candidate.eventId
+                imported++
+            }
+
+            imported
+        }
     }
 
     /**
-     * After importing events, replay group_meta events in chronological order
-     * so the group entity reflects the full state (members, name, relays, epoch keys).
+     * A row from the export that passed authenticity and timestamp checks and is ready to store.
+     *
+     * @property sig the value to persist: the event's own signature, or the exporter's `seal:`
+     *   marker for a rumor (see [EventSnapshot.SEAL_SIG_PREFIX]) so the row stays recognisable as
+     *   not third-party verifiable
+     */
+    private class Candidate(
+        val parsed: NostrEvent,
+        val originalJson: String,
+        val eventType: String,
+        val expenseUuid: String?,
+        val sig: String,
+        val keyEpoch: Int
+    ) {
+        val eventId: String get() = parsed.id
+        val pubkey: String get() = parsed.pubkey
+
+        fun toSnapshot(groupId: String) = EventSnapshot(
+            eventId = eventId, groupId = groupId, pubkey = pubkey,
+            createdAt = parsed.createdAt, kind = parsed.kind,
+            contentEncrypted = parsed.content, eventType = eventType,
+            expenseUuid = expenseUuid, sig = sig,
+            receivedAt = System.currentTimeMillis() / 1000,
+            originalEventJson = originalJson,
+            keyEpoch = keyEpoch
+        )
+    }
+
+    /**
+     * Parse and authenticate one exported row, or return null if it must be skipped.
+     *
+     * Two shapes are accepted:
+     *  - a normally signed event whose signature verifies;
+     *  - an unsigned NIP-59 rumor (`sig == ""`) whose exported row carries a
+     *    [EventSnapshot.SEAL_SIG_PREFIX] marker. The exporting device verified the seal at receipt
+     *    time and the export is HMAC-authenticated, so the marker is trusted on restore. The rumor
+     *    id is still re-derived so a corrupt row cannot collide with a real event id.
+     */
+    private fun toCandidate(event: ExportedEvent): Candidate? {
+        val originalJson = event.originalEventJson ?: return null
+        val parsed = NostrEvent.fromJson(originalJson) ?: return null
+
+        val sig =
+            when {
+                parsed.verify() -> parsed.sig
+                parsed.sig.isEmpty() &&
+                    event.sig.startsWith(EventSnapshot.SEAL_SIG_PREFIX) &&
+                    parsed.pubkey.isNotEmpty() &&
+                    parsed.id == parsed.computeId().toHex() -> event.sig
+                else -> return null
+            }
+        if (!eventValidator.isTimestampValidLenient(parsed.createdAt)) return null
+
+        var eventType = "unknown"
+        var expenseUuid: String? = null
+        for (tag in parsed.tags) {
+            if (tag.size >= 2) {
+                when (tag[0]) {
+                    "t" -> eventType = tag[1]
+                    "x" -> expenseUuid = tag[1]
+                }
+            }
+        }
+        return Candidate(parsed, originalJson, eventType, expenseUuid, sig, event.keyEpoch)
+    }
+
+    /** Decrypt with the key of the epoch the event was recorded under, falling back to the current key. */
+    private suspend fun decryptForValidation(candidate: Candidate, groupId: String, groupKey: String): String? {
+        val key = groupRepo.getGroupKeyForEpoch(groupId, candidate.keyEpoch) ?: groupKey
+        return try {
+            encryption.decrypt(candidate.parsed.content, key)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Mirror of `EventProcessor.validatePayload`: a decryptable expense/settlement must parse, pass
+     * [EventValidator] and agree with its `x` tag. Other event types carry no validated payload.
+     */
+    private fun isPayloadValid(candidate: Candidate, decrypted: String, members: Set<String>): Boolean {
+        when (candidate.eventType) {
+            "expense", "expense_correction" -> {
+                val expense =
+                    try {
+                        json.decodeFromString<Expense>(decrypted)
+                    } catch (_: Exception) {
+                        return false
+                    }
+                if (!eventValidator.isExpenseValid(expense, members)) return false
+                if (expense.id != candidate.expenseUuid) return false
+            }
+
+            "settlement" -> {
+                val settlement =
+                    try {
+                        json.decodeFromString<Settlement>(decrypted)
+                    } catch (_: Exception) {
+                        return false
+                    }
+                if (!eventValidator.isSettlementValid(settlement, candidate.pubkey, members)) return false
+                if (candidate.expenseUuid != null && settlement.id != candidate.expenseUuid) return false
+            }
+        }
+        return true
+    }
+
+    /**
+     * After pass 1 of the import, replay group_meta events in chronological order so the group
+     * entity reflects the full state (members, name, relays, epoch keys) before pass 2 filters
+     * content events against it.
      *
      * An imported group starts with an empty `createdBy`. It is filled in only from a
      * `group_meta` whose author is the creator the group id was derived from
@@ -286,5 +383,9 @@ constructor(
 
     companion object {
         private const val TAG = "ImportGroupUseCase"
+        private const val DEFAULT_GROUP_NAME = "Imported group"
+
+        /** Events that define membership/keys; stored and replayed before anything else is filtered. */
+        private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")
     }
 }

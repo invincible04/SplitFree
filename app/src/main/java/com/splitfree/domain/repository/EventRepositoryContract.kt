@@ -54,6 +54,8 @@ interface EventRepositoryContract {
  * @property contentEncrypted NIP-44 encrypted payload
  * @property eventType one of `expense`, `settlement`, `group_meta`, `key_rotation`, `key_revocation`, `snapshot`
  * @property expenseUuid optional expense/settlement UUID for dedup and correction tracking
+ * @property sig the event's own NIP-01 signature, or `seal:<sig>` when the row is an unsigned NIP-59
+ *   rumor whose author was authenticated by the seal signature at receipt time (see [SEAL_SIG_PREFIX])
  * @property originalEventJson original signed JSON for self-heal republishing
  */
 data class EventSnapshot(
@@ -69,4 +71,21 @@ data class EventSnapshot(
     val receivedAt: Long = 0,
     val originalEventJson: String? = null,
     val keyEpoch: Int = 0
-)
+) {
+    companion object {
+        /**
+         * Marker prefix for [sig] when the stored event arrived as a NIP-59 rumor. Rumors are
+         * unsigned by design, so the receiver records the seal's signature (which it verified
+         * against the author's pubkey) instead. Such a row is trustworthy locally (and in a
+         * backup this device produced) but cannot be re-verified by a third party, so it must
+         * not be forwarded as if it were a signed event.
+         */
+        const val SEAL_SIG_PREFIX = "seal:"
+
+        /**
+         * True if [sig] is a real NIP-01 signature that any peer can verify against the event's
+         * `originalEventJson`. Empty signatures and [SEAL_SIG_PREFIX] markers are not.
+         */
+        fun isThirdPartyVerifiable(sig: String): Boolean = sig.isNotEmpty() && !sig.startsWith(SEAL_SIG_PREFIX)
+    }
+}

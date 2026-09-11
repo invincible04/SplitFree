@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.hexToBytes
@@ -66,7 +67,7 @@ constructor(
     ): ProcessResult {
         // 1. Unwrap gift wrap if applicable
         val unwrapResult = giftWrap.tryUnwrap(rawEvent)
-        val inner = unwrapResult?.first ?: rawEvent
+        val inner = unwrapResult?.rumor ?: rawEvent
         if (unwrapResult == null && !signer.verify(inner)) return ProcessResult(false)
 
         // 2. Validate timestamp
@@ -182,11 +183,15 @@ constructor(
         }
 
         // 8. Store
+        // A gift-wrapped rumor is unsigned; the seal signature is the proof that `authorHex` wrote
+        // it. Record it under a `seal:` marker so the row is distinguishable from an unverified one
+        // (backup restore trusts it; BLE/self-heal forwarding, which peers must verify, skips it).
+        val storedSig = if (unwrapResult != null) EventSnapshot.SEAL_SIG_PREFIX + unwrapResult.sealSig else inner.sig
         if (!eventDao.insertIfNew(
                 EventEntity(
                     eventId = inner.id, groupId = groupId, pubkey = authorHex,
                     createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
-                    eventType = eventType, expenseUuid = expenseUuid, sig = inner.sig,
+                    eventType = eventType, expenseUuid = expenseUuid, sig = storedSig,
                     receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson(),
                     keyEpoch = decryptedEpoch
                 )

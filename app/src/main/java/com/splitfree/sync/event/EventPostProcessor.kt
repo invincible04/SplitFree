@@ -3,7 +3,9 @@ package com.splitfree.sync.event
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
@@ -27,6 +29,8 @@ constructor(
     private val rotateGroupKey: RotateGroupKeyUseCase,
     private val revokeKey: RevokeKeyUseCase,
     private val selfHeal: SelfHealUseCase,
+    private val eventPublisher: EventPublisherContract,
+    private val identity: IdentityContract,
     @ApplicationScope private val appScope: CoroutineScope
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -144,6 +148,30 @@ constructor(
                         e: Exception
                     ) {
                         Log.w(TAG, "Eager self-heal failed for $groupId: ${e.message}")
+                    }
+                }
+            }
+
+            // Members that just appeared could not decrypt any gift wrap I published before now,
+            // so re-deliver my history to them. This also covers the creator's solo period: the
+            // expenses added before anyone joined produced zero deliveries, and the first member's
+            // self-join group_meta lands here with newMembers = {them}.
+            //
+            // Diff the PERSISTED member list, not `finalMembers`: updateFromMeta is LWW-guarded, and
+            // a stale meta replayed from a relay may still list someone removed by a later rotation.
+            // Wrapping my history for them would hand it to a non-member.
+            val persistedMembers = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
+            val newMembers =
+                persistedMembers - (currentGroup?.members?.toSet() ?: emptySet()) - identity.getPublicKeyHex()
+            if (newMembers.isNotEmpty()) {
+                Log.i(TAG, "${newMembers.size} new member(s) in $groupId, re-delivering authored history")
+                appScope.launch {
+                    try {
+                        eventPublisher.redeliverAuthoredEvents(groupId, newMembers)
+                    } catch (
+                        e: Exception
+                    ) {
+                        Log.w(TAG, "Re-delivery to new members failed for $groupId: ${e.message}")
                     }
                 }
             }

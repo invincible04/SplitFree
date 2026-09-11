@@ -73,6 +73,23 @@ class Nip59Test {
     }
 
     @Test
+    fun `unwrap returns the seal signature that authenticates the rumor`() {
+        val wrapped = Nip59.giftWrap(makeRumor(), senderPriv, recipientPub)
+
+        // Independently peel the outer layer to get at the seal the sender signed.
+        val wrapConvKey = Nip44.getConversationKey(recipientPriv, wrapped.pubkey.hexToBytes())
+        val seal = NostrEvent.fromJson(Nip44.decrypt(wrapped.content, wrapConvKey))!!
+        assertTrue(seal.verify())
+
+        val result = Nip59.unwrap(wrapped, recipientPriv)!!
+        assertEquals(seal.sig, result.sealSig)
+        assertEquals(128, result.sealSig.length)
+        assertEquals(seal.pubkey, result.senderPubkey)
+        // The seal signature is over the seal, not the rumor: the rumor itself stays unsigned.
+        assertEquals("", result.rumor.sig)
+    }
+
+    @Test
     fun `unwrap fails with wrong recipient key`() {
         val wrapped = Nip59.giftWrap(makeRumor(), senderPriv, recipientPub)
         val wrongKey = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".hexToBytes()
@@ -274,7 +291,7 @@ class Nip59Test {
         val rumorWithId = genuine.copy(id = genuine.computeId().toHex())
         val result = Nip59.unwrap(wrapRawRumor(rumorWithId), recipientPriv)
         assertNotNull("Self-consistent rumor must unwrap", result)
-        assertEquals(rumorWithId.id, result!!.first.id)
+        assertEquals(rumorWithId.id, result!!.rumor.id)
     }
 
     @Test

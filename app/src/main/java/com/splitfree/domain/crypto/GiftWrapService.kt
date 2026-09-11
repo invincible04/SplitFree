@@ -49,9 +49,10 @@ constructor(
      * Attempt to unwrap a gift-wrapped event.
      *
      * @param event the incoming event (only kind 1059 is processed)
-     * @return pair of (inner rumor, sender pubkey hex), or null if not a gift wrap or decryption fails
+     * @return the inner rumor, its authenticated sender and the seal signature that authenticates it,
+     *   or null if not a gift wrap or decryption fails
      */
-    fun tryUnwrap(event: NostrEvent): Pair<NostrEvent, String>? {
+    fun tryUnwrap(event: NostrEvent): Nip59.Unwrapped? {
         if (event.kind != NostrKind.GIFT_WRAP) return null
         val privKey = identityManager.getPrivateKeyBytes()
         try {

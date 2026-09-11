@@ -59,6 +59,21 @@ interface EventPublisherContract {
 
     /** @return true if any of the given event IDs are still in the outbox */
     suspend fun hasOutboxEventsById(eventIds: List<String>): Boolean
+
+    /**
+     * Re-deliver every gift-wrapped event this identity authored in [groupId] to [recipients].
+     *
+     * NIP-59 wraps are addressed to the members present at publish time, so anyone who joins
+     * later cannot decrypt them and never receives that history. Called when new members appear
+     * in a `group_meta`; each of my `expense`/`settlement`/`expense_correction`/`expense_delete`/
+     * `snapshot` events is wrapped once per recipient and queued in the outbox. Events published
+     * direct (`group_meta`, `key_rotation`, `key_revocation`) are already readable from relays.
+     *
+     * No-op when gift wrap is disabled or [recipients] is empty. Self is always excluded.
+     *
+     * @return the number of wraps queued
+     */
+    suspend fun redeliverAuthoredEvents(groupId: String, recipients: Collection<String>): Int
 }
 
 class OutboxFullException : IllegalStateException("Delivery queue is full. Try saving again after syncing")

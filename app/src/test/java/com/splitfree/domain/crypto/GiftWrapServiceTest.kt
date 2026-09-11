@@ -1,5 +1,6 @@
 package com.splitfree.domain.crypto
 
+import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.hexToBytes
@@ -125,6 +126,37 @@ class GiftWrapServiceTest {
         every { identity.getPrivateKeyBytes() } returns recipientPriv.hexToBytes()
         val result = service.tryUnwrap(wrapped)
         assertNotNull(result)
-        assertEquals("hello", result!!.first.content)
+        assertEquals("hello", result!!.rumor.content)
+        assertEquals(pubHex, result.senderPubkey)
+    }
+
+    @Test
+    fun `tryUnwrap exposes the seal signature of the sender`() {
+        every { userPreferences.giftWrapEnabled } returns true
+        val inner =
+            NostrEvent(
+                id = "id1",
+                pubkey = pubHex,
+                createdAt = 1,
+                kind = 9735,
+                tags = emptyList(),
+                content = "hello",
+                sig = "sig"
+            )
+        val wrapped = service.wrapIfEnabled(inner, recipientPub)
+
+        // Peel the outer layer by hand to read the seal the sender actually signed.
+        val recipientKey = recipientPriv.hexToBytes()
+        val wrapConvKey = Nip44.getConversationKey(recipientKey, wrapped.pubkey.hexToBytes())
+        val seal = NostrEvent.fromJson(Nip44.decrypt(wrapped.content, wrapConvKey))!!
+        assertEquals(NostrKind.SEAL, seal.kind)
+        assertTrue(seal.verify())
+
+        every { identity.getPrivateKeyBytes() } returns recipientPriv.hexToBytes()
+        val result = service.tryUnwrap(wrapped)!!
+        assertEquals(seal.sig, result.sealSig)
+        assertTrue(result.sealSig.isNotEmpty())
+        // The rumor stays unsigned; the seal signature is the only proof of authorship.
+        assertEquals("", result.rumor.sig)
     }
 }

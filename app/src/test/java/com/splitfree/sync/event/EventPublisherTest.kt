@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.withTransaction
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.AppDatabase
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.ExpenseRepository
@@ -341,6 +342,175 @@ class EventPublisherTest {
         assertFalse(publisher.hasOutboxMatching { "missing" in it })
         assertTrue(publisher.hasOutboxEventsById(listOf("evt1")))
         assertFalse(publisher.hasOutboxEventsById(emptyList()))
+    }
+
+    // --- redeliverAuthoredEvents ---
+
+    private val newMember = "dd".repeat(32)
+    private val anotherNewMember = "ee".repeat(32)
+
+    /** A locally stored event, as EventPublisher/EventProcessor would have persisted it. */
+    private fun storedEvent(
+        id: String,
+        eventType: String = "expense",
+        author: String = myPub,
+        sig: String = "sig",
+        withJson: Boolean = true
+    ): EventEntity {
+        val nostr = event.copy(id = id, pubkey = author, sig = if (sig.startsWith("seal:")) "" else sig)
+        return EventEntity(
+            eventId = id, groupId = "g1", pubkey = author, createdAt = 1000, kind = NostrKind.APP_SPECIFIC,
+            contentEncrypted = "enc", eventType = eventType, expenseUuid = null, sig = sig, receivedAt = 1000,
+            originalEventJson = if (withJson) nostr.toJson() else null
+        )
+    }
+
+    private suspend fun store(vararg entities: EventEntity) {
+        entities.forEach { db.eventDao().insert(it) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents queues one wrap per authored event and recipient`() = runBlocking {
+        store(
+            storedEvent("exp1"),
+            storedEvent("exp2", eventType = "settlement"),
+            storedEvent("exp3", eventType = "expense_correction"),
+            storedEvent("exp4", eventType = "expense_delete"),
+            storedEvent("exp5", eventType = "snapshot")
+        )
+
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(newMember, anotherNewMember))
+
+        assertEquals(10, queued)
+        val rows = db.outboxDao().getAll()
+        assertEquals(10, rows.size)
+        val expectedIds = listOf("exp1", "exp2", "exp3", "exp4", "exp5").flatMap { id ->
+            listOf("$id-$newMember", "$id-$anotherNewMember")
+        }
+        assertEquals(expectedIds.toSet(), rows.map { it.eventId }.toSet())
+        // Outbox rows keep the inner event's type so eviction/criticality rules stay meaningful.
+        assertEquals(
+            mapOf("expense" to 2, "settlement" to 2, "expense_correction" to 2, "expense_delete" to 2, "snapshot" to 2),
+            rows.groupingBy { it.eventType!! }.eachCount()
+        )
+        verify(exactly = 10) { throttler.enqueue(match { it.kind == NostrKind.GIFT_WRAP }) }
+        verify(exactly = 5) { giftWrap.wrapIfEnabled(any(), newMember) }
+        verify(exactly = 5) { giftWrap.wrapIfEnabled(any(), anotherNewMember) }
+        // Re-delivery never creates new local events; it only wraps existing ones.
+        assertEquals(5, db.eventDao().getEventCount("g1"))
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents wraps the stored original event as-is`() = runBlocking {
+        store(storedEvent("exp1"))
+        publisher.redeliverAuthoredEvents("g1", listOf(newMember))
+        verify(exactly = 1) {
+            giftWrap.wrapIfEnabled(match { it.id == "exp1" && it.pubkey == myPub && it.sig == "sig" }, newMember)
+        }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents skips direct-published structural events`() = runBlocking {
+        store(
+            storedEvent("meta", eventType = "group_meta"),
+            storedEvent("rot", eventType = "key_rotation"),
+            storedEvent("rev", eventType = "key_revocation"),
+            storedEvent("exp1")
+        )
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(newMember))
+        assertEquals(1, queued)
+        assertEquals(listOf("exp1-$newMember"), db.outboxDao().getAll().map { it.eventId })
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents skips events by other authors`() = runBlocking {
+        store(storedEvent("mine"), storedEvent("theirs", author = otherPub))
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(newMember))
+        assertEquals(1, queued)
+        assertEquals(listOf("mine-$newMember"), db.outboxDao().getAll().map { it.eventId })
+        verify(exactly = 0) { giftWrap.wrapIfEnabled(match { it.pubkey == otherPub }, any()) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents skips seal-signed rumors and rows without a signature or JSON`() = runBlocking {
+        store(
+            storedEvent("signed"),
+            storedEvent("sealed", sig = "seal:" + "ab".repeat(64)),
+            storedEvent("unsigned", sig = ""),
+            storedEvent("nojson", withJson = false)
+        )
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(newMember))
+        assertEquals(1, queued)
+        assertEquals(listOf("signed-$newMember"), db.outboxDao().getAll().map { it.eventId })
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents excludes self and duplicate recipients`() = runBlocking {
+        store(storedEvent("exp1"))
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(myPub, newMember, newMember))
+        assertEquals(1, queued)
+        verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), myPub) }
+        verify(exactly = 1) { giftWrap.wrapIfEnabled(any(), newMember) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents returns 0 for empty recipients or only self`() = runBlocking {
+        store(storedEvent("exp1"))
+        assertEquals(0, publisher.redeliverAuthoredEvents("g1", emptyList()))
+        assertEquals(0, publisher.redeliverAuthoredEvents("g1", listOf(myPub)))
+        assertEquals(0, db.outboxDao().count())
+        verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), any()) }
+        verify(exactly = 0) { throttler.enqueue(any()) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents returns 0 when there is nothing authored`() = runBlocking {
+        store(storedEvent("theirs", author = otherPub))
+        assertEquals(0, publisher.redeliverAuthoredEvents("g1", listOf(newMember)))
+        assertEquals(0, db.outboxDao().count())
+        verify(exactly = 0) { throttler.enqueue(any()) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents returns 0 when gift wrap is disabled`() = runBlocking {
+        every { giftWrap.enabled } returns false
+        store(storedEvent("exp1"))
+        assertEquals(0, publisher.redeliverAuthoredEvents("g1", listOf(newMember)))
+        assertEquals(0, db.outboxDao().count())
+        verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), any()) }
+        verify(exactly = 0) { throttler.enqueue(any()) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents respects the outbox cap and queues what fits`() = runBlocking {
+        fillOutbox(4997)
+        store(storedEvent("exp1"), storedEvent("exp2"), storedEvent("exp3"))
+
+        // 3 events x 2 recipients = 6 wraps, but only 3 slots remain.
+        val queued = publisher.redeliverAuthoredEvents("g1", listOf(newMember, anotherNewMember))
+
+        assertEquals(3, queued)
+        assertEquals(5000, db.outboxDao().count())
+        verify(exactly = 3) { throttler.enqueue(any()) }
+        // Every queued row is a genuine redelivery wrap, not a pre-existing filler row.
+        val redeliveries = db.outboxDao().getAll().filter { it.eventId.startsWith("exp") }
+        assertEquals(3, redeliveries.size)
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents queues nothing when the outbox is already full`() = runBlocking {
+        fillOutbox(5000)
+        store(storedEvent("exp1"))
+        assertEquals(0, publisher.redeliverAuthoredEvents("g1", listOf(newMember)))
+        assertEquals(5000, db.outboxDao().count())
+        verify(exactly = 0) { throttler.enqueue(any()) }
+    }
+
+    @Test
+    fun `redeliverAuthoredEvents does not wrap inside the transaction`() = runBlocking {
+        // The giftWrap mock in setup() asserts db.inTransaction() is false on every call.
+        store(storedEvent("exp1"), storedEvent("exp2"))
+        assertEquals(2, publisher.redeliverAuthoredEvents("g1", listOf(newMember)))
     }
 
     private suspend fun fillOutbox(count: Int) {

@@ -2,14 +2,18 @@ package com.splitfree.data.ble
 
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import com.splitfree.sync.event.EventProcessor
 import fr.acinq.secp256k1.Secp256k1
 import io.mockk.Runs
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -61,6 +65,8 @@ class BleTransferTest {
         val sent = mutableListOf<ByteArray>()
         val nearbySync = mockk<NearbySync>()
         val identity = mockk<IdentityManager>()
+        val eventDao = mockk<EventDao>(relaxed = true)
+        val groupRepo = mockk<GroupRepository>(relaxed = true)
         val transfer: BleTransfer
 
         init {
@@ -70,8 +76,8 @@ class BleTransferTest {
             every { identity.getPrivateKeyBytes() } answers { priv.copyOf() }
             transfer =
                 BleTransfer(
-                    mockk(relaxed = true),
-                    mockk(relaxed = true),
+                    eventDao,
+                    groupRepo,
                     mockk(),
                     nearbySync,
                     identity,
@@ -345,6 +351,93 @@ class BleTransferTest {
     fun `processBinaryPayload rejects unauthenticated peer`() = runBlocking {
         val result = transfer.processBinaryPayload("ep1", byteArrayOf(1, 2, 3))
         assertNull(result)
+    }
+
+    // --- Forwarding stored events to an authenticated peer ---
+
+    /** Run the full three-leg handshake so [alice] has authenticated [bob] on endpoint "bob". */
+    private fun authenticate(alice: Peer, bob: Peer) {
+        alice.transfer.sendHandshake("bob", alice.pub, emptyList())
+        val leg1 = bob.receive("alice", alice.lastSent())
+        bob.transfer.sendHandshakeResponse("alice", bob.pub, emptyList(), leg1.challenge, leg1.pubkey)
+        val leg2 = alice.receive("bob", bob.lastSent())
+        assertTrue(alice.transfer.verifyHandshake("bob", leg2))
+    }
+
+    private fun stored(
+        id: String,
+        author: String,
+        sig: String,
+        eventType: String = "expense",
+        json: String? = "{\"id\":\"$id\"}"
+    ) = EventEntity(
+        eventId = id, groupId = "g1", pubkey = author, createdAt = 1000, kind = 30078,
+        contentEncrypted = "enc", eventType = eventType, expenseUuid = null, sig = sig, receivedAt = 1000,
+        originalEventJson = json
+    )
+
+    private fun eventPayloads(peer: Peer): List<String> =
+        peer.sent.filter { it.isNotEmpty() && it[0] == BleTransfer.MSG_EVENT }
+            .map { String(it.copyOfRange(1, it.size)) }
+
+    @Test
+    fun `sendMissingEvents forwards only third-party-verifiable events`() = runBlocking {
+        val alice = Peer(ALICE_PRIV)
+        val bob = Peer(BOB_PRIV)
+        authenticate(alice, bob)
+        coEvery { alice.groupRepo.getById("g1") } returns
+            Group("g1", "Test", "", alice.pub, 1000, listOf(alice.pub, bob.pub), emptyList())
+        coEvery { alice.eventDao.getEventsByGroup("g1") } returns
+            listOf(
+                stored("signed", alice.pub, sig = "ab".repeat(64)),
+                // Received as a NIP-59 rumor: unsigned, authenticated only by a seal we verified.
+                stored("sealed", "cc".repeat(32), sig = EventSnapshot.SEAL_SIG_PREFIX + "cd".repeat(64)),
+                stored("unsigned", "cc".repeat(32), sig = ""),
+                stored("nojson", alice.pub, sig = "ab".repeat(64), json = null)
+            )
+
+        alice.transfer.sendMissingEvents("bob", "g1", peerEventIds = emptySet())
+
+        assertEquals(listOf("""{"id":"signed"}"""), eventPayloads(alice))
+    }
+
+    @Test
+    fun `sendMissingEvents still skips events the peer already has`() = runBlocking {
+        val alice = Peer(ALICE_PRIV)
+        val bob = Peer(BOB_PRIV)
+        authenticate(alice, bob)
+        coEvery { alice.groupRepo.getById("g1") } returns
+            Group("g1", "Test", "", alice.pub, 1000, listOf(alice.pub, bob.pub), emptyList())
+        coEvery { alice.eventDao.getEventsByGroup("g1") } returns
+            listOf(stored("known", alice.pub, sig = "ab".repeat(64)), stored("new", alice.pub, sig = "ab".repeat(64)))
+
+        alice.transfer.sendMissingEvents("bob", "g1", peerEventIds = setOf("known"))
+
+        assertEquals(listOf("""{"id":"new"}"""), eventPayloads(alice))
+    }
+
+    @Test
+    fun `sendMissingEventsBinary forwards only third-party-verifiable events`() = runBlocking {
+        val alice = Peer(ALICE_PRIV)
+        val bob = Peer(BOB_PRIV)
+        authenticate(alice, bob)
+        coEvery { alice.groupRepo.getById("g1") } returns
+            Group("g1", "Test", "", alice.pub, 1000, listOf(alice.pub, bob.pub), emptyList())
+        coEvery { alice.eventDao.getEventsByGroup("g1") } returns
+            listOf(
+                stored("signed", alice.pub, sig = "ab".repeat(64)),
+                stored("sealed", "cc".repeat(32), sig = EventSnapshot.SEAL_SIG_PREFIX + "cd".repeat(64)),
+                stored("unsigned", "cc".repeat(32), sig = "")
+            )
+        val handshakeFrames = alice.sent.size
+
+        alice.transfer.sendMissingEventsBinary("bob", "g1", peerEventIds = emptySet(), senderPubkey = alice.pub)
+
+        val frames = alice.sent.drop(handshakeFrames)
+        // One event, small enough for a single unfragmented packet.
+        assertEquals(1, frames.size)
+        val packet = BleProtocol.decode(frames.single())
+        assertEquals("""{"id":"signed"}""", String(packet!!.payload))
     }
 
     // --- processPayload ---

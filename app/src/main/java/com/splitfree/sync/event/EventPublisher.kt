@@ -12,6 +12,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.OutboxFullException
@@ -167,8 +168,64 @@ constructor(
     override suspend fun hasOutboxEventsById(eventIds: List<String>): Boolean =
         eventIds.isNotEmpty() && outboxDao.countByEventIds(eventIds) > 0
 
+    override suspend fun redeliverAuthoredEvents(groupId: String, recipients: Collection<String>): Int {
+        if (!giftWrap.enabled) return 0
+        val me = identity.getPublicKeyHex()
+        val targets = recipients.distinct().filter { it != me }
+        if (targets.isEmpty()) return 0
+
+        // Only events I signed myself can be re-wrapped: a `seal:` row is someone else's rumor
+        // (or one I could not re-authenticate), and direct-published types are already on relays.
+        val authored =
+            eventDao.getEventsByGroup(groupId).filter {
+                it.pubkey == me &&
+                    it.eventType in REDELIVERABLE_TYPES &&
+                    it.originalEventJson != null &&
+                    EventSnapshot.isThirdPartyVerifiable(it.sig)
+            }
+        if (authored.isEmpty()) return 0
+
+        // Wrap outside the transaction (crypto is slow), exactly as publishToGroup does.
+        val deliveries =
+            authored.flatMap { entity ->
+                val event = NostrEvent.fromJson(checkNotNull(entity.originalEventJson)) ?: return@flatMap emptyList()
+                targets.map { recipient ->
+                    val wrapped = giftWrap.wrapIfEnabled(event, recipient)
+                    check(wrapped.kind == NostrKind.GIFT_WRAP) { "Gift wrapping changed while preparing redelivery" }
+                    wrapped to
+                        OutboxEntity(wrapped.id, wrapped.toJson(), wrapped.createdAt, eventType = entity.eventType)
+                }
+            }.shuffled()
+
+        // Every wrap has a fresh random id, so re-running this is harmless for receivers (they dedup
+        // on the inner rumor id). The cap only bounds local outbox growth; the count is read inside
+        // the transaction so a concurrent save cannot push us past it.
+        val queued =
+            db.withTransaction {
+                val room = (MAX_EXPENSE_OUTBOX_SIZE - outboxDao.count()).coerceAtLeast(0)
+                val admitted = if (deliveries.size <= room) deliveries else deliveries.take(room)
+                admitted.forEach { (_, row) -> outboxDao.insert(row) }
+                admitted
+            }
+        if (queued.size < deliveries.size) {
+            Log.w(
+                TAG,
+                "Outbox cap reached: queued ${queued.size}/${deliveries.size} redelivery wraps for $groupId " +
+                    "(${authored.size} events x ${targets.size} recipients)"
+            )
+        } else {
+            Log.i(TAG, "Queued ${queued.size} redelivery wraps for $groupId to ${targets.size} new member(s)")
+        }
+        dispatch(queued.map { (wrapped, _) -> wrapped })
+        return queued.size
+    }
+
     companion object {
         private const val TAG = "EventPublisher"
         private const val MAX_EXPENSE_OUTBOX_SIZE = 5000
+
+        /** Event types that are gift-wrapped per member and therefore need re-delivery to late joiners. */
+        private val REDELIVERABLE_TYPES =
+            setOf("expense", "settlement", "expense_correction", "expense_delete", "snapshot")
     }
 }

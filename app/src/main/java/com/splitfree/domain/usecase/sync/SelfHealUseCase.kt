@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.sync
 
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.NostrClientContract
@@ -43,10 +44,13 @@ constructor(
         val myPubkey = identity.getPublicKeyHex()
         val remoteIds = nostrClient.fetchEventIds(groupId, since, myPubkey)
 
+        // Rows that arrived as NIP-59 rumors (empty or `seal:` sig) are not re-publishable: a
+        // relay/peer cannot verify them and their author is responsible for their delivery.
         val missing =
             localEvents.filter {
                 it.eventId !in remoteIds &&
                     it.originalEventJson != null &&
+                    EventSnapshot.isThirdPartyVerifiable(it.sig) &&
                     it.pubkey in currentMembers
             }
         if (missing.isEmpty()) return 0

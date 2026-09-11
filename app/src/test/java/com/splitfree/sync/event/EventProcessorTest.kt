@@ -6,7 +6,9 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.nip.Nip59
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.validation.EventValidator
@@ -17,6 +19,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
@@ -386,11 +389,43 @@ class EventProcessorTest {
     @Test
     fun `process unwraps gift-wrapped events`() = runBlocking {
         val inner = makeEvent()
-        every { giftWrap.tryUnwrap(any()) } returns Pair(inner, "sender")
+        every { giftWrap.tryUnwrap(any()) } returns Nip59.Unwrapped(inner, "sender", "sealsig")
         // Rumor has sig="" so signer.verify would return false — but we skip it for unwrapped events
         every { signer.verify(any()) } returns false
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertTrue(result.stored)
+    }
+
+    @Test
+    fun `process stores gift-wrapped rumor with seal-marked signature`() = runBlocking {
+        val rumor = makeEvent().copy(sig = "")
+        val sealSig = "ab".repeat(64)
+        every { giftWrap.tryUnwrap(any()) } returns Nip59.Unwrapped(rumor, pubkey, sealSig)
+        every { signer.verify(any()) } returns false
+        val stored = slot<EventEntity>()
+        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+
+        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+
+        assertTrue(result.stored)
+        assertEquals(EventSnapshot.SEAL_SIG_PREFIX + sealSig, stored.captured.sig)
+        assertTrue(stored.captured.sig.startsWith("seal:"))
+        assertFalse(EventSnapshot.isThirdPartyVerifiable(stored.captured.sig))
+        // The rumor itself is persisted unchanged (unsigned); the marker lives only in the sig column.
+        assertEquals(rumor.toJson(), stored.captured.originalEventJson)
+        assertEquals(rumor.id, stored.captured.eventId)
+    }
+
+    @Test
+    fun `process stores direct signed event with its own signature`() = runBlocking {
+        val stored = slot<EventEntity>()
+        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+
+        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+
+        assertTrue(result.stored)
+        assertEquals("sig", stored.captured.sig)
+        assertTrue(EventSnapshot.isThirdPartyVerifiable(stored.captured.sig))
     }
 
     @Test

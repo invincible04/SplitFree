@@ -28,18 +28,19 @@ class SelfHealUseCaseTest {
     private val groupId = "group-123"
     private val memberPub = "pub"
 
-    private fun entity(id: String, hasJson: Boolean = true, pubkey: String = memberPub) = EventSnapshot(
-        eventId = id,
-        groupId = groupId,
-        pubkey = pubkey,
-        createdAt = 1700000000,
-        kind = 30078,
-        contentEncrypted = "enc",
-        eventType = "expense",
-        sig = "sig",
-        receivedAt = 1700000000,
-        originalEventJson = if (hasJson) """{"id":"$id"}""" else null
-    )
+    private fun entity(id: String, hasJson: Boolean = true, pubkey: String = memberPub, sig: String = "sig") =
+        EventSnapshot(
+            eventId = id,
+            groupId = groupId,
+            pubkey = pubkey,
+            createdAt = 1700000000,
+            kind = 30078,
+            contentEncrypted = "enc",
+            eventType = "expense",
+            sig = sig,
+            receivedAt = 1700000000,
+            originalEventJson = if (hasJson) """{"id":"$id"}""" else null
+        )
 
     @Before
     fun setup() {
@@ -148,6 +149,22 @@ class SelfHealUseCaseTest {
         every { giftWrap.enabled } returns true
         assertEquals(0, useCase(groupId))
         coVerify(exactly = 0) { eventRepo.getEventsByGroup(any()) }
+    }
+
+    @Test
+    fun `skips seal-signed rumors and unsigned rows that relays cannot verify`() = runTest {
+        val local = listOf(
+            entity("signed"),
+            entity("sealed", sig = EventSnapshot.SEAL_SIG_PREFIX + "ab".repeat(64)),
+            entity("unsigned", sig = "")
+        )
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns local
+        coEvery { nostrClient.fetchEventIds(groupId, any(), any()) } returns emptySet()
+        coEvery { nostrClient.publishJson(any()) } returns true
+
+        assertEquals(1, useCase(groupId))
+        coVerify(exactly = 1) { nostrClient.publishJson(any()) }
+        coVerify(exactly = 1) { nostrClient.publishJson("""{"id":"signed"}""") }
     }
 
     @Test

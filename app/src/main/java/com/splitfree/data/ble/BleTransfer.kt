@@ -5,6 +5,7 @@ import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import com.splitfree.sync.event.EventProcessor
@@ -323,6 +324,10 @@ constructor(
         var sent = 0
         for (event in localEvents) {
             if (event.eventId !in peerEventIds) {
+                // Rows received as NIP-59 rumors carry no signature the peer could check (their
+                // `sig` is empty or a `seal:` marker only we could verify). The peer's EventProcessor
+                // would reject them, so skip; the original author re-delivers to new members.
+                if (!EventSnapshot.isThirdPartyVerifiable(event.sig)) continue
                 val eventJson = event.originalEventJson ?: continue
                 nearbySync.sendPayload(endpointId, byteArrayOf(MSG_EVENT) + eventJson.toByteArray())
                 sent++
@@ -417,6 +422,8 @@ constructor(
         var sent = 0
         for (event in localEvents) {
             if (event.eventId !in peerEventIds) {
+                // Same rule as sendMissingEvents: only forward events the peer can verify itself.
+                if (!EventSnapshot.isThirdPartyVerifiable(event.sig)) continue
                 val eventJson = event.originalEventJson ?: continue
                 val msgType = MessageType.fromEventType(event.eventType) ?: MessageType.EXPENSE
                 val packet =

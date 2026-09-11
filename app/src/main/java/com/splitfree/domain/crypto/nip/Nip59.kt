@@ -18,6 +18,17 @@ object Nip59 {
     private val secureRandom = SecureRandom()
 
     /**
+     * Result of a successful [unwrap].
+     *
+     * @property rumor the inner, unsigned event (its id has been checked for self-consistency)
+     * @property senderPubkey hex pubkey of the seal signer, the authenticated author of [rumor]
+     * @property sealSig the seal's BIP-340 signature. The rumor carries no signature of its own, so
+     *   this is the only cryptographic evidence that [senderPubkey] authored it. Callers that store
+     *   the rumor keep this alongside it so the row can later be distinguished from an unverified one.
+     */
+    data class Unwrapped(val rumor: NostrEvent, val senderPubkey: String, val sealSig: String)
+
+    /**
      * Wrap a rumor for a specific recipient.
      *
      * @param rumor The inner event (unsigned — sig must be empty)
@@ -87,9 +98,9 @@ object Nip59 {
      *
      * @param giftWrap The kind 1059 event
      * @param recipientPrivKey 32-byte recipient private key
-     * @return Pair of (rumor, senderPubkeyHex) or null if invalid
+     * @return [Unwrapped] (rumor, sender pubkey hex, seal signature) or null if invalid
      */
-    fun unwrap(giftWrap: NostrEvent, recipientPrivKey: ByteArray): Pair<NostrEvent, String>? {
+    fun unwrap(giftWrap: NostrEvent, recipientPrivKey: ByteArray): Unwrapped? {
         if (giftWrap.kind != NostrKind.GIFT_WRAP) return null
         if (!giftWrap.verify()) return null
 
@@ -125,7 +136,7 @@ object Nip59 {
         // We deliberately ignore rumor.sig here (lenient toward non-compliant senders).
         if (rumor.id != rumor.computeId().toHex()) return null
 
-        return rumor to seal.pubkey
+        return Unwrapped(rumor = rumor, senderPubkey = seal.pubkey, sealSig = seal.sig)
     }
 
     /** Random timestamp within the past 2 days (some relays reject future timestamps). */

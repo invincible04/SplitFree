@@ -3,11 +3,14 @@ package com.splitfree.sync.event
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -25,6 +28,8 @@ class EventPostProcessorTest {
     private val rotateGroupKey = mockk<RotateGroupKeyUseCase>(relaxed = true)
     private val revokeKey = mockk<RevokeKeyUseCase>(relaxed = true)
     private val selfHeal = mockk<SelfHealUseCase>(relaxed = true)
+    private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
+    private val identity = mockk<IdentityContract>()
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private lateinit var processor: EventPostProcessor
 
@@ -39,7 +44,9 @@ class EventPostProcessorTest {
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { android.util.Log.e(any(), any(), any()) } returns 0
         coEvery { groupRepo.getById(groupId) } returns group
-        processor = EventPostProcessor(groupRepo, rotateGroupKey, revokeKey, selfHeal, appScope)
+        every { identity.getPublicKeyHex() } returns pubkey
+        processor =
+            EventPostProcessor(groupRepo, rotateGroupKey, revokeKey, selfHeal, eventPublisher, identity, appScope)
     }
 
     @After
@@ -349,5 +356,124 @@ class EventPostProcessorTest {
         coEvery { revokeKey.handleRevocation(any(), any(), any()) } throws RuntimeException("revoke failed")
         processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false)
         // Should not throw — exception is caught internally
+    }
+
+    // --- Re-delivery of authored history to new members ---
+
+    private val joiner = "bb".repeat(32)
+
+    /**
+     * Make the repository behave like Room: the first read returns [before], every read after the
+     * meta has been applied returns [after]. `updateFromMeta` is where the switch happens.
+     */
+    private fun persistedTransition(before: Group, after: Group) {
+        var current = before
+        coEvery { groupRepo.getById(groupId) } answers { current }
+        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } answers
+            { current = after }
+    }
+
+    @Test
+    fun `handle group_meta self-join adding a new member triggers redelivery to that member only`() = runBlocking {
+        val creatorGroup = group.copy(createdBy = pubkey)
+        persistedTransition(creatorGroup, creatorGroup.copy(members = listOf(pubkey, joiner)))
+        val meta = """{"name":"Test","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, joiner, groupId, 2000, false)
+
+        // appScope uses Dispatchers.Unconfined so the launch runs eagerly.
+        coVerify(exactly = 1) { eventPublisher.redeliverAuthoredEvents(groupId, setOf(joiner)) }
+    }
+
+    @Test
+    fun `handle group_meta from creator adding several members redelivers to all of them except me`() = runBlocking {
+        val third = "cc".repeat(32)
+        val creator = "dd".repeat(32)
+        val before = group.copy(createdBy = creator, members = listOf(creator, pubkey))
+        persistedTransition(before, before.copy(members = listOf(creator, pubkey, joiner, third)))
+        val meta =
+            """{"name":"Test","created_by":"$creator","members":["$creator","$pubkey","$joiner","$third"],""" +
+                """"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, creator, groupId, 2000, false)
+
+        coVerify(exactly = 1) { eventPublisher.redeliverAuthoredEvents(groupId, setOf(joiner, third)) }
+    }
+
+    @Test
+    fun `handle group_meta that only renames does not trigger redelivery`() = runBlocking {
+        val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, joiner))
+        persistedTransition(creatorGroup, creatorGroup.copy(name = "Renamed"))
+        val meta = """{"name":"Renamed","created_by":"$pubkey","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
+
+        coVerify(exactly = 0) { eventPublisher.redeliverAuthoredEvents(any(), any()) }
+    }
+
+    @Test
+    fun `handle group_meta for my own join does not trigger redelivery`() = runBlocking {
+        // I am the one who just appeared: there is nobody new to deliver my history to.
+        val creator = "dd".repeat(32)
+        val before = group.copy(createdBy = creator, members = listOf(creator))
+        persistedTransition(before, before.copy(members = listOf(creator, pubkey)))
+        val meta = """{"name":"Test","members":["$creator","$pubkey"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
+
+        coVerify(exactly = 0) { eventPublisher.redeliverAuthoredEvents(any(), any()) }
+    }
+
+    @Test
+    fun `handle group_meta that removes a member does not trigger redelivery`() = runBlocking {
+        val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, joiner))
+        persistedTransition(creatorGroup, creatorGroup.copy(members = listOf(pubkey)))
+        val meta = """{"name":"Test","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
+
+        coVerify(exactly = 0) { eventPublisher.redeliverAuthoredEvents(any(), any()) }
+    }
+
+    @Test
+    fun `handle group_meta rejected by the LWW watermark does not redeliver to a stale member`() = runBlocking {
+        // A stale meta replayed from a relay still lists `joiner`, who has since been removed by a
+        // rotation. updateFromMeta ignores it (persisted state unchanged), so re-delivery must too,
+        // or my history would be wrapped for a non-member.
+        val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
+        persistedTransition(creatorGroup, creatorGroup) // watermark rejects: no change persisted
+        val staleMeta =
+            """{"name":"Test","created_by":"$pubkey","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", staleMeta, pubkey, groupId, 500, false)
+
+        coVerify(exactly = 0) { eventPublisher.redeliverAuthoredEvents(any(), any()) }
+    }
+
+    @Test
+    fun `handle group_meta redelivery failure is caught`() = runBlocking {
+        coEvery { eventPublisher.redeliverAuthoredEvents(any(), any()) } throws RuntimeException("outbox exploded")
+        val creatorGroup = group.copy(createdBy = pubkey)
+        persistedTransition(creatorGroup, creatorGroup.copy(members = listOf(pubkey, joiner)))
+        val meta = """{"name":"Test","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+
+        // Should not throw: failure is caught inside appScope.launch
+        processor.handle("group_meta", meta, joiner, groupId, 2000, false)
+
+        coVerify(exactly = 1) { eventPublisher.redeliverAuthoredEvents(groupId, setOf(joiner)) }
+    }
+
+    @Test
+    fun `handle group_meta with new member still applies the meta before redelivering`() = runBlocking {
+        val creatorGroup = group.copy(createdBy = pubkey)
+        persistedTransition(creatorGroup, creatorGroup.copy(members = listOf(pubkey, joiner)))
+        val meta = """{"name":"Test","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, joiner, groupId, 2000, false)
+
+        coVerifyOrder {
+            groupRepo.updateFromMeta(groupId, "Test", match { joiner in it && pubkey in it }, any(), 2000, "", any())
+            eventPublisher.redeliverAuthoredEvents(groupId, setOf(joiner))
+        }
     }
 }
