@@ -29,6 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
@@ -214,10 +218,22 @@ private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, on
 @Composable
 private fun StatusDot(status: RelayCheckStatus) {
     val tokens = adaptiveSizeTokens()
+    val statusText = stringResource(
+        when (status) {
+            RelayCheckStatus.ONLINE -> R.string.cd_status_connected
+            RelayCheckStatus.OFFLINE, RelayCheckStatus.REJECTED -> R.string.cd_status_disconnected
+            RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING -> R.string.cd_status_connecting
+            RelayCheckStatus.IDLE -> R.string.cd_status_unchecked
+        }
+    )
+    val statusSemantics = Modifier.semantics {
+        contentDescription = statusText
+        role = Role.Image
+    }
 
     when (status) {
         RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING -> CircularProgressIndicator(
-            modifier = Modifier.size(tokens.relayStatusDotSize),
+            modifier = Modifier.size(tokens.relayStatusDotSize).then(statusSemantics),
             strokeWidth = 1.5.dp
         )
         else -> {
@@ -232,7 +248,7 @@ private fun StatusDot(status: RelayCheckStatus) {
             Surface(
                 shape = MaterialTheme.shapes.extraSmall,
                 color = color,
-                modifier = Modifier.size(tokens.relayStatusDotSize),
+                modifier = Modifier.size(tokens.relayStatusDotSize).then(statusSemantics),
                 content = {}
             )
         }

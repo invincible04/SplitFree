@@ -2,10 +2,14 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
+import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -18,11 +22,13 @@ import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
+import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +42,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -106,30 +113,91 @@ class GroupDetailViewModelTest {
     }
 
     @Test
-    fun `addRelay appends to ui state`() {
+    fun `isCreator is false until both keys are known`() {
+        assertFalse(GroupDetailUiState().isCreator)
+        assertFalse(GroupDetailUiState(createdBy = pubkey).isCreator)
+        assertTrue(vm.uiState.value.isCreator)
+    }
+
+    // --- relay editing happens on a draft; the saved list only changes on save ---
+
+    @Test
+    fun `addRelay appends to the draft and leaves saved relays unchanged`() {
+        vm.beginRelayEdit()
         vm.addRelay("wss://new.relay")
-        assertTrue("wss://new.relay" in vm.uiState.value.relays)
-        assertEquals(3, vm.uiState.value.relays.size)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two", "wss://new.relay"), vm.uiState.value.draftRelays)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two"), vm.uiState.value.relays)
     }
 
     @Test
     fun `addRelay deduplicates`() {
+        vm.beginRelayEdit()
         vm.addRelay("wss://relay.one")
-        assertEquals(2, vm.uiState.value.relays.size)
+        assertEquals(2, vm.uiState.value.draftRelays!!.size)
     }
 
     @Test
-    fun `removeRelay removes from ui state`() {
+    fun `removeRelay removes from the draft`() {
+        vm.beginRelayEdit()
         vm.removeRelay("wss://relay.one")
-        assertEquals(listOf("wss://relay.two"), vm.uiState.value.relays)
+        assertEquals(listOf("wss://relay.two"), vm.uiState.value.draftRelays)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two"), vm.uiState.value.relays)
     }
 
     @Test
     fun `removeRelay does not remove last relay`() {
+        vm.beginRelayEdit()
         vm.removeRelay("wss://relay.one")
-        assertEquals(1, vm.uiState.value.relays.size)
+        assertEquals(1, vm.uiState.value.draftRelays!!.size)
         vm.removeRelay("wss://relay.two")
-        assertEquals(1, vm.uiState.value.relays.size)
+        assertEquals(1, vm.uiState.value.draftRelays!!.size)
+    }
+
+    @Test
+    fun `beginRelayEdit copies saved relays and does not reset an open draft`() {
+        vm.beginRelayEdit()
+        assertEquals(vm.uiState.value.relays, vm.uiState.value.draftRelays)
+        vm.addRelay("wss://new.relay")
+        vm.beginRelayEdit()
+        assertTrue("wss://new.relay" in vm.uiState.value.draftRelays!!)
+    }
+
+    @Test
+    fun `cancelRelayEdit discards the draft and reverts to saved relays`() = runTest {
+        vm.beginRelayEdit()
+        vm.addRelay("wss://new.relay")
+        vm.removeRelay("wss://relay.one")
+
+        vm.cancelRelayEdit()
+
+        assertNull(vm.uiState.value.draftRelays)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two"), vm.uiState.value.relays)
+        coVerify(exactly = 0) { updateGroupRelays(any(), any()) }
+    }
+
+    @Test
+    fun `saveRelays persists the draft and closes it`() = runTest {
+        vm.beginRelayEdit()
+        vm.addRelay("wss://new.relay")
+        var done = false
+
+        vm.saveRelays { done = true }
+
+        coVerify { updateGroupRelays("g1", listOf("wss://relay.one", "wss://relay.two", "wss://new.relay")) }
+        assertTrue(done)
+        assertNull(vm.uiState.value.draftRelays)
+    }
+
+    @Test
+    fun `a failed save keeps the draft open for another attempt`() = runTest {
+        coEvery { updateGroupRelays(any(), any()) } throws RuntimeException("network")
+        vm.beginRelayEdit()
+        vm.addRelay("wss://new.relay")
+
+        vm.saveRelays {}
+
+        assertEquals(UiMessage.Raw("network"), vm.error.value)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two", "wss://new.relay"), vm.uiState.value.draftRelays)
     }
 
     @Test
@@ -149,6 +217,7 @@ class GroupDetailViewModelTest {
         every { relayHealthMonitor.statuses } returns
             mapOf(url to RelayStatus(url, online = false))
 
+        vm.beginRelayEdit()
         vm.addRelay(url)
         vm.checkRelay(url)
 
@@ -156,13 +225,12 @@ class GroupDetailViewModelTest {
     }
 
     @Test
-    fun `saveRelays calls use case and invokes callback`() = runTest {
-        vm.addRelay("wss://new.relay")
+    fun `saveRelays without an open draft persists the saved list`() = runTest {
         var done = false
 
         vm.saveRelays { done = true }
 
-        coVerify { updateGroupRelays("g1", vm.uiState.value.relays) }
+        coVerify { updateGroupRelays("g1", listOf("wss://relay.one", "wss://relay.two")) }
         assertTrue(done)
     }
 
@@ -172,7 +240,61 @@ class GroupDetailViewModelTest {
 
         vm.saveRelays {}
 
-        assertEquals("network", vm.error.value)
+        assertEquals(UiMessage.Raw("network"), vm.error.value)
+    }
+
+    // --- settlements are validated against freshly computed debts ---
+
+    private val other = "bb".repeat(32)
+    private val debt = DebtTransaction(from = other, to = pubkey, amount = 5000, currency = "INR")
+
+    private fun currentDebts(vararg debts: DebtTransaction) {
+        val balances = listOf(Balance(pubkey, 5000, "INR"), Balance(other, -5000, "INR"))
+        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(balances, emptySet())
+        every { simplifyDebts(balances) } returns debts.toList()
+    }
+
+    @Test
+    fun `recordSettlement stores a settlement for a debt that still exists`() = runTest {
+        currentDebts(debt)
+        coEvery { groupRepo.getById("g1") } returns group
+        val stored = slot<Settlement>()
+        coEvery { expenseRepo.addSettlement(capture(stored), "g1") } returns Unit
+
+        vm.recordSettlement(debt)
+
+        assertEquals(other, stored.captured.from)
+        assertEquals(pubkey, stored.captured.to)
+        assertEquals(5000L, stored.captured.amount)
+        assertEquals("INR", stored.captured.currency)
+        assertNull(vm.error.value)
+    }
+
+    @Test
+    fun `recordSettlement rejects a debt whose amount changed since the dialog opened`() = runTest {
+        currentDebts(debt.copy(amount = 4000))
+        coEvery { groupRepo.getById("g1") } returns group
+
+        vm.recordSettlement(debt)
+
+        coVerify(exactly = 0) { expenseRepo.addSettlement(any(), any()) }
+        assertEquals(UiMessage.Res(R.string.settlement_stale), vm.error.value)
+        assertEquals(listOf(debt.copy(amount = 4000)), vm.uiState.value.debts)
+    }
+
+    @Test
+    fun `recordSettlement rejects a debt that no longer exists`() = runTest {
+        currentDebts()
+        coEvery { groupRepo.getById("g1") } returns group
+
+        vm.recordSettlement(debt)
+
+        coVerify(exactly = 0) { expenseRepo.addSettlement(any(), any()) }
+        assertEquals(UiMessage.Res(R.string.settlement_stale), vm.error.value)
+        // The guard is released: a valid settlement afterwards still goes through.
+        currentDebts(debt)
+        vm.recordSettlement(debt)
+        coVerify(exactly = 1) { expenseRepo.addSettlement(any(), "g1") }
     }
 
     @Test
@@ -203,7 +325,7 @@ class GroupDetailViewModelTest {
 
         vm.removeMember("bb".repeat(32))
 
-        assertEquals("Group changed during rotation", vm.error.value)
+        assertEquals(UiMessage.Raw("Group changed during rotation"), vm.error.value)
         vm.removeMember("bb".repeat(32))
         coVerify(exactly = 2) { rotateGroupKey("g1", "bb".repeat(32)) }
     }
@@ -223,7 +345,7 @@ class GroupDetailViewModelTest {
 
         val failing = newViewModel()
 
-        assertEquals("database corrupt", failing.error.value)
+        assertEquals(UiMessage.Raw("database corrupt"), failing.error.value)
         failing.viewModelScope.cancel()
     }
 
@@ -233,7 +355,7 @@ class GroupDetailViewModelTest {
 
         val failing = newViewModel()
 
-        assertEquals("keystore unavailable", failing.error.value)
+        assertEquals(UiMessage.Raw("keystore unavailable"), failing.error.value)
         failing.viewModelScope.cancel()
     }
 
@@ -243,7 +365,7 @@ class GroupDetailViewModelTest {
 
         val failing = newViewModel()
 
-        assertEquals("disk io error", failing.error.value)
+        assertEquals(UiMessage.Raw("disk io error"), failing.error.value)
         failing.viewModelScope.cancel()
     }
 
@@ -252,11 +374,12 @@ class GroupDetailViewModelTest {
         val url = "wss://custom.bad.relay"
         coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
 
+        vm.beginRelayEdit()
         vm.addRelay(url)
         vm.checkRelay(url)
 
         assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
-        assertEquals("Could not check custom.bad.relay", vm.error.value)
+        assertEquals(UiMessage.Res(R.string.relay_check_failed, "custom.bad.relay"), vm.error.value)
     }
 
     @Test

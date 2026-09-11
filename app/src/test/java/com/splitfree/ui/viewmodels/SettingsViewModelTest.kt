@@ -14,6 +14,7 @@ import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -27,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -62,6 +64,9 @@ class SettingsViewModelTest {
 
     private lateinit var vm: SettingsViewModel
 
+    /** Backing store for the mocked preferences so `displayName` round-trips like the real one. */
+    private var storedDisplayName = ""
+
     private val groups = listOf(
         Group(id = "g1", name = "A", createdBy = "p", createdAt = 1, members = listOf("p"), relays = emptyList()),
         Group(id = "g2", name = "B", createdBy = "p", createdAt = 1, members = listOf("p"), relays = emptyList())
@@ -78,6 +83,8 @@ class SettingsViewModelTest {
         every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
         every { identity.hasIdentity() } returns false
         every { identity.hasPendingKeyPair() } returns false
+        every { userPreferences.displayName } answers { storedDisplayName }
+        every { userPreferences.displayName = any() } answers { storedDisplayName = firstArg() }
         coEvery { groupRepo.getAll() } returns groups
 
         vm = SettingsViewModel(
@@ -162,6 +169,52 @@ class SettingsViewModelTest {
         vm.exportAllGroups(uri)
 
         assertEquals(ExportState.Error("boom"), vm.exportState.value)
+    }
+
+    // --- display name debounce ---
+
+    @Test
+    fun `first display name edit within the debounce window is published`() = runTest {
+        // The ViewModel was created moments ago; this edit lands well inside the 800 ms window.
+        vm.setDisplayName("Alice")
+        coVerify(exactly = 0) { updateDisplayName(any()) }
+
+        advanceTimeBy(801)
+
+        coVerify(exactly = 1) { updateDisplayName("Alice") }
+        assertEquals("Alice", vm.displayName.value)
+    }
+
+    @Test
+    fun `keystrokes inside the window collapse into one publish of the final name`() = runTest {
+        vm.setDisplayName("A")
+        advanceTimeBy(300)
+        vm.setDisplayName("Al")
+        advanceTimeBy(300)
+        vm.setDisplayName("Alice")
+        advanceTimeBy(801)
+
+        coVerify(exactly = 1) { updateDisplayName(any()) }
+        coVerify(exactly = 1) { updateDisplayName("Alice") }
+    }
+
+    @Test
+    fun `re-entering the already published name is not republished`() = runTest {
+        vm.setDisplayName("Alice")
+        advanceTimeBy(801)
+        vm.setDisplayName("Alic")
+        advanceTimeBy(100)
+        vm.setDisplayName("Alice")
+        advanceTimeBy(801)
+
+        coVerify(exactly = 1) { updateDisplayName(any()) }
+    }
+
+    @Test
+    fun `the initially persisted name is never republished on its own`() = runTest {
+        advanceTimeBy(5_000)
+
+        coVerify(exactly = 0) { updateDisplayName(any()) }
     }
 
     @Test

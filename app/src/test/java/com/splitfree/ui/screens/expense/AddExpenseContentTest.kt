@@ -51,6 +51,7 @@ import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.ui.theme.SplitFreeTheme
+import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.AddExpenseUiState
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -463,11 +464,11 @@ class AddExpenseContentTest {
 
     @Test
     fun `loading error displays reason and retries only on request`() {
-        state = AddExpenseUiState(loading = false, loadingError = "This group is no longer available")
+        state = AddExpenseUiState(loading = false, loadingError = UiMessage.Res(R.string.expense_group_unavailable))
         var retries = 0
         render(ExpenseEditorActions(retry = { retries++ }))
 
-        compose.onNodeWithText("This group is no longer available").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.expense_group_unavailable)).assertIsDisplayed()
         compose.onNodeWithTag("expense_form").assertDoesNotExist()
         compose.onNodeWithTag("expense_save").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, retries) }
@@ -480,15 +481,15 @@ class AddExpenseContentTest {
     fun `validation messages are visible and save dispatches submission`() {
         state =
             state.copy(
-                amountError = "Enter an amount",
-                descriptionError = "Add a description",
-                error = "Could not save expense"
+                amountError = UiMessage.Raw("Enter an amount"),
+                descriptionError = UiMessage.Res(R.string.expense_description_required),
+                error = UiMessage.Raw("Could not save expense")
             )
         var saves = 0
         render(ExpenseEditorActions(save = { saves++ }))
 
         formNode("expense_amount").assertTextContains("Enter an amount")
-        formNode("expense_description").assertTextContains("Add a description")
+        formNode("expense_description").assertTextContains(text(R.string.expense_description_required))
         compose.onNodeWithTag("expense_save_error").assertIsDisplayed()
         compose.onNodeWithText("Could not save expense").assertIsDisplayed()
         compose.onNodeWithTag("expense_save").assertIsEnabled().performClick()
@@ -498,7 +499,7 @@ class AddExpenseContentTest {
 
     @Test
     fun `locked draft exposes recovery retry instead of allowing edits`() {
-        state = state.copy(editable = false, error = "Check the previously saved expense before editing")
+        state = state.copy(editable = false, error = UiMessage.Raw("Check the previously saved expense before editing"))
         var retries = 0
         render(ExpenseEditorActions(retry = { retries++ }))
 
@@ -518,7 +519,7 @@ class AddExpenseContentTest {
         render(ExpenseEditorActions(save = { saves++ }))
         compose.onNodeWithTag("expense_save_error").assertDoesNotExist()
 
-        compose.runOnIdle { state = state.copy(error = "Could not save expense") }
+        compose.runOnIdle { state = state.copy(error = UiMessage.Raw("Could not save expense")) }
 
         val errorBounds = compose.onNodeWithTag("expense_save_error").assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot

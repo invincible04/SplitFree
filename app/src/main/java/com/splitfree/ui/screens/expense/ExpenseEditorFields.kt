@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.ui.util.disambiguatedMemberName
 import com.splitfree.ui.viewmodels.AddExpenseUiState
 import com.splitfree.util.CurrencyFormatter
 
@@ -103,21 +104,13 @@ internal fun ExpenseDescriptionField(state: AddExpenseUiState, enabled: Boolean,
 
 /** Keep same-name members distinguishable without replacing the real repository identity. */
 @Composable
-internal fun memberName(state: AddExpenseUiState, pubkey: String): String {
-    val you = stringResource(R.string.expense_you)
-    fun label(key: String): String = if (key == state.myPubkey) {
-        you
-    } else {
-        state.memberNames[key]?.takeIf { it.isNotBlank() } ?: key.take(8)
-    }
-    val name = label(pubkey)
-    val collisions = (state.members + state.participants + state.paidBy).distinct().filter { label(it) == name }
-    if (collisions.size < 2) return name
-    val length = (8..pubkey.length.coerceAtLeast(8)).firstOrNull { size ->
-        collisions.count { it.takeLast(size) == pubkey.takeLast(size) } == 1
-    } ?: pubkey.length
-    return "$name · ${pubkey.takeLast(length)}"
-}
+internal fun memberName(state: AddExpenseUiState, pubkey: String): String = disambiguatedMemberName(
+    pubkey = pubkey,
+    memberNames = state.memberNames,
+    everyone = state.members + state.participants + state.paidBy,
+    youLabel = stringResource(R.string.expense_you),
+    myPubkey = state.myPubkey
+)
 
 @Composable
 internal fun splitLabel(type: SplitType): String = stringResource(

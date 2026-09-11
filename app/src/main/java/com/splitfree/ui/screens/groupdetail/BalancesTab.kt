@@ -21,6 +21,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -36,12 +37,15 @@ fun BalancesTab(
     hasExpenses: Boolean,
     myPubkey: String = "",
     memberNames: Map<String, String> = emptyMap(),
+    members: Collection<String> = emptyList(),
     onSettle: (DebtTransaction) -> Unit
 ) {
     val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
+    // A (from, to, currency) triple identifies one simplified debt; duplicates would crash LazyColumn.
+    val uniqueDebts = remember(debts) { debts.distinctBy { debtKey(it) } }
 
-    if (debts.isEmpty()) {
+    if (uniqueDebts.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize().padding(tokens.emptyStatePadding),
             contentAlignment = Alignment.Center
@@ -86,11 +90,12 @@ fun BalancesTab(
             contentPadding = PaddingValues(tokens.screenPaddingHorizontal),
             verticalArrangement = Arrangement.spacedBy(tokens.fieldSpacing)
         ) {
-            items(debts) { debt ->
+            items(uniqueDebts, key = { debtKey(it) }) { debt ->
                 DebtCard(
                     debt,
                     showSettle = debt.from == myPubkey || debt.to == myPubkey,
                     memberNames = memberNames,
+                    members = members,
                     onSettle = { onSettle(debt) }
                 )
             }
@@ -99,11 +104,14 @@ fun BalancesTab(
     }
 }
 
+private fun debtKey(debt: DebtTransaction): String = "${debt.from}:${debt.to}:${debt.currency}"
+
 @Composable
 fun DebtCard(
     debt: DebtTransaction,
     showSettle: Boolean = true,
     memberNames: Map<String, String> = emptyMap(),
+    members: Collection<String> = emptyList(),
     onSettle: () -> Unit
 ) {
     val tokens = adaptiveSizeTokens()
@@ -118,13 +126,13 @@ fun DebtCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                 ) {
-                    PubkeyChip(debt.from, memberNames)
+                    PubkeyChip(debt.from, memberNames, members)
                     Text(
                         stringResource(R.string.owes),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
-                    PubkeyChip(debt.to, memberNames)
+                    PubkeyChip(debt.to, memberNames, members)
                 }
                 Spacer(Modifier.height(tokens.itemSpacing))
                 Text(

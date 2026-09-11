@@ -1,8 +1,10 @@
 package com.splitfree.ui.viewmodels
 
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
@@ -13,6 +15,8 @@ import com.splitfree.domain.money.ExpenseSplitPreview
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.toUiMessage
 import com.splitfree.ui.viewmodels.expense.ExpenseDraft
 import com.splitfree.ui.viewmodels.expense.ExpenseDraftStore
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,9 +29,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * Screen state for the expense editor. Every message field is a [UiMessage]: ViewModel-produced text
+ * is a string resource, while domain validation messages pass through as [UiMessage.Raw].
+ */
 data class AddExpenseUiState(
     val loading: Boolean = true,
-    val loadingError: String? = null,
+    val loadingError: UiMessage? = null,
     val groupName: String = "",
     val members: List<String> = emptyList(),
     val memberNames: Map<String, String> = emptyMap(),
@@ -42,10 +50,10 @@ data class AddExpenseUiState(
     val participants: Set<String> = emptySet(),
     val previewSplits: List<SplitEntry> = emptyList(),
     val remaining: Long? = null,
-    val amountError: String? = null,
-    val descriptionError: String? = null,
-    val splitError: String? = null,
-    val error: String? = null,
+    val amountError: UiMessage? = null,
+    val descriptionError: UiMessage? = null,
+    val splitError: UiMessage? = null,
+    val error: UiMessage? = null,
     val saving: Boolean = false,
     val saved: Boolean = false,
     val dirty: Boolean = false,
@@ -63,12 +71,12 @@ constructor(
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
     private val store = ExpenseDraftStore(savedStateHandle)
-    private var draftLoadError: String? = null
-    private var recoveryError: String? = null
+    private var draftLoadError: UiMessage? = null
+    private var recoveryError: UiMessage? = null
     private var draft = try {
         store.read()
     } catch (_: IllegalArgumentException) {
-        draftLoadError = "This draft could not be restored safely. Close it and start a new expense."
+        draftLoadError = UiMessage.Res(R.string.expense_draft_unrestorable)
         ExpenseDraft(expenseId = "", createdAt = 0, localeTag = Locale.getDefault().toLanguageTag())
     }
     private val parser = ExpenseInputParser(Locale.forLanguageTag(draft.localeTag))
@@ -137,7 +145,7 @@ constructor(
             try {
                 val pubkey = currentAuthor()
                 if (!recoverIfNeeded()) return@launch
-                val current = groupRepo.getById(groupId) ?: error("This group is no longer available")
+                val current = groupRepo.getById(groupId) ?: throw groupUnavailable()
                 applyGroup(current, pubkey)
                 observeGroup()
             } catch (e: CancellationException) {
@@ -145,7 +153,7 @@ constructor(
                     _uiState.value.copy(
                         loading = false,
                         loadingError =
-                        recoveryError ?: "Loading was interrupted. Retry to load this group."
+                        recoveryError ?: UiMessage.Res(R.string.expense_load_interrupted)
                     )
                 )
                 throw e
@@ -153,7 +161,7 @@ constructor(
                 render(
                     _uiState.value.copy(
                         loading = false,
-                        loadingError = e.message ?: "Could not load this group",
+                        loadingError = e.uiMessage(R.string.expense_group_load_failed),
                         editable = false
                     )
                 )
@@ -192,7 +200,10 @@ constructor(
                     if (current == null) {
                         group = null
                         render(
-                            _uiState.value.copy(loadingError = "This group is no longer available", editable = false)
+                            _uiState.value.copy(
+                                loadingError = UiMessage.Res(R.string.expense_group_unavailable),
+                                editable = false
+                            )
                         )
                     } else {
                         applyGroup(current)
@@ -201,7 +212,12 @@ constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                render(_uiState.value.copy(loadingError = e.message ?: "Could not update this group", editable = false))
+                render(
+                    _uiState.value.copy(
+                        loadingError = e.uiMessage(R.string.expense_group_update_failed),
+                        editable = false
+                    )
+                )
             }
         }
     }
@@ -214,7 +230,7 @@ constructor(
         render(_uiState.value.copy(saving = true, error = null, editable = false))
         viewModelScope.launch {
             try {
-                val current = groupRepo.getById(groupId) ?: error("This group is no longer available")
+                val current = groupRepo.getById(groupId) ?: throw groupUnavailable()
                 applyGroup(current, currentAuthor())
                 if (!valid()) return@launch
                 draft = draft.copy(needsRecovery = true)
@@ -236,12 +252,11 @@ constructor(
                 markSaved()
             } catch (e: CancellationException) {
                 if (mustRecover) {
-                    recoveryError =
-                        "Save was interrupted. Retry to check whether it was saved before editing."
+                    recoveryError = UiMessage.Res(R.string.expense_save_interrupted)
                 }
                 throw e
             } catch (e: Exception) {
-                render(_uiState.value.copy(error = e.message ?: "Could not save this expense"))
+                render(_uiState.value.copy(error = e.uiMessage(R.string.expense_save_failed)))
                 recoverIfNeeded()
             } finally {
                 render(_uiState.value.copy(saving = false))
@@ -263,8 +278,7 @@ constructor(
             if (saved != null) {
                 val expected = expectedExpense()
                 if (expected == null || saved.copy(splitAmong = saved.splitAmong.sortedBy { it.pubkey }) != expected) {
-                    recoveryError =
-                        "This expense was saved with different details. Your draft is unchanged. Close it and review the saved expense."
+                    recoveryError = UiMessage.Res(R.string.expense_saved_differently)
                     render(_uiState.value.copy(loading = false))
                 } else {
                     markSaved()
@@ -278,11 +292,11 @@ constructor(
                 true
             }
         } catch (e: CancellationException) {
-            recoveryError = "Save check was interrupted. Retry before editing."
+            recoveryError = UiMessage.Res(R.string.expense_save_check_interrupted)
             render(_uiState.value.copy(loading = false))
             throw e
         } catch (_: Exception) {
-            recoveryError = "Could not confirm whether this expense was saved. Retry before editing."
+            recoveryError = UiMessage.Res(R.string.expense_save_check_failed)
             render(
                 _uiState.value.copy(
                     loading = false,
@@ -297,9 +311,10 @@ constructor(
     private fun currentAuthor(): String {
         val pubkey = identity.getPublicKeyHex()
         if (draft.initialized && draft.authorPubkey != pubkey) {
-            recoveryError = "Your identity changed. Close this draft and start a new expense."
+            val changed = UiMessage.Res(R.string.expense_identity_changed)
+            recoveryError = changed
             render(_uiState.value.copy(loading = false))
-            error(checkNotNull(recoveryError))
+            throw UiMessageException(changed)
         }
         return pubkey
     }
@@ -348,19 +363,30 @@ constructor(
     }
 
     private fun render(base: AddExpenseUiState = _uiState.value) {
-        var amountError: String? = null
+        var amountError: UiMessage? = null
         val amount = try {
-            parser.money(draft.amount, draft.currency).also {
-                require(it > 0) { "Enter an amount greater than zero" }
-                require(it <= ExpenseInputParser.MAX_EXPENSE_AMOUNT) { "Amount exceeds the maximum allowed" }
+            val parsed = parser.money(draft.amount, draft.currency)
+            when {
+                parsed <= 0 -> {
+                    amountError = UiMessage.Res(R.string.expense_amount_positive)
+                    null
+                }
+                parsed > ExpenseInputParser.MAX_EXPENSE_AMOUNT -> {
+                    amountError = UiMessage.Res(R.string.expense_amount_too_large)
+                    null
+                }
+                else -> parsed
             }
         } catch (e: IllegalArgumentException) {
-            if (attempted || draft.amount.isNotEmpty()) amountError = e.message
+            // Parser messages are domain text and are shown as-is.
+            amountError = e.toUiMessage(R.string.expense_amount_invalid)
             null
         }
+        if (!attempted && draft.amount.isEmpty()) amountError = null
         val descriptionError = when {
-            attempted && draft.description.isBlank() -> "Enter a description"
-            draft.description.length > MAX_DESCRIPTION_LENGTH -> "Use at most $MAX_DESCRIPTION_LENGTH characters"
+            attempted && draft.description.isBlank() -> UiMessage.Res(R.string.expense_description_required)
+            draft.description.length > MAX_DESCRIPTION_LENGTH ->
+                UiMessage.Plural(R.plurals.expense_description_too_long, MAX_DESCRIPTION_LENGTH, MAX_DESCRIPTION_LENGTH)
             else -> null
         }
         val inputs = draft.inputs[draft.splitType].orEmpty()
@@ -371,20 +397,18 @@ constructor(
             null
         } else {
             when {
-                base.myPubkey !in base.members -> "You are no longer a member of this group"
-                draft.paidBy !in base.members -> "Choose a payer who is still in this group"
-                draft.participants.any {
-                    it !in base.members
-                } -> "A selected participant left this group. Remove them before saving."
-                draft.participants.isEmpty() -> "Select at least one participant"
-                else -> split.error
+                base.myPubkey !in base.members -> UiMessage.Res(R.string.expense_not_member)
+                draft.paidBy !in base.members -> UiMessage.Res(R.string.expense_payer_left)
+                draft.participants.any { it !in base.members } -> UiMessage.Res(R.string.expense_participant_left)
+                draft.participants.isEmpty() -> UiMessage.Res(R.string.expense_select_participant)
+                else -> split.error?.let(UiMessage::Raw)
             }
         }
         val loadingError = draftLoadError ?: recoveryError ?: if (draft.initialized &&
             base.myPubkey.isNotEmpty() &&
             draft.authorPubkey != base.myPubkey
         ) {
-            "Your identity changed. Close this draft and start a new expense."
+            UiMessage.Res(R.string.expense_identity_changed)
         } else {
             base.loadingError
         }
@@ -409,7 +433,15 @@ constructor(
         )
     }
 
+    private fun groupUnavailable() = UiMessageException(UiMessage.Res(R.string.expense_group_unavailable))
+
     companion object {
         private const val MAX_DESCRIPTION_LENGTH = 500
     }
 }
+
+/** Carries a resource-backed message through this ViewModel's exception-based control flow. */
+private class UiMessageException(val uiMessage: UiMessage) : IllegalStateException()
+
+private fun Exception.uiMessage(@StringRes fallback: Int): UiMessage =
+    (this as? UiMessageException)?.uiMessage ?: toUiMessage(fallback)

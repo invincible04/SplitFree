@@ -8,17 +8,23 @@ import com.google.zxing.qrcode.QRCodeWriter
 
 /**
  * QR code generation using ZXing — no camera/scanning, just encoding.
+ *
+ * Encoding a 512×512 module matrix takes tens of milliseconds; callers should run [encode] off the
+ * main thread (e.g. `withContext(Dispatchers.Default)`), not inside composition.
  */
 object QrGenerator {
     fun encode(content: String, size: Int = 512): Bitmap {
         val hints = mapOf(EncodeHintType.MARGIN to 1)
         val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
-        return Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565).apply {
+        val pixels = IntArray(size * size)
+        for (y in 0 until size) {
+            val row = y * size
             for (x in 0 until size) {
-                for (y in 0 until size) {
-                    setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
-                }
+                pixels[row + x] = if (matrix[x, y]) Color.BLACK else Color.WHITE
             }
+        }
+        return Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565).apply {
+            setPixels(pixels, 0, size, 0, 0, size, size)
         }
     }
 }

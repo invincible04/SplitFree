@@ -28,10 +28,28 @@ class ExpenseInputParser(private val locale: Locale = Locale.getDefault()) {
 
     fun weight(input: String): BigDecimal = decimal(input, MAX_WEIGHT_FRACTION_DIGITS)
 
+    /**
+     * Parse [input] into a [BigDecimal] with at most [fractionDigits] decimal places.
+     *
+     * Separator rules: the locale decides which separators exist, but keyboards often only offer
+     * `.`, so both are accepted:
+     * - If exactly one of `.` / `,` / the locale decimal separator appears (once), it is the decimal
+     *   separator, regardless of locale.
+     * - If both `,` and `.` appear, the LAST one is the decimal separator and the other is grouping.
+     *   The locale grouping separator (e.g. a narrow space) is likewise stripped when it is not the
+     *   sole separator being used as the decimal.
+     * - The decimal separator may appear only once; `1.2.3` and `12,5,0` are rejected.
+     */
     private fun decimal(input: String, fractionDigits: Int): BigDecimal {
         require(input.length in 1..MAX_INPUT_LENGTH) { "Enter a number of at most $MAX_INPUT_LENGTH characters" }
         val symbols = DecimalFormatSymbols.getInstance(locale)
-        val separator = symbols.decimalSeparator
+        val localeDecimal = symbols.decimalSeparator
+        val localeGrouping = symbols.groupingSeparator
+        val hint = if (localeDecimal == '.') {
+            "Use digits and '.' as the decimal separator"
+        } else {
+            "Use digits and '$localeDecimal' or '.' as the decimal separator"
+        }
         val normalized = input.map { character ->
             when {
                 character in '0'..'9' -> character
@@ -39,14 +57,39 @@ class ExpenseInputParser(private val locale: Locale = Locale.getDefault()) {
                 else -> character
             }
         }.joinToString("")
-        val parts = normalized.split(separator)
-        require(parts.size <= 2 && parts.all { part -> part.isNotEmpty() && part.all { it in '0'..'9' } }) {
-            "Use digits and '$separator' as the decimal separator, without grouping"
+        val decimalCandidates = setOf('.', ',', localeDecimal)
+        val separators = normalized.filter { it in decimalCandidates || it == localeGrouping }
+        val distinct = separators.toSet()
+        val decimalSeparator: Char? = when (distinct.size) {
+            0 -> null
+            1 -> {
+                val only = distinct.single()
+                when {
+                    only !in decimalCandidates -> null // locale grouping only, e.g. "1 234"
+                    separators.length == 1 -> only
+                    else -> throw IllegalArgumentException(hint)
+                }
+            }
+            2 -> {
+                val last = separators.last()
+                val other = (distinct - last).single()
+                val groupingCandidates = setOf('.', ',', localeGrouping) - last
+                require(last in decimalCandidates && other in groupingCandidates) { hint }
+                require(separators.count { it == last } == 1) { hint }
+                last
+            }
+            else -> throw IllegalArgumentException(hint)
         }
+        // Every run between separators must be non-empty digits: rejects ".5", "1.", "1,,234.5", "+1", "1e2".
+        val runs = if (distinct.isEmpty()) listOf(normalized) else normalized.split(*distinct.toCharArray())
+        require(runs.all { run -> run.isNotEmpty() && run.all { it in '0'..'9' } }) { hint }
+        val groupingSeparators = distinct - setOfNotNull(decimalSeparator)
+        val digitsAndDecimal = normalized.filterNot { it in groupingSeparators }
+        val parts = if (decimalSeparator == null) listOf(digitsAndDecimal) else digitsAndDecimal.split(decimalSeparator)
         require(parts.size == 1 || (fractionDigits > 0 && parts[1].length <= fractionDigits)) {
             "Use at most $fractionDigits decimal places"
         }
-        return BigDecimal(normalized.replace(separator, '.'))
+        return BigDecimal(parts.joinToString("."))
     }
 
     companion object {

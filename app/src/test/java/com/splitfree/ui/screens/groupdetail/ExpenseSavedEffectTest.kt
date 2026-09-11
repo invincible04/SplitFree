@@ -46,6 +46,7 @@ class ExpenseSavedEffectTest {
     private var expenseSaved by mutableStateOf(false)
     private var revision by mutableStateOf(0)
     private val consumedAtRevision = mutableListOf<Int>()
+    private val pageAtConsume = mutableListOf<Int>()
     private lateinit var pagerState: PagerState
     private lateinit var snackbarHostState: SnackbarHostState
     private lateinit var scope: CoroutineScope
@@ -86,6 +87,21 @@ class ExpenseSavedEffectTest {
             assertEquals(listOf(0), consumedAtRevision)
             assertSame(confirmation, snackbarHostState.currentSnackbarData)
         }
+    }
+
+    @Test
+    fun `flag is consumed before the pager moves so disposal mid-scroll cannot leave it set`() {
+        render(initialSaved = true)
+
+        compose.runOnIdle {
+            // Consumption happened while the pager still showed Balances (page 0)…
+            assertEquals(listOf(0), pageAtConsume)
+            assertFalse(expenseSaved)
+            // …and the scroll and confirmation still completed afterwards.
+            assertEquals(1, pagerState.currentPage)
+            requireNotNull(snackbarHostState.currentSnackbarData)
+        }
+        compose.onNodeWithText(text(R.string.tab_expenses)).assertIsDisplayed()
     }
 
     @Test
@@ -154,6 +170,7 @@ class ExpenseSavedEffectTest {
                     expenseSaved = expenseSaved,
                     onConsumed = {
                         consumedAtRevision += renderedRevision
+                        pageAtConsume += pagerState.currentPage
                         if (resetOnConsume) expenseSaved = false
                     },
                     pagerState = pagerState,

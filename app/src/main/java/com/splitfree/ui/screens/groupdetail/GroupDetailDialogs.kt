@@ -1,5 +1,6 @@
 package com.splitfree.ui.screens.groupdetail
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +23,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,7 +38,10 @@ import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.QrGenerator
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.disambiguatedMemberName
 import com.splitfree.util.CurrencyFormatter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ShareWarningDialog(inviteLink: String?, onShare: (String) -> Unit, onDismiss: () -> Unit) {
@@ -73,10 +78,14 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
         title = { Text(stringResource(R.string.invite_qr_code)) },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                if (inviteLink != null) {
-                    val qrBitmap = remember(inviteLink) { QrGenerator.encode(inviteLink) }
+                // Encoding runs off the main thread; the spinner below covers the short gap.
+                val qrBitmap by produceState<Bitmap?>(initialValue = null, inviteLink) {
+                    value = inviteLink?.let { link -> withContext(Dispatchers.Default) { QrGenerator.encode(link) } }
+                }
+                val bitmap = qrBitmap
+                if (inviteLink != null && bitmap != null) {
                     Image(
-                        bitmap = qrBitmap.asImageBitmap(),
+                        bitmap = bitmap.asImageBitmap(),
                         contentDescription = stringResource(R.string.invite_qr_content_desc),
                         modifier = Modifier.size(qrSize)
                     )
@@ -111,6 +120,7 @@ fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
 fun SettleDialog(
     debt: DebtTransaction,
     memberNames: Map<String, String> = emptyMap(),
+    members: Collection<String> = emptyList(),
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -123,9 +133,9 @@ fun SettleDialog(
                 Text(stringResource(R.string.record_payment))
                 Spacer(Modifier.height(tokens.itemSpacing))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    PubkeyChip(debt.from, memberNames)
+                    PubkeyChip(debt.from, memberNames, members)
                     Text(" → ", style = MaterialTheme.typography.titleMedium)
-                    PubkeyChip(debt.to, memberNames)
+                    PubkeyChip(debt.to, memberNames, members)
                 }
                 Spacer(Modifier.height(tokens.itemSpacing))
                 Text(
@@ -170,12 +180,25 @@ fun RemoveMemberDialog(
     )
 }
 
-/** Compact chip showing a member's display name or truncated pubkey with avatar initial. */
+/**
+ * Compact chip showing a member's display name or truncated pubkey with avatar initial.
+ *
+ * @param everyone every pubkey that can appear next to this chip; when another member shares the same
+ *   display name, a pubkey suffix is appended so the two stay distinguishable.
+ */
 @Composable
-fun PubkeyChip(pubkey: String, memberNames: Map<String, String> = emptyMap()) {
+fun PubkeyChip(
+    pubkey: String,
+    memberNames: Map<String, String> = emptyMap(),
+    everyone: Collection<String> = emptyList()
+) {
     val tokens = adaptiveSizeTokens()
     val name = memberNames[pubkey]?.ifBlank { null }
-    val label = name ?: (pubkey.take(6) + "…")
+    val label = if (name != null) {
+        disambiguatedMemberName(pubkey, memberNames, everyone)
+    } else {
+        pubkey.take(6) + "…"
+    }
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.secondaryContainer,

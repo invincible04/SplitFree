@@ -4,11 +4,13 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.di.IoDispatcher
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ImportGroupUseCase
+import com.splitfree.ui.util.UiMessage
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,6 +27,17 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 /**
+ * Outcome of a backup import; the screen renders it with string resources.
+ */
+sealed interface ImportStatus {
+    /** Import succeeded and restored [count] events across all groups in the file. */
+    data class Restored(val count: Int) : ImportStatus
+
+    /** Import failed; [reason] is the exception message from the import path (domain text), if any. */
+    data class Failed(val reason: String?) : ImportStatus
+}
+
+/**
  * Handles first-launch identity generation, display name setup, optional key import from mnemonic,
  * and backup file import after key restore.
  */
@@ -38,11 +51,11 @@ constructor(
     @ApplicationContext private val appContext: Context,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : ViewModel() {
-    private val _error = MutableStateFlow<String?>(null)
+    private val _error = MutableStateFlow<UiMessage?>(null)
     val error = _error.asStateFlow()
 
-    /** Outcome of the last backup import: `"Restored N events"` or `"Import failed: …"`. */
-    private val _importStatus = MutableStateFlow<String?>(null)
+    /** Outcome of the last backup import, or null before the first attempt. */
+    private val _importStatus = MutableStateFlow<ImportStatus?>(null)
     val importStatus = _importStatus.asStateFlow()
 
     /** True while a backup file is being read and imported. */
@@ -70,7 +83,7 @@ constructor(
         _keyImported.value = true
         true
     } catch (e: Exception) {
-        _error.value = "Invalid key. Enter a hex private key or 24-word seed phrase."
+        _error.value = UiMessage.Res(R.string.invalid_key_input)
         false
     }
 
@@ -87,12 +100,12 @@ constructor(
         viewModelScope.launch {
             try {
                 val count = withContext(ioDispatcher) { importContent(readBackup(uri)) }
-                _importStatus.value = "Restored $count events"
+                _importStatus.value = ImportStatus.Restored(count)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Backup import failed: ${e.message}")
-                _importStatus.value = "Import failed: ${e.message}"
+                _importStatus.value = ImportStatus.Failed(e.message)
             } finally {
                 _importing.value = false
             }

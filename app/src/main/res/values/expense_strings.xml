@@ -53,4 +53,29 @@
     <string name="expense_saved_message">Expense saved on this phone</string>
     <string name="expense_member_left">No longer in the group</string>
     <string name="expense_no_currencies_found">No matching currencies</string>
+
+    <!-- AddExpenseViewModel messages -->
+    <string name="expense_draft_unrestorable">This draft could not be restored safely. Close it and start a new expense.</string>
+    <string name="expense_load_interrupted">Loading was interrupted. Retry to load this group.</string>
+    <string name="expense_group_load_failed">Could not load this group</string>
+    <string name="expense_group_unavailable">This group is no longer available</string>
+    <string name="expense_group_update_failed">Could not update this group</string>
+    <string name="expense_save_interrupted">Save was interrupted. Retry to check whether it was saved before editing.</string>
+    <string name="expense_save_failed">Could not save this expense</string>
+    <string name="expense_saved_differently">This expense was saved with different details. Close the draft and review the saved expense.</string>
+    <string name="expense_save_check_interrupted">Save check was interrupted. Retry before editing.</string>
+    <string name="expense_save_check_failed">Could not confirm whether this expense was saved. Retry before editing.</string>
+    <string name="expense_identity_changed">Your identity changed. Close this draft and start a new expense.</string>
+    <string name="expense_amount_positive">Enter an amount greater than zero</string>
+    <string name="expense_amount_too_large">Amount exceeds the maximum allowed</string>
+    <string name="expense_amount_invalid">Enter a valid amount</string>
+    <string name="expense_description_required">Enter a description</string>
+    <plurals name="expense_description_too_long">
+        <item quantity="one">Use at most %1$d character</item>
+        <item quantity="other">Use at most %1$d characters</item>
+    </plurals>
+    <string name="expense_not_member">You are no longer a member of this group</string>
+    <string name="expense_payer_left">Choose a payer who is still in this group</string>
+    <string name="expense_participant_left">A selected participant left this group. Remove them before saving.</string>
+    <string name="expense_select_participant">Select at least one participant</string>
 </resources>

@@ -43,6 +43,7 @@ import com.splitfree.R
 import com.splitfree.ui.components.RelayEditor
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.CreateGroupViewModel
 import kotlinx.coroutines.launch
 
@@ -59,13 +60,15 @@ fun CreateGroupScreen(
     val relayStatuses by viewModel.relayStatuses.collectAsStateWithLifecycle()
     val relayInfo by viewModel.relayInfo.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val isCreating by viewModel.isCreating.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
 
+    val errorText = error?.asString()
     LaunchedEffect(error) {
-        error?.let {
+        errorText?.let {
             scope.launch { snackbarHostState.showSnackbar(it) }
             viewModel.clearError()
         }
@@ -152,7 +155,7 @@ fun CreateGroupScreen(
             Button(
                 onClick = { viewModel.createGroup(name) { onGroupCreated(it) } },
                 modifier = Modifier.fillMaxWidth().height(tokens.buttonHeight),
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !isCreating,
                 shape = MaterialTheme.shapes.large
             ) {
                 Text(

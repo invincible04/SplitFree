@@ -3,10 +3,12 @@ package com.splitfree.ui.viewmodels
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import com.splitfree.R
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ImportGroupUseCase
+import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -78,7 +80,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Restored 7 events", vm.importStatus.value)
+        assertEquals(ImportStatus.Restored(7), vm.importStatus.value)
         assertFalse(vm.importing.value)
         coVerify(exactly = 1) { importGroup(match<SplitFreeExport> { it.groupId == "g1" && it.hmac == "aa" }) }
     }
@@ -91,7 +93,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Restored 5 events", vm.importStatus.value)
+        assertEquals(ImportStatus.Restored(5), vm.importStatus.value)
         coVerify(exactly = 2) { importGroup(any<SplitFreeExport>()) }
     }
 
@@ -101,7 +103,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Import failed: Backup file is too large", vm.importStatus.value)
+        assertEquals(ImportStatus.Failed("Backup file is too large"), vm.importStatus.value)
         assertFalse(vm.importing.value)
         coVerify(exactly = 0) { importGroup(any<SplitFreeExport>()) }
     }
@@ -126,7 +128,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Import failed: Backup file is too large", vm.importStatus.value)
+        assertEquals(ImportStatus.Failed("Backup file is too large"), vm.importStatus.value)
         // Stops within one read buffer of the cap.
         assertTrue("read $served bytes past the cap", served <= OnboardingViewModel.MAX_IMPORT_BYTES + 64 * 1024L)
     }
@@ -139,7 +141,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Restored 1 events", vm.importStatus.value)
+        assertEquals(ImportStatus.Restored(1), vm.importStatus.value)
     }
 
     @Test
@@ -148,7 +150,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Import failed: could not read the backup file", vm.importStatus.value)
+        assertEquals(ImportStatus.Failed("could not read the backup file"), vm.importStatus.value)
         assertFalse(vm.importing.value)
     }
 
@@ -158,7 +160,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Import failed: could not read the backup file", vm.importStatus.value)
+        assertEquals(ImportStatus.Failed("could not read the backup file"), vm.importStatus.value)
     }
 
     @Test
@@ -168,8 +170,19 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertEquals("Import failed: integrity check failed", vm.importStatus.value)
+        assertEquals(ImportStatus.Failed("integrity check failed"), vm.importStatus.value)
         assertFalse(vm.importing.value)
+    }
+
+    @Test
+    fun `invalid key input surfaces a resource message`() {
+        every { identity.importKey("junk") } throws IllegalArgumentException("bad key")
+
+        assertFalse(vm.importKey("junk"))
+
+        assertEquals(UiMessage.Res(R.string.invalid_key_input), vm.error.value)
+        vm.clearError()
+        assertEquals(null, vm.error.value)
     }
 
     @Test
@@ -178,7 +191,7 @@ class OnboardingViewModelTest {
 
         vm.importBackup(uri)
 
-        assertTrue(vm.importStatus.value!!.startsWith("Import failed: "))
+        assertTrue(vm.importStatus.value is ImportStatus.Failed)
         coVerify(exactly = 0) { importGroup(any<SplitFreeExport>()) }
     }
 }

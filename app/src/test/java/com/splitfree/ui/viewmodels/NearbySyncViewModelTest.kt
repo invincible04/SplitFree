@@ -2,6 +2,7 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.data.ble.BleEvent
 import com.splitfree.data.ble.BleHandshake
 import com.splitfree.data.ble.BleTransfer
@@ -11,6 +12,7 @@ import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.sync.worker.PowerManager
+import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -92,7 +94,7 @@ class NearbySyncViewModelTest {
 
         events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01, 0x7B)))
 
-        assertEquals("Could not process peer data", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_peer_data_failed), vm.uiState.value.status)
         assertFalse(vm.uiState.value.syncing)
 
         // A later valid event from an authenticated peer is still handled end to end.
@@ -102,7 +104,7 @@ class NearbySyncViewModelTest {
         events.emit(BleEvent.PayloadReceived("peer-2", byteArrayOf(0x04)))
 
         coVerify { bleTransfer.sendSyncRequest("peer-2", "g1", emptyList()) }
-        assertEquals("Syncing with peer…", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_syncing), vm.uiState.value.status)
     }
 
     @Test
@@ -121,7 +123,7 @@ class NearbySyncViewModelTest {
 
         events.emit(BleEvent.Connected("peer-1"))
 
-        assertEquals("Could not process peer data", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_peer_data_failed), vm.uiState.value.status)
 
         coEvery { groupRepo.getAll() } returns emptyList()
         events.emit(BleEvent.PeerFound(NearbyPeer("peer-4", "hotel")))
@@ -136,7 +138,7 @@ class NearbySyncViewModelTest {
 
         events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x04)))
 
-        assertEquals("Sync request failed", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_sync_request_failed), vm.uiState.value.status)
         assertFalse(vm.uiState.value.syncing)
     }
 
@@ -148,7 +150,7 @@ class NearbySyncViewModelTest {
 
         assertFalse(vm.uiState.value.scanning)
         assertFalse(vm.uiState.value.syncing)
-        assertTrue(vm.uiState.value.status.startsWith("Scan failed"))
+        assertEquals(UiMessage.Res(R.string.nearby_scan_failed, "no permission"), vm.uiState.value.status)
         verify { nearbySync.stop() }
     }
 
@@ -163,7 +165,7 @@ class NearbySyncViewModelTest {
 
         verify { bleTransfer.sendHandshakeResponse("peer-1", OUR_PUB, emptyList(), CHALLENGE, PEER_PUB) }
         verify(exactly = 0) { nearbySync.disconnect(any()) }
-        assertEquals("Authenticating peer…", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_authenticating), vm.uiState.value.status)
     }
 
     @Test
@@ -177,7 +179,7 @@ class NearbySyncViewModelTest {
         verify(exactly = 0) { bleTransfer.sendHandshakeResponse(any(), any(), any(), any(), any()) }
         verify { bleTransfer.clearPeer("peer-1") }
         verify { nearbySync.disconnect("peer-1") }
-        assertEquals("Peer authentication failed", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_peer_auth_failed), vm.uiState.value.status)
     }
 
     @Test
@@ -190,7 +192,7 @@ class NearbySyncViewModelTest {
         verify(exactly = 0) { bleTransfer.sendHandshakeResponse(any(), any(), any(), any(), any()) }
         verify { bleTransfer.clearPeer("peer-1") }
         verify { nearbySync.disconnect("peer-1") }
-        assertEquals("Peer authentication failed", vm.uiState.value.status)
+        assertEquals(UiMessage.Res(R.string.nearby_peer_auth_failed), vm.uiState.value.status)
     }
 
     @Test

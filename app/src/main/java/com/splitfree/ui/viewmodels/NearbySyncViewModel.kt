@@ -1,8 +1,10 @@
 package com.splitfree.ui.viewmodels
 
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.data.ble.BleEvent
 import com.splitfree.data.ble.BleHandshake
 import com.splitfree.data.ble.BleTransfer
@@ -12,6 +14,7 @@ import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.sync.worker.PowerManager
+import com.splitfree.ui.util.UiMessage
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -25,12 +28,14 @@ import kotlinx.coroutines.launch
 
 /**
  * UI state for the BLE nearby sync screen.
+ *
+ * @property status what the screen should say about the current sync step, or null for nothing.
  */
 data class NearbySyncUiState(
     val scanning: Boolean = false,
     val peers: List<NearbyPeer> = emptyList(),
     val syncing: Boolean = false,
-    val status: String = ""
+    val status: UiMessage? = null
 )
 
 /**
@@ -67,7 +72,10 @@ constructor(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Dropped BLE event ${event::class.simpleName}: ${e.message}")
-                    _uiState.value = _uiState.value.copy(syncing = false, status = "Could not process peer data")
+                    _uiState.value = _uiState.value.copy(
+                        syncing = false,
+                        status = UiMessage.Res(R.string.nearby_peer_data_failed)
+                    )
                 }
             }
         }
@@ -75,6 +83,8 @@ constructor(
 
     @Suppress("CyclomaticComplexMethod")
     private suspend fun handleEvent(event: BleEvent) {
+        val peerAuthFailed = UiMessage.Res(R.string.nearby_peer_auth_failed)
+        val handshakeTimedOut = UiMessage.Res(R.string.nearby_handshake_timeout)
         when (event) {
             is BleEvent.PeerFound -> {
                 val current = _uiState.value.peers.toMutableList()
@@ -95,12 +105,12 @@ constructor(
                 val groups = groupRepo.getAll().map { it.id }
                 bleTransfer.sendHandshake(event.endpointId, identity.getPublicKeyHex(), groups)
                 // Enforce handshake timeout
-                launchGuarded("Handshake timeout check") {
+                launchGuarded("Handshake timeout check", R.string.nearby_handshake_check_failed) {
                     delay(BleTransfer.HANDSHAKE_TIMEOUT_MS)
                     if (!bleTransfer.isAuthenticated(event.endpointId)) {
                         bleTransfer.clearPeer(event.endpointId)
                         nearbySync.disconnect(event.endpointId)
-                        _uiState.value = _uiState.value.copy(status = "Handshake timed out")
+                        _uiState.value = _uiState.value.copy(status = handshakeTimedOut)
                     }
                 }
             }
@@ -122,14 +132,14 @@ constructor(
                                 )
                                 startSyncIfReady(event.endpointId, result)
                             } else {
-                                _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                _uiState.value = _uiState.value.copy(status = peerAuthFailed)
                             }
                         } else if (result.challengeResponse.isNotEmpty()) {
                             // Final response (leg 3): verify initiator's sig to complete mutual auth
                             if (bleTransfer.verifyHandshake(event.endpointId, result)) {
                                 startSyncIfReady(event.endpointId, result)
                             } else {
-                                _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                _uiState.value = _uiState.value.copy(status = peerAuthFailed)
                             }
                         } else if (result.challenge.isNotEmpty()) {
                             // Leg 1 arrives before any authentication. Refuse to sign anything for a
@@ -137,14 +147,14 @@ constructor(
                             // bound into a signature made with the user's long-term Nostr key.
                             if (!isHex32(result.pubkey) || !isHex32(result.challenge)) {
                                 Log.w(TAG, "Rejecting malformed handshake from ${event.endpointId}")
-                                _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                _uiState.value = _uiState.value.copy(status = peerAuthFailed)
                                 bleTransfer.clearPeer(event.endpointId)
                                 nearbySync.disconnect(event.endpointId)
                                 return
                             }
                             if (bleTransfer.isHandshakeTimedOut(event.endpointId)) {
                                 bleTransfer.clearPeer(event.endpointId)
-                                _uiState.value = _uiState.value.copy(status = "Handshake timed out")
+                                _uiState.value = _uiState.value.copy(status = handshakeTimedOut)
                             } else {
                                 // Initial handshake with challenge — send our response
                                 val groups = groupRepo.getAll().map { it.id }
@@ -157,7 +167,7 @@ constructor(
                                 )
                             }
                         }
-                        _uiState.value = _uiState.value.copy(status = "Authenticating peer…")
+                        _uiState.value = _uiState.value.copy(status = UiMessage.Res(R.string.nearby_authenticating))
                     }
 
                     is List<*> -> {
@@ -171,11 +181,12 @@ constructor(
             is BleEvent.Disconnected -> {
                 peerHandshakes.remove(event.endpointId)
                 bleTransfer.clearPeer(event.endpointId)
-                _uiState.value = _uiState.value.copy(syncing = false, status = "Sync complete")
+                _uiState.value =
+                    _uiState.value.copy(syncing = false, status = UiMessage.Res(R.string.nearby_sync_complete))
             }
 
             is BleEvent.Error -> {
-                val status = "BLE ${event.operation} failed: ${event.reason}"
+                val status = UiMessage.Res(R.string.nearby_ble_error, event.operation, event.reason)
                 val scanFatal = event.operation == "advertise" || event.operation == "discovery"
                 _uiState.value =
                     _uiState.value.copy(
@@ -195,7 +206,7 @@ constructor(
     private fun startSyncIfReady(endpointId: String, handshake: BleHandshake) {
         if (!bleTransfer.isAuthenticated(endpointId)) return
         // Send our group IDs now that peer is authenticated
-        launchGuarded("Group ID exchange") {
+        launchGuarded("Group ID exchange", R.string.nearby_group_exchange_failed) {
             val groups = groupRepo.getAll().map { it.id }
             bleTransfer.sendGroupIds(endpointId, groups)
         }
@@ -207,10 +218,10 @@ constructor(
     private fun onGroupIdsReceived(endpointId: String, groupIds: List<String>) {
         if (!bleTransfer.isAuthenticated(endpointId)) return
         if (groupId in groupIds) {
-            launchGuarded("Sync request") {
+            launchGuarded("Sync request", R.string.nearby_sync_request_failed) {
                 val localIds = eventDao.getEventIds(groupId)
                 bleTransfer.sendSyncRequest(endpointId, groupId, localIds)
-                _uiState.value = _uiState.value.copy(status = "Syncing with peer…")
+                _uiState.value = _uiState.value.copy(status = UiMessage.Res(R.string.nearby_syncing))
             }
         }
     }
@@ -218,22 +229,24 @@ constructor(
     /**
      * Runs [block] in the ViewModel scope with a failure boundary — a child coroutine
      * that throws would otherwise reach the scope's (absent) exception handler and
-     * crash the process.
+     * crash the process. [what] labels the log line; [failure] is what the screen shows.
      */
-    private fun launchGuarded(what: String, block: suspend () -> Unit): Job = viewModelScope.launch {
-        try {
-            block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "$what failed: ${e.message}")
-            _uiState.value = _uiState.value.copy(syncing = false, status = "$what failed")
+    private fun launchGuarded(what: String, @StringRes failure: Int, block: suspend () -> Unit): Job =
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "$what failed: ${e.message}")
+                _uiState.value = _uiState.value.copy(syncing = false, status = UiMessage.Res(failure))
+            }
         }
-    }
 
     fun startScan() {
         dutyCycleJob?.cancel()
-        _uiState.value = _uiState.value.copy(scanning = true, peers = emptyList(), status = "Scanning…")
+        _uiState.value =
+            _uiState.value.copy(scanning = true, peers = emptyList(), status = UiMessage.Res(R.string.nearby_scanning))
         dutyCycleJob =
             viewModelScope.launch {
                 // A throw here (missing permission, unreadable identity) would otherwise
@@ -255,7 +268,11 @@ constructor(
                     Log.w(TAG, "BLE scan duty cycle stopped: ${e.message}")
                     nearbySync.stop()
                     _uiState.value =
-                        _uiState.value.copy(scanning = false, syncing = false, status = "Scan failed: ${e.message}")
+                        _uiState.value.copy(
+                            scanning = false,
+                            syncing = false,
+                            status = UiMessage.Res(R.string.nearby_scan_failed, e.message.orEmpty())
+                        )
                 }
             }
     }
@@ -268,7 +285,7 @@ constructor(
     }
 
     fun connectToPeer(endpointId: String) {
-        _uiState.value = _uiState.value.copy(syncing = true, status = "Connecting…")
+        _uiState.value = _uiState.value.copy(syncing = true, status = UiMessage.Res(R.string.nearby_connecting))
         nearbySync.requestConnection(endpointId)
     }
 

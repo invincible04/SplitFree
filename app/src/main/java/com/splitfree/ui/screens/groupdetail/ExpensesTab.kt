@@ -20,6 +20,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,14 +31,21 @@ import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.disambiguatedMemberName
 import com.splitfree.util.CurrencyFormatter
 
 @Composable
-fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = emptyMap()) {
+fun ExpensesTab(
+    expenses: List<Expense>,
+    memberNames: Map<String, String> = emptyMap(),
+    members: Collection<String> = emptyList()
+) {
     val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
+    // Expense ids are unique per group; guard anyway so a duplicate can never crash LazyColumn.
+    val uniqueExpenses = remember(expenses) { expenses.distinctBy { it.id } }
 
-    if (expenses.isEmpty()) {
+    if (uniqueExpenses.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize().padding(tokens.emptyStatePadding),
             contentAlignment = Alignment.Center
@@ -76,8 +84,8 @@ fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = empt
             contentPadding = PaddingValues(tokens.screenPaddingHorizontal),
             verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
         ) {
-            items(expenses) { expense ->
-                ExpenseRow(expense, memberNames)
+            items(uniqueExpenses, key = { it.id }) { expense ->
+                ExpenseRow(expense, memberNames, members)
             }
             item { Spacer(Modifier.height(tokens.listBottomSpacer)) }
         }
@@ -85,7 +93,11 @@ fun ExpensesTab(expenses: List<Expense>, memberNames: Map<String, String> = empt
 }
 
 @Composable
-private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = emptyMap()) {
+private fun ExpenseRow(
+    expense: Expense,
+    memberNames: Map<String, String> = emptyMap(),
+    members: Collection<String> = emptyList()
+) {
     val tokens = adaptiveSizeTokens()
 
     val categoryEmoji =
@@ -105,11 +117,13 @@ private fun ExpenseRow(expense: Expense, memberNames: Map<String, String> = empt
             Text(expense.description, maxLines = 1, overflow = TextOverflow.Ellipsis)
         },
         supportingContent = {
+            val payer = if (memberNames[expense.paidBy].isNullOrBlank()) {
+                expense.paidBy.take(6) + "…"
+            } else {
+                disambiguatedMemberName(expense.paidBy, memberNames, members)
+            }
             Text(
-                stringResource(
-                    R.string.paid_by,
-                    memberNames[expense.paidBy]?.ifBlank { null } ?: (expense.paidBy.take(6) + "…")
-                ),
+                stringResource(R.string.paid_by, payer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline
             )

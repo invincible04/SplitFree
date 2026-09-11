@@ -5,6 +5,7 @@ import java.text.DecimalFormatSymbols
 import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ExpenseInputParserTest {
@@ -35,14 +36,63 @@ class ExpenseInputParserTest {
     }
 
     @Test
-    fun `locale separator is explicit and grouping is never accepted`() {
+    fun `comma locale accepts both comma and dot as the decimal separator`() {
         val german = ExpenseInputParser(Locale.GERMANY)
+        assertEquals(1250L, german.money("12.50", "EUR"))
+        assertEquals(1250L, german.money("12,50", "EUR"))
         assertEquals(1234L, german.money("12,34", "EUR"))
         assertEquals(BigDecimal("12.5"), german.weight("12,5"))
-        listOf("12.34", "1.234,56", "1,234.56", "1 234,56", "1\u00a0234,56", "1,2,3").forEach { input ->
-            assertThrows(input, IllegalArgumentException::class.java) { german.money(input, "EUR") }
+        assertEquals(BigDecimal("12.5"), german.weight("12.5"))
+    }
+
+    @Test
+    fun `when both comma and dot appear the last one is the decimal and the other is grouping`() {
+        val german = ExpenseInputParser(Locale.GERMANY)
+        assertEquals(123450L, german.money("1.234,50", "EUR"))
+        assertEquals(123450L, german.money("1,234.50", "EUR"))
+        assertEquals(123456789L, german.money("1.234.567,89", "EUR"))
+        assertEquals(123450L, parser.money("1,234.50", "USD"))
+        assertEquals(123450L, parser.money("1.234,50", "USD"))
+    }
+
+    @Test
+    fun `a lone separator is the decimal separator regardless of locale`() {
+        val german = ExpenseInputParser(Locale.GERMANY)
+        // "1.234" in de_DE reads as one-point-two-three-four, which EUR cannot hold; never as 1234.
+        assertThrows(IllegalArgumentException::class.java) { german.money("1.234", "EUR") }
+        assertEquals(1234L, german.money("1.234", "KWD"))
+        assertEquals(1234L, parser.money("12,34", "USD"))
+        assertThrows(IllegalArgumentException::class.java) { parser.money("1,234", "USD") }
+    }
+
+    @Test
+    fun `repeated separators and non grouping whitespace are rejected`() {
+        val german = ExpenseInputParser(Locale.GERMANY)
+        listOf("1.2.3", "12,5,0", "1,2,3", "1..5", "1,,5", "1.2,3.4", "1,2.3,4", "1 234,56", "1\u00a0234,56").forEach {
+            assertThrows(it, IllegalArgumentException::class.java) { german.money(it, "EUR") }
+            assertThrows(it, IllegalArgumentException::class.java) { parser.money(it, "USD") }
         }
-        assertThrows(IllegalArgumentException::class.java) { parser.money("12,34", "USD") }
+    }
+
+    @Test
+    fun `locale grouping separator that is neither comma nor dot is stripped`() {
+        val french = ExpenseInputParser(Locale.FRANCE)
+        val grouping = DecimalFormatSymbols.getInstance(Locale.FRANCE).groupingSeparator
+        assertEquals(123456L, french.money("1${grouping}234,56", "EUR"))
+        assertEquals(123456L, french.money("1${grouping}234.56", "EUR"))
+        assertEquals(123400L, french.money("1${grouping}234", "EUR"))
+        assertThrows(IllegalArgumentException::class.java) { french.money("1${grouping}${grouping}234", "EUR") }
+        assertThrows(IllegalArgumentException::class.java) { french.money("1,234${grouping}56", "EUR") }
+    }
+
+    @Test
+    fun `separator hint names both accepted decimal separators`() {
+        val german = assertThrows(IllegalArgumentException::class.java) {
+            ExpenseInputParser(Locale.GERMANY).money("1.2.3", "EUR")
+        }
+        assertTrue(german.message!!, german.message!!.contains("','") && german.message!!.contains("'.'"))
+        val us = assertThrows(IllegalArgumentException::class.java) { parser.money("1.2.3", "USD") }
+        assertTrue(us.message!!, us.message!!.contains("'.'"))
     }
 
     @Test
@@ -113,12 +163,10 @@ class ExpenseInputParserTest {
             val two = symbols.zeroDigit + 2
             val decimal = symbols.decimalSeparator
             val malformed = listOf(
-                "$one${symbols.groupingSeparator}$two",
-                "$one.$two",
-                "$one,$two",
                 "$one$decimal$two.$one",
                 "$one$decimal$two,$one",
                 "$one$decimal$two$decimal$one",
+                "$one${symbols.groupingSeparator}${symbols.groupingSeparator}$two",
                 "$one $two",
                 "+$one",
                 "-$one",
@@ -128,6 +176,11 @@ class ExpenseInputParserTest {
                 assertThrows("$tag $input", IllegalArgumentException::class.java) { regional.money(input, "INR") }
                 assertThrows("$tag $input", IllegalArgumentException::class.java) { regional.weight(input) }
             }
+            // ASCII separators are accepted as the decimal, and the regional grouping separator is stripped.
+            assertEquals(120L, regional.money("$one.$two", "INR"))
+            assertEquals(120L, regional.money("$one,$two", "INR"))
+            assertEquals(1200L, regional.money("$one${symbols.groupingSeparator}$two", "INR"))
+            assertEquals(122212L, regional.money("$one${symbols.groupingSeparator}$two$two$two$decimal$one$two", "INR"))
             assertThrows(IllegalArgumentException::class.java) { regional.money("$one$decimal$two", "JPY") }
             assertThrows(IllegalArgumentException::class.java) { regional.money("$one$decimal$two$two$two", "INR") }
             assertThrows(IllegalArgumentException::class.java) {

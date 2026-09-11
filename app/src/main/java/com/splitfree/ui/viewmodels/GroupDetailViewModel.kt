@@ -1,8 +1,10 @@
 package com.splitfree.ui.viewmodels
 
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.expense.DebtTransaction
@@ -21,6 +23,8 @@ import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
+import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.toUiMessage
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
@@ -37,6 +41,10 @@ import kotlinx.coroutines.launch
 
 /**
  * UI state for the group detail screen (expenses, balances, debts, members, invite link).
+ *
+ * @property draftRelays the relay list being edited in the relay dialog, or null when no edit is open.
+ *   The dialog renders `draftRelays ?: relays`; [GroupDetailViewModel.saveRelays] persists the draft
+ *   and [GroupDetailViewModel.cancelRelayEdit] discards it, leaving [relays] untouched.
  */
 data class GroupDetailUiState(
     val groupId: String = "",
@@ -47,9 +55,13 @@ data class GroupDetailUiState(
     val createdBy: String = "",
     val myPubkey: String = "",
     val relays: List<String> = emptyList(),
+    val draftRelays: List<String>? = null,
     val debts: List<DebtTransaction> = emptyList(),
     val expenses: List<Expense> = emptyList()
-)
+) {
+    /** True once both keys are known and match; `"" == ""` during the initial empty frame is not creator. */
+    val isCreator: Boolean get() = myPubkey.isNotEmpty() && myPubkey == createdBy
+}
 
 /**
  * Drives the group detail screen: observes expenses, computes balances,
@@ -86,28 +98,28 @@ constructor(
     private val _relayInfo = MutableStateFlow<Map<String, RelayInfo>>(emptyMap())
     val relayInfo: StateFlow<Map<String, RelayInfo>> = _relayInfo.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _error = MutableStateFlow<UiMessage?>(null)
+    val error: StateFlow<UiMessage?> = _error.asStateFlow()
 
     private val inviteLinkLoaded = AtomicBoolean(false)
 
     init {
         viewModelScope.launch {
             groupRepo.observeById(groupId)
-                .catch { e -> reportObservationFailure("Group observation failed", e) }
+                .catch { e -> reportObservationFailure(R.string.group_observation_failed, "Group observation", e) }
                 .collect { group ->
                     try {
                         applyGroup(group)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        reportObservationFailure("Failed to apply group update", e)
+                        reportObservationFailure(R.string.group_update_failed, "Apply group update", e)
                     }
                 }
         }
         viewModelScope.launch {
             getExpenses.observe(groupId)
-                .catch { e -> reportObservationFailure("Expense observation failed", e) }
+                .catch { e -> reportObservationFailure(R.string.expense_observation_failed, "Expense observation", e) }
                 .collectLatest { allExpenses ->
                     try {
                         val result = computeBalances.computeWithExclusions(groupId)
@@ -119,7 +131,7 @@ constructor(
                         throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to compute balances: ${e.message}", e)
-                        _error.value = e.message ?: "Failed to compute balances"
+                        _error.value = e.toUiMessage(R.string.compute_balances_failed)
                     }
                 }
         }
@@ -148,10 +160,10 @@ constructor(
      * not as an uncaught exception that tears down the ViewModel scope. Cancellation
      * and JVM [Error]s stay fatal.
      */
-    private fun reportObservationFailure(what: String, e: Throwable) {
+    private fun reportObservationFailure(@StringRes fallback: Int, what: String, e: Throwable) {
         if (e is CancellationException || e !is Exception) throw e
-        Log.e(TAG, "$what: ${e.message}", e)
-        _error.value = e.message ?: what
+        Log.e(TAG, "$what failed: ${e.message}", e)
+        _error.value = e.toUiMessage(fallback)
     }
 
     private fun loadInviteLink() {
@@ -166,10 +178,23 @@ constructor(
 
     private val settlingInProgress = AtomicBoolean(false)
 
+    /**
+     * Record [debt] as paid. The dialog that offered [debt] may be showing a snapshot from before
+     * a newer expense or settlement arrived, so the debts are recomputed through the same path the
+     * screen uses and [debt] must still be present (same from/to/amount/currency); otherwise the
+     * user is asked to review.
+     */
     fun recordSettlement(debt: DebtTransaction) {
         if (!settlingInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
+                val current = simplifyDebts(computeBalances.computeWithExclusions(groupId).balances)
+                if (debt !in current) {
+                    Log.w(TAG, "Settlement rejected: balances changed since the dialog opened")
+                    _uiState.update { it.copy(debts = current) }
+                    _error.value = UiMessage.Res(R.string.settlement_stale)
+                    return@launch
+                }
                 val group = groupRepo.getById(groupId) ?: return@launch
                 val settlement =
                     Settlement(
@@ -181,9 +206,11 @@ constructor(
                         timestamp = System.currentTimeMillis() / 1000
                     )
                 expenseRepo.addSettlement(settlement, groupId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Settlement failed: ${e.message}")
-                _error.value = e.message ?: "Settlement failed"
+                _error.value = e.toUiMessage(R.string.settlement_failed)
             } finally {
                 settlingInProgress.set(false)
             }
@@ -198,17 +225,31 @@ constructor(
         viewModelScope.launch {
             try {
                 rotateGroupKey(groupId, pubkey)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Remove member failed: ${e.message}")
-                _error.value = e.message ?: "Failed to remove member"
+                _error.value = e.toUiMessage(R.string.remove_member_failed)
             } finally {
                 removalInProgress.set(false)
             }
         }
     }
 
+    // --- Relay editing: the dialog works on a draft so Cancel leaves the saved relays untouched ---
+
+    /** Open the relay dialog: copy the saved relays into an editable draft. */
+    fun beginRelayEdit() {
+        _uiState.update { it.copy(draftRelays = it.draftRelays ?: it.relays) }
+    }
+
+    /** Close the relay dialog without saving. */
+    fun cancelRelayEdit() {
+        _uiState.update { it.copy(draftRelays = null) }
+    }
+
     fun addRelay(url: String) {
-        _uiState.update { it.copy(relays = (it.relays + url).distinct()) }
+        _uiState.update { it.copy(draftRelays = ((it.draftRelays ?: it.relays) + url).distinct()) }
     }
 
     fun clearError() {
@@ -216,8 +257,10 @@ constructor(
     }
 
     fun removeRelay(url: String) {
-        val current = _uiState.value.relays
-        if (current.size > 1) _uiState.update { it.copy(relays = current - url) }
+        _uiState.update {
+            val current = it.draftRelays ?: it.relays
+            if (current.size > 1) it.copy(draftRelays = current - url) else it
+        }
     }
 
     fun checkRelay(url: String) {
@@ -232,7 +275,7 @@ constructor(
                 Log.w(TAG, "Relay check failed for $host: ${e.message}")
                 _relayStatuses.value = _relayStatuses.value +
                     (url to if (isKnown) RelayCheckStatus.IDLE else RelayCheckStatus.OFFLINE)
-                _error.value = "Could not check $host"
+                _error.value = UiMessage.Res(R.string.relay_check_failed, host)
             }
         }
     }
@@ -259,31 +302,37 @@ constructor(
         }
         if (status?.online != true) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-            _error.value = "$host is offline or unreachable"
+            _error.value = UiMessage.Res(R.string.relay_offline, host)
             return
         }
         _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
         val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
         if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-            _error.value = "$host can't store events — write+read failed"
+            _error.value = UiMessage.Res(R.string.relay_write_read_failed, host)
             return
         }
         _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
     }
 
     fun checkAllRelays() {
-        _uiState.value.relays.forEach { checkRelay(it) }
+        val state = _uiState.value
+        (state.draftRelays ?: state.relays).forEach { checkRelay(it) }
     }
 
+    /** Persist the draft relay list (or the saved list if no draft is open), then close the draft. */
     fun saveRelays(onDone: () -> Unit) {
         viewModelScope.launch {
+            val toSave = _uiState.value.let { it.draftRelays ?: it.relays }
             try {
-                updateGroupRelays(groupId, _uiState.value.relays)
+                updateGroupRelays(groupId, toSave)
+                _uiState.update { it.copy(draftRelays = null) }
                 onDone()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to update relays: ${e.message}")
-                _error.value = e.message ?: "Failed to update relays"
+                _error.value = e.toUiMessage(R.string.update_relays_failed)
             }
         }
     }

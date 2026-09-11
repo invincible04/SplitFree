@@ -7,6 +7,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * In-app log buffer that mirrors android.util.Log API.
@@ -35,11 +36,15 @@ object DebugLog {
 
     private const val INVITE_LINK_REDACTED = "splitfree://join?d=[REDACTED]"
 
+    private val sequence = AtomicLong()
+
     data class Entry(
         val timestamp: Long = System.currentTimeMillis(),
         val level: Char,
         val tag: String,
-        val message: String
+        val message: String,
+        /** Monotonically increasing id, stable across [entries] snapshots; the debug screen's LazyColumn key. */
+        val seq: Long = sequence.getAndIncrement()
     ) {
         private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 

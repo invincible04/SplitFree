@@ -64,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.NearbySyncViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -188,9 +189,9 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                     }
                 }
 
-                if (uiState.status.isNotBlank()) {
+                uiState.status?.let { status ->
                     Text(
-                        uiState.status,
+                        status.asString(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -282,7 +283,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
                     contentPadding = PaddingValues(horizontal = horizontalPadding),
                     verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
                 ) {
-                    items(uiState.peers) { peer ->
+                    items(uiState.peers, key = { it.endpointId }) { peer ->
                         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier = Modifier.padding(tokens.cardPadding).fillMaxWidth(),

@@ -46,6 +46,7 @@ import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.GroupDetailViewModel
 import kotlinx.coroutines.launch
 
@@ -83,8 +84,9 @@ fun GroupDetailScreen(
         snackbarHostState = snackbarHostState
     )
 
+    val errorText = error?.asString()
     LaunchedEffect(error) {
-        error?.let {
+        errorText?.let {
             snackScope.launch { snackbarHostState.showSnackbar(it) }
             viewModel.clearError()
         }
@@ -103,6 +105,7 @@ fun GroupDetailScreen(
                 actions = {
                     val scope = rememberCoroutineScope()
                     IconButton(onClick = {
+                        viewModel.beginRelayEdit()
                         showRelayDialog = true
                         viewModel.checkAllRelays()
                     }) {
@@ -161,20 +164,20 @@ fun GroupDetailScreen(
                                 hasExpenses = uiState.expenses.isNotEmpty(),
                                 myPubkey = uiState.myPubkey,
                                 memberNames = uiState.memberNames,
+                                members = uiState.members,
                                 onSettle = { showSettleDialog = it }
                             )
                         }
 
                         1 -> {
-                            ExpensesTab(uiState.expenses, memberNames = uiState.memberNames)
+                            ExpensesTab(uiState.expenses, memberNames = uiState.memberNames, members = uiState.members)
                         }
 
                         2 -> {
                             MembersTab(
                                 members = uiState.members,
                                 createdBy = uiState.createdBy,
-                                isCreator =
-                                uiState.myPubkey == uiState.createdBy,
+                                isCreator = uiState.isCreator,
                                 myPubkey = uiState.myPubkey,
                                 memberNames = uiState.memberNames,
                                 onRemove = { showRemoveDialog = it }
@@ -218,6 +221,7 @@ fun GroupDetailScreen(
         SettleDialog(
             debt = debt,
             memberNames = uiState.memberNames,
+            members = uiState.members,
             onConfirm = {
                 viewModel.recordSettlement(debt)
                 showSettleDialog = null
@@ -237,16 +241,20 @@ fun GroupDetailScreen(
         )
     }
     if (showRelayDialog) {
+        val dismissRelayDialog = {
+            showRelayDialog = false
+            viewModel.cancelRelayEdit()
+        }
         RelayDialog(
-            relays = uiState.relays,
+            relays = uiState.draftRelays ?: uiState.relays,
             relayStatuses = relayStatuses,
             relayInfo = relayInfo,
-            isCreator = uiState.myPubkey == uiState.createdBy,
+            isCreator = uiState.isCreator,
             onAdd = viewModel::addRelay,
             onRemove = viewModel::removeRelay,
             onCheck = viewModel::checkRelay,
             onSave = viewModel::saveRelays,
-            onDismiss = { showRelayDialog = false }
+            onDismiss = dismissRelayDialog
         )
     }
 }

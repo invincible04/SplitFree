@@ -63,12 +63,15 @@ internal fun ExpenseEditorSheet(
         ExpenseCurrencyCatalog.codes.sortedWith(compareBy<String> { it != state.currency }.thenBy { it })
     }
     val query = search.trim()
-    val matchingCurrencies = if (kind == "currency") {
-        currencies.filter { code ->
-            code.contains(query, true) || Currency.getInstance(code).displayName.contains(query, true)
+    // Display-name lookups over ~150 currencies are not free; only redo them when the query changes.
+    val matchingCurrencies = remember(kind, query, currencies) {
+        if (kind == "currency") {
+            currencies.filter { code ->
+                code.contains(query, true) || Currency.getInstance(code).displayName.contains(query, true)
+            }
+        } else {
+            emptyList()
         }
-    } else {
-        emptyList()
     }
     val youLabel = stringResource(R.string.expense_you)
     val title = stringResource(
@@ -118,7 +121,8 @@ internal fun ExpenseEditorSheet(
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.weight(1f).then(
-                    if (kind == "payer" || kind == "currency" ||
+                    if (kind == "payer" ||
+                        kind == "currency" ||
                         kind == "category"
                     ) {
                         Modifier.selectableGroup()
@@ -130,7 +134,8 @@ internal fun ExpenseEditorSheet(
                 when (kind) {
                     "payer" -> {
                         val members = state.members.filter { key ->
-                            query.isBlank() || key.contains(query, ignoreCase = true) ||
+                            query.isBlank() ||
+                                key.contains(query, ignoreCase = true) ||
                                 state.memberNames[key].orEmpty().contains(query, ignoreCase = true) ||
                                 (key == state.myPubkey && youLabel.contains(query, ignoreCase = true))
                         }
@@ -191,7 +196,8 @@ internal fun ExpenseEditorSheet(
                         }
                         state.splitError?.let { error -> item { EditorError(error) } }
                         val matchingMembers = (state.members + state.participants).distinct().filter { key ->
-                            query.isBlank() || key.contains(query, ignoreCase = true) ||
+                            query.isBlank() ||
+                                key.contains(query, ignoreCase = true) ||
                                 state.memberNames[key].orEmpty().contains(query, ignoreCase = true) ||
                                 (key == state.myPubkey && youLabel.contains(query, ignoreCase = true))
                         }

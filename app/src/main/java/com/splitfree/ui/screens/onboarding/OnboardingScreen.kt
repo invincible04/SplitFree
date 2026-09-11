@@ -4,7 +4,9 @@ import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -31,7 +33,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,13 +45,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +63,8 @@ import com.splitfree.R
 import com.splitfree.ui.util.HeightClass
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.asString
+import com.splitfree.ui.viewmodels.ImportStatus
 import com.splitfree.ui.viewmodels.OnboardingViewModel
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -151,7 +158,8 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(tokens.itemSpacing))
-                // Feature chips
+                // Feature chips — decorative, so plain surfaces rather than inert clickable chips
+                // (TalkBack would otherwise announce a button that does nothing).
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(chipSpacing, Alignment.CenterHorizontally),
@@ -162,11 +170,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                         stringResource(R.string.chip_decentralized),
                         stringResource(R.string.chip_free)
                     ).forEach { label ->
-                        SuggestionChip(
-                            onClick = {},
-                            modifier = Modifier.heightIn(min = chipMinHeight),
-                            label = { Text(label, style = chipTextStyle) }
-                        )
+                        FeatureChip(label = label, minHeight = chipMinHeight, textStyle = chipTextStyle)
                     }
                 }
 
@@ -230,7 +234,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                         importInput = it
                                         viewModel.clearError()
                                     },
-                                    error = error
+                                    error = error?.asString()
                                 )
                                 Spacer(Modifier.height(tokens.fieldSpacing))
                                 Button(
@@ -282,16 +286,21 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                importStatus?.let {
+                                importStatus?.let { status ->
                                     Spacer(Modifier.height(tokens.itemSpacing))
-                                    Text(
-                                        it,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = if (it.startsWith("Restored")) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
+                                    val (statusText, statusColor) = when (status) {
+                                        is ImportStatus.Restored -> pluralStringResource(
+                                            R.plurals.backup_restored_events,
+                                            status.count,
+                                            status.count
+                                        ) to MaterialTheme.colorScheme.primary
+                                        is ImportStatus.Failed -> importFailedText(status.reason) to
                                             MaterialTheme.colorScheme.error
-                                        }
+                                    }
+                                    Text(
+                                        statusText,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = statusColor
                                     )
                                 }
                                 Spacer(Modifier.height(tokens.sectionSpacing))
@@ -317,6 +326,30 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                     }
                 }
             }
+        }
+    }
+}
+
+/** "Import failed: <reason>" when the import path supplied a reason, otherwise the generic failure line. */
+@Composable
+private fun importFailedText(reason: String?): String =
+    reason?.let { stringResource(R.string.backup_import_failed_reason, it) }
+        ?: stringResource(R.string.backup_import_failed)
+
+/**
+ * Non-interactive feature badge styled like an outlined chip. It is a plain [Surface], not a
+ * `SuggestionChip`, so accessibility services do not announce an inert control.
+ */
+@Composable
+private fun FeatureChip(label: String, minHeight: Dp, textStyle: TextStyle) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = Modifier.heightIn(min = minHeight)
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+            Text(label, style = textStyle)
         }
     }
 }

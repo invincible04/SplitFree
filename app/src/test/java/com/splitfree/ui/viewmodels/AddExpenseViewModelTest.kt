@@ -2,6 +2,7 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
@@ -10,6 +11,7 @@ import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -219,7 +221,7 @@ class AddExpenseViewModelTest {
         val vm = create().apply { validExpense() }
         writeExpense = { throw IOException("disk full") }
         vm.submit()
-        assertEquals("disk full", vm.uiState.value.error)
+        assertEquals(UiMessage.Raw("disk full"), vm.uiState.value.error)
         assertFalse(vm.uiState.value.saved)
         assertTrue(vm.uiState.value.editable)
         writeExpense = { saved[it.id] = it }
@@ -333,7 +335,7 @@ class AddExpenseViewModelTest {
         val vm = create()
         assertFalse(vm.uiState.value.loading)
         assertFalse(vm.uiState.value.editable)
-        assertEquals("cannot read group", vm.uiState.value.loadingError)
+        assertEquals(UiMessage.Raw("cannot read group"), vm.uiState.value.loadingError)
         vm.submit()
         assertTrue(commands.isEmpty())
         coEvery { groupRepo.getById("g1") } returns group
@@ -346,7 +348,7 @@ class AddExpenseViewModelTest {
     fun `missing group and empty membership do not look ready to save`() = runTest {
         groups.value = null
         val missing = create()
-        assertNotNull(missing.uiState.value.loadingError)
+        assertEquals(UiMessage.Res(R.string.expense_group_unavailable), missing.uiState.value.loadingError)
         assertFalse(missing.uiState.value.editable)
         groups.value = group.copy(members = emptyList())
         missing.retryLoad()
@@ -414,13 +416,15 @@ class AddExpenseViewModelTest {
         val vm = create()
         vm.submit()
         assertNotNull(vm.uiState.value.amountError)
-        assertNotNull(vm.uiState.value.descriptionError)
+        assertEquals(UiMessage.Res(R.string.expense_description_required), vm.uiState.value.descriptionError)
         vm.validExpense()
         vm.updateAmount("0.001")
-        assertNotNull(vm.uiState.value.amountError)
+        assertEquals(UiMessage.Raw("Use at most 2 decimal places"), vm.uiState.value.amountError)
+        vm.updateAmount("0")
+        assertEquals(UiMessage.Res(R.string.expense_amount_positive), vm.uiState.value.amountError)
         vm.submit()
         vm.updateAmount("10000000000.01")
-        assertNotNull(vm.uiState.value.amountError)
+        assertEquals(UiMessage.Res(R.string.expense_amount_too_large), vm.uiState.value.amountError)
         vm.submit()
         vm.updateAmount("100")
         vm.exact("50", "49.99")
@@ -505,7 +509,7 @@ class AddExpenseViewModelTest {
         every { identity.getPublicKeyHex() } returns "b"
         vm.submit()
         assertTrue(commands.isEmpty())
-        assertNotNull(vm.uiState.value.loadingError)
+        assertEquals(UiMessage.Res(R.string.expense_identity_changed), vm.uiState.value.loadingError)
         assertFalse(vm.uiState.value.editable)
     }
 
@@ -530,7 +534,7 @@ class AddExpenseViewModelTest {
         assertEquals("200", second.uiState.value.amount)
         assertEquals("Changed", second.uiState.value.description)
         assertEquals("Food", second.uiState.value.category)
-        assertTrue(second.uiState.value.loadingError!!.contains("different details"))
+        assertEquals(UiMessage.Res(R.string.expense_saved_differently), second.uiState.value.loadingError)
         assertEquals(10000L, saved.values.single().amount)
     }
 
@@ -546,7 +550,7 @@ class AddExpenseViewModelTest {
         assertFalse(restored.uiState.value.saved)
         assertFalse(restored.uiState.value.editable)
         assertEquals("", restored.uiState.value.category)
-        assertTrue(restored.uiState.value.loadingError!!.contains("different details"))
+        assertEquals(UiMessage.Res(R.string.expense_saved_differently), restored.uiState.value.loadingError)
     }
 
     @Test

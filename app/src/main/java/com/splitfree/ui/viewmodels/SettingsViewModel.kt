@@ -29,7 +29,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
@@ -73,6 +75,9 @@ constructor(
     private val _displayName = MutableStateFlow(userPreferences.displayName)
     val displayName: StateFlow<String> = _displayName
 
+    /** The last name handed to [updateDisplayName]; starts as the persisted value so re-typing it is a no-op. */
+    private var lastPublishedName: String = _displayName.value
+
     /**
      * `(pending, stuck)` outbox counts: events not yet accepted by any relay, and the subset that
      * has failed enough attempts to be retried only every few hours. A DB error degrades to
@@ -84,13 +89,18 @@ constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0 to 0)
 
     init {
-        // Debounce name changes to avoid spamming relays on every keystroke
+        // Debounce name changes to avoid spamming relays on every keystroke. `drop(1)` skips only the
+        // StateFlow's initial replay; it must run BEFORE `debounce`, otherwise a first edit typed
+        // within the debounce window is merged into the initial emission and silently discarded.
         _displayName
-            .debounce(800)
-            .drop(1) // skip initial value
+            .drop(1)
+            .debounce(DISPLAY_NAME_DEBOUNCE_MS)
+            .distinctUntilChanged()
+            .filter { it != lastPublishedName }
             .onEach { name ->
                 try {
                     updateDisplayName(name)
+                    lastPublishedName = name
                 } catch (_: Exception) { }
             }
             .launchIn(viewModelScope)
@@ -217,6 +227,7 @@ constructor(
 
     private companion object {
         const val TAG = "SettingsViewModel"
+        const val DISPLAY_NAME_DEBOUNCE_MS = 800L
     }
 }
 

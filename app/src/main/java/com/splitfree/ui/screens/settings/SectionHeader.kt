@@ -10,6 +10,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 
@@ -19,10 +21,12 @@ fun SectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector, title: 
     val tokens = adaptiveSizeTokens()
 
     Row(
-        modifier = Modifier.padding(
-            horizontal = tokens.screenPaddingHorizontal,
-            vertical = tokens.sectionHeaderVerticalPadding
-        ),
+        modifier = Modifier
+            .padding(
+                horizontal = tokens.screenPaddingHorizontal,
+                vertical = tokens.sectionHeaderVerticalPadding
+            )
+            .semantics { heading() },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
     ) {

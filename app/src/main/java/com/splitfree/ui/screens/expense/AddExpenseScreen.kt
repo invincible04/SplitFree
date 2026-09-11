@@ -51,6 +51,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.AddExpenseUiState
 import com.splitfree.ui.viewmodels.AddExpenseViewModel
 
@@ -249,9 +251,9 @@ fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
 }
 
 @Composable
-internal fun EditorError(message: String) {
+internal fun EditorError(message: UiMessage) {
     Text(
-        message,
+        message.asString(),
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }

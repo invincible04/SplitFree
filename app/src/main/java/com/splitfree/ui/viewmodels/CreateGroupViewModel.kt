@@ -2,14 +2,18 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.usecase.group.CreateGroupUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
+import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.toUiMessage
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,8 +32,8 @@ constructor(
     private val relayHealthMonitor: RelayHealthMonitor,
     private val eventSigner: EventSigner
 ) : ViewModel() {
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _error = MutableStateFlow<UiMessage?>(null)
+    val error: StateFlow<UiMessage?> = _error.asStateFlow()
 
     private val _relays = MutableStateFlow(RelayDefaults.DEFAULT_RELAYS)
     val relays: StateFlow<List<String>> = _relays.asStateFlow()
@@ -39,6 +43,12 @@ constructor(
 
     private val _relayInfo = MutableStateFlow<Map<String, RelayInfo>>(emptyMap())
     val relayInfo: StateFlow<Map<String, RelayInfo>> = _relayInfo.asStateFlow()
+
+    /** True while a group is being created; the screen disables the submit button. */
+    private val _isCreating = MutableStateFlow(false)
+    val isCreating: StateFlow<Boolean> = _isCreating.asStateFlow()
+
+    private val creationInProgress = AtomicBoolean(false)
 
     fun addRelay(url: String) {
         _relays.value = (_relays.value + url).distinct()
@@ -64,7 +74,7 @@ constructor(
                 Log.w(TAG, "Relay check failed for $host: ${e.message}")
                 _relayStatuses.value = _relayStatuses.value +
                     (url to if (isKnown) RelayCheckStatus.IDLE else RelayCheckStatus.OFFLINE)
-                _error.value = "Could not check $host"
+                _error.value = UiMessage.Res(R.string.relay_check_failed, host)
             }
         }
     }
@@ -93,7 +103,7 @@ constructor(
         if (status?.online != true) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
             _relays.value = _relays.value - url
-            _error.value = "$host is offline or unreachable"
+            _error.value = UiMessage.Res(R.string.relay_offline, host)
             return
         }
         _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
@@ -101,7 +111,7 @@ constructor(
         if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
             _relays.value = _relays.value - url
-            _error.value = "$host can't store events — write+read failed"
+            _error.value = UiMessage.Res(R.string.relay_write_read_failed, host)
             return
         }
         _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
@@ -111,13 +121,24 @@ constructor(
         _relays.value.forEach { checkRelay(it) }
     }
 
+    /**
+     * Create the group once. A second call while the first is still running is ignored so a
+     * double tap cannot create two groups; the guard is released when the attempt finishes.
+     */
     fun createGroup(name: String, onCreated: (String) -> Unit) {
+        if (!creationInProgress.compareAndSet(false, true)) return
+        _isCreating.value = true
         viewModelScope.launch {
             try {
                 val group = createGroup(name, _relays.value)
                 onCreated(group.id)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to create group"
+                _error.value = e.toUiMessage(R.string.create_group_failed)
+            } finally {
+                _isCreating.value = false
+                creationInProgress.set(false)
             }
         }
     }

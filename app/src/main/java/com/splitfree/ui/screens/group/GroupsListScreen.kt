@@ -52,6 +52,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -266,7 +270,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = group.name.take(1).uppercase(),
+                    text = avatarInitial(group.name),
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -305,6 +309,9 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
 @Composable
 private fun ConnectionDot(connected: Boolean) {
     val tokens = adaptiveSizeTokens()
+    val statusText = stringResource(
+        if (connected) R.string.cd_status_connected else R.string.cd_status_disconnected
+    )
     val color by animateColorAsState(
         targetValue = if (connected) Color(0xFF4CAF50) else Color(0xFFBDBDBD),
         animationSpec = tween(600),
@@ -324,5 +331,19 @@ private fun ConnectionDot(connected: Boolean) {
     Box(
         modifier = Modifier.size(tokens.iconTiny).clip(CircleShape)
             .background(color.copy(alpha = alpha))
+            .semantics {
+                contentDescription = statusText
+                role = Role.Image
+            }
     )
+}
+
+/**
+ * First user-perceived character of [name] for an avatar, upper-cased. Uses the first code point so a
+ * leading emoji or other supplementary-plane character is not split into a lone surrogate.
+ */
+internal fun avatarInitial(name: String): String {
+    if (name.isEmpty()) return ""
+    val codePoint = name.codePointAt(0)
+    return String(Character.toChars(codePoint)).uppercase()
 }

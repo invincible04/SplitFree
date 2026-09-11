@@ -66,6 +66,22 @@
     <string name="relay_editor_hint_creator">Manage relays for this group. Changes are broadcast to all members.</string>
     <string name="relay_editor_hint_member">Relays this group syncs through. Only the group creator can edit.</string>
 
+    <!-- GroupDetailViewModel -->
+    <string name="group_observation_failed">Could not load this group</string>
+    <string name="group_update_failed">Could not apply the latest group update</string>
+    <string name="expense_observation_failed">Could not load expenses</string>
+    <string name="compute_balances_failed">Could not compute balances</string>
+    <string name="settlement_failed">Settlement failed</string>
+    <string name="settlement_stale">Balances changed. Review and try again.</string>
+    <string name="remove_member_failed">Could not remove member</string>
+    <string name="update_relays_failed">Could not update relays</string>
+
+    <!-- Relay checks (CreateGroupViewModel, GroupDetailViewModel) -->
+    <string name="relay_check_failed">Could not check %1$s</string>
+    <string name="relay_offline">%1$s is offline or unreachable</string>
+    <string name="relay_write_read_failed">%1$s can\'t store events — write+read failed</string>
+    <string name="create_group_failed">Could not create group</string>
+
     <!-- OnboardingScreen -->
     <string name="onboarding_subtitle">Split expenses with anyone.\nNo accounts. No servers. No cost.</string>
     <string name="chip_encrypted">🔒 Encrypted</string>
@@ -84,6 +100,13 @@
     <string name="import_backup_file">Import Backup File</string>
     <string name="importing_backup">Importing backup…</string>
     <string name="continue_button">Continue</string>
+    <string name="invalid_key_input">Invalid key. Enter a hex private key or 24-word seed phrase.</string>
+    <plurals name="backup_restored_events">
+        <item quantity="one">Restored %1$d event</item>
+        <item quantity="other">Restored %1$d events</item>
+    </plurals>
+    <string name="backup_import_failed">Import failed</string>
+    <string name="backup_import_failed_reason">Import failed: %1$s</string>
 
     <!-- SettingsScreen -->
     <string name="appearance">Appearance</string>
@@ -164,6 +187,19 @@
     <string name="tap_sync">Tap Sync to exchange expenses</string>
     <string name="sync">Sync</string>
     <string name="looking_for_nearby">Looking for nearby SplitFree users…</string>
+    <string name="nearby_scanning">Scanning…</string>
+    <string name="nearby_connecting">Connecting…</string>
+    <string name="nearby_authenticating">Authenticating peer…</string>
+    <string name="nearby_syncing">Syncing with peer…</string>
+    <string name="nearby_sync_complete">Sync complete</string>
+    <string name="nearby_handshake_timeout">Handshake timed out</string>
+    <string name="nearby_peer_auth_failed">Peer authentication failed</string>
+    <string name="nearby_peer_data_failed">Could not process peer data</string>
+    <string name="nearby_handshake_check_failed">Handshake timeout check failed</string>
+    <string name="nearby_group_exchange_failed">Group ID exchange failed</string>
+    <string name="nearby_sync_request_failed">Sync request failed</string>
+    <string name="nearby_ble_error">BLE %1$s failed: %2$s</string>
+    <string name="nearby_scan_failed">Scan failed: %1$s</string>
 
     <!-- CreateGroupScreen -->
     <string name="create_group">Create Group</string>
@@ -204,6 +240,10 @@
     <string name="cd_sync_icon">Sync</string>
     <string name="cd_person_icon">Person</string>
     <string name="cd_theme_overlay">Theme transition overlay</string>
+    <string name="cd_status_connected">Connected</string>
+    <string name="cd_status_disconnected">Disconnected</string>
+    <string name="cd_status_connecting">Connecting</string>
+    <string name="cd_status_unchecked">Not checked</string>
 
     <!-- ExpenseNotifier -->
     <string name="notif_channel_expenses_name">Expense Updates</string>
