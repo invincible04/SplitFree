@@ -34,7 +34,7 @@ constructor(
     /**
      * Create a new expense group and publish its `group_meta` to relays.
      *
-     * @param name group display name (1–100 chars)
+     * @param name group display name (1 to 100 chars)
      * @param relays Nostr relay URLs for this group
      * @return the newly created [Group]
      * @throws IllegalArgumentException if [name] is blank or exceeds 100 chars

@@ -480,7 +480,7 @@ class FullRealWorldSimulationIntegrationTest {
         println("   ✅ Phone 1 received corrected expense: ${parsed2b.description} ₹${parsed2b.amount / 100}")
 
         // ══════════════════════════════════════════════════
-        // STEP 9: Verify encryption isolation — wrong key can't decrypt
+        // STEP 9: Verify encryption isolation: wrong key can't decrypt
         // ══════════════════════════════════════════════════
         println("\n── STEP 9: Verify encryption isolation ──")
         val wrongKey = encryption.generateGroupKey()
@@ -492,7 +492,7 @@ class FullRealWorldSimulationIntegrationTest {
         }
 
         // ══════════════════════════════════════════════════
-        // STEP 10: Verify signature integrity — tampered event fails
+        // STEP 10: Verify signature integrity: tampered event fails
         // ══════════════════════════════════════════════════
         println("\n── STEP 10: Verify signature integrity ──")
         val tampered = recv1.copy(content = "tampered-content")
@@ -517,9 +517,9 @@ class FullRealWorldSimulationIntegrationTest {
         val p2Bal = balances[p2Pub] ?: 0
 
         println("   Active expenses:")
-        println("     Dinner ₹1500 — paid by Phone 1, split ₹750/₹750")
-        println("     Groceries ₹800 — paid by Phone 1, split ₹400/₹400")
-        println("     Cab ₹350 (corrected) — paid by Phone 2, split ₹175/₹175")
+        println("     Dinner ₹1500, paid by Phone 1, split ₹750/₹750")
+        println("     Groceries ₹800, paid by Phone 1, split ₹400/₹400")
+        println("     Cab ₹350 (corrected), paid by Phone 2, split ₹175/₹175")
         println("   ─────────────────────────────")
         // P1 paid 1500+800=2300, owes 750+400+175=1325, net = +975
         // P2 paid 350, owes 750+400+175=1325, net = -975
@@ -557,7 +557,7 @@ class FullRealWorldSimulationIntegrationTest {
         val expDTags = expenseEvents.map { e -> e.tags.find { it[0] == "d" }!![1] }
         assertEquals("Expense d-tags must be unique", expDTags.size, expDTags.toSet().size)
         // Note: deletion event intentionally shares d-tag with the deleted expense
-        // (addressable event replacement — relay replaces expense with deletion)
+        // (addressable event replacement: relay replaces expense with deletion)
         val delDTag = delEvent.tags.find { it[0] == "d" }!![1]
         val exp2DTag = exp2Event.tags.find { it[0] == "d" }!![1]
         assertEquals("Deletion d-tag must match deleted expense", exp2DTag, delDTag)

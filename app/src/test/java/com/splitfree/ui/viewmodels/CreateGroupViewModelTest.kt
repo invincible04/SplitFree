@@ -194,7 +194,7 @@ class CreateGroupViewModelTest {
 
         assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
         assertEquals(UiMessage.Res(R.string.relay_check_failed, "custom.bad.relay"), vm.error.value)
-        // The relay stays in the list — a failed probe is not a rejection.
+        // The relay stays in the list: a failed probe is not a rejection.
         assertTrue(url in vm.relays.value)
     }
 

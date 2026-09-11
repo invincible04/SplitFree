@@ -55,8 +55,8 @@ SplitFree's security model is built on several layers:
 - **Cryptographic identity**: BIP-340 Schnorr keypairs. No passwords, no accounts.
 - **Key storage**: Private keys stored in Android Keystore (AES-256-GCM, hardware-backed).
 - **Event validation**: Signature verification, timestamp bounds, rate limiting, content size limits, nesting depth checks.
-- **BLE authentication**: Challenge-response handshake before any data exchange over Bluetooth.
-- **Export security**: HMAC-SHA256 integrity verification on all exported data. Group keys NIP-44 encrypted to the exporter's own pubkey.
+- **BLE authentication**: Mutual Schnorr challenge-response over a domain-separated transcript (challenge, both pubkeys) before any data exchange; signatures cannot be repurposed as Nostr event signatures.
+- **Export security**: HMAC-SHA256 over the entire backup keyed from the user's identity (HKDF); group keys NIP-44 encrypted to the exporter's own pubkey.
 - **ProGuard/R8**: Code shrinking and obfuscation enabled for release builds.
 
 ## Responsible Disclosure

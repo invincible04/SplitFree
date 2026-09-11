@@ -7,7 +7,7 @@ import androidx.room.PrimaryKey
 /**
  * Locally stored Nostr event.
  *
- * Content is stored encrypted (`contentEncrypted`) — decryption is performed on-the-fly
+ * Content is stored encrypted (`contentEncrypted`); decryption is performed on-the-fly
  * via [decryptContent] using the group's symmetric key. The `originalEventJson` field
  * preserves the full signed event for self-healing re-publish to relays.
  *
@@ -40,7 +40,7 @@ data class EventEntity(
     val keyEpoch: Int = 0
 ) {
     /**
-     * Decrypt content on-the-fly. Never persisted — call each time content is needed.
+     * Decrypt content on-the-fly. Never persisted; call each time content is needed.
      * Returns null if decryption fails (wrong key, corrupted data).
      */
     fun decryptContent(decryptor: (String, String) -> String): String? = try {

@@ -56,10 +56,10 @@ data class RelayStatus(
  * info documents via HTTP GET with `Accept: application/nostr+json`.
  *
  * Parses the response to extract:
- * - **Online status** — did the relay respond with HTTP 200?
- * - **Latency** — round-trip time for the NIP-11 request
- * - **Payment required** — from `limitation.payment_required`
- * - **Supported NIPs** — from `supported_nips` array (e.g. NIP-59 gift wrap)
+ * - **Online status**: did the relay respond with HTTP 200?
+ * - **Latency**: round-trip time for the NIP-11 request
+ * - **Payment required**: from `limitation.payment_required`
+ * - **Supported NIPs**: from `supported_nips` array (e.g. NIP-59 gift wrap)
  *
  * Shares the app-wide [OkHttpClient] connection pool and TLS session cache.
  * All HTTP calls run on [Dispatchers.IO] to avoid blocking the main thread.
@@ -122,7 +122,7 @@ constructor(private val httpClient: OkHttpClient) {
 
     /**
      * Parse a NIP-11 JSON response body to extract relay capabilities.
-     * Gracefully handles missing fields and malformed JSON — returns online=true
+     * Gracefully handles missing fields and malformed JSON: returns online=true
      * with defaults if parsing fails (the relay responded, so it's reachable).
      */
     private fun parseNip11(url: String, body: String?, latencyMs: Long): RelayStatus {

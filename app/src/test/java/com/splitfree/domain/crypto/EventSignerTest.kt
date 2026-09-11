@@ -15,7 +15,7 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Tests for EventSigner — tag structure, NIP-09 deletion, signing correctness.
+ * Tests for EventSigner: tag structure, NIP-09 deletion, signing correctness.
  * Cannot test with real IdentityManager (needs Android context), so we test
  * the NostrEvent-level behavior that EventSigner delegates to.
  */

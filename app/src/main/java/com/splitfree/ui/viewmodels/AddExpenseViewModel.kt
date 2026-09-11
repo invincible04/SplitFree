@@ -9,6 +9,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.money.ExpenseCurrencyCatalog
 import com.splitfree.domain.money.ExpenseInputParser
 import com.splitfree.domain.money.ExpenseSplitCalculator
 import com.splitfree.domain.money.ExpenseSplitPreview
@@ -99,7 +100,10 @@ constructor(
 
     fun updateDescription(value: String) = edit { copy(description = value.take(MAX_DESCRIPTION_LENGTH + 1)) }
 
-    fun updateCurrency(value: String) = edit { copy(currency = value.take(4).uppercase(Locale.ROOT)) }
+    /** ISO 4217 codes are exactly three letters; anything longer is a typo that can never validate. */
+    fun updateCurrency(value: String) = edit {
+        copy(currency = value.take(ExpenseCurrencyCatalog.CODE_LENGTH).uppercase(Locale.ROOT))
+    }
 
     fun updatePayer(value: String) {
         if (value in _uiState.value.members) edit { copy(paidBy = value) }

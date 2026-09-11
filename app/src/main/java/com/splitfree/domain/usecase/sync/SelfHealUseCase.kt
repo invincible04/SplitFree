@@ -25,11 +25,11 @@ constructor(
 ) {
     suspend operator fun invoke(groupId: String): Int {
         if (!nostrClient.isConnected) {
-            Log.d(TAG, "No relay connection — skipping self-heal for $groupId")
+            Log.d(TAG, "No relay connection, skipping self-heal for $groupId")
             return 0
         }
         if (giftWrap.enabled) {
-            Log.d(TAG, "Gift wrap enabled — skipping self-heal for $groupId (outbox handles retries)")
+            Log.d(TAG, "Gift wrap enabled, skipping self-heal for $groupId (outbox handles retries)")
             return 0
         }
 

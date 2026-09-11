@@ -53,7 +53,7 @@ constructor(
                     memberNames = updatedNames
                 )
 
-                val groupKey = groupRepo.getGroupKey(group.id) ?: continue
+                val groupKey = groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch) ?: continue
                 val meta = GroupMeta(
                     name = group.name,
                     description = group.description,

@@ -3,7 +3,7 @@ package com.splitfree.domain.model.group
 import kotlinx.serialization.Serializable
 
 /**
- * An expense group — the core organizational unit in SplitFree.
+ * An expense group, the core organizational unit in SplitFree.
  *
  * @property id UUID, also used as the Nostr `g` tag for event filtering
  * @property createdBy pubkey of the group creator (has elevated privileges for group_meta)

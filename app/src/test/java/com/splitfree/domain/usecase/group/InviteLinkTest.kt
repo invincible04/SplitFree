@@ -106,7 +106,7 @@ class InviteLinkTest {
     }
 
     @Test
-    fun `link fits in QR code — under 400 chars with known relays`() {
+    fun `link fits in QR code, under 400 chars with known relays`() {
         val link = InviteLinkCodec.encode(testGroup(name = "Goa Trip 2026"), testKey)
         assertTrue("Link too long: ${link.length} chars", link.length < 400)
     }

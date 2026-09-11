@@ -36,7 +36,7 @@ import org.junit.Test
  * Uses wss://relay.damus.io (public, no auth required).
  *
  * These tests require network access and may be slow (~5s each).
- * They are NOT mocked — they exercise the real code paths.
+ * They are NOT mocked; they exercise the real code paths.
  */
 class RelayIntegrationTest {
     // Real secp256k1 keypair for signing
@@ -89,7 +89,7 @@ class RelayIntegrationTest {
         relay.connect()
         withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
 
-        // Create a kind 1 ephemeral event (text note) — relays accept these
+        // Create a kind 1 ephemeral event (text note); relays accept these
         val event =
             NostrEvent(
                 pubkey = pubKey,
@@ -102,7 +102,7 @@ class RelayIntegrationTest {
         assertTrue("Event must have valid signature", event.verify())
 
         val accepted = relay.sendEvent(event, timeoutMs = 10_000)
-        // Relay may accept or reject (rate limit, etc.) — but we should get a response
+        // Relay may accept or reject (rate limit, etc.), but we should get a response
         // The key test is that sendEvent completes without exception
         assertNotNull(accepted)
     }
@@ -148,7 +148,7 @@ class RelayIntegrationTest {
         withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
 
         val subId = "test-events-${System.nanoTime()}"
-        // Ask for recent kind 1 events — there are always some on public relays
+        // Ask for recent kind 1 events; there are always some on public relays
         val filter =
             NostrFilter(
                 kinds = listOf(1),

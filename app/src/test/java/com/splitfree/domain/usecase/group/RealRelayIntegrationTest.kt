@@ -43,7 +43,7 @@ import org.junit.Test
  * Phone 2: generates different real keypair, parses invite link, connects to real relays,
  *          fetches events, joins group, publishes join announcement.
  *
- * Only Android storage (Room, SharedPreferences) is mocked — everything else is real.
+ * Only Android storage (Room, SharedPreferences) is mocked; everything else is real.
  *
  * This test depends on external Nostr relays and is skipped by default.
  * Run with `-DREAL_RELAY_TEST=true` to enable:
@@ -212,7 +212,7 @@ class RealRelayIntegrationTest {
 
         val published = phone1Client.publish(event)
         println("Phone 1 published group_meta: $published")
-        // Don't fail on publish — some relays may reject test events
+        // Don't fail on publish; some relays may reject test events
         // The important thing is the event was signed and sent
 
         // Wait for relay propagation

@@ -13,7 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests for balance computation logic — the core business logic of the app.
+ * Tests for balance computation logic, the core business logic of the app.
  * Tests the applyExpense algorithm and balance scenarios without needing Room DB.
  * Design doc Section 11.1.
  */
@@ -56,7 +56,7 @@ class BalanceComputationTest {
     @Test
     fun `payer's own share doesn't create self-debt`() {
         val balances = mutableMapOf<Pair<String, String>, Long>()
-        // Alice pays 100, split 50/50 — alice's own share is skipped
+        // Alice pays 100, split 50/50; alice's own share is skipped
         applyExpense(expense("1", 100, "alice", listOf(SplitEntry("alice", 50), SplitEntry("bob", 50))), balances)
         // Only bob's share creates a balance entry for alice
         assertEquals(50L, balances["alice" to "INR"])
@@ -173,7 +173,7 @@ class BalanceComputationTest {
     fun `deletion takes precedence over correction`() {
         val deleted = mutableSetOf("exp-1")
         val corrections = mapOf("exp-1" to "corr-1")
-        // Both deleted and corrected — deletion wins
+        // Both deleted and corrected: deletion wins
         val shouldApply = "exp-1" !in deleted && "exp-1" !in corrections
         assertFalse("Deleted expense should not be applied even if corrected", shouldApply)
     }

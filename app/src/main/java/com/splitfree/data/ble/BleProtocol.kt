@@ -262,7 +262,7 @@ object FragmentManager {
     private const val MAX_PENDING = 20
     private const val MAX_FRAGMENTS = 256
     private const val TIMEOUT_MS = 30_000L
-    private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB — matches relay max_event_bytes
+    private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB, matches relay max_event_bytes
 
     /**
      * Buffer one fragment; returns the reassembled message when the last piece arrives.

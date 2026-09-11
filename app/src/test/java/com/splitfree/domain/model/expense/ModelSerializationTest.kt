@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests for domain model serialization — ensures events survive JSON round-trips
+ * Tests for domain model serialization: ensures events survive JSON round-trips
  * through relays and local storage.
  */
 class ModelSerializationTest {
@@ -96,14 +96,14 @@ class ModelSerializationTest {
                 id = "1",
                 amount = 500,
                 currency = "INR",
-                description = "Dinner 🍕 at café — ₹500",
+                description = "Dinner 🍕 at café, ₹500",
                 paidBy = "a",
                 splitType = SplitType.EQUAL,
                 splitAmong = listOf(SplitEntry("a", 500)),
                 timestamp = 1
             )
         val d = json.decodeFromString<Expense>(json.encodeToString(Expense.serializer(), expense))
-        assertEquals("Dinner 🍕 at café — ₹500", d.description)
+        assertEquals("Dinner 🍕 at café, ₹500", d.description)
     }
 
     // --- Settlement ---

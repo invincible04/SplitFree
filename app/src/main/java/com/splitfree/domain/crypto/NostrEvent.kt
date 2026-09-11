@@ -14,7 +14,7 @@ import kotlinx.serialization.json.long
 
 /**
  * Core Nostr event data model (NIP-01).
- * Pure data + serialization — no business logic.
+ * Pure data + serialization, no business logic.
  */
 data class NostrEvent(
     val id: String = "",

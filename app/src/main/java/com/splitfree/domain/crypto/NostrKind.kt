@@ -19,6 +19,6 @@ object NostrKind {
     /** NIP-59: Gift wrap (outer encrypted envelope). */
     const val GIFT_WRAP = 1059
 
-    /** NIP-78: App-specific data — SplitFree's primary event kind. */
+    /** NIP-78: App-specific data, SplitFree's primary event kind. */
     const val APP_SPECIFIC = 30078
 }

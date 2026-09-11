@@ -28,7 +28,7 @@ import org.junit.Test
 
 /**
  * Integration test: publish signed events to REAL public Nostr relays
- * using raw OkHttp WebSocket — validates that our NostrEvent serialization
+ * using raw OkHttp WebSocket. Validates that our NostrEvent serialization
  * and signing is wire-compatible with real Nostr relay infrastructure.
  *
  * Uses raw WebSocket intentionally (not NostrClient) to independently verify

@@ -105,6 +105,17 @@ class AddExpenseViewModelTest {
     }
 
     @Test
+    fun `currency input is capped at three characters and uppercased`() {
+        val vm = create()
+        vm.updateCurrency("usdx")
+        assertEquals("USD", vm.uiState.value.currency)
+        vm.updateCurrency("eur")
+        assertEquals("EUR", vm.uiState.value.currency)
+        vm.updateCurrency("kwd")
+        assertEquals("KWD", vm.uiState.value.currency)
+    }
+
+    @Test
     fun `exact 100 rupees 50 each and category reach real usecase`() = runTest {
         val vm = create().apply {
             validExpense()

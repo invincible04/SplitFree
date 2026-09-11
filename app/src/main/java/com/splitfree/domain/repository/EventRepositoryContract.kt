@@ -49,7 +49,7 @@ interface EventRepositoryContract {
 }
 
 /**
- * Lightweight projection of a stored event — avoids domain depending on Room entities.
+ * Lightweight projection of a stored event; avoids domain depending on Room entities.
  *
  * @property eventId Nostr event ID (SHA-256 hex)
  * @property groupId UUID of the group this event belongs to

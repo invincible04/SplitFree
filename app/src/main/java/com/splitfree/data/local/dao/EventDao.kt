@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.Flow
  * Data access for Nostr events stored locally.
  *
  * Events are keyed by their Nostr event ID (SHA-256 hash) and grouped by `groupId`.
- * Content remains encrypted at rest — decryption happens on-the-fly via [EventEntity.decryptContent].
+ * Content remains encrypted at rest; decryption happens on-the-fly via [EventEntity.decryptContent].
  */
 @Dao
 interface EventDao {
@@ -53,6 +53,6 @@ interface EventDao {
     )
     suspend fun getDeletedExpenseUuids(groupId: String): List<String>
 
-    /** Atomic insert — returns true only if the row was actually inserted (not a duplicate). */
+    /** Atomic insert; returns true only if the row was actually inserted (not a duplicate). */
     suspend fun insertIfNew(event: EventEntity): Boolean = insert(event) != -1L
 }

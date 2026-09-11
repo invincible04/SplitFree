@@ -48,9 +48,9 @@ class NostrClientTest {
         client.acquireConnection()
         client.acquireConnection()
         client.releaseConnection()
-        // Still one user — should not disconnect
+        // Still one user, so no disconnect
         client.releaseConnection()
-        // Now zero — disconnect called internally
+        // Now zero: disconnect called internally
     }
 
     @Test

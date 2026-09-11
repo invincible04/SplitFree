@@ -7,7 +7,7 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 
 /**
- * QR code generation using ZXing — no camera/scanning, just encoding.
+ * QR code generation using ZXing: encoding only, no camera or scanning.
  *
  * Encoding a 512×512 module matrix takes tens of milliseconds; callers should run [encode] off the
  * main thread (e.g. `withContext(Dispatchers.Default)`), not inside composition.

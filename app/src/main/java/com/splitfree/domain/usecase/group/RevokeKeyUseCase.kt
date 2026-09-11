@@ -238,7 +238,7 @@ constructor(
         if (nowSecs - startTime > MAX_REVOCATION_AGE_SECS) {
             Log.w(
                 TAG,
-                "Revocation timeout (${MAX_REVOCATION_AGE_SECS}s) — committing pending key ${newPubkey.take(8)}…"
+                "Revocation timeout (${MAX_REVOCATION_AGE_SECS}s), committing pending key ${newPubkey.take(8)}…"
             )
             identity.commitPendingKeyPair()
             return
@@ -246,7 +246,7 @@ constructor(
 
         // Check if tracked revocation events are still in the outbox
         if (eventPublisher.hasOutboxEventsById(eventIds)) {
-            Log.i(TAG, "Pending key ${newPubkey.take(8)}… waiting — revocation events still in outbox")
+            Log.i(TAG, "Pending key ${newPubkey.take(8)}… waiting, revocation events still in outbox")
             return
         }
 
@@ -317,7 +317,7 @@ constructor(
     companion object {
         private const val TAG = "RevokeKeyUseCase"
 
-        /** 24 hours — commit pending key even if outbox events haven't published */
+        /** 24 hours: commit pending key even if outbox events haven't published */
         private const val MAX_REVOCATION_AGE_SECS = 24 * 60 * 60L
 
         /** A Nostr public key: exactly 64 lowercase hex characters. */

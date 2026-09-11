@@ -7,7 +7,7 @@ SplitFree is a decentralized expense-splitting app built on the [Nostr](https://
 ## The Short Version
 
 - We **do not** collect, store, or transmit any personal data
-- We **do not** operate any servers — there is no "backend"
+- We **do not** operate any servers; there is no "backend"
 - We **cannot** read your expenses, group names, or balances
 - We **do not** use analytics, tracking, or advertising SDKs
 - All your data stays on your device and is encrypted end-to-end
@@ -29,17 +29,19 @@ SplitFree does **not** use cloud databases, Firebase, or any remote storage cont
 
 ### Nostr Relays
 
-SplitFree syncs encrypted events through public Nostr relays. Relays are third-party servers that store and forward messages — similar to email servers.
+SplitFree syncs encrypted events through public Nostr relays. Relays are third-party servers that store and forward messages, similar to email servers.
 
 - **What relays see:** Ciphertext (encrypted blobs), your public key, and event timestamps
 - **What relays cannot see:** Expense amounts, descriptions, group names, member identities, or balances
 - **Gift Wrap (optional):** When enabled, NIP-59 triple-layer encryption hides even the sender's public key from relays
 
+To be precise about the metadata: relays (and anyone watching the traffic) can see the group id tag on every event, event timestamps, the sender's public key on events that are not gift-wrapped, and the recipient's public key on gift wraps. That is enough to learn that a set of keys belongs to the same group and when it is active, but not what any of it says.
+
 You can choose which relays to use. We do not operate any relays.
 
 ### Bluetooth (BLE)
 
-When you use nearby sync, SplitFree communicates directly with other group members over Bluetooth Low Energy using Google Nearby Connections. This is a direct peer-to-peer connection — no data passes through any server. BLE connections are authenticated via a Schnorr challenge-response handshake before any data is exchanged.
+When you use nearby sync, SplitFree communicates directly with other group members over Bluetooth Low Energy using Google Nearby Connections. This is a direct peer-to-peer connection; no data passes through any server. BLE connections are authenticated via a Schnorr challenge-response handshake before any data is exchanged.
 
 ## Identity
 

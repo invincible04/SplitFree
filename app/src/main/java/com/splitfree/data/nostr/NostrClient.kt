@@ -230,12 +230,15 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     override fun startListening() { /* messages already flowing via relay.messages collectors */ }
 
     override suspend fun publish(event: NostrEvent): Boolean {
-        if (relays.isEmpty()) {
+        // Snapshot once: disconnect() clears the map concurrently, so an isEmpty() check followed
+        // by a second read of relays.values could iterate a set that no longer matches the check.
+        val targets = relays.values.toList()
+        if (targets.isEmpty()) {
             Log.w(TAG, "publish: no relays connected, event ${event.id.take(8)} will be lost")
             return false
         }
         var anySuccess = false
-        relays.values
+        targets
             .map { relay ->
                 scope.async {
                     try {
@@ -248,7 +251,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             }.forEach { if (it.await()) anySuccess = true }
         Log.i(
             TAG,
-            "publish event ${event.id.take(8)}: ${if (anySuccess) "OK" else "FAILED"} (${relays.size} relays)"
+            "publish event ${event.id.take(8)}: ${if (anySuccess) "OK" else "FAILED"} (${targets.size} relays)"
         )
         return anySuccess
     }

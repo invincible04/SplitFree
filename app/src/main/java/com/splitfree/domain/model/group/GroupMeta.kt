@@ -4,7 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * Deserialized content of a `group_meta` event — the group's current state as published to relays.
+ * Deserialized content of a `group_meta` event: the group's current state as published to relays.
  */
 @Serializable
 data class GroupMeta(

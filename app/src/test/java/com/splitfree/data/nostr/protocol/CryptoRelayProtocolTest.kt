@@ -16,20 +16,23 @@ import org.junit.Test
 class RelayProtocolSignatureTest {
     @Test
     fun `parse EVENT message`() {
+        val id = "ab".repeat(32)
+        val pubkey = "cd".repeat(32)
+        val sig = "ef".repeat(64)
         val json =
-            """["EVENT","sub1",{"id":"abc","pubkey":"def","created_at":123,""" +
-                """"kind":1,"tags":[["e","xyz"]],"content":"hello","sig":"sig1"}]"""
+            """["EVENT","sub1",{"id":"$id","pubkey":"$pubkey","created_at":123,""" +
+                """"kind":1,"tags":[["e","xyz"]],"content":"hello","sig":"$sig"}]"""
         val msg = RelayMessage.parse(json)
         assertTrue(msg is RelayMessage.EventMsg)
         val event = (msg as RelayMessage.EventMsg)
         assertEquals("sub1", event.subId)
-        assertEquals("abc", event.event.id)
-        assertEquals("def", event.event.pubkey)
+        assertEquals(id, event.event.id)
+        assertEquals(pubkey, event.event.pubkey)
         assertEquals(123L, event.event.createdAt)
         assertEquals(1, event.event.kind)
         assertEquals(listOf(listOf("e", "xyz")), event.event.tags)
         assertEquals("hello", event.event.content)
-        assertEquals("sig1", event.event.sig)
+        assertEquals(sig, event.event.sig)
     }
 
     @Test

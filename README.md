@@ -5,7 +5,7 @@
 <h1 align="center">SplitFree</h1>
 
 <p align="center">
-  <b>Decentralized expense splitting — no servers, no accounts, no tracking.</b>
+  <b>Decentralized expense splitting: no servers, no accounts, no tracking.</b>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 ## Why SplitFree?
 
-Every expense-splitting app today wants your money or your data — or both. Monthly subscriptions for basic features, mandatory accounts that harvest your financial data, and proprietary servers that can shut down anytime. I built SplitFree because I was fed up with all of it.
+Every expense-splitting app today wants your money or your data, or both. Monthly subscriptions for basic features, mandatory accounts that harvest your financial data, and proprietary servers that can shut down anytime. I built SplitFree because I was fed up with all of it.
 
 | | Traditional Apps | SplitFree |
 |---|---|---|
@@ -41,38 +41,38 @@ Every expense-splitting app today wants your money or your data — or both. Mon
 | **Identity** | Email/password | 24-word mnemonic backup (BIP-39) |
 | **Offline** | ❌ Requires internet | ✅ BLE sync with nearby members |
 
-SplitFree is built entirely on the [Nostr](https://nostr.com) protocol — an open, decentralized network. Your groups sync peer-to-peer through public Nostr relays and local Bluetooth, so your financial data stays under your control.
+SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open, decentralized network. Your groups sync peer-to-peer through public Nostr relays and local Bluetooth, so your financial data stays under your control.
 
 ## Features
 
 ### 🔐 Privacy & Security
-- **End-to-end encryption** — all group data encrypted with [NIP-44](https://nips.nostr.com/44) v2 (ChaCha20 + HMAC-SHA256); relays see only ciphertext
-- **Gift Wrap privacy** — optional [NIP-59](https://nips.nostr.com/59) triple-layer encryption hides sender metadata from relays
-- **Cryptographic identity** — [BIP-340](https://bips.dev/340) Schnorr keypair as your identity, exportable as a [BIP-39](https://en.bitcoin.it/wiki/BIP_0039) 24-word mnemonic
-- **Key revocation & group migration** — rotate your identity or remove members without losing history
+- **End-to-end encryption**: all group data encrypted with [NIP-44](https://nips.nostr.com/44) v2 (ChaCha20 + HMAC-SHA256); relays see only ciphertext
+- **Gift Wrap privacy**: optional [NIP-59](https://nips.nostr.com/59) triple-layer encryption hides sender metadata from relays
+- **Cryptographic identity**: [BIP-340](https://bips.dev/340) Schnorr keypair as your identity, exportable as a [BIP-39](https://en.bitcoin.it/wiki/BIP_0039) 24-word mnemonic
+- **Key revocation & group migration**: rotate your identity or remove members without losing history
 
 ### 💰 Expense Management
-- **Flexible splits** — equal, exact amount, percentage, or share-based splitting
-- **Multi-currency support** — track expenses in any currency, balances computed per currency
-- **Smart debt simplification** — greedy algorithm minimizes the number of settlement transactions
-- **Balance snapshots** — periodic snapshots reduce recomputation for large groups
+- **Flexible splits**: equal, exact amount, percentage, or share-based splitting
+- **Multi-currency support**: track expenses in any currency, balances computed per currency
+- **Smart debt simplification**: greedy algorithm reduces settlement to at most n−1 transfers (not guaranteed minimal; that problem is NP-hard)
+- **Balance snapshots**: periodic snapshots reduce recomputation for large groups
 
 ### 🔄 Sync & Connectivity
-- **Decentralized sync** — expenses propagate through Nostr relays ([NIP-01](https://nips.nostr.com/1)) with no proprietary backend
-- **Offline-first BLE sync** — sync with nearby group members over Bluetooth Low Energy when there's no internet
-- **Adaptive power management** — sync intervals, relay connections, and BLE duty cycles adjust to battery state
-- **Invite links** — compact deep links with bitmap-encoded relay lists (v2) or relay-based key exchange (v3)
+- **Decentralized sync**: expenses propagate through Nostr relays ([NIP-01](https://nips.nostr.com/1)) with no proprietary backend
+- **Offline-first BLE sync**: sync with nearby group members over Bluetooth Low Energy when there's no internet
+- **Adaptive power management**: sync intervals, relay connections, and BLE duty cycles adjust to battery state
+- **Invite links**: one compact, versioned bearer link carries everything a joiner needs (group id, creator, key epoch, group key, relays, expiry, name); the group id is bound to its creator so a forged "created by" cannot pass
 
 ### 🎨 User Experience
-- **Material 3 + circular reveal theme switching** — light/dark theme with smooth animation
-- **Export / Import** — self-contained encrypted backup (`.splitfree` files) with HMAC integrity verification for cross-device transfer
-- **QR code sharing** — scan to join groups instantly
-- **Debug log** — real-time protocol event viewer for developers
+- **Material 3 + circular reveal theme switching**: light/dark theme with smooth animation
+- **Export / Import**: self-contained encrypted backup (`.splitfree` files, format v2) for cross-device transfer; the whole file is authenticated with HMAC-SHA256 under a key HKDF-derived from your identity, so only the identity that made a backup can restore it
+- **QR code sharing**: scan to join groups instantly
+- **Debug log**: real-time protocol event viewer for developers
 
 ## How It Works
 
 ```
-┌──────────┐    splitfree://join/...    ┌──────────┐
+┌──────────┐   splitfree://join?d=...   ┌──────────┐
 │  Alice   │ ◄────────────────────────  │   Bob    │
 │ (keypair)│                            │ (keypair)│
 └────┬─────┘                            └────┬─────┘
@@ -86,19 +86,19 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol — an op
         └─────────────────────────────────┘
 ```
 
-1. **Identity** — On first launch, a secp256k1 keypair is generated. The public key is your identity. Back it up as a 24-word BIP-39 mnemonic.
+1. **Identity**: On first launch, a secp256k1 keypair is generated. The public key is your identity. Back it up as a 24-word BIP-39 mnemonic.
 
-2. **Groups** — Creating a group generates a random 256-bit symmetric key. All group events are encrypted with this key using NIP-44 v2 before publishing to relays.
+2. **Groups**: Creating a group generates a random 256-bit symmetric key. All group events are encrypted with this key using NIP-44 v2 before publishing to relays.
 
-3. **Invites** — Share a compact deep link (`splitfree://join/...`) containing the group ID, encrypted key material, and relay list. V2 links embed the key directly; V3 links use ephemeral key exchange via relays for extra security.
+3. **Invites**: Share a compact deep link (`splitfree://join?d=...`). It is a single versioned binary payload containing the group id, the creator's pubkey, the creation time, the key epoch, the group key itself, the relay list, an expiry, and the group name. The group id is derived from `(creator pubkey, createdAt)`, so a joiner can verify the creator claim before trusting it. The link is a bearer credential (anyone holding it can join and read the group), so share it over a channel you trust (in person via QR, or an end-to-end encrypted messenger).
 
-4. **Expenses** — Expenses are signed Nostr events (kind 30078) with encrypted JSON content. Each expense records who paid, who owes, the split method, and the amount.
+4. **Expenses**: Expenses are signed Nostr events (kind 30078) with encrypted JSON content. Each expense records who paid, who owes, the split method, and the amount.
 
-5. **Sync** — The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. A foreground service maintains real-time sync; WorkManager handles periodic and midnight sync.
+5. **Sync**: The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. A foreground service maintains real-time sync; WorkManager handles periodic and midnight sync.
 
-6. **BLE Sync** — When two group members are nearby, they can sync directly over Bluetooth using Google Nearby Connections. The BLE protocol uses binary framing with fragmentation, LZ4 compression, and a Schnorr challenge-response handshake for authentication.
+6. **BLE Sync**: When two group members are nearby, they can sync directly over Bluetooth using Google Nearby Connections. The BLE protocol uses binary framing with fragmentation, LZ4 compression, and a Schnorr challenge-response handshake for authentication.
 
-7. **Balances** — Balances are computed from the full event history (with snapshot optimization). The debt simplification algorithm uses a greedy creditor-debtor matching approach to minimize the number of settlement transactions.
+7. **Balances**: Balances are computed from the full event history (with snapshot optimization). The debt simplification algorithm greedily matches the largest creditor with the largest debtor, which settles everyone in at most n−1 transfers; it does not search for the true minimum.
 
 ## Architecture
 
@@ -134,15 +134,15 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Nostr Protocol (implemented from scratch — no third-party Nostr libraries)
+### Nostr Protocol (implemented from scratch, no third-party Nostr libraries)
 
 | NIP | Purpose | Implementation |
 |-----|---------|----------------|
 | [NIP-01](https://nips.nostr.com/1) | Event model, signing, relay protocol | `NostrEvent`, `Relay`, `ClientMessage`, `RelayMessage` |
-| [NIP-44](https://nips.nostr.com/44) | Encrypted payloads (v2) | `Nip44` — ChaCha20 + HKDF + HMAC-SHA256 + padding |
-| [NIP-59](https://nips.nostr.com/59) | Gift Wrap (triple-layer encryption) | `Nip59` — Rumor → Seal → Gift Wrap |
+| [NIP-44](https://nips.nostr.com/44) | Encrypted payloads (v2) | `Nip44`: ChaCha20 + HKDF + HMAC-SHA256 + padding |
+| [NIP-59](https://nips.nostr.com/59) | Gift Wrap (triple-layer encryption) | `Nip59`: Rumor → Seal → Gift Wrap |
 | [NIP-78](https://nips.nostr.com/78) | App-specific data (kind 30078) | Used for expense/settlement/group events |
-| [BIP-39](https://en.bitcoin.it/wiki/BIP_0039) | Mnemonic seed phrases | `Bip39` — 24-word mnemonic generation & recovery |
+| [BIP-39](https://en.bitcoin.it/wiki/BIP_0039) | Mnemonic seed phrases | `Bip39`: 24-word mnemonic generation & recovery |
 | [BIP-340](https://bips.dev/340) | Schnorr signatures | `Secp256k1` via `fr.acinq.secp256k1` |
 
 ### Tech Stack
@@ -220,12 +220,12 @@ app/src/main/java/com/splitfree/
 ├── domain/
 │   ├── crypto/           # NostrEvent, GroupEncryption, IdentityManager, EventSigner
 │   │   └── nip/          # Nip44, Nip59, Bip39 (from-scratch implementations)
-│   ├── invite/           # InviteLinkCodec (v1/v2/v3 invite link encoding)
+│   ├── invite/           # InviteLinkCodec (compact bearer invite link, creator-bound group id)
 │   ├── model/            # Domain models (Group, Expense, Balance, Settlement)
 │   ├── repository/       # Repository contracts (interfaces)
 │   ├── usecase/          # Business logic use cases
 │   │   ├── expense/      # AddExpense, ComputeBalances, SimplifyDebts, Snapshots
-│   │   ├── export/       # Export/Import with HMAC verification
+│   │   ├── export/       # Export/Import, whole-file HMAC keyed from the identity (HKDF)
 │   │   ├── group/        # CreateGroup, JoinGroup, MigrateGroup, RevokeKey
 │   │   └── sync/         # SelfHeal
 │   ├── util/             # HexUtil, HashUtil, RelayDefaults, CompressionProvider
@@ -252,7 +252,7 @@ Comprehensive unit tests across every layer of the app.
 ./gradlew testDebugUnitTest app:createDebugUnitTestCoverageReport # With coverage
 ./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test" # Specific class
 
-# Integration tests (real Nostr relays — excluded by default)
+# Integration tests (real Nostr relays; excluded by default)
 ./gradlew test -DREAL_RELAY_TEST=true                             # All tests including integration
 ./gradlew test -DREAL_RELAY_TEST=true --tests "*IntegrationTest"  # Integration tests only
 ```
@@ -265,7 +265,7 @@ Comprehensive unit tests across every layer of the app.
 | Sync | SyncEngine pull/flush, power management modes, boot receiver, self-heal republishing |
 | BLE | Binary protocol encode/decode, fragmentation/reassembly, handshake authentication, payload processing |
 | Validation | Timestamp bounds, rate limiting, content safety (nesting depth, size), author authorization, tombstone checks |
-| Integration | Full relay round-trips, end-to-end expense lifecycle, multi-phone simulation (`*IntegrationTest.kt` — excluded by default, run with `-DREAL_RELAY_TEST=true`) |
+| Integration | Full relay round-trips, end-to-end expense lifecycle, multi-phone simulation (`*IntegrationTest.kt`; excluded by default, run with `-DREAL_RELAY_TEST=true`) |
 
 ## Contributing
 
@@ -282,12 +282,12 @@ git checkout -b feat/your-feature-name
 
 ### Areas Where Help Is Needed
 
-- 🌍 **Localization** — i18n support for multiple languages
-- 🧪 **UI tests** — Compose UI test coverage
-- 📱 **iOS port** — Kotlin Multiplatform or native Swift implementation
-- 📖 **Documentation** — User guides, relay operator docs
-- ♿ **Accessibility** — Screen reader support, content descriptions
-- 🎨 **Design** — App icon, screenshots, Play Store assets
+- 🌍 **Localization**: i18n support for multiple languages
+- 🧪 **UI tests**: Compose UI test coverage
+- 📱 **iOS port**: Kotlin Multiplatform or native Swift implementation
+- 📖 **Documentation**: User guides, relay operator docs
+- ♿ **Accessibility**: Screen reader support, content descriptions
+- 🎨 **Design**: App icon, screenshots, Play Store assets
 
 ## Security
 

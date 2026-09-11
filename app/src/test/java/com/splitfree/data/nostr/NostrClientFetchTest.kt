@@ -30,7 +30,7 @@ import org.junit.Test
  * Regression tests for the [NostrClient.fetchEvents] collector lifecycle.
  *
  * The collectors append to the list that is handed back to the caller, so they must not outlive
- * the fetch — a collector still running after the return is what let the caller's
+ * the fetch. A collector still running after the return is what let the caller's
  * `for (event in events)` loop hit ConcurrentModificationException.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -192,8 +192,8 @@ class NostrClientFetchTest {
         val late = FakeRelay("wss://late")
         val client = clientWith(a)
 
-        // Enter fetch now, but leave collector launches queued. Changing the pool in this
-        // gap used to split the relay count from the set the collectors/subscriptions used.
+        // Enter fetch now, but leave collector launches queued. Changing the pool in this gap
+        // must not split the relay count from the set the collectors/subscriptions use.
         val fetch = async(start = CoroutineStart.UNDISPATCHED) { client.fetchEvents("group-1", 0, null) }
         injectRelay(client, late)
         runCurrent()

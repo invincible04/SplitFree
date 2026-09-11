@@ -10,7 +10,7 @@ import org.bouncycastle.crypto.params.KeyParameter
 import org.bouncycastle.crypto.params.ParametersWithIV
 
 /**
- * NIP-44 v2 encryption/decryption — implemented from scratch per spec.
+ * NIP-44 v2 encryption/decryption, implemented from scratch per spec.
  * https://github.com/nostr-protocol/nips/blob/master/44.md
  *
  * Algorithm: secp256k1 ECDH → HKDF-SHA256 → ChaCha20 (RFC 8439) + HMAC-SHA256
@@ -23,16 +23,16 @@ object Nip44 {
 
     /**
      * Derive conversation key from private key A and public key B.
-     * conv(a, B) == conv(b, A) — symmetric.
+     * conv(a, B) == conv(b, A), so it is symmetric.
      *
      * @param privateKey 32-byte secret key
      * @param publicKey 32-byte x-only pubkey (will be converted to 33-byte compressed)
      */
     fun getConversationKey(privateKey: ByteArray, publicKey: ByteArray): ByteArray {
-        // Convert 32-byte x-only to 33-byte compressed (02 prefix — even y)
+        // Convert 32-byte x-only to 33-byte compressed (02 prefix, even y)
         val pubkey33 = if (publicKey.size == 32) byteArrayOf(0x02) + publicKey else publicKey
         // ECDH: scalar multiplication → raw uncompressed point (65 bytes: 04||x||y)
-        // MUST use pubKeyTweakMul, NOT ecdh() — ecdh() SHA256-hashes the output
+        // MUST use pubKeyTweakMul, NOT ecdh(): ecdh() SHA256-hashes the output
         val sharedPoint = Secp256k1.pubKeyTweakMul(pubkey33, privateKey)
         // Extract raw 32-byte x-coordinate (unhashed, per NIP-44 spec)
         val sharedX = sharedPoint.copyOfRange(1, 33)

@@ -37,7 +37,7 @@ import org.junit.Test
 /**
  * Integration test for group custom relay feature using REAL relays.
  *
- * Uses `nos.lol` + `relay.damus.io` — both accept kind 30078 writes.
+ * Uses `nos.lol` + `relay.damus.io`; both accept kind 30078 writes.
  * Tests: NIP-11 probe, publish+verify, relay migration with self-heal, auth guard.
  *
  * Run: `./gradlew test -DREAL_RELAY_TEST=true --tests "*.CustomRelayIntegrationTest"`
@@ -164,7 +164,7 @@ class CustomRelayIntegrationTest {
             // Verify via fetchEventIds which uses a simpler filter.
             val ids = client.fetchEventIds(groupId, 0, pubKey)
             println("fetchEventIds returned ${ids.size} IDs (event.id in ids: ${event.id in ids})")
-            println("⚠️ fetchEvents returned 0 but publish succeeded — relay may not index #g for kind 30078")
+            println("⚠️ fetchEvents returned 0 but publish succeeded; relay may not index #g for kind 30078")
         }
     }
 
@@ -225,7 +225,7 @@ class CustomRelayIntegrationTest {
             println("✅ Relay migration verified: ${foundOnB.size}/3 events migrated from A to B")
         } else {
             // Even if fetch returns 0 (relay indexing), verify the publish didn't error
-            println("⚠️ Relay B fetch returned 0 — relay may not index #g tag for kind 30078")
+            println("⚠️ Relay B fetch returned 0; relay may not index #g tag for kind 30078")
             println("   But publish succeeded without errors, which is the critical path")
         }
     }

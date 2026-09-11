@@ -16,6 +16,7 @@ import com.splitfree.sync.event.EventPostProcessor
 import com.splitfree.sync.event.EventProcessor
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -187,6 +188,8 @@ class EventProcessorTest {
         every { eventValidator.isWithinRateLimit(any()) } returns false
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse(result.stored)
+        // Rate limits run before the group lookup so a flood does not cost a DB read per event.
+        coVerify(exactly = 0) { groupRepo.getById(any()) }
     }
 
     @Test
@@ -194,6 +197,17 @@ class EventProcessorTest {
         every { eventValidator.isWithinGroupRateLimit(any()) } returns false
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse(result.stored)
+        coVerify(exactly = 0) { groupRepo.getById(any()) }
+    }
+
+    @Test
+    fun `process consults rate limits before the group lookup`() = runBlocking {
+        processor.process(makeEvent(), knownGroupKey = groupKey)
+        coVerifyOrder {
+            eventValidator.isWithinRateLimit(pubkey)
+            eventValidator.isWithinGroupRateLimit(groupId)
+            groupRepo.getById(groupId)
+        }
     }
 
     @Test
@@ -277,7 +291,7 @@ class EventProcessorTest {
         val joiner = "cc".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
-        // joiner adds only themselves — valid self-join
+        // joiner adds only themselves: a valid self-join
         val meta =
             """{"name":"Test","description":"",""" +
                 """"created_by":"$pubkey","created_at":1000,""" +
@@ -298,7 +312,7 @@ class EventProcessorTest {
         val otherMember = "dd".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, otherMember))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
-        // joiner adds themselves but meta omits otherMember — CWE-863 fix rejects
+        // joiner adds themselves but meta omits otherMember; the CWE-863 check rejects this
         val meta =
             """{"name":"Test","description":"",""" +
                 """"created_by":"$pubkey","created_at":1000,""" +
@@ -390,7 +404,7 @@ class EventProcessorTest {
     fun `process unwraps gift-wrapped events`() = runBlocking {
         val inner = makeEvent()
         every { giftWrap.tryUnwrap(any()) } returns Nip59.Unwrapped(inner, "sender", "sealsig")
-        // Rumor has sig="" so signer.verify would return false — but we skip it for unwrapped events
+        // Rumor has sig="" so signer.verify would return false, but we skip it for unwrapped events
         every { signer.verify(any()) } returns false
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertTrue(result.stored)
@@ -537,7 +551,7 @@ class EventProcessorTest {
         val stranger = "cc".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
-        // decrypt fails — can't verify self-join, so reject
+        // decrypt fails, so the self-join cannot be verified and is rejected
         every { encryption.decrypt(any(), any<String>()) } throws RuntimeException("decrypt failed")
         val result =
             processor.process(

@@ -18,19 +18,39 @@ import org.robolectric.annotation.Config
 @Config(application = Application::class, sdk = [35])
 class RelayProtocolTest {
     private val sampleEvent = NostrEvent("id1", "pub1", 100, 1, listOf(listOf("g", "grp")), "hello", "sig1")
+    private val hexId = "ab".repeat(32)
+    private val hexPub = "cd".repeat(32)
+    private val hexSig = "ef".repeat(64)
 
     // --- RelayMessage.parse ---
 
     @Test
     fun `parse EVENT message`() {
         val json =
-            """["EVENT","sub1",{"id":"id1","pubkey":"pub1","created_at":100,""" +
-                """"kind":1,"tags":[["g","grp"]],"content":"hello","sig":"sig1"}]"""
+            """["EVENT","sub1",{"id":"$hexId","pubkey":"$hexPub","created_at":100,""" +
+                """"kind":1,"tags":[["g","grp"]],"content":"hello","sig":"$hexSig"}]"""
         val msg = RelayMessage.parse(json) as RelayMessage.EventMsg
         assertEquals("sub1", msg.subId)
-        assertEquals("id1", msg.event.id)
+        assertEquals(hexId, msg.event.id)
         assertEquals("hello", msg.event.content)
         assertEquals(listOf(listOf("g", "grp")), msg.event.tags)
+    }
+
+    @Test
+    fun `parse EVENT rejects wrong-length id pubkey or sig`() {
+        fun frame(id: String = hexId, pubkey: String = hexPub, sig: String = hexSig) =
+            """["EVENT","sub1",{"id":"$id","pubkey":"$pubkey","created_at":100,""" +
+                """"kind":1,"tags":[],"content":"","sig":"$sig"}]"""
+        assertTrue(RelayMessage.parse(frame()) is RelayMessage.EventMsg)
+        assertNull(RelayMessage.parse(frame(id = "id1")))
+        assertNull(RelayMessage.parse(frame(id = hexId + "0")))
+        assertNull(RelayMessage.parse(frame(pubkey = "pub1")))
+        assertNull(RelayMessage.parse(frame(sig = hexSig.take(127))))
+        // org.json coerces numbers to strings; a number is never 64 hex chars long
+        val numericId =
+            """["EVENT","sub1",{"id":1,"pubkey":"$hexPub","created_at":100,""" +
+                """"kind":1,"tags":[],"content":"","sig":"$hexSig"}]"""
+        assertNull(RelayMessage.parse(numericId))
     }
 
     @Test

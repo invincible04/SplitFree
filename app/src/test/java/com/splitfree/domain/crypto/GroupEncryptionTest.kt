@@ -49,14 +49,14 @@ class GroupEncryptionTest {
             // If it doesn't throw, the result should be garbage (MAC check should fail)
             fail("Should throw on wrong key, got: $result")
         } catch (_: Exception) {
-            // expected — MAC verification fails
+            // expected: MAC verification fails
         }
     }
 
     @Test
     fun `same key deterministically derives same conversation key`() {
         val key = encryption.generateGroupKey()
-        // Encrypt twice — should produce different ciphertexts (random nonce)
+        // Encrypt twice: should produce different ciphertexts (random nonce)
         // but both should decrypt to the same plaintext
         val msg = "test message"
         val e1 = encryption.encrypt(msg, key)
@@ -215,7 +215,7 @@ class GroupEncryptionTest {
     fun `compress returns null for incompressible data`() {
         // Random data doesn't compress well
         val random = java.security.SecureRandom().let { r -> ByteArray(200).also { r.nextBytes(it) } }
-        // May or may not compress — if it doesn't, returns null
+        // May or may not compress; if it doesn't, returns null
         val result = CompressionUtil.compress(random)
         if (result != null) {
             // If it did compress, verify round-trip
@@ -252,7 +252,7 @@ class GroupEncryptionTest {
             val result = CompressionUtil.decompress(bomb)
             assertNull("Should reject compression bomb", result)
         } catch (_: RuntimeException) {
-            // android.util.Log not mocked — the check still ran, just Log.w threw
+            // android.util.Log not mocked: the check still ran, just Log.w threw
             // This is acceptable: in production, Log.w works and returns null
         }
     }
@@ -287,7 +287,7 @@ class GroupEncryptionTest {
     @Test
     fun `encrypt-decrypt with unicode content`() {
         val key = encryption.generateGroupKey()
-        val plaintext = """{"description":"Dinner 🍕 at café — ₹500 für Ünïcödé"}"""
+        val plaintext = """{"description":"Dinner 🍕 at café, ₹500 für Ünïcödé"}"""
         val encrypted = encryption.encrypt(plaintext, key)
         assertEquals(plaintext, encryption.decrypt(encrypted, key))
     }

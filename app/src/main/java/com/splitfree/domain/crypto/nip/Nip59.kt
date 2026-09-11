@@ -8,7 +8,7 @@ import fr.acinq.secp256k1.Secp256k1
 import java.security.SecureRandom
 
 /**
- * NIP-59 Gift Wrap — implemented from scratch per spec.
+ * NIP-59 Gift Wrap, implemented from scratch per spec.
  * https://github.com/nostr-protocol/nips/blob/master/59.md
  *
  * Three-layer encryption:
@@ -31,7 +31,7 @@ object Nip59 {
     /**
      * Wrap a rumor for a specific recipient.
      *
-     * @param rumor The inner event (unsigned — sig must be empty)
+     * @param rumor The inner event (unsigned; sig must be empty)
      * @param senderPrivKey 32-byte sender private key
      * @param recipientPubKey 32-byte x-only recipient public key
      * @return Signed kind 1059 gift wrap event

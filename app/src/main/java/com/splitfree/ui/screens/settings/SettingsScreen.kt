@@ -367,16 +367,23 @@ private fun SecurityWarningDialog(
     )
 }
 
+/** Clipboard labels whose contents are secrets and are auto-cleared after [CLIPBOARD_CLEAR_MS]. */
+private val SENSITIVE_CLIP_LABELS = setOf("nsec", "seed")
+private const val CLIPBOARD_CLEAR_MS = 30_000L
+
 private fun copyToClipboard(context: Context, label: String, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val sensitive = label in SENSITIVE_CLIP_LABELS
     val clip = ClipData.newPlainText(label, text)
     clip.description.extras =
         PersistableBundle().apply {
             putBoolean("android.content.extra.IS_SENSITIVE", true)
         }
     clipboard.setPrimaryClip(clip)
-    Toast.makeText(context, context.getString(R.string.clipboard_copied_30s), Toast.LENGTH_SHORT).show()
-    if (label == "nsec" || label == "seed") {
+    // Only the secret copies are actually cleared below, so only they may promise it.
+    val toastRes = if (sensitive) R.string.clipboard_copied_30s else R.string.clipboard_copied
+    Toast.makeText(context, context.getString(toastRes), Toast.LENGTH_SHORT).show()
+    if (sensitive) {
         val copiedText = text
         Handler(Looper.getMainLooper()).postDelayed({
             try {
@@ -393,6 +400,6 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
                 }
             } catch (_: Exception) {
             }
-        }, 30_000)
+        }, CLIPBOARD_CLEAR_MS)
     }
 }

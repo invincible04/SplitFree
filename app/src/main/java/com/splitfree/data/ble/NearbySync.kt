@@ -142,7 +142,7 @@ constructor(
 
     /**
      * Tear down advertising, discovery and all endpoints. Each call is guarded separately so
-     * that one refusal — permissions revoked while connected — cannot skip the remaining
+     * that one refusal (permissions revoked while connected) cannot skip the remaining
      * teardown, and local state is cleared either way.
      */
     fun stop() {
@@ -187,11 +187,11 @@ constructor(
              * authentication completes.
              */
             override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-                // Accept connection to allow handshake — actual authentication happens
+                // Accept connection to allow the handshake; actual authentication happens
                 // via Schnorr challenge-response in BleTransfer after connection.
                 // Validate endpoint name is a plausible hex pubkey prefix.
                 val name = info.endpointName
-                // This runs on a Nearby callback thread — an escaping SecurityException
+                // This runs on a Nearby callback thread; an escaping SecurityException
                 // (permission revoked while connected) would kill the process.
                 try {
                     if (name.length == 8 && name.all { it in "0123456789abcdef" }) {

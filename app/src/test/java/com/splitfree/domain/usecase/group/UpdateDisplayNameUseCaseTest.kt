@@ -63,7 +63,7 @@ class UpdateDisplayNameUseCaseTest {
     fun `invoke saves name locally and broadcasts to all groups`() = runBlocking {
         val group = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
         coEvery { groupRepo.getAll() } returns listOf(group)
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
 
         useCase("Alice")
 
@@ -90,8 +90,8 @@ class UpdateDisplayNameUseCaseTest {
         val g1 = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
         val g2 = Group("g2", "Rent", "", otherPubkey, 2000, listOf(pubkey, otherPubkey), listOf("wss://r2"))
         coEvery { groupRepo.getAll() } returns listOf(g1, g2)
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
-        coEvery { groupRepo.getGroupKey("g2") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g2", 0) } returns fakeGroupKey
 
         useCase("Alice")
 
@@ -103,7 +103,7 @@ class UpdateDisplayNameUseCaseTest {
     fun `invoke skips group when key is missing`() = runBlocking {
         val group = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
         coEvery { groupRepo.getAll() } returns listOf(group)
-        coEvery { groupRepo.getGroupKey("g1") } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
 
         useCase("Alice")
 
@@ -125,7 +125,7 @@ class UpdateDisplayNameUseCaseTest {
             memberNames = mapOf(pubkey to "OldName")
         )
         coEvery { groupRepo.getAll() } returns listOf(group)
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
 
         useCase("  ")
 
@@ -155,7 +155,7 @@ class UpdateDisplayNameUseCaseTest {
             memberNames = mapOf(otherPubkey to "Bob")
         )
         coEvery { groupRepo.getAll() } returns listOf(group)
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
 
         useCase("Alice")
 
@@ -177,14 +177,26 @@ class UpdateDisplayNameUseCaseTest {
         val g1 = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
         val g2 = Group("g2", "Rent", "", pubkey, 2000, listOf(pubkey), listOf("wss://r2"))
         coEvery { groupRepo.getAll() } returns listOf(g1, g2)
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
-        coEvery { groupRepo.getGroupKey("g2") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g2", 0) } returns fakeGroupKey
         coEvery { eventPublisher.publishDirect(any(), eq("g1"), any(), any()) } throws RuntimeException("network")
 
         useCase("Alice")
 
         // g2 should still be published despite g1 failure
         coVerify { eventPublisher.publishDirect(any(), "g2", "encrypted", "group_meta") }
+    }
+
+    @Test
+    fun `invoke encrypts with the key for the group's current epoch`() = runBlocking {
+        val rotated = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"), keyEpoch = 2)
+        coEvery { groupRepo.getAll() } returns listOf(rotated)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 2) } returns "epoch2key"
+
+        useCase("Alice")
+
+        verify { encryption.encrypt(any(), "epoch2key") }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
     }
 
     @Test

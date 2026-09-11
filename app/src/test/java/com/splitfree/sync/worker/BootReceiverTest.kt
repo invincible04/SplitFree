@@ -48,7 +48,7 @@ class BootReceiverTest {
     @Test
     fun `does nothing when no identity flag`() {
         val context = spyk(RuntimeEnvironment.getApplication() as Context)
-        // Don't set the flag — default is false
+        // Flag not set: default is false
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
         verify(exactly = 0) { context.startForegroundService(any()) }

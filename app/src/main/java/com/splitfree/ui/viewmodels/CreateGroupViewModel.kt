@@ -95,7 +95,7 @@ constructor(
                     )
         }
         if (isKnown) {
-            // Default relays: ONLINE if NIP-11 passed, IDLE (grey) if not — never red
+            // Default relays: ONLINE if NIP-11 passed, IDLE (grey) if not; never red
             _relayStatuses.value = _relayStatuses.value +
                 (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
             return

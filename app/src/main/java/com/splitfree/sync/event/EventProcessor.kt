@@ -97,17 +97,9 @@ constructor(
         }
         groupId ?: return ProcessResult(false)
 
-        // 4. Validate group membership
+        // 4. Rate limits, checked before any DB read so a flood of junk costs only the in-memory
+        //    counters, not a group lookup per event.
         val authorHex = inner.pubkey
-        val group = groupRepo.getById(groupId) ?: run {
-            Log.w(TAG, "Rejecting event for unknown group $groupId")
-            return ProcessResult(false)
-        }
-
-        val membershipResult = validateMembership(eventType, authorHex, group, knownGroupKey, groupId, inner)
-        if (!membershipResult.allowed) return ProcessResult(false)
-
-        // 5. Rate limits
         if (!eventValidator.isWithinRateLimit(authorHex)) {
             Log.w(TAG, "Rate-limiting events from $authorHex")
             return ProcessResult(false)
@@ -117,7 +109,16 @@ constructor(
             return ProcessResult(false)
         }
 
-        // 6. Decrypt — use cached self-join decryption if available, else try epoch keys
+        // 5. Validate group membership
+        val group = groupRepo.getById(groupId) ?: run {
+            Log.w(TAG, "Rejecting event for unknown group $groupId")
+            return ProcessResult(false)
+        }
+
+        val membershipResult = validateMembership(eventType, authorHex, group, knownGroupKey, groupId, inner)
+        if (!membershipResult.allowed) return ProcessResult(false)
+
+        // 6. Decrypt: use cached self-join decryption if available, else try epoch keys
         var decrypted: String? = membershipResult.cachedDecrypted
         var decryptedEpoch = group.keyEpoch
         if (decrypted == null) {

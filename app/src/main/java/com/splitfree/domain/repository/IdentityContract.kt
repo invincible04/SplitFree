@@ -24,7 +24,7 @@ interface IdentityContract {
 
     /**
      * Returns private key as hex string.
-     * Prefer [getPrivateKeyBytes] for crypto operations — hex strings are immutable
+     * Prefer [getPrivateKeyBytes] for crypto operations; hex strings are immutable
      * and cannot be zeroed from memory.
      */
     fun getPrivateKeyHex(): String

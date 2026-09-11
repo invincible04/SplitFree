@@ -84,7 +84,7 @@ class BleProtocolBinaryTest {
             if (i < frags1.size) FragmentManager.addFragment("peer1", frags1[i])
             if (i < frags2.size) FragmentManager.addFragment("peer2", frags2[i])
         }
-        // Last fragment should complete reassembly — already consumed above
+        // Last fragment should complete reassembly (already consumed above)
         // Just verify clear works without crash
         FragmentManager.clear()
     }

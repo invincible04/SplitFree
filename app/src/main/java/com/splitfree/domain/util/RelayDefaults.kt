@@ -2,7 +2,7 @@ package com.splitfree.domain.util
 
 /**
  * Single source of truth for relay lists.
- * KNOWN_RELAYS order is append-only — changing order breaks existing invite links.
+ * KNOWN_RELAYS order is append-only; changing order breaks existing invite links.
  */
 object RelayDefaults {
     /** Default relays for new groups and fallback when no group relays exist. */
@@ -15,7 +15,7 @@ object RelayDefaults {
     )
 
     /**
-     * Fallback relays — always included in every connection for redundancy.
+     * Fallback relays, always included in every connection for redundancy.
      * Different operators, different continents, no overlap with [DEFAULT_RELAYS].
      */
     val FALLBACK_RELAYS = listOf(
@@ -26,7 +26,7 @@ object RelayDefaults {
 
     /**
      * Known relays for invite link bitmap encoding.
-     * Order is append-only — index-based encoding means reordering breaks existing links.
+     * Order is append-only; index-based encoding means reordering breaks existing links.
      */
     val KNOWN_RELAYS = DEFAULT_RELAYS
 

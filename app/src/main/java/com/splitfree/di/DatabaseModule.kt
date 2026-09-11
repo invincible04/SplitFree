@@ -23,8 +23,8 @@ import javax.inject.Singleton
  * ### Do not use `fallbackToDestructiveMigration()`
  *
  * The app splits persistent state across two storage layers:
- * - **Room** — group metadata, encrypted Nostr events, and the outbox queue
- * - **[KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage]** — group symmetric encryption keys
+ * - **Room**: group metadata, encrypted Nostr events, and the outbox queue
+ * - **[KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage]**: group symmetric encryption keys
  *
  * Destructive migration wipes Room but leaves the Keystore intact, which
  * orphans the encryption keys. Without a populated `groups` table the app

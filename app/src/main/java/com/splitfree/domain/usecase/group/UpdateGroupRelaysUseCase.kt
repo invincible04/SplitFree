@@ -47,7 +47,7 @@ constructor(
         require(relays.all { it.startsWith("wss://") }) { "Only wss:// relay URLs are allowed" }
 
         val group = groupRepo.getById(groupId) ?: error("Group not found")
-        val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group key not found")
+        val groupKey = groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch) ?: error("Group key not found")
         require(group.createdBy == identity.getPublicKeyHex()) { "Only the group creator can change relays" }
         val oldRelays = group.relays.toSet()
 

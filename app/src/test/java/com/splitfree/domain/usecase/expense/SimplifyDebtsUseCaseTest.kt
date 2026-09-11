@@ -77,7 +77,7 @@ class SimplifyDebtsUseCaseTest {
     @Test
     fun `single person with balance returns empty`() {
         val balances = listOf(Balance("A", 100, "INR"))
-        // No one to pay — creditor only
+        // No one to pay: creditor only
         val result = useCase(balances)
         assertTrue(result.isEmpty())
     }

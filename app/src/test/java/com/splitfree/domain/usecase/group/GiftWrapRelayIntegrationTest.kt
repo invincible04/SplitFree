@@ -32,7 +32,7 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Real relay test with GIFT WRAP ENABLED — simulates the actual prod path.
+ * Real relay test with GIFT WRAP ENABLED; simulates the actual prod path.
  *
  * Phone 1 creates expense → NIP-59 gift wraps it for Phone 2 → publishes kind 1059
  * Phone 2 receives kind 1059 → unwraps → decrypts → verifies expense

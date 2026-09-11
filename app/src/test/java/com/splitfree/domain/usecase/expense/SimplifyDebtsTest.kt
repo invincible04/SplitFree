@@ -6,10 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Tests for SimplifyDebtsUseCase — the greedy debt simplification algorithm.
- * Design doc Section 11.2.
- */
+/** Tests for SimplifyDebtsUseCase, the greedy debt simplification algorithm. */
 class SimplifyDebtsTest {
     private val simplify = SimplifyDebtsUseCase()
 
@@ -129,7 +126,7 @@ class SimplifyDebtsTest {
     @Test
     fun `single person with balance produces no transactions`() {
         val balances = listOf(Balance("alice", 100, "INR"))
-        // No one to pay — this is an inconsistent state but shouldn't crash
+        // No one to pay: an inconsistent state, but it must not crash
         val result = simplify(balances)
         assertEquals(0, result.size)
     }

@@ -15,7 +15,7 @@ import kotlin.system.exitProcess
  *
  * Stores:
  * - last heartbeat (timestamp/source/detail)
- * - last uncaught exception (timestamp/thread/stacktrace)
+ * - last uncaught exception (timestamp/thread/stacktrace, run through [DebugLog.sanitize])
  * - latest OS process-exit reason (API 30+)
  *
  * Data is local-only in SharedPreferences and can be copied from Settings.
@@ -128,7 +128,11 @@ object ProcessHealthTracker {
     internal fun recordCrash(context: Context, thread: Thread, throwable: Throwable) {
         val sw = StringWriter()
         throwable.printStackTrace(PrintWriter(sw))
-        val stack = sw.toString().take(MAX_STACK_CHARS)
+        // Exception messages routinely embed group ids, pubkeys or event ids ("Rejecting event for
+        // unknown group …"). The prefs file is plain and the report is copied to the clipboard, so
+        // redact before persisting. Sanitize first, then cap: a hex run cut short by the cap would
+        // otherwise slip past the 64-char redaction pattern.
+        val stack = DebugLog.sanitize(sw.toString()).take(MAX_STACK_CHARS)
         val p = prefs(context)
         // Snapshot the last operation now: the next launch overwrites the live heartbeat.
         p.edit()

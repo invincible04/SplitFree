@@ -365,7 +365,7 @@ constructor(
      * ([GroupIdentity.matches]); a `created_by` claim by anyone else is ignored, and if no
      * meta is bound to the id the creator stays unknown.
      *
-     * Key rotation events are NOT replayed here — all epoch keys are restored
+     * Key rotation events are NOT replayed here; all epoch keys are restored
      * directly from [SplitFreeExport.encryptedEpochKeys] before event import.
      *
      * @param stored every event of the group as read after pass 1

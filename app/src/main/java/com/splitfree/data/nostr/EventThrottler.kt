@@ -1,6 +1,7 @@
 package com.splitfree.data.nostr
 
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.util.DebugLog as Log
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -10,24 +11,28 @@ import javax.inject.Singleton
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Rate-limits event publishing to ~1 event/sec (500ms base + 100–900ms jitter) to avoid relay rate limits.
+ * Rate-limits event publishing to ~1 event/sec (500ms base + 100 to 900ms jitter) to avoid relay rate limits.
  * Events are queued and published sequentially; queue is capped at [MAX_QUEUE_SIZE].
  *
  * Every event handed here was already committed to the outbox, so a successful publish removes
  * its outbox row; otherwise the next `flushOutbox` would publish the same event a second time.
+ *
+ * The drain loop runs on the injected application scope so it shares the app lifecycle instead
+ * of a private scope nothing can cancel.
  */
 @Singleton
 class EventThrottler
 @Inject
-constructor(private val nostrClient: NostrClient, private val outboxDao: OutboxDao) {
+constructor(
+    private val nostrClient: NostrClient,
+    private val outboxDao: OutboxDao,
+    @ApplicationScope private val scope: CoroutineScope
+) {
     private val queue = ConcurrentLinkedQueue<NostrEvent>()
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val publishing = AtomicBoolean(false)
     private val intervalMs = 500L
     private val queueSize =

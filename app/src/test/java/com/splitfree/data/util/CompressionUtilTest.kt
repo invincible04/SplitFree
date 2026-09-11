@@ -57,7 +57,7 @@ class CompressionUtilTest {
         // Random-ish data that won't compress well
         val data = ByteArray(50) { it.toByte() }
         val result = CompressionUtil.compress(data)
-        // LZ4 may or may not compress small data — if it doesn't shrink, returns null
+        // LZ4 may or may not compress small data; if it doesn't shrink, returns null
         // This is a valid branch either way
         if (result != null) {
             assertTrue(result.size < data.size + 4) // 4-byte header

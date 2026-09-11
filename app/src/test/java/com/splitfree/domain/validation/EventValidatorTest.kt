@@ -11,7 +11,7 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Tests for EventValidator — timestamp, correction auth, rate limiting,
+ * Tests for EventValidator: timestamp, correction auth, rate limiting,
  * content safety, deletion, group meta auth, and remote payload validation.
  */
 class EventValidatorTest {

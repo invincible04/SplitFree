@@ -10,10 +10,15 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.AfterClass
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -34,6 +39,9 @@ class EventThrottlerTest {
         }
     }
 
+    /** Stands in for the Hilt-provided `@ApplicationScope`; the drain loop really runs on IO. */
+    private fun appScope() = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private fun makeEvent(id: String) = NostrEvent(
         id = id,
         pubkey = "pub",
@@ -49,7 +57,7 @@ class EventThrottlerTest {
         val client = mockk<NostrClient>(relaxed = true)
         val outboxDao = mockk<OutboxDao>(relaxed = true)
         coEvery { client.publish(any()) } returns true
-        val throttler = EventThrottler(client, outboxDao)
+        val throttler = EventThrottler(client, outboxDao, appScope())
         throttler.enqueue(makeEvent("e1"))
         advanceUntilIdle()
         // Give the IO dispatcher time to process
@@ -61,8 +69,8 @@ class EventThrottlerTest {
     fun `enqueue drops events beyond max queue size`() {
         val client = mockk<NostrClient>(relaxed = true)
         val outboxDao = mockk<OutboxDao>(relaxed = true)
-        val throttler = EventThrottler(client, outboxDao)
-        // Fill queue to max (500) + 1 — the 501st should be dropped
+        val throttler = EventThrottler(client, outboxDao, appScope())
+        // Fill queue to max (500) + 1; the 501st should be dropped
         repeat(501) { throttler.enqueue(makeEvent("e$it")) }
         // We can't easily assert the drop, but it shouldn't crash
     }
@@ -74,7 +82,7 @@ class EventThrottlerTest {
         val deleted = CountDownLatch(1)
         coEvery { client.publish(any()) } returns true
         coEvery { outboxDao.delete("e1") } answers { deleted.countDown() }
-        val throttler = EventThrottler(client, outboxDao)
+        val throttler = EventThrottler(client, outboxDao, appScope())
 
         throttler.enqueue(makeEvent("e1"))
 
@@ -92,7 +100,7 @@ class EventThrottlerTest {
             published.countDown()
             false
         }
-        val throttler = EventThrottler(client, outboxDao)
+        val throttler = EventThrottler(client, outboxDao, appScope())
 
         throttler.enqueue(makeEvent("e1"))
 
@@ -111,12 +119,39 @@ class EventThrottlerTest {
             secondPublished.countDown()
             true
         }
-        val throttler = EventThrottler(client, outboxDao)
+        val throttler = EventThrottler(client, outboxDao, appScope())
 
         throttler.enqueue(makeEvent("boom"))
         throttler.enqueue(makeEvent("after"))
 
         assertTrue("second event never published", secondPublished.await(5, TimeUnit.SECONDS))
         coVerify(exactly = 0) { outboxDao.delete("boom") }
+    }
+
+    @Test
+    fun `cancelling the application scope stops the drain loop`() {
+        val client = mockk<NostrClient>(relaxed = true)
+        val outboxDao = mockk<OutboxDao>(relaxed = true)
+        val scope = appScope()
+        val firstPublished = CountDownLatch(1)
+        val secondPublished = CountDownLatch(1)
+        coEvery { client.publish(match { it.id == "first" }) } answers {
+            firstPublished.countDown()
+            true
+        }
+        coEvery { client.publish(match { it.id == "second" }) } answers {
+            secondPublished.countDown()
+            true
+        }
+        val throttler = EventThrottler(client, outboxDao, scope)
+
+        throttler.enqueue(makeEvent("first"))
+        throttler.enqueue(makeEvent("second"))
+        assertTrue(firstPublished.await(5, TimeUnit.SECONDS))
+        // The loop is now in its inter-event delay; cancelling the app scope must end it.
+        scope.cancel()
+
+        assertFalse("drain loop outlived its scope", secondPublished.await(2, TimeUnit.SECONDS))
+        coVerify(exactly = 0) { client.publish(match { it.id == "second" }) }
     }
 }

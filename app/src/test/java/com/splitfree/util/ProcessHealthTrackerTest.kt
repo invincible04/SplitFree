@@ -10,6 +10,7 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -117,6 +118,38 @@ class ProcessHealthTrackerTest {
         val prefs = context.getSharedPreferences("splitfree_diagnostics", Context.MODE_PRIVATE)
         assertEquals(16_000, prefs.getString("crash_stack", "")!!.length)
         assertEquals(128, prefs.getString("crash_thread", "")!!.length)
+    }
+
+    @Test
+    fun `stored crash stack redacts pubkeys event ids and invite links`() {
+        val pubkey = "ab".repeat(32)
+        val link = "splitfree://join?d=AAECAwQFBgcICQoLDA0ODw"
+        ProcessHealthTracker.recordCrash(
+            context,
+            Thread("sync"),
+            IllegalStateException("Rejecting event for unknown group $pubkey via $link")
+        )
+
+        val stored = context.getSharedPreferences("splitfree_diagnostics", Context.MODE_PRIVATE)
+            .getString("crash_stack", "")!!
+        assertFalse(stored.contains(pubkey))
+        assertFalse(stored.contains(link))
+        assertTrue(stored.contains(pubkey.take(8) + "…"))
+        assertTrue(stored.contains("splitfree://join?d=[REDACTED]"))
+        // The report is built from the stored text, so it is redacted too.
+        assertFalse(ProcessHealthTracker.buildReport(context).contains(pubkey))
+    }
+
+    @Test
+    fun `hex run cut short by the size cap is still redacted`() {
+        // Sanitize runs before the cap: a 64-hex id that would straddle the boundary must not survive.
+        val pubkey = "cd".repeat(32)
+        val padding = "p".repeat(16_000 - 60)
+        ProcessHealthTracker.recordCrash(context, Thread("sync"), IllegalStateException(padding + pubkey))
+
+        val stored = context.getSharedPreferences("splitfree_diagnostics", Context.MODE_PRIVATE)
+            .getString("crash_stack", "")!!
+        assertFalse(stored.contains(pubkey.take(20)))
     }
 
     @Test

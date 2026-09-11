@@ -6,17 +6,23 @@ import java.util.PriorityQueue
 import javax.inject.Inject
 
 /**
- * Reduces member balances to the minimum number of debtor→creditor transfers using a greedy algorithm.
+ * Reduces member balances to a small set of debtor→creditor transfers using a greedy
+ * largest-creditor / largest-debtor matching.
+ *
+ * Every transfer fully settles at least one party, so the result never has more than `n − 1`
+ * transfers for `n` members with a non-zero balance. It is not guaranteed to be the minimum:
+ * finding the fewest transfers is NP-hard (subset-sum), and the greedy choice can miss cases where
+ * a group of smaller balances cancels exactly.
  */
 class SimplifyDebtsUseCase
 @Inject
 constructor() {
     /**
-     * Reduce a list of balances to the minimum number of transfers using a greedy algorithm.
-     * Groups by currency before simplifying.
+     * Reduce a list of balances to at most `n − 1` transfers per currency using the greedy
+     * matching described on the class. Groups by currency before simplifying.
      *
      * @param balances per-member net balances (positive = owed money, negative = owes money)
-     * @return minimal list of debtor→creditor transactions that settle all debts
+     * @return debtor→creditor transactions that settle all debts; few, but not necessarily minimal
      */
     operator fun invoke(balances: List<Balance>): List<DebtTransaction> =
         balances.groupBy { it.currency }.flatMap { (currency, currencyBalances) ->

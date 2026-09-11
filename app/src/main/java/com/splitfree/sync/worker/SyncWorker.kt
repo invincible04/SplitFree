@@ -18,7 +18,7 @@ import dagger.assisted.AssistedInject
 /**
  * Periodic background sync worker.
  *
- * Runs on a battery-adaptive schedule (1–24h depending on [PowerMode]).
+ * Runs on a battery-adaptive schedule (1 to 24h depending on [PowerMode]).
  * For each group: flushes outbox → pulls new events → self-heals → creates snapshots.
  */
 @HiltWorker

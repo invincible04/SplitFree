@@ -633,7 +633,7 @@ class ComputeBalancesUseCaseTest {
             )
         val useCase = ComputeBalancesUseCase(dao, repo, encryption())
         val balances = useCase("g1")
-        // Empty-hash snapshot is rejected — balances computed from events only
+        // Empty-hash snapshot is rejected; balances computed from events only
         // bob paid 200, split equally: alice owes bob 100
         val alice = balances.find { it.pubkey == "alice" }
         val bob = balances.find { it.pubkey == "bob" }

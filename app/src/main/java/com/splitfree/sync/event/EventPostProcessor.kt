@@ -142,7 +142,7 @@ constructor(
             )
 
             if (relaysChanged) {
-                Log.i(TAG, "Relays changed for $groupId — triggering eager self-heal")
+                Log.i(TAG, "Relays changed for $groupId, triggering eager self-heal")
                 appScope.launch {
                     try {
                         selfHeal(groupId)

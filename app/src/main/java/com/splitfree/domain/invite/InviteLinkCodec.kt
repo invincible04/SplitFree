@@ -37,7 +37,7 @@ data class InviteParams(
 /**
  * Encodes/decodes compact invite links for group sharing.
  *
- * SECURITY MODEL: Bearer-token invite — the URL itself is the credential.
+ * SECURITY MODEL: Bearer-token invite; the URL itself is the credential.
  *
  * - **Confidentiality** of the link is the user's responsibility. The group key travels in the
  *   clear inside the payload; anyone holding the link can join and read the group. Mitigated by

@@ -2,6 +2,7 @@ package com.splitfree.data.nostr.protocol
 
 import com.splitfree.domain.crypto.NostrEvent
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 /**
@@ -31,7 +32,19 @@ sealed class RelayMessage {
             null
         }
 
+        /**
+         * Shape check only. A wrong-length id/pubkey/sig can never pass [NostrEvent.verify], so
+         * failing here (which [parse] turns into `null`) drops obviously malformed events before
+         * they cost a SHA-256 and a Schnorr verification. `getString` still coerces non-string
+         * JSON values, which is fine: a number is never 64 hex chars long.
+         */
         private fun parseEvent(obj: JSONObject): NostrEvent {
+            val id = obj.getString("id")
+            val pubkey = obj.getString("pubkey")
+            val sig = obj.getString("sig")
+            if (id.length != ID_HEX_LENGTH || pubkey.length != PUBKEY_HEX_LENGTH || sig.length != SIG_HEX_LENGTH) {
+                throw JSONException("Malformed event: id/pubkey/sig length")
+            }
             val tagsArr = obj.getJSONArray("tags")
             val tags =
                 (0 until tagsArr.length()).map { i ->
@@ -39,14 +52,21 @@ sealed class RelayMessage {
                     (0 until t.length()).map { j -> t.getString(j) }
                 }
             return NostrEvent(
-                id = obj.getString("id"),
-                pubkey = obj.getString("pubkey"),
+                id = id,
+                pubkey = pubkey,
                 createdAt = obj.getLong("created_at"),
                 kind = obj.getInt("kind"),
                 tags = tags,
                 content = obj.getString("content"),
-                sig = obj.getString("sig")
+                sig = sig
             )
         }
+
+        /** Hex length of a SHA-256 event id and of an x-only secp256k1 pubkey. */
+        private const val ID_HEX_LENGTH = 64
+        private const val PUBKEY_HEX_LENGTH = 64
+
+        /** Hex length of a BIP-340 Schnorr signature. */
+        private const val SIG_HEX_LENGTH = 128
     }
 }

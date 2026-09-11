@@ -151,28 +151,28 @@ The project has comprehensive unit tests across every layer. New code should inc
 # Specific test method
 ./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test.encrypt then decrypt round-trip"
 
-# Integration tests (real Nostr relays — requires network)
+# Integration tests (real Nostr relays; requires network)
 ./gradlew test -DREAL_RELAY_TEST=true                             # All tests including integration
 ./gradlew test -DREAL_RELAY_TEST=true --tests "*IntegrationTest"  # Integration tests only
 ```
 
 ### Test Naming Convention
 
-- Unit tests: `*Test.kt` — run by default, no network required
-- Integration tests: `*IntegrationTest.kt` — excluded by default, require `-DREAL_RELAY_TEST=true`
+- Unit tests: `*Test.kt`, run by default, no network required
+- Integration tests: `*IntegrationTest.kt`, excluded by default, require `-DREAL_RELAY_TEST=true`
 
 ### Test Organization
 
 | Directory | Purpose |
 |-----------|---------|
-| `domain/crypto/` | Crypto primitives — NIP-01, NIP-44, NIP-59, BIP-39 |
+| `domain/crypto/` | Crypto primitives: NIP-01, NIP-44, NIP-59, BIP-39 |
 | `domain/crypto/integration/` | End-to-end crypto + relay round-trips |
 | `domain/usecase/expense/` | Balance computation, debt simplification, splits |
-| `domain/usecase/group/` | Group lifecycle — create, join, migrate, revoke |
+| `domain/usecase/group/` | Group lifecycle: create, join, migrate, revoke |
 | `domain/usecase/export/` | Export/import with HMAC verification |
 | `domain/usecase/sync/` | Self-heal, constants |
 | `domain/usecase/integration/` | Full multi-phone simulation |
-| `domain/validation/` | Event validation — timestamps, rate limits, content safety |
+| `domain/validation/` | Event validation: timestamps, rate limits, content safety |
 | `data/nostr/` | NostrClient, relay protocol, health monitor |
 | `data/ble/` | BLE binary protocol, transfer, handshake |
 | `data/repository/` | Repository implementations |
@@ -184,7 +184,7 @@ The project has comprehensive unit tests across every layer. New code should inc
 - Use backtick-quoted test names: `` fun `descriptive test name`() ``
 - Use `MockK` for mocking dependencies
 - Use `Robolectric` when Android framework classes are needed
-- Integration tests (`*IntegrationTest.kt`) hit live relays — excluded by default, run with `-DREAL_RELAY_TEST=true`
+- Integration tests (`*IntegrationTest.kt`) hit live relays; they are excluded by default, run with `-DREAL_RELAY_TEST=true`
 
 ## Commit Messages
 
@@ -223,12 +223,12 @@ chore: bump Kotlin to 2.1.0
 
 ## Pull Request Process
 
-1. **Title** — Use the same Conventional Commits format as commit messages
-2. **Description** — Explain what changed and why. Link related issues with `Closes #123`
-3. **Scope** — Keep PRs focused on a single concern. Split large changes into multiple PRs
-4. **Tests** — Include tests for new functionality. Don't reduce existing coverage
-5. **CI** — All checks must pass (tests, lint, spotless)
-6. **Review** — At least one maintainer approval is required before merge
+1. **Title**: Use the same Conventional Commits format as commit messages
+2. **Description**: Explain what changed and why. Link related issues with `Closes #123`
+3. **Scope**: Keep PRs focused on a single concern. Split large changes into multiple PRs
+4. **Tests**: Include tests for new functionality. Don't reduce existing coverage
+5. **CI**: All checks must pass (tests, lint, spotless)
+6. **Review**: At least one maintainer approval is required before merge
 
 ### PR Checklist
 
@@ -249,11 +249,11 @@ UI (Compose) → ViewModel → Use Case → Repository → Data Source
 
 ### Key Principles
 
-- **Domain layer has no Android dependencies** — pure Kotlin, testable without Robolectric
-- **Repository pattern** — contracts (interfaces) in `domain/repository/`, implementations in `data/repository/`
-- **Use cases are single-responsibility** — one public `invoke()` method per use case
-- **Crypto is from scratch** — NIP-01, NIP-44, NIP-59, BIP-39 are implemented without third-party Nostr libraries
-- **Events are immutable** — Nostr events are signed and stored as-is; corrections/deletions are new events
+- **Domain layer has no Android dependencies**: pure Kotlin, testable without Robolectric
+- **Repository pattern**: contracts (interfaces) in `domain/repository/`, implementations in `data/repository/`
+- **Use cases are single-responsibility**: one public `invoke()` method per use case
+- **Crypto is from scratch**: NIP-01, NIP-44, NIP-59, BIP-39 are implemented without third-party Nostr libraries
+- **Events are immutable**: Nostr events are signed and stored as-is; corrections/deletions are new events
 
 ### Where to Put New Code
 
@@ -268,13 +268,13 @@ UI (Compose) → ViewModel → Use Case → Repository → Data Source
 
 ## Areas Where Help Is Needed
 
-- 🌍 **Localization** — i18n support for multiple languages
-- 🧪 **UI tests** — Compose UI test coverage with `ComposeTestRule`
-- 📱 **iOS port** — Kotlin Multiplatform or native Swift implementation
-- 📖 **Documentation** — User guides, relay operator docs, API documentation
-- ♿ **Accessibility** — Screen reader support, content descriptions, focus management
-- 🎨 **Design** — App icon, screenshots, Play Store listing assets
-- 📊 **Analytics** — Privacy-respecting usage metrics (opt-in only)
+- 🌍 **Localization**: i18n support for multiple languages
+- 🧪 **UI tests**: Compose UI test coverage with `ComposeTestRule`
+- 📱 **iOS port**: Kotlin Multiplatform or native Swift implementation
+- 📖 **Documentation**: User guides, relay operator docs, API documentation
+- ♿ **Accessibility**: Screen reader support, content descriptions, focus management
+- 🎨 **Design**: App icon, screenshots, Play Store listing assets
+- 📊 **Analytics**: Privacy-respecting usage metrics (opt-in only)
 
 ---
 

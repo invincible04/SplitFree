@@ -32,8 +32,8 @@ class Nip01Test {
     // These validate that our signing/verification uses the correct BIP-340 algorithm.
 
     @Test
-    fun `BIP-340 signing vectors - verify known signatures`() {
-        // Official BIP-340 test vectors (verification only — vectors 4-14 have no secret key)
+    fun `BIP-340 signing vectors match known signatures`() {
+        // Official BIP-340 test vectors (verification only; vectors 4 to 14 have no secret key)
         val verifyVectors =
             listOf(
                 // index, pubkey, message (32-byte hex), signature, expected result
@@ -462,7 +462,7 @@ class Nip01Test {
 
     @Test
     fun `toJson-fromJson round-trip with unicode in content`() {
-        val content = "Dinner 🍕 at café — ₹500 日本語 العربية"
+        val content = "Dinner 🍕 at café, ₹500 日本語 العربية"
         val event = NostrEvent(pubkey = pubHex, createdAt = 1, kind = 1, content = content).sign(privKey)
         val parsed = NostrEvent.fromJson(event.toJson())!!
         assertEquals(content, parsed.content)

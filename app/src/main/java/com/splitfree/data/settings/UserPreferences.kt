@@ -9,7 +9,7 @@ import javax.inject.Singleton
 
 /**
  * User preferences backed by plain SharedPreferences (privacy toggles).
- * No sensitive data — Android FBE protects at rest.
+ * No sensitive data; Android FBE protects at rest.
  */
 @Singleton
 class UserPreferences

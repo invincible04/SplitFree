@@ -175,7 +175,7 @@ constructor(
         val challengeBytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
         val challenge = challengeBytes.toHex()
         pendingChallenges[endpointId] = challenge
-        // Send empty groups list — real group IDs sent after authentication
+        // Send an empty groups list; real group IDs are sent after authentication
         val hs = json.encodeToString(
             BleHandshake.serializer(),
             BleHandshake(pubkey, emptyList(), challenge = challenge)
@@ -374,8 +374,8 @@ constructor(
     }
 
     /**
-     * Parse a peer-supplied payload. A peer is untrusted here — MSG_HANDSHAKE is handled
-     * before authentication — so malformed bytes must be discarded rather than thrown to
+     * Parse a peer-supplied payload. A peer is untrusted here (MSG_HANDSHAKE is handled
+     * before authentication), so malformed bytes must be discarded rather than thrown to
      * the caller, which collects this in a flow whose collector would die with it.
      */
     private fun <T> decodeOrNull(serializer: DeserializationStrategy<T>, body: ByteArray): T? = try {

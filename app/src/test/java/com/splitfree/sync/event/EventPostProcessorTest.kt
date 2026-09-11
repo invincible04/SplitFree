@@ -223,7 +223,7 @@ class EventPostProcessorTest {
     fun `handle catches exception from rotateGroupKey`() = runBlocking {
         coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } throws RuntimeException("boom")
         processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        // Should not throw — exception is caught internally
+        // Should not throw: exception is caught internally
     }
 
     @Test
@@ -383,7 +383,7 @@ class EventPostProcessorTest {
         val oldRelayGroup = group.copy(relays = listOf("wss://old"))
         coEvery { groupRepo.getById(groupId) } returns oldRelayGroup
         val meta = """{"name":"Test","members":["$pubkey"],"relays":["wss://new"]}"""
-        // Should not throw — self-heal exception is caught inside appScope.launch
+        // Should not throw: self-heal exception is caught inside appScope.launch
         processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
         coVerify { selfHeal(groupId) }
     }
@@ -392,7 +392,7 @@ class EventPostProcessorTest {
     fun `handle key_revocation catches exception`() = runBlocking {
         coEvery { revokeKey.handleRevocation(any(), any(), any()) } throws RuntimeException("revoke failed")
         processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        // Should not throw — exception is caught internally
+        // Should not throw: exception is caught internally
     }
 
     // --- Re-delivery of authored history to new members ---

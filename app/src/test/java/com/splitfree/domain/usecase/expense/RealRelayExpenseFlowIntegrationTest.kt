@@ -155,7 +155,7 @@ class RealRelayExpenseFlowIntegrationTest {
         println("Both phones connected to ${relays.size} relays")
 
         // ========== Subscribe BOTH phones to the group (like ForegroundSyncService) ==========
-        // This is the real-time path the app uses — subscribe first, then events arrive via incomingEvents
+        // This is the real-time path the app uses: subscribe first, then events arrive via incomingEvents
         phone1Client.startListening()
         phone2Client.startListening()
         phone1Client.subscribe(groupId, now - 60)

@@ -119,6 +119,7 @@
     <string name="debug_logs">Debug Logs</string>
     <string name="debug_logs_supporting">View live app logs for troubleshooting</string>
     <string name="open">Open</string>
+    <string name="clipboard_copied">Copied</string>
     <string name="clipboard_copied_30s">Copied — clipboard will auto-clear in 30s</string>
 
     <!-- SettingsScreen - Security Dialogs -->

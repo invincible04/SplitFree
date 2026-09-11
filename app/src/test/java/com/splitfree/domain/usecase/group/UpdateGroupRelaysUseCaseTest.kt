@@ -59,7 +59,7 @@ class UpdateGroupRelaysUseCaseTest {
         every { identity.getPublicKeyHex() } returns pubkey
 
         coEvery { groupRepo.getById("g1") } returns group
-        coEvery { groupRepo.getGroupKey("g1") } returns fakeGroupKey
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
 
         useCase =
             UpdateGroupRelaysUseCase(
@@ -141,7 +141,7 @@ class UpdateGroupRelaysUseCaseTest {
 
     @Test(expected = IllegalStateException::class)
     fun `invoke throws when group key not found`() = runBlocking {
-        coEvery { groupRepo.getGroupKey("g1") } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
         useCase("g1", listOf("wss://r"))
         Unit
     }
@@ -168,5 +168,16 @@ class UpdateGroupRelaysUseCaseTest {
         every { identity.getPublicKeyHex() } returns "bb".repeat(32)
         useCase("g1", listOf("wss://r"))
         Unit
+    }
+
+    @Test
+    fun `invoke encrypts with the key for the group's current epoch`() = runBlocking {
+        coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
+
+        useCase("g1", listOf("wss://r"))
+
+        verify { encryption.encrypt(any(), "epoch3key") }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
     }
 }

@@ -56,7 +56,7 @@ object DebugLog {
     /** Snapshot of current entries (newest last). */
     val entries: List<Entry> get() = buffer.toList()
 
-    /** Incremented on every write — collect as StateFlow trigger. */
+    /** Incremented on every write; collect as StateFlow trigger. */
     @Volatile
     var revision: Long = 0L
         private set

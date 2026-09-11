@@ -64,7 +64,7 @@ constructor(
     init {
         viewModelScope.launch {
             nearbySync.events.collect { event ->
-                // Per-event DB/identity failures must not terminate collection — this
+                // Per-event DB/identity failures must not terminate collection; this
                 // collector is the only consumer of BLE events for the screen.
                 try {
                     handleEvent(event)
@@ -156,7 +156,7 @@ constructor(
                                 bleTransfer.clearPeer(event.endpointId)
                                 _uiState.value = _uiState.value.copy(status = handshakeTimedOut)
                             } else {
-                                // Initial handshake with challenge — send our response
+                                // Initial handshake with challenge: send our response
                                 val groups = groupRepo.getAll().map { it.id }
                                 bleTransfer.sendHandshakeResponse(
                                     event.endpointId,
@@ -227,7 +227,7 @@ constructor(
     }
 
     /**
-     * Runs [block] in the ViewModel scope with a failure boundary — a child coroutine
+     * Runs [block] in the ViewModel scope with a failure boundary: a child coroutine
      * that throws would otherwise reach the scope's (absent) exception handler and
      * crash the process. [what] labels the log line; [failure] is what the screen shows.
      */
@@ -263,7 +263,7 @@ constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // Advertising may already be live — release the radio in the catch only,
+                    // Advertising may already be live; release the radio in the catch only,
                     // so cancelling this job for a fresh scan does not stop the new one.
                     Log.w(TAG, "BLE scan duty cycle stopped: ${e.message}")
                     nearbySync.stop()

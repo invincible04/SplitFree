@@ -303,6 +303,13 @@ class RelayTest {
     private fun event(id: String, createdAt: Long = 1) =
         NostrEvent(id = id, pubkey = "aa".repeat(32), createdAt = createdAt, kind = 30078, content = "", sig = "ss")
 
-    private fun eventFrame(subId: String, createdAt: Long): String =
-        """["EVENT","$subId",${event("ev-$createdAt", createdAt).toJson()}]"""
+    /**
+     * An inbound frame must carry well-formed 64/64/128-hex id/pubkey/sig or `RelayMessage.parse`
+     * drops it before it reaches the buffer. The id is derived from [createdAt] so frames stay distinct.
+     */
+    private fun eventFrame(subId: String, createdAt: Long): String {
+        val id = createdAt.toString(16).padStart(64, '0')
+        val wellFormed = event(id, createdAt).copy(sig = "ss".repeat(64))
+        return """["EVENT","$subId",${wellFormed.toJson()}]"""
+    }
 }

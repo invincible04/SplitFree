@@ -28,10 +28,17 @@ constructor() {
         private const val RATE_LIMIT_PER_MINUTE = 30
         private const val RATE_WINDOW_MS = 60_000L
         private const val GROUP_RATE_LIMIT_PER_MINUTE = 60
+
+        /** Rate maps are only pruned once they hold more keys than this. */
+        private const val PRUNE_THRESHOLD = 100
     }
 
     private class RateEntry {
+        /** Guarded by `synchronized(entry)`. */
         var count: Int = 0
+
+        /** Written under the entry lock; `@Volatile` so the lock-free [pruneStale] read is not torn or stale. */
+        @Volatile
         var windowStart: Long = 0L
     }
 
@@ -90,11 +97,7 @@ constructor() {
      */
     fun isWithinRateLimit(pubkey: String): Boolean {
         val now = System.currentTimeMillis()
-        if (rateCounts.size > 100) {
-            rateCounts.entries.removeIf { entry ->
-                synchronized(entry.value) { now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
-            }
-        }
+        pruneStale(rateCounts, now)
         val entry = rateCounts.computeIfAbsent(pubkey) { RateEntry() }
         synchronized(entry) {
             if (now - entry.windowStart > RATE_WINDOW_MS) {
@@ -115,11 +118,7 @@ constructor() {
      */
     fun isWithinGroupRateLimit(groupId: String): Boolean {
         val now = System.currentTimeMillis()
-        if (groupRateCounts.size > 100) {
-            groupRateCounts.entries.removeIf { entry ->
-                synchronized(entry.value) { now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
-            }
-        }
+        pruneStale(groupRateCounts, now)
         val entry = groupRateCounts.computeIfAbsent(groupId) { RateEntry() }
         synchronized(entry) {
             if (now - entry.windowStart > RATE_WINDOW_MS) {
@@ -130,6 +129,19 @@ constructor() {
             entry.count++
             return entry.count <= GROUP_RATE_LIMIT_PER_MINUTE
         }
+    }
+
+    /**
+     * Drop entries whose window ended more than a full window ago, once the map has grown past
+     * [PRUNE_THRESHOLD]. `windowStart` is read without the entry lock on purpose: a stale read can
+     * only see an older value, and an entry old enough to prune is by definition not being
+     * refreshed, so the worst case is keeping a key around for one more pass. A key that is pruned
+     * and then immediately used again just starts a fresh (more permissive) window, which is the
+     * same outcome as an expired window.
+     */
+    private fun pruneStale(counts: ConcurrentHashMap<String, RateEntry>, now: Long) {
+        if (counts.size <= PRUNE_THRESHOLD) return
+        counts.entries.removeIf { entry -> now - entry.value.windowStart > RATE_WINDOW_MS * 2 }
     }
 
     /**

@@ -29,7 +29,7 @@ import kotlinx.serialization.json.Json
  *    metadata on relays no longer lists the removed member
  *
  * Receivers decrypt the rotation event, store the new epoch key, and update
- * their local member list. History is preserved — old events decrypt with
+ * their local member list. History is preserved; old events decrypt with
  * their epoch's key.
  */
 class RotateGroupKeyUseCase
@@ -166,7 +166,7 @@ constructor(
     }
 
     /**
-     * Handle an incoming key_rotation event — decrypt new key and update local state.
+     * Handle an incoming key_rotation event: decrypt new key and update local state.
      *
      * @param createdAt the rotation event's `created_at`, used as the LWW timestamp for the
      *   member-list update so a stale `group_meta` cannot revert it
@@ -236,7 +236,7 @@ constructor(
         // Validate member list is a subset of current minus removed
         val expectedMembers = group.members.toSet() - rotation.removedMember
         if (!expectedMembers.containsAll(rotation.members.toSet())) {
-            Log.w(TAG, "key_rotation contains members not in original group — rejecting")
+            Log.w(TAG, "key_rotation contains members not in original group, rejecting")
             return
         }
 

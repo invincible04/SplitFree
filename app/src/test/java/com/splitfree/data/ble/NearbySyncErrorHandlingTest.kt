@@ -93,7 +93,7 @@ class NearbySyncErrorHandlingTest {
         val errors = collectEvents { nearbySync.disconnect("ep1") }
 
         assertEquals(listOf("disconnect"), errors.map { (it as BleEvent.Error).operation })
-        // A second disconnect must behave the same — local state was cleared, not left stale.
+        // A second disconnect must behave the same: local state was cleared, not left stale.
         nearbySync.disconnect("ep1")
     }
 

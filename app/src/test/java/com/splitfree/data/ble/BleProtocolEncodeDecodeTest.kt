@@ -236,7 +236,7 @@ class BleProtocolEncodeDecodeTest {
             if (i == 1) continue
             FragmentManager.addFragment("ep-miss", frag)
         }
-        // Not complete yet — no result
+        // Not complete yet: no result
     }
 
     @Test
@@ -277,7 +277,7 @@ class BleProtocolEncodeDecodeTest {
                 groupId = "0f8fad5b-d9cb-469f-a165-70867728950e"
             )
         assertNotNull(BleProtocol.decode(full))
-        // No prefix of a valid packet may throw — a peer can cut a frame at any offset.
+        // No prefix of a valid packet may throw; a peer can cut a frame at any offset.
         for (size in 0 until full.size) {
             assertNull("prefix of length $size must decode to null", BleProtocol.decode(full.copyOf(size)))
         }

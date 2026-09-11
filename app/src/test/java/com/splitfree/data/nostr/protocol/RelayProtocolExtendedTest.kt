@@ -14,6 +14,10 @@ import org.junit.Test
  * Extended relay protocol tests: filter serialization, AUTH message, edge cases.
  */
 class RelayProtocolExtendedTest {
+    private val hexId = "ab".repeat(32)
+    private val hexPub = "cd".repeat(32)
+    private val hexSig = "ef".repeat(64)
+
     // --- NostrFilter serialization ---
 
     @Test
@@ -132,7 +136,8 @@ class RelayProtocolExtendedTest {
     fun `parse EVENT with empty tags`() {
         val msg =
             RelayMessage.parse(
-                """["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":13,"tags":[],"content":"sealed","sig":"s"}]"""
+                """["EVENT","sub1",{"id":"$hexId","pubkey":"$hexPub","created_at":1,"kind":13,""" +
+                    """"tags":[],"content":"sealed","sig":"$hexSig"}]"""
             )
         assertTrue(msg is RelayMessage.EventMsg)
         val event = (msg as RelayMessage.EventMsg).event
@@ -144,12 +149,22 @@ class RelayProtocolExtendedTest {
     fun `parse EVENT with multi-element tags`() {
         val msg =
             RelayMessage.parse(
-                """["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":1,"tags":[["e","id1","wss://relay.example.com","reply"],["p","pk1"]],"content":"hi","sig":"s"}]"""
+                """["EVENT","sub1",{"id":"$hexId","pubkey":"$hexPub","created_at":1,"kind":1,""" +
+                    """"tags":[["e","id1","wss://relay.example.com","reply"],["p","pk1"]],"content":"hi","sig":"$hexSig"}]"""
             )
         val event = (msg as RelayMessage.EventMsg).event
         assertEquals(2, event.tags.size)
         assertEquals(4, event.tags[0].size) // ["e","id1","relay","reply"]
         assertEquals("wss://relay.example.com", event.tags[0][2])
+    }
+
+    @Test
+    fun `parse EVENT with short id pubkey or sig returns null`() {
+        assertNull(
+            RelayMessage.parse(
+                """["EVENT","sub1",{"id":"a","pubkey":"b","created_at":1,"kind":1,"tags":[],"content":"hi","sig":"s"}]"""
+            )
+        )
     }
 
     @Test
