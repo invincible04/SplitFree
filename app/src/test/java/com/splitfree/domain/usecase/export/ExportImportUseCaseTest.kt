@@ -11,6 +11,7 @@ import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import io.mockk.Runs
@@ -31,6 +32,7 @@ import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -150,43 +152,44 @@ class ExportImportUseCaseTest {
     // --- ExportGroupUseCase ---
 
     @Test
-    fun `export produces valid JSON with HMAC`() = runBlocking {
+    fun `export produces version 2 JSON whose MAC verifies under the exporter's identity key`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
         val identity = mockk<IdentityContract>()
-        every { identity.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
-        every { identity.getPublicKeyBytes() } returns memberPubkey.let { hex ->
-            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
-        }
+        every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
+        every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
 
-        assertEquals(1, export.version)
+        assertEquals(2, export.version)
         assertEquals(groupId, export.groupId)
         assertEquals(1, export.events.size)
         assertEquals("evt1", export.events[0].eventId)
-        assertTrue(export.hmac.isNotEmpty())
         assertTrue(export.encryptedGroupKey.isNotEmpty())
         assertEquals("Test", export.groupName)
         assertEquals(listOf("wss://relay.test"), export.relays)
+        // Independent recomputation: HKDF(privkey) → HMAC over the canonical body with hmac blanked.
+        assertEquals(independentMac(export, memberPrivKey), export.hmac)
     }
 
     @Test
-    fun `export with no group key produces empty HMAC`() = runBlocking {
+    fun `export with no group key still authenticates the file and leaves the keys empty`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
         coEvery { groupRepo.getById(groupId) } returns null
         coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
         val identity = mockk<IdentityContract>()
+        every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
-        assertEquals("", export.hmac)
+        assertEquals(independentMac(export, memberPrivKey), export.hmac)
         assertEquals("", export.encryptedGroupKey)
+        assertTrue(export.encryptedEpochKeys.isEmpty())
     }
 
     @Test
@@ -196,10 +199,8 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventsByGroup(groupId) } returns emptyList()
         val identity = mockk<IdentityContract>()
-        every { identity.getPrivateKeyBytes() } returns memberPrivKey.copyOf()
-        every { identity.getPublicKeyBytes() } returns memberPubkey.let { hex ->
-            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
-        }
+        every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
+        every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
@@ -207,38 +208,56 @@ class ExportImportUseCaseTest {
         assertTrue(export.events.isEmpty())
     }
 
-    // --- ImportGroupUseCase ---
+    @Test
+    fun `export zeroes the private key it borrowed`() = runBlocking {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getById(groupId) } returns group
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns emptyList()
+        val handedOut = memberPrivKey.copyOf()
+        val identity = mockk<IdentityContract>()
+        every { identity.getPrivateKeyBytes() } returns handedOut
+        every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
 
-    private fun computeHmac(data: String, key: String): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(
-            SecretKeySpec(
-                Base64
-                    .getDecoder()
-                    .decode(key),
-                "HmacSHA256"
-            )
-        )
-        return mac.doFinal(data.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        ExportGroupUseCase(eventRepo, groupRepo, identity)(groupId)
+
+        assertTrue(handedOut.all { it == 0.toByte() })
     }
 
+    // --- ImportGroupUseCase ---
+
+    /**
+     * Test-side reimplementation of the export MAC so the tests do not merely assert that the
+     * production code agrees with itself: HKDF-Extract(salt="splitfree-export-v2", ikm=privkey),
+     * HKDF-Expand(info="mac", 32), HMAC-SHA256 over the canonical JSON with `hmac` blanked.
+     */
+    private fun independentMac(export: SplitFreeExport, privKey: ByteArray): String {
+        val prk = Nip44.hkdfExtract("splitfree-export-v2".toByteArray(), privKey)
+        val macKey = Nip44.hkdfExpand(prk, "mac".toByteArray(), 32)
+        val body = Json { encodeDefaults = true }.encodeToString(SplitFreeExport.serializer(), export.copy(hmac = ""))
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(macKey, "HmacSHA256"))
+        return mac.doFinal(body.toByteArray(Charsets.UTF_8)).toHex()
+    }
+
+    /** Returns [export] with its `hmac` set for [privKey]'s identity. */
+    private fun signed(export: SplitFreeExport, privKey: ByteArray = memberPrivKey): SplitFreeExport =
+        export.copy(hmac = independentMac(export, privKey))
+
     private fun buildExportJson(events: List<ExportedEvent>, hmac: String = "", gid: String = groupId): String {
-        val serializer = kotlinx.serialization.builtins
-            .ListSerializer(ExportedEvent.serializer())
-        val eventsJson = Json.encodeToString(serializer, events)
-        val h = if (hmac.isEmpty()) computeHmac(eventsJson, groupKey) else hmac
-        val export = SplitFreeExport(version = 1, groupId = gid, exportedAt = 1700000000, events = events, hmac = h)
-        return Json.encodeToString(SplitFreeExport.serializer(), export)
+        val export = SplitFreeExport(version = 2, groupId = gid, exportedAt = 1700000000, events = events)
+        val authenticated = if (hmac.isEmpty()) signed(export) else export.copy(hmac = hmac)
+        return Json.encodeToString(SplitFreeExport.serializer(), authenticated)
     }
 
     private val identityMock = mockk<IdentityContract>().also {
         every { it.getPublicKeyHex() } returns memberPubkey
         // Callers zero the key after use, so hand out a fresh copy on every call like IdentityManager does.
         every { it.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
-        every { it.getPublicKeyBytes() } returns memberPubkey.let { hex ->
-            ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
-        }
+        every { it.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
     }
+
+    private fun newImport() = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
 
     @Test
     fun `import stores new events and returns count`() = runBlocking {
@@ -302,29 +321,37 @@ class ExportImportUseCaseTest {
         assertEquals(1, count)
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun `import rejects unsupported version`() = runBlocking {
+    @Test
+    fun `import rejects a version 1 file with a clear message before touching anything`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        val badJson = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
-        importUseCase(badJson)
+        val v1 = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
+
+        val e = assertThrows(IllegalArgumentException::class.java) { runBlocking { newImport()(v1) } }
+
+        assertEquals("Unsupported backup version 1; re-export from the current app", e.message)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { eventRepo.withTransaction(any<suspend () -> Int>()) }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `import rejects a newer version`() = runBlocking {
+        val v3 = """{"version":3,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
+        newImport()(v3)
         Unit
     }
 
     @Test(expected = IllegalStateException::class)
     fun `import rejects unknown group`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
-        importUseCase(buildExportJson(emptyList()))
+        newImport()(buildExportJson(emptyList()))
         Unit
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects missing HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        val noHmac = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
-        importUseCase(noHmac)
+        val noHmac = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
+        newImport()(noHmac)
         Unit
     }
 
@@ -332,22 +359,110 @@ class ExportImportUseCaseTest {
     fun `import rejects tampered HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         val events = listOf(ExportedEvent("evt1", "pub1", 1700000000, 30078, "enc", "expense", "uuid1", "sig1"))
-        val serializer = kotlinx.serialization.builtins
-            .ListSerializer(ExportedEvent.serializer())
-        val eventsJson = Json.encodeToString(serializer, events)
         val badHmac = "ff".repeat(32)
         val export = SplitFreeExport(groupId = groupId, exportedAt = 0, events = events, hmac = badHmac)
-        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
-        importUseCase(Json.encodeToString(SplitFreeExport.serializer(), export))
+        newImport()(Json.encodeToString(SplitFreeExport.serializer(), export))
         Unit
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects invalid HMAC hex`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        val badJson = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
-        ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(badJson)
+        val badJson = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
+        newImport()(badJson)
         Unit
+    }
+
+    // --- ImportGroupUseCase: the MAC covers the whole file and is bound to the identity ---
+
+    /** A fully populated, correctly signed export that the tamper tests mutate one field of. */
+    private fun signedFullExport(gid: String = groupId): SplitFreeExport = signed(
+        SplitFreeExport(
+            version = 2,
+            groupId = gid,
+            exportedAt = 1700000100,
+            events = listOf(buildSignedExportedEvent(gid = gid)),
+            encryptedGroupKey = encryptKeyToSelf(groupKey),
+            groupName = "Trip",
+            relays = listOf("wss://relay.test"),
+            keyEpoch = 0,
+            encryptedEpochKeys = mapOf("0" to encryptKeyToSelf(groupKey))
+        )
+    )
+
+    private fun assertRejectedUntouched(tampered: SplitFreeExport) {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { newImport()(Json.encodeToString(SplitFreeExport.serializer(), tampered)) }
+        }
+        assertTrue(e.message!!.contains("integrity check failed"))
+        // Rejected before the group, the epoch keys or any event were written.
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { eventRepo.withTransaction(any<suspend () -> Int>()) }
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
+    }
+
+    @Test
+    fun `MAC covers groupName`() {
+        assertRejectedUntouched(signedFullExport().copy(groupName = "Hijacked"))
+    }
+
+    @Test
+    fun `MAC covers relays`() {
+        assertRejectedUntouched(signedFullExport().copy(relays = listOf("wss://attacker.example")))
+    }
+
+    @Test
+    fun `MAC covers encryptedEpochKeys`() {
+        val original = signedFullExport()
+        val swapped = original.encryptedEpochKeys + ("1" to encryptKeyToSelf(groupKey))
+        assertRejectedUntouched(original.copy(encryptedEpochKeys = swapped))
+    }
+
+    @Test
+    fun `MAC covers keyEpoch and exportedAt`() {
+        assertRejectedUntouched(signedFullExport().copy(keyEpoch = 7))
+        assertRejectedUntouched(signedFullExport().copy(exportedAt = 1))
+    }
+
+    @Test
+    fun `MAC covers events`() {
+        val original = signedFullExport()
+        // Appending a perfectly valid, properly signed event is still a modification of the file.
+        val extra = buildSignedExportedEvent(expenseUuid = "uuid2", contentEncrypted = "enc2")
+        assertRejectedUntouched(original.copy(events = original.events + extra))
+        // So is flipping the exporter's seal marker on an existing row.
+        val marked = original.events.map { it.copy(sig = EventSnapshot.SEAL_SIG_PREFIX + "00".repeat(64)) }
+        assertRejectedUntouched(original.copy(events = marked))
+    }
+
+    @Test
+    fun `MAC signed by another identity is rejected and attributed to an identity mismatch`() {
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        val export = SplitFreeExport(version = 2, groupId = groupId, exportedAt = 1700000100, events = emptyList())
+        val foreign = signed(export, privKey = strangerPrivKey)
+
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { newImport()(Json.encodeToString(SplitFreeExport.serializer(), foreign)) }
+        }
+
+        assertTrue(e.message!!.contains("different identity"))
+        verify { android.util.Log.w("ImportGroupUseCase", match<String> { it.contains("different identity") }) }
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { eventRepo.withTransaction(any<suspend () -> Int>()) }
+    }
+
+    @Test
+    fun `import accepts a file whose defaults were omitted by the writer`() = runBlocking {
+        // A hand-minified file that leaves out every default still has the same canonical body.
+        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
+        coEvery { groupRepo.getById(groupId) } returns group
+        val export = signed(SplitFreeExport(groupId = groupId, exportedAt = 5, events = emptyList()))
+        val minified = """{"groupId":"$groupId","exportedAt":5,"events":[],"hmac":"${export.hmac}"}"""
+
+        assertEquals(0, newImport()(minified))
     }
 
     @Test
@@ -869,22 +984,24 @@ class ExportImportUseCaseTest {
         return Nip44.encrypt(key, convKey)
     }
 
-    private fun buildFreshDeviceExport(events: List<ExportedEvent>, gid: String, groupName: String): String {
-        val serializer = kotlinx.serialization.builtins.ListSerializer(ExportedEvent.serializer())
-        val eventsJson = Json.encodeToString(serializer, events)
+    private fun buildFreshDeviceExport(
+        events: List<ExportedEvent>,
+        gid: String,
+        groupName: String,
+        relays: List<String> = listOf("wss://relay.test")
+    ): String {
         val export = SplitFreeExport(
-            version = 1,
+            version = 2,
             groupId = gid,
             exportedAt = 1700000100,
             events = events,
-            hmac = computeHmac(eventsJson, groupKey),
             encryptedGroupKey = encryptKeyToSelf(groupKey),
             groupName = groupName,
-            relays = listOf("wss://relay.test"),
+            relays = relays,
             keyEpoch = 0,
             encryptedEpochKeys = mapOf("0" to encryptKeyToSelf(groupKey))
         )
-        return Json.encodeToString(SplitFreeExport.serializer(), export)
+        return Json.encodeToString(SplitFreeExport.serializer(), signed(export))
     }
 
     @Test
@@ -1040,5 +1157,187 @@ class ExportImportUseCaseTest {
         )
 
         assertEquals("Ski weekend", store.group!!.name)
+    }
+
+    // --- ImportGroupUseCase: untrusted group metadata is sanitised on a fresh device ---
+
+    @Test
+    fun `import keeps only wss relays of a sane length and at most ten of them`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val relays = listOf(
+            "ws://insecure.example",
+            "wss://ok.example",
+            "https://not-a-relay.example",
+            "wss://" + "a".repeat(300),
+            "wss://ok.example"
+        ) + (1..12).map { "wss://relay$it.example" }
+
+        newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = relays))
+
+        val kept = store.group!!.relays
+        assertEquals(10, kept.size)
+        assertEquals("wss://ok.example", kept.first())
+        assertTrue(kept.all { it.startsWith("wss://") && it.length <= 256 })
+        assertEquals(kept.size, kept.distinct().size)
+    }
+
+    @Test
+    fun `import truncates an oversized group name and strips control characters`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val hostile = "  \u202Etrip\u0000 " + "x".repeat(150)
+
+        newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = hostile))
+
+        val name = store.group!!.name
+        assertEquals(100, name.length)
+        assertTrue(name.startsWith("trip"))
+        assertFalse(name.any { it < ' ' || it == '\u202E' })
+    }
+
+    @Test
+    fun `import falls back to the default name when only control characters remain`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "\u200E\u200F \u0007"))
+
+        assertEquals("Imported group", store.group!!.name)
+    }
+
+    // --- ImportGroupUseCase: events of since-removed members survive a restore ---
+
+    @Test
+    fun `expense from a member removed before export is restored via historical group_meta`() = runBlocking {
+        val createdAt = 1_690_000_000L
+        val gid = GroupIdentity.derive(strangerPubkey, createdAt)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        // Creator's first meta admits the third member; the later one drops them again.
+        val metaWithThird = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta-1",
+            createdAt = createdAt + 5,
+            gid = gid
+        )
+        val metaWithoutThird = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta-2",
+            createdAt = createdAt + 50,
+            gid = gid
+        )
+        // The third member paid for something while they were still in.
+        val thirdsExpense = buildSealedRumorExportedEvent(
+            privateKey = thirdPrivKey,
+            expenseUuid = "u-third",
+            contentEncrypted = "enc-third",
+            createdAt = createdAt + 20,
+            gid = gid
+        )
+        every { encryption.decrypt("enc-meta-1", any()) } returns
+            metaJson(strangerPubkey, createdAt, listOf(strangerPubkey, memberPubkey, thirdPubkey))
+        every { encryption.decrypt("enc-meta-2", any()) } returns
+            metaJson(strangerPubkey, createdAt, listOf(strangerPubkey, memberPubkey))
+        every { encryption.decrypt("enc-third", any()) } returns expenseJson(id = "u-third", paidBy = thirdPubkey)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildFreshDeviceExport(listOf(thirdsExpense, metaWithoutThird, metaWithThird), gid, groupName = "")
+        )
+
+        assertEquals(3, count)
+        // The final membership no longer contains the third member ...
+        assertEquals(setOf(strangerPubkey, memberPubkey), store.group!!.members.toSet())
+        // ... but their expense (accepted while they were a member) is still part of the history.
+        assertEquals(1, store.events.count { it.eventType == "expense" && it.pubkey == thirdPubkey })
+    }
+
+    @Test
+    fun `expense from a member removed by key_rotation is restored`() = runBlocking {
+        val createdAt = 1_690_000_000L
+        val gid = GroupIdentity.derive(strangerPubkey, createdAt)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        // Only the post-rotation meta is in the file; the rotation payload is the only record of the third member.
+        val meta = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta",
+            createdAt = createdAt + 50,
+            gid = gid
+        )
+        val rotation = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "key_rotation",
+            expenseUuid = null,
+            contentEncrypted = "enc-rotation",
+            createdAt = createdAt + 40,
+            gid = gid
+        )
+        val thirdsExpense = buildSealedRumorExportedEvent(
+            privateKey = thirdPrivKey,
+            expenseUuid = "u-third",
+            contentEncrypted = "enc-third",
+            createdAt = createdAt + 20,
+            gid = gid
+        )
+        every { encryption.decrypt("enc-meta", any()) } returns
+            metaJson(strangerPubkey, createdAt, listOf(strangerPubkey, memberPubkey))
+        every { encryption.decrypt("enc-rotation", any()) } returns
+            """{"epoch":1,"encrypted_keys":{},"members":["$strangerPubkey","$memberPubkey"],""" +
+            """"removed_member":"$thirdPubkey"}"""
+        every { encryption.decrypt("enc-third", any()) } returns expenseJson(id = "u-third", paidBy = thirdPubkey)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildFreshDeviceExport(listOf(thirdsExpense, meta, rotation), gid, groupName = "")
+        )
+
+        assertEquals(3, count)
+        assertEquals(setOf(strangerPubkey, memberPubkey), store.group!!.members.toSet())
+        assertEquals(1, store.events.count { it.eventType == "expense" && it.pubkey == thirdPubkey })
+    }
+
+    @Test
+    fun `expense from a pubkey that was never a member is still dropped`() = runBlocking {
+        val createdAt = 1_690_000_000L
+        val gid = GroupIdentity.derive(strangerPubkey, createdAt)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+
+        val meta = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-meta",
+            createdAt = createdAt + 5,
+            gid = gid
+        )
+        val outsider = buildSealedRumorExportedEvent(
+            privateKey = thirdPrivKey,
+            expenseUuid = "u-third",
+            contentEncrypted = "enc-third",
+            createdAt = createdAt + 20,
+            gid = gid
+        )
+        every { encryption.decrypt("enc-meta", any()) } returns
+            metaJson(strangerPubkey, createdAt, listOf(strangerPubkey, memberPubkey))
+        every { encryption.decrypt("enc-third", any()) } returns expenseJson(id = "u-third", paidBy = thirdPubkey)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildFreshDeviceExport(listOf(outsider, meta), gid, groupName = "")
+        )
+
+        assertEquals(1, count)
+        assertTrue(store.events.none { it.pubkey == thirdPubkey })
     }
 }

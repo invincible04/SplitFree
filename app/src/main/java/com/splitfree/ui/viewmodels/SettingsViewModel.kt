@@ -1,8 +1,12 @@
 package com.splitfree.ui.viewmodels
 
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.di.IoDispatcher
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -10,9 +14,15 @@ import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
+import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.IOException
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +34,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Drives the settings screen: identity display, key backup/restore,
@@ -41,6 +52,8 @@ constructor(
     private val updateDisplayName: UpdateDisplayNameUseCase,
     private val groupRepo: GroupRepositoryContract,
     private val exportGroup: ExportGroupUseCase,
+    @ApplicationContext private val appContext: Context,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
     outboxDao: OutboxDao
 ) : ViewModel() {
     // Reading the pubkey hits Keystore-backed storage, which can throw SecureStorageException
@@ -129,11 +142,43 @@ constructor(
         _seedPhrase.value = emptyList()
     }
 
+    /** State of the backup export; the screen reports [ExportState.Done]/[ExportState.Error] and clears it. */
+    private val _exportState = MutableStateFlow<ExportState>(ExportState.Idle)
+    val exportState: StateFlow<ExportState> = _exportState
+
     /**
-     * Export all groups as a JSON array, streaming each group directly to [out]
-     * to avoid holding the entire export in memory.
+     * Export all groups as a JSON array to [uri], streaming one group at a time so the whole
+     * export is never held in memory.
+     *
+     * Runs on [viewModelScope] rather than a composable scope so recomposition and configuration
+     * changes do not cancel the write. On any failure (including cancellation when the user leaves
+     * the screen mid-write) the partially written document is deleted so a truncated file is never
+     * mistaken for a backup. A second call while one is running is ignored.
      */
-    suspend fun exportAllGroups(out: java.io.OutputStream) {
+    fun exportAllGroups(uri: Uri) {
+        if (_exportState.value is ExportState.InProgress) return
+        _exportState.value = ExportState.InProgress
+        viewModelScope.launch {
+            try {
+                withContext(ioDispatcher) { writeAllGroups(uri) }
+                _exportState.value = ExportState.Done
+            } catch (e: Exception) {
+                withContext(NonCancellable + ioDispatcher) { discardPartialExport(uri) }
+                if (e is CancellationException) throw e
+                Log.w(TAG, "Export failed: ${e.message}")
+                _exportState.value = ExportState.Error(e.message ?: "Export failed")
+            }
+        }
+    }
+
+    fun clearExportState() {
+        _exportState.value = ExportState.Idle
+    }
+
+    private suspend fun writeAllGroups(uri: Uri) {
+        // "wt" truncates, so re-exporting over an existing file never leaves a stale tail behind.
+        val out = appContext.contentResolver.openOutputStream(uri, "wt")
+            ?: throw IOException("Could not open the backup file for writing")
         out.bufferedWriter().use { writer ->
             val groups = groupRepo.getAll()
             writer.write("[")
@@ -143,6 +188,17 @@ constructor(
                 writer.flush()
             }
             writer.write("]")
+        }
+    }
+
+    /** Best-effort removal of a half-written backup; only SAF documents can be deleted through a Uri. */
+    private fun discardPartialExport(uri: Uri) {
+        try {
+            if (DocumentsContract.isDocumentUri(appContext, uri)) {
+                DocumentsContract.deleteDocument(appContext.contentResolver, uri)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not delete partial backup: ${e.message}")
         }
     }
 
@@ -158,6 +214,10 @@ constructor(
             }
         }
     }
+
+    private companion object {
+        const val TAG = "SettingsViewModel"
+    }
 }
 
 /**
@@ -171,4 +231,17 @@ sealed class RevokeState {
     data class Done(val newPubkey: String) : RevokeState()
 
     data class Error(val message: String) : RevokeState()
+}
+
+/**
+ * State machine for the backup export flow in the settings screen.
+ */
+sealed class ExportState {
+    data object Idle : ExportState()
+
+    data object InProgress : ExportState()
+
+    data object Done : ExportState()
+
+    data class Error(val message: String) : ExportState()
 }

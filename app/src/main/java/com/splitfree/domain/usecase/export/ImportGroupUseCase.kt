@@ -10,10 +10,13 @@ import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.KeyRevocation
+import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.TextSanitizer
 import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
@@ -24,13 +27,15 @@ import kotlinx.serialization.json.Json
 /**
  * Import group events from a `.splitfree` JSON export.
  *
- * Decrypts the embedded group key using the user's private key, creates the group if needed,
- * restores all epoch keys, then imports events in two passes inside one transaction:
+ * Verifies the file's MAC against a key derived from the user's own private key (see
+ * [SplitFreeExport]) before anything else, decrypts the embedded group key, creates the group if
+ * needed, restores all epoch keys, then imports events in two passes inside one transaction:
  *
  * 1. `group_meta` / `key_rotation` / `key_revocation` events are stored and replayed so the
  *    member list, creator, name and relays are reconstructed first.
- * 2. Everything else is stored, filtered against the *reconstructed* membership and validated
- *    the same way [com.splitfree.sync.event.EventProcessor] validates live events.
+ * 2. Everything else is stored, filtered against the *historical* membership (everyone who was ever
+ *    a member according to the structural events) and validated the same way
+ *    [com.splitfree.sync.event.EventProcessor] validates live events.
  *
  * On a fresh device the group starts with `members = [me]`; filtering before replay would drop
  * every event authored by anyone else, which is exactly what a restore must not do.
@@ -49,23 +54,26 @@ constructor(
     /**
      * @param jsonContent raw JSON string from a `.splitfree` export file
      * @return number of new events imported (duplicates are skipped)
-     * @throws IllegalArgumentException if HMAC is missing/invalid or version is unsupported
+     * @throws IllegalArgumentException if the MAC is missing/invalid or the version is unsupported
      * @throws IllegalStateException if the group key cannot be obtained
      */
-    suspend operator fun invoke(jsonContent: String): Int {
-        val export = json.decodeFromString<SplitFreeExport>(jsonContent)
-        require(export.version == 1) { "Unsupported export version: ${export.version}" }
+    suspend operator fun invoke(jsonContent: String): Int = invoke(json.decodeFromString<SplitFreeExport>(jsonContent))
+
+    /**
+     * @param export a decoded `.splitfree` export
+     * @return number of new events imported (duplicates are skipped)
+     * @throws IllegalArgumentException if the MAC is missing/invalid or the version is unsupported
+     * @throws IllegalStateException if the group key cannot be obtained
+     */
+    suspend operator fun invoke(export: SplitFreeExport): Int {
+        require(export.version == SplitFreeExport.CURRENT_VERSION) {
+            "Unsupported backup version ${export.version}; re-export from the current app"
+        }
+        // Authenticate before touching the key store or the database.
+        verifyMac(export)
 
         val groupId = export.groupId
         val groupKey = resolveGroupKey(export)
-
-        require(export.hmac.isNotEmpty()) { "Export file missing integrity check (HMAC)" }
-        val eventsJson = Json.encodeToString(export.events)
-        val providedHmac = hexToBytes(export.hmac) ?: throw IllegalArgumentException("Invalid HMAC hex")
-        val expectedHmac = HmacUtil.computeBytes(eventsJson, groupKey)
-        require(MessageDigest.isEqual(providedHmac, expectedHmac)) {
-            "Export file integrity check failed — file may have been tampered with"
-        }
 
         // Create the group if it doesn't exist locally. The name is cosmetic and replayPostImport
         // overwrites it from the creator's group_meta anyway, so a blank name is no reason to
@@ -73,11 +81,11 @@ constructor(
         if (groupRepo.getById(groupId) == null) {
             val group = Group(
                 id = groupId,
-                name = export.groupName.ifBlank { DEFAULT_GROUP_NAME },
+                name = sanitizeGroupName(export.groupName),
                 createdBy = "",
                 createdAt = export.exportedAt,
                 members = listOf(identity.getPublicKeyHex()),
-                relays = export.relays,
+                relays = sanitizeRelays(export.relays),
                 keyEpoch = export.keyEpoch
             )
             groupRepo.save(group, groupKey)
@@ -118,11 +126,18 @@ constructor(
                 knownEventIds += candidate.eventId
                 imported++
             }
-            replayPostImport(groupId)
+            val stored = eventRepo.getEventsByGroup(groupId)
+            replayPostImport(groupId, stored)
 
-            // Pass 2: everything else, filtered against the reconstructed membership.
+            // Pass 2: everything else, filtered against everyone who was ever a member.
+            //
+            // The live path checks membership once, at receipt time: an expense accepted while its
+            // author was a member stays valid history after they are removed (and the balances
+            // still owe/credit them). Filtering by the *current* member list would silently drop
+            // that history on restore, so the filter is the union of every membership the
+            // structural events describe plus the reconstructed current list.
             val group = groupRepo.getById(groupId)
-            val members = group?.members?.toSet()
+            val members = group?.let { collectHistoricalMembers(groupId, groupKey, stored) + it.members }
             for (candidate in content) {
                 if (candidate.eventId in knownEventIds) continue
                 if (members != null && candidate.pubkey !in members) continue
@@ -151,6 +166,43 @@ constructor(
             imported
         }
     }
+
+    /**
+     * Check [SplitFreeExport.hmac] against the MAC recomputed under this identity's export key.
+     *
+     * @throws IllegalArgumentException if the MAC is missing, malformed or does not verify
+     */
+    private fun verifyMac(export: SplitFreeExport) {
+        require(export.hmac.isNotEmpty()) { "Export file missing integrity check (HMAC)" }
+        val providedHmac = hexToBytes(export.hmac) ?: throw IllegalArgumentException("Invalid HMAC hex")
+
+        val privKey = identity.getPrivateKeyBytes()
+        val expectedHmac = try {
+            ExportMac.compute(export, privKey)
+        } finally {
+            privKey.fill(0)
+        }
+        if (!MessageDigest.isEqual(providedHmac, expectedHmac)) {
+            // The key is derived from the private key, so a mismatch on an unmodified file means
+            // the backup was made under a different identity (wrong seed phrase / nsec restored).
+            Log.w(
+                TAG,
+                "Backup for group ${export.groupId} failed its integrity check; it was most likely made by a " +
+                    "different identity than the one restored on this device"
+            )
+            throw IllegalArgumentException(
+                "Backup integrity check failed: it was made by a different identity or has been modified"
+            )
+        }
+    }
+
+    /** Group name from the file, stripped of control/bidi characters and bounded in length. */
+    private fun sanitizeGroupName(raw: String): String =
+        TextSanitizer.stripControlChars(raw).take(MAX_GROUP_NAME_LENGTH).trim().ifBlank { DEFAULT_GROUP_NAME }
+
+    /** Relay list from the file, restricted to plausible `wss://` URLs and bounded in count. */
+    private fun sanitizeRelays(raw: List<String>): List<String> =
+        raw.filter { it.startsWith("wss://") && it.length <= MAX_RELAY_URL_LENGTH }.distinct().take(MAX_RELAYS)
 
     /**
      * A row from the export that passed authenticity and timestamp checks and is ready to store.
@@ -220,13 +272,56 @@ constructor(
     }
 
     /** Decrypt with the key of the epoch the event was recorded under, falling back to the current key. */
-    private suspend fun decryptForValidation(candidate: Candidate, groupId: String, groupKey: String): String? {
-        val key = groupRepo.getGroupKeyForEpoch(groupId, candidate.keyEpoch) ?: groupKey
+    private suspend fun decryptForValidation(candidate: Candidate, groupId: String, groupKey: String): String? =
+        decryptWithEpochKey(candidate.parsed.content, candidate.keyEpoch, groupId, groupKey)
+
+    private suspend fun decryptWithEpochKey(
+        content: String,
+        keyEpoch: Int,
+        groupId: String,
+        groupKey: String
+    ): String? {
+        val key = groupRepo.getGroupKeyForEpoch(groupId, keyEpoch) ?: groupKey
         return try {
-            encryption.decrypt(candidate.parsed.content, key)
+            encryption.decrypt(content, key)
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Every pubkey that the stored structural events say was a member at some point:
+     * `group_meta.members`, `key_rotation.members` plus the member it removed, and both sides of a
+     * `key_revocation`. Payloads that do not decrypt or parse are skipped. Used by pass 2 so that
+     * events from since-removed (or since-rotated) members survive a restore.
+     */
+    private suspend fun collectHistoricalMembers(
+        groupId: String,
+        groupKey: String,
+        stored: List<EventSnapshot>
+    ): Set<String> {
+        val members = mutableSetOf<String>()
+        for (event in stored) {
+            if (event.eventType !in STRUCTURAL_TYPES) continue
+            val decrypted = decryptWithEpochKey(event.contentEncrypted, event.keyEpoch, groupId, groupKey) ?: continue
+            try {
+                when (event.eventType) {
+                    "group_meta" -> members += json.decodeFromString<GroupMeta>(decrypted).members
+                    "key_rotation" -> {
+                        val rotation = json.decodeFromString<KeyRotation>(decrypted)
+                        members += rotation.members
+                        members += rotation.removedMember
+                    }
+                    "key_revocation" -> {
+                        val revocation = json.decodeFromString<KeyRevocation>(decrypted)
+                        members += revocation.oldPubkey
+                        members += revocation.newPubkey
+                    }
+                }
+            } catch (_: Exception) { }
+        }
+        members.remove("")
+        return members
     }
 
     /**
@@ -272,9 +367,11 @@ constructor(
      *
      * Key rotation events are NOT replayed here — all epoch keys are restored
      * directly from [SplitFreeExport.encryptedEpochKeys] before event import.
+     *
+     * @param stored every event of the group as read after pass 1
      */
-    private suspend fun replayPostImport(groupId: String) {
-        val allEvents = eventRepo.getEventsByGroup(groupId)
+    private suspend fun replayPostImport(groupId: String, stored: List<EventSnapshot>) {
+        val allEvents = stored
             .filter { it.eventType == "group_meta" }
             .sortedBy { it.createdAt }
 
@@ -371,19 +468,18 @@ constructor(
     }
 
     private fun hexToBytes(hex: String): ByteArray? {
-        if (hex.length % 2 != 0) return null
-        return try {
-            ByteArray(hex.length / 2) { i ->
-                ((Character.digit(hex[i * 2], 16) shl 4) + Character.digit(hex[i * 2 + 1], 16)).toByte()
-            }
-        } catch (_: Exception) {
-            null
+        if (hex.length % 2 != 0 || hex.any { Character.digit(it, 16) < 0 }) return null
+        return ByteArray(hex.length / 2) { i ->
+            ((Character.digit(hex[i * 2], 16) shl 4) + Character.digit(hex[i * 2 + 1], 16)).toByte()
         }
     }
 
     companion object {
         private const val TAG = "ImportGroupUseCase"
         private const val DEFAULT_GROUP_NAME = "Imported group"
+        private const val MAX_GROUP_NAME_LENGTH = 100
+        private const val MAX_RELAYS = 10
+        private const val MAX_RELAY_URL_LENGTH = 256
 
         /** Events that define membership/keys; stored and replayed before anything else is filtered. */
         private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")

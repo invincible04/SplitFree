@@ -3,6 +3,7 @@ package com.splitfree.domain.invite
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.util.RelayDefaults
+import com.splitfree.domain.util.TextSanitizer
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import java.io.ByteArrayOutputStream
@@ -82,12 +83,6 @@ object InviteLinkCodec {
     private const val HEADER_SIZE =
         1 + UUID_SIZE + PUBKEY_SIZE + CREATED_AT_SIZE + EPOCH_SIZE + GROUP_KEY_SIZE + 1 + 1
     private const val EXPIRY_SIZE = 4
-
-    /**
-     * Characters that must never appear in a group name: C0/C1 controls, DEL, and the Unicode
-     * bidi/embedding controls that can visually reorder or hide text in the join confirmation.
-     */
-    private val CONTROL_CHARS = Regex("[\\u0000-\\u001F\\u007F\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]")
 
     /**
      * Encode a group into a compact invite link.
@@ -184,7 +179,7 @@ object InviteLinkCodec {
     // --- Name helpers ---
 
     /** Strips control and bidi-override characters and surrounding whitespace. */
-    private fun sanitizeName(name: String): String = CONTROL_CHARS.replace(name, "").trim()
+    private fun sanitizeName(name: String): String = TextSanitizer.stripControlChars(name)
 
     /**
      * UTF-8 encodes [value] and truncates to at most [maxBytes] without splitting a code point,

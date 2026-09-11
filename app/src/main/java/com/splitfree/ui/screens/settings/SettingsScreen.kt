@@ -64,16 +64,11 @@ import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.ThemeTransitionState
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.viewmodels.ExportState
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
-import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-
-private const val TAG = "SettingsScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,34 +81,29 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
     var showKey by remember { mutableStateOf(false) }
     var showSeedPhrase by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
     val backupExportedMsg = stringResource(R.string.backup_exported)
     val backupFailedMsg = stringResource(R.string.export_failed)
 
+    // The write happens in the ViewModel: a composable scope is cancelled by navigation and
+    // recomposition, which would leave a half-written backup behind.
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            // openOutputStream throws when the picked target is gone or permission was
-            // revoked, and the export itself can fail mid-write; both used to escape this
-            // scope uncaught, and a null stream reported success without writing anything.
-            val exported = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use {
-                        viewModel.exportAllGroups(it)
-                        true
-                    } ?: false
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Export failed: ${e.message}")
-                    false
-                }
-            }
-            snackbarHostState.showSnackbar(if (exported) backupExportedMsg else backupFailedMsg)
+        if (uri != null) viewModel.exportAllGroups(uri)
+    }
+    val exportState by viewModel.exportState.collectAsStateWithLifecycle()
+    LaunchedEffect(exportState) {
+        val message = when (exportState) {
+            ExportState.Done -> backupExportedMsg
+            is ExportState.Error -> backupFailedMsg
+            else -> return@LaunchedEffect
         }
+        // Consume the one-shot result first so a recomposition does not show it twice; the snackbar
+        // itself lives on the composition scope because clearing restarts (cancels) this effect.
+        viewModel.clearExportState()
+        snackbarScope.launch { snackbarHostState.showSnackbar(message) }
     }
 
     // FLAG_SECURE: prevent screenshots/recording when private key or seed phrase is visible
@@ -244,9 +234,10 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                 modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)
             )
 
-            BackupSection(onExportAll = {
-                exportLauncher.launch("splitfree-backup.splitfree")
-            })
+            BackupSection(
+                exporting = exportState is ExportState.InProgress,
+                onExportAll = { exportLauncher.launch("splitfree-backup.splitfree") }
+            )
 
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.itemSpacing)

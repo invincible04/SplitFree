@@ -82,6 +82,7 @@
     <string name="key_imported">Key imported ✓</string>
     <string name="import_backup_hint">If you have a .splitfree backup file, import it now to restore your groups.</string>
     <string name="import_backup_file">Import Backup File</string>
+    <string name="importing_backup">Importing backup…</string>
     <string name="continue_button">Continue</string>
 
     <!-- SettingsScreen -->

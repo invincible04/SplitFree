@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -33,11 +34,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -48,13 +47,6 @@ import com.splitfree.ui.util.HeightClass
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.OnboardingViewModel
-import com.splitfree.util.DebugLog as Log
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-
-private const val TAG = "OnboardingScreen"
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -65,30 +57,16 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
     val error by viewModel.error.collectAsStateWithLifecycle()
     val keyImported by viewModel.keyImported.collectAsStateWithLifecycle()
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
+    val importing by viewModel.importing.collectAsStateWithLifecycle()
     val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
+    // Reading and importing happen in the ViewModel: a composable scope is cancelled by navigation
+    // and recomposition, which would abort the import mid-transaction.
     val backupLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                // A picked file can be unreadable (deleted, permission revoked); that used to
-                // throw out of this scope and crash instead of reporting a failed import.
-                val json = try {
-                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Backup read failed: ${e.message}")
-                    null
-                }
-                if (json != null) viewModel.importBackup(json) else viewModel.reportUnreadableBackup()
-            }
-        }
+        if (uri != null) viewModel.importBackup(uri)
     }
 
     val horizontalPadding = tokens.screenPaddingHorizontal
@@ -277,9 +255,20 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                 OutlinedButton(
                                     onClick = { backupLauncher.launch(arrayOf("*/*")) },
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
-                                    shape = MaterialTheme.shapes.large
+                                    shape = MaterialTheme.shapes.large,
+                                    enabled = !importing
                                 ) {
                                     Text(stringResource(R.string.import_backup_file))
+                                }
+                                if (importing) {
+                                    Spacer(Modifier.height(tokens.itemSpacing))
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.height(tokens.denseSpacing))
+                                    Text(
+                                        stringResource(R.string.importing_backup),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
                                 importStatus?.let {
                                     Spacer(Modifier.height(tokens.itemSpacing))
@@ -294,10 +283,13 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     )
                                 }
                                 Spacer(Modifier.height(tokens.sectionSpacing))
+                                // Leaving the screen clears the ViewModel and cancels a running import
+                                // (the transaction rolls back), so hold the user here until it settles.
                                 Button(
                                     onClick = onComplete,
                                     modifier = Modifier.fillMaxWidth().height(buttonHeight),
-                                    shape = MaterialTheme.shapes.large
+                                    shape = MaterialTheme.shapes.large,
+                                    enabled = !importing
                                 ) {
                                     Text(
                                         stringResource(R.string.continue_button),
@@ -305,7 +297,7 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                     )
                                 }
                                 Spacer(Modifier.height(tokens.itemSpacing))
-                                TextButton(onClick = onComplete) {
+                                TextButton(onClick = onComplete, enabled = !importing) {
                                     Text(stringResource(R.string.skip))
                                 }
                             }
