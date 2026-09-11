@@ -1,49 +1,94 @@
 package com.splitfree.domain.usecase.group
 
-import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.GroupRepositoryContract
-import com.splitfree.domain.repository.IdentityContract
 import io.mockk.coEvery
-import io.mockk.every
+import io.mockk.coVerify
 import io.mockk.mockk
-import java.security.SecureRandom
+import java.util.Base64
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class CreateInviteLinkUseCaseTest {
     private val groupRepo = mockk<GroupRepositoryContract>()
-    private val identity = mockk<IdentityContract>()
-    private val useCase = CreateInviteLinkUseCase(groupRepo, identity)
+    private val useCase = CreateInviteLinkUseCase(groupRepo)
 
-    private fun validPrivateKey(): ByteArray {
-        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key)) {
-            SecureRandom().nextBytes(key)
-        }
-        return key
+    private val creator = "cc".repeat(32)
+    private val member = "dd".repeat(32)
+    private val createdAt = 1_700_000_000L
+    private val groupId = GroupIdentity.derive(creator, createdAt)
+    private val epoch0Key = Base64.getEncoder().encodeToString(ByteArray(32) { 1 })
+    private val epoch2Key = Base64.getEncoder().encodeToString(ByteArray(32) { 2 })
+
+    private fun group(keyEpoch: Int = 0, createdBy: String = creator) = Group(
+        groupId,
+        "Trip",
+        "",
+        createdBy,
+        createdAt,
+        listOf(creator, member),
+        listOf("wss://r"),
+        keyEpoch = keyEpoch
+    )
+
+    @Test
+    fun `any member can generate invite link naming the real creator`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group()
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns epoch0Key
+
+        val link = useCase(groupId)
+
+        assertTrue(link.startsWith("splitfree://join?d="))
+        val invite = InviteLinkCodec.decode(link)
+        assertEquals(creator, invite.creatorPubkey)
+        assertEquals(createdAt, invite.createdAt)
+        assertEquals(groupId, invite.groupId)
+        assertEquals(epoch0Key, invite.groupKey)
     }
 
     @Test
-    fun `any member can generate invite link`() = runBlocking {
-        val privKey = validPrivateKey()
-        val pubKey = NostrEvent.pubkeyFromPrivkey(privKey)
-        val group =
-            Group(
-                "550e8400-e29b-41d4-a716-446655440000",
-                "Trip",
-                "",
-                "other-creator",
-                1000,
-                listOf(pubKey),
-                listOf("wss://r")
-            )
-        coEvery { groupRepo.getById(group.id) } returns group
-        coEvery { groupRepo.getGroupKey(group.id) } returns "group-key"
-        every { identity.getPrivateKeyBytes() } returns privKey.copyOf()
+    fun `uses the key for the group's current epoch`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group(keyEpoch = 2)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 2) } returns epoch2Key
 
-        val link = useCase(group.id)
-        assertTrue(link.startsWith("splitfree://join?d="))
+        val invite = InviteLinkCodec.decode(useCase(groupId))
+
+        assertEquals(2, invite.keyEpoch)
+        assertEquals(epoch2Key, invite.groupKey)
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
+        coVerify(exactly = 0) { groupRepo.getGroupKeyForEpoch(groupId, 0) }
+    }
+
+    @Test
+    fun `throws when group has unknown creator`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group(createdBy = "")
+
+        try {
+            useCase(groupId)
+            fail("Expected IllegalStateException")
+        } catch (e: IllegalStateException) {
+            assertEquals("Cannot invite to a group with unknown creator", e.message)
+        }
+        coVerify(exactly = 0) { groupRepo.getGroupKeyForEpoch(any(), any()) }
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `throws when group not found`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns null
+        useCase(groupId)
+        Unit
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `throws when current epoch key is missing`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group(keyEpoch = 1)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns null
+        useCase(groupId)
+        Unit
     }
 }

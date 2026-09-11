@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -127,14 +128,15 @@ class EndToEndJoinFlowIntegrationTest {
     fun `Phone 1 creates group and publishes, Phone 2 joins via invite link and fetches from relay`() = runBlocking {
         // === Phone 1: Create group ===
         val groupKey = encryption.generateGroupKey()
-        val groupId = java.util.UUID.randomUUID().toString()
+        val createdAt = System.currentTimeMillis() / 1000
+        val groupId = GroupIdentity.derive(phone1PubKey, createdAt)
         val groupName = "JoinFlowTest-${System.currentTimeMillis()}"
 
         val group = Group(
             id = groupId,
             name = groupName,
             createdBy = phone1PubKey,
-            createdAt = System.currentTimeMillis() / 1000,
+            createdAt = createdAt,
             members = listOf(phone1PubKey),
             relays = relays
         )
@@ -163,7 +165,7 @@ class EndToEndJoinFlowIntegrationTest {
         delay(2000)
 
         // === Phone 1: Generate invite link ===
-        val inviteLink = InviteLinkCodec.encode(group, groupKey, phone1PrivKey)
+        val inviteLink = InviteLinkCodec.encode(group, groupKey)
         assertTrue("Link should be compact for QR", inviteLink.length < 500)
         println("Invite link: $inviteLink (${inviteLink.length} chars)")
 

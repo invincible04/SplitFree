@@ -17,7 +17,10 @@ import javax.inject.Inject
 import kotlinx.serialization.json.Json
 
 /**
- * Parses an invite link, retrieves the group key, syncs existing events, and joins the group.
+ * Parses an invite link, stores the group and its epoch key, syncs existing events, and joins the group.
+ *
+ * The link's creator claim is trusted only because [InviteLinkCodec.decode] has already verified
+ * that the group id is derived from `(creatorPubkey, createdAt)`; the inviter is irrelevant.
  */
 class JoinGroupUseCase
 @Inject
@@ -37,13 +40,15 @@ constructor(
     /**
      * Parse an invite link and join the group.
      *
-     * Decodes the compact link, retrieves the group key via ephemeral key exchange,
-     * saves the group locally, performs initial sync, and publishes a join announcement.
+     * Decodes the compact link, saves the group locally with the creator, creation time and key
+     * epoch carried by the link (so the key lands under `groupId:epoch` and the next `key_rotation`
+     * is accepted), performs initial sync, and publishes a join announcement.
      *
      * @param uri `splitfree://join?d=<compact_base64_payload>` deep link
      * @return the joined [Group]
-     * @throws IllegalArgumentException if the link is malformed or the group ID is invalid
-     * @throws IllegalStateException if the link is expired, relays are empty, or key retrieval fails
+     * @throws IllegalArgumentException if the link is malformed, expired, or its creator claim does not
+     *   match the group id
+     * @throws IllegalStateException if the link carries no relays
      */
     suspend operator fun invoke(uri: String): Group {
         Log.i(TAG, "Joining via link: ${uri.take(80)}...")
@@ -60,7 +65,11 @@ constructor(
 
         val groupKey = invite.groupKey
 
-        Log.i(TAG, "Parsed invite: group=${invite.groupId} name=${invite.name} relays=${invite.relays.size}")
+        Log.i(
+            TAG,
+            "Parsed invite: group=${invite.groupId} name=${invite.name} relays=${invite.relays.size} " +
+                "creator=${invite.creatorPubkey.take(8)} epoch=${invite.keyEpoch}"
+        )
 
         val existing = groupRepo.getById(invite.groupId)
         if (existing != null) {
@@ -73,11 +82,13 @@ constructor(
             Group(
                 id = invite.groupId,
                 name = invite.name,
-                createdBy = invite.inviterPubkey,
-                createdAt = System.currentTimeMillis() / 1000,
+                createdBy = invite.creatorPubkey,
+                createdAt = invite.createdAt,
                 members = listOf(pubkey),
-                relays = invite.relays
+                relays = invite.relays,
+                keyEpoch = invite.keyEpoch
             )
+        // Stores the key under "<groupId>:<keyEpoch>" (and the legacy plain id only for epoch 0).
         groupRepo.save(group, groupKey)
 
         // Connect, sync existing events, publish our join, then release
@@ -94,6 +105,15 @@ constructor(
         // After initial sync, publish a group_meta that includes ourselves.
         // This announces our join to other members via relays.
         val currentGroup = groupRepo.getById(group.id) ?: group
+        if (currentGroup.createdBy.isEmpty() || currentGroup.createdBy != invite.creatorPubkey) {
+            // The id is bound to the invite's creator, so nothing pulled during sync should have
+            // changed this; if it did, a trusted-creator hand-over path is misbehaving.
+            Log.w(
+                TAG,
+                "Creator mismatch after initial sync for ${group.id}: " +
+                    "local=${currentGroup.createdBy.take(8)} invite=${invite.creatorPubkey.take(8)}"
+            )
+        }
         val updatedMembers =
             if (pubkey in currentGroup.members) {
                 currentGroup.members

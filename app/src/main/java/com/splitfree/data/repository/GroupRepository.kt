@@ -112,6 +112,11 @@ constructor(
         groupDao.updateKeyEpoch(groupId, epoch)
     }
 
+    override suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long) {
+        require(createdBy.isNotEmpty()) { "createdBy must not be empty" }
+        groupDao.updateCreator(groupId, createdBy, createdAt)
+    }
+
     override suspend fun updateLastSync(groupId: String, timestamp: Long) {
         groupDao.updateLastSync(groupId, timestamp)
     }

@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -11,13 +12,17 @@ import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
+import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
-import java.security.SecureRandom
+import io.mockk.verify
+import java.util.Base64
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -37,25 +42,37 @@ class JoinGroupUseCaseTest {
     private val settings = mockk<SettingsContract>(relaxed = true)
 
     private lateinit var useCase: JoinGroupUseCase
+
+    /** The joiner. */
     private val pubkey = "aa".repeat(32)
 
-    private fun validSenderPrivKey(): ByteArray {
-        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key)) {
-            SecureRandom().nextBytes(key)
-        }
-        return key
-    }
+    /** The group creator named by the invite (not the joiner, not necessarily the inviter). */
+    private val creatorPubkey = "cc".repeat(32)
+    private val createdAt = 1_700_000_000L
+    private val groupId = GroupIdentity.derive(creatorPubkey, createdAt)
+    private val groupKey = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
 
-    /** Encode an invite link — group key is encrypted in the URL, no relay needed. */
-    private fun buildInviteUri(
-        groupId: String = java.util.UUID.randomUUID().toString(),
-        groupKey: String = "testkey123",
+    /** Byte offset of the expiry field when the link carries no custom relays. */
+    private val expiryPos = 1 + 16 + 32 + 8 + 2 + 32 + 1 + 1
+
+    private fun inviteGroup(
+        name: String = "TestGroup",
         relays: List<String> = listOf("wss://relay.damus.io"),
-        name: String = "TestGroup"
-    ): String {
-        val group = Group(groupId, name, "", pubkey, 1000, listOf(pubkey), relays)
-        return InviteLinkCodec.encode(group, groupKey, validSenderPrivKey())
+        keyEpoch: Int = 0
+    ): Group = Group(groupId, name, "", creatorPubkey, createdAt, listOf(creatorPubkey), relays, keyEpoch = keyEpoch)
+
+    /** Encode an invite link for the creator-bound test group. */
+    private fun buildInviteUri(
+        name: String = "TestGroup",
+        relays: List<String> = listOf("wss://relay.damus.io"),
+        keyEpoch: Int = 0,
+        key: String = groupKey
+    ): String = InviteLinkCodec.encode(inviteGroup(name, relays, keyEpoch), key)
+
+    private fun tamper(link: String, mutate: (ByteArray) -> Unit): String {
+        val data = Base64.getUrlDecoder().decode(link.substringAfter("d="))
+        mutate(data)
+        return "splitfree://join?d=" + Base64.getUrlEncoder().withoutPadding().encodeToString(data)
     }
 
     @Before
@@ -86,59 +103,82 @@ class JoinGroupUseCaseTest {
 
     @Test
     fun `invoke creates group from valid invite link`() = runBlocking {
-        val inviteUri = buildInviteUri()
-        val invite = InviteLinkCodec.decode(inviteUri)
-        val group = useCase(inviteUri)
+        val group = useCase(buildInviteUri())
+        assertEquals(groupId, group.id)
         assertEquals("TestGroup", group.name)
         assertEquals(listOf(pubkey), group.members)
-        assertEquals(invite.inviterPubkey, group.createdBy)
+        assertEquals(creatorPubkey, group.createdBy)
         coVerify { groupRepo.save(any(), any()) }
     }
 
     @Test
+    fun `invoke saves group with creator, createdAt and key epoch from the invite`() = runBlocking {
+        val saved = slot<Group>()
+        val savedKey = slot<String>()
+        coEvery { groupRepo.save(capture(saved), capture(savedKey)) } just Runs
+
+        useCase(buildInviteUri(keyEpoch = 3))
+
+        assertEquals(groupId, saved.captured.id)
+        assertEquals(creatorPubkey, saved.captured.createdBy)
+        assertEquals(createdAt, saved.captured.createdAt)
+        assertEquals(3, saved.captured.keyEpoch)
+        assertEquals(listOf(pubkey), saved.captured.members)
+        // GroupRepository.save stores the key under "<id>:<keyEpoch>", i.e. "<id>:3" here.
+        assertEquals(groupKey, savedKey.captured)
+    }
+
+    @Test
+    fun `invoke publishes join announcement with the verified creator and createdAt`() = runBlocking {
+        useCase(buildInviteUri())
+        // publishGroupMeta reads createdBy/createdAt from the locally saved group, which came from the invite.
+        coVerify { groupRepo.save(match { it.createdBy == creatorPubkey && it.createdAt == createdAt }, groupKey) }
+        coVerify { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+    }
+
+    @Test
     fun `invoke returns existing group if already joined`() = runBlocking {
-        val groupId = java.util.UUID.randomUUID().toString()
-        val existing = Group(groupId, "Existing", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io"))
+        val existing = Group(groupId, "Existing", "", creatorPubkey, createdAt, listOf(pubkey), listOf("wss://r"))
         coEvery { groupRepo.getById(groupId) } returns existing
-        val result = useCase(buildInviteUri(groupId = groupId))
+        val result = useCase(buildInviteUri())
         assertEquals("Existing", result.name)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun `invoke rejects invalid group ID format`() = runBlocking {
-        useCase(buildInviteUri(groupId = "not-a-uuid"))
+    fun `invoke rejects link whose creator claim does not match the group id`() = runBlocking {
+        val forgedCreator = "ee".repeat(32).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val link = tamper(buildInviteUri()) { data -> forgedCreator.copyInto(data, destinationOffset = 1 + 16) }
+        useCase(link)
         Unit
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `invoke rejects expired invite link`() = runBlocking {
-        val groupId = java.util.UUID.randomUUID().toString()
-        val group = Group(groupId, "Test", "", pubkey, 1000, listOf(pubkey), listOf("wss://relay.damus.io"))
-        val link = InviteLinkCodec.encode(group, "key", validSenderPrivKey())
-
-        // Tamper with the expiry bytes to set it in the past
-        // New layout: uuid(16) + ephPriv(32) + senderPub(32) + bitmap(1) + customLen(1) = 82
-        val payload = link.substringAfter("d=")
-        val data = java.util.Base64.getUrlDecoder().decode(payload)
-        val expPos = 82
         val pastExp = ((System.currentTimeMillis() / 1000 - 3600) and 0xFFFFFFFFL).toInt()
-        data[expPos] = ((pastExp ushr 24) and 0xFF).toByte()
-        data[expPos + 1] = ((pastExp ushr 16) and 0xFF).toByte()
-        data[expPos + 2] = ((pastExp ushr 8) and 0xFF).toByte()
-        data[expPos + 3] = (pastExp and 0xFF).toByte()
-        val tamperedPayload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(data)
-        useCase("splitfree://join?d=$tamperedPayload")
+        val link = tamper(buildInviteUri()) { data ->
+            data[expiryPos] = ((pastExp ushr 24) and 0xFF).toByte()
+            data[expiryPos + 1] = ((pastExp ushr 16) and 0xFF).toByte()
+            data[expiryPos + 2] = ((pastExp ushr 8) and 0xFF).toByte()
+            data[expiryPos + 3] = (pastExp and 0xFF).toByte()
+        }
+        useCase(link)
+        Unit
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `invoke rejects unsupported link version`() = runBlocking {
+        useCase(tamper(buildInviteUri()) { data -> data[0] = 0x01 })
         Unit
     }
 
     @Test
-    fun `invoke runs initial sync via syncEngine`() = runBlocking {
-        val groupId = java.util.UUID.randomUUID().toString()
+    fun `invoke runs initial sync via syncEngine with the invite key`() = runBlocking {
         every { nostrClient.isConnected } returns false
         coEvery { syncEngine.pullEvents(any(), any(), any(), lenientTimestamp = true) } returns 3
 
-        useCase(buildInviteUri(groupId = groupId))
-        coVerify { syncEngine.pullEvents(groupId, 0, any(), lenientTimestamp = true) }
+        useCase(buildInviteUri())
+        coVerify { syncEngine.pullEvents(groupId, 0, groupKey, lenientTimestamp = true) }
     }
 
     @Test
@@ -153,11 +193,10 @@ class JoinGroupUseCaseTest {
 
     @Test
     fun `invoke still publishes join announcement when offline connect fails`() = runBlocking {
-        val groupId = java.util.UUID.randomUUID().toString()
         every { nostrClient.isConnected } returns false
         coEvery { nostrClient.connect(any()) } throws RuntimeException("offline")
 
-        val group = useCase(buildInviteUri(groupId = groupId))
+        val group = useCase(buildInviteUri())
 
         assertEquals(groupId, group.id)
         coVerify { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
@@ -171,8 +210,7 @@ class JoinGroupUseCaseTest {
     @Test
     fun `invoke includes joiner display name in local meta update`() = runBlocking {
         every { settings.displayName } returns "Bob"
-        val groupId = java.util.UUID.randomUUID().toString()
-        useCase(buildInviteUri(groupId = groupId))
+        useCase(buildInviteUri())
         coVerify {
             groupRepo.updateFromMeta(
                 groupId,
@@ -183,6 +221,20 @@ class JoinGroupUseCaseTest {
                 "",
                 match { it[pubkey] == "Bob" }
             )
+        }
+    }
+
+    @Test
+    fun `invoke warns but continues when synced group disagrees with invite creator`() = runBlocking {
+        val hijacked = Group(groupId, "TestGroup", "", "ff".repeat(32), createdAt, listOf(pubkey), listOf("wss://r"))
+        // First lookup (dedupe) finds nothing; after save+sync the local row claims another creator.
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, hijacked, hijacked)
+
+        val result = useCase(buildInviteUri())
+
+        assertNotNull(result)
+        verify {
+            android.util.Log.w("JoinGroupUseCase", match<String> { it.contains("Creator mismatch") })
         }
     }
 }

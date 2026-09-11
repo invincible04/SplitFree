@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.group
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -10,11 +11,13 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
-import java.util.UUID
 import javax.inject.Inject
 import kotlinx.serialization.json.Json
 /**
  * Creates a new expense group, generates its symmetric key, and publishes `group_meta` to relays.
+ *
+ * The group id is derived from `(creator, createdAt)` via [GroupIdentity] so that invite links
+ * and imported metadata can prove who created the group.
  */
 class CreateGroupUseCase
 @Inject
@@ -42,12 +45,13 @@ constructor(
         val pubkey = identity.getPublicKeyHex()
         val myName = settings.displayName
         val names = if (myName.isNotBlank()) mapOf(pubkey to myName) else emptyMap()
+        val createdAt = System.currentTimeMillis() / 1000
         val group =
             Group(
-                id = UUID.randomUUID().toString(),
+                id = GroupIdentity.derive(pubkey, createdAt),
                 name = name,
                 createdBy = pubkey,
-                createdAt = System.currentTimeMillis() / 1000,
+                createdAt = createdAt,
                 members = listOf(pubkey),
                 relays = relays,
                 memberNames = names

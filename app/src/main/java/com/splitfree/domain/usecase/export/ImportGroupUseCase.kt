@@ -5,12 +5,14 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.validation.EventValidator
+import com.splitfree.util.DebugLog as Log
 import java.security.MessageDigest
 import javax.inject.Inject
 import kotlinx.serialization.json.Json
@@ -166,6 +168,11 @@ constructor(
      * After importing events, replay group_meta events in chronological order
      * so the group entity reflects the full state (members, name, relays, epoch keys).
      *
+     * An imported group starts with an empty `createdBy`. It is filled in only from a
+     * `group_meta` whose author is the creator the group id was derived from
+     * ([GroupIdentity.matches]); a `created_by` claim by anyone else is ignored, and if no
+     * meta is bound to the id the creator stays unknown.
+     *
      * Key rotation events are NOT replayed here — all epoch keys are restored
      * directly from [SplitFreeExport.encryptedEpochKeys] before event import.
      */
@@ -174,6 +181,7 @@ constructor(
             .filter { it.eventType == "group_meta" }
             .sortedBy { it.createdAt }
 
+        var creatorKnown = false
         for (event in allEvents) {
             val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch)
                 ?: groupRepo.getGroupKey(groupId) ?: continue
@@ -187,22 +195,21 @@ constructor(
                 val meta = json.decodeFromString<GroupMeta>(decrypted)
                 if (meta.members.isEmpty()) continue
 
-                val currentGroup = groupRepo.getById(groupId)
+                var currentGroup = groupRepo.getById(groupId)
 
-                // Bootstrap createdBy from the first group_meta if not yet set
-                if (currentGroup != null && currentGroup.createdBy.isEmpty() && meta.createdBy.isNotEmpty()) {
-                    groupRepo.updateFromMeta(
-                        groupId,
-                        currentGroup.name,
-                        currentGroup.members,
-                        currentGroup.relays,
-                        createdBy = meta.createdBy
-                    )
+                // Bootstrap createdBy only from the author the group id is cryptographically bound to.
+                if (currentGroup != null &&
+                    currentGroup.createdBy.isEmpty() &&
+                    meta.createdBy == event.pubkey &&
+                    GroupIdentity.matches(groupId, event.pubkey, meta.createdAt)
+                ) {
+                    groupRepo.updateCreator(groupId, event.pubkey, meta.createdAt)
+                    currentGroup = currentGroup.copy(createdBy = event.pubkey, createdAt = meta.createdAt)
                 }
-                val group = groupRepo.getById(groupId) ?: currentGroup
+                if (currentGroup == null || currentGroup.createdBy.isNotEmpty()) creatorKnown = true
 
-                val isCreator = group == null ||
-                    (group.createdBy.isNotEmpty() && event.pubkey == group.createdBy)
+                val isCreator = currentGroup == null ||
+                    (currentGroup.createdBy.isNotEmpty() && event.pubkey == currentGroup.createdBy)
 
                 val finalMembers = if (isCreator) {
                     meta.members
@@ -239,6 +246,14 @@ constructor(
                 )
             } catch (_: Exception) { }
         }
+
+        if (allEvents.isNotEmpty() && !creatorKnown) {
+            Log.w(
+                TAG,
+                "Imported ${allEvents.size} group_meta event(s) for $groupId but none was authored by the " +
+                    "creator the group id is bound to; creator stays unknown"
+            )
+        }
     }
 
     /** Resolve the group key: local storage first, then embedded encrypted key. */
@@ -267,5 +282,9 @@ constructor(
         } catch (_: Exception) {
             null
         }
+    }
+
+    companion object {
+        private const val TAG = "ImportGroupUseCase"
     }
 }

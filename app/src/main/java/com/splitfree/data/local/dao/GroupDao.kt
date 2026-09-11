@@ -88,4 +88,11 @@ interface GroupDao {
 
     @Query("UPDATE `groups` SET keyEpoch = :epoch WHERE groupId = :groupId")
     suspend fun updateKeyEpoch(groupId: String, epoch: Int)
+
+    /**
+     * Records the verified creator of a group whose `createdBy` was unknown (legacy import).
+     * Deliberately leaves `lastMetaTimestamp` alone so historical `group_meta` replays still apply.
+     */
+    @Query("UPDATE `groups` SET createdBy = :createdBy, createdAt = :createdAt WHERE groupId = :groupId")
+    suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long)
 }

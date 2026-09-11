@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.SyncEngineContract
@@ -150,10 +151,8 @@ class RealRelayIntegrationTest {
         )
         // ========== PHONE 1: Create group with real crypto ==========
         val groupKey = phone1Encryption.generateGroupKey()
-        val groupId =
-            java.util.UUID
-                .randomUUID()
-                .toString()
+        val createdAt = System.currentTimeMillis() / 1000
+        val groupId = GroupIdentity.derive(phone1PubKey, createdAt)
         val groupName = "IntegrationTest-${System.currentTimeMillis()}"
 
         val phone1Group =
@@ -161,7 +160,7 @@ class RealRelayIntegrationTest {
                 id = groupId,
                 name = groupName,
                 createdBy = phone1PubKey,
-                createdAt = System.currentTimeMillis() / 1000,
+                createdAt = createdAt,
                 members = listOf(phone1PubKey),
                 relays = relays
             )
@@ -220,7 +219,7 @@ class RealRelayIntegrationTest {
         delay(2000)
 
         // ========== PHONE 1: Generate invite link ==========
-        val inviteLink = InviteLinkCodec.encode(phone1Group, groupKey, phone1PrivKey)
+        val inviteLink = InviteLinkCodec.encode(phone1Group, groupKey)
         println("\n=== INVITE LINK ===")
         println("Link: $inviteLink")
         println("Link length: ${inviteLink.length} chars")

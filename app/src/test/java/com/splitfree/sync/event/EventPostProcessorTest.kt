@@ -2,6 +2,7 @@ package com.splitfree.sync.event
 
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
@@ -260,6 +261,68 @@ class EventPostProcessorTest {
                 2000,
                 ""
             )
+        }
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+    }
+
+    @Test
+    fun `handle group_meta legacy group adopts creator whose meta is bound to the group id`() = runBlocking {
+        val createdAt = 1_700_000_000L
+        val boundId = GroupIdentity.derive(pubkey, createdAt)
+        val legacy = group.copy(id = boundId, createdBy = "", createdAt = 12345)
+        coEvery { groupRepo.getById(boundId) } returns legacy
+        val other = "bb".repeat(32)
+        val meta =
+            """{"name":"Restored","created_by":"$pubkey","created_at":$createdAt,""" +
+                """"members":["$pubkey","$other"],"relays":["wss://new"],"member_names":{"$pubkey":"Alice"}}"""
+
+        processor.handle("group_meta", meta, pubkey, boundId, 2000, false)
+
+        coVerify { groupRepo.updateCreator(boundId, pubkey, createdAt) }
+        // Treated as the creator: full metadata is applied and createdBy is set.
+        coVerify {
+            groupRepo.updateFromMeta(
+                boundId,
+                "Restored",
+                listOf(pubkey, other),
+                listOf("wss://new"),
+                2000,
+                pubkey,
+                mapOf(pubkey to "Alice")
+            )
+        }
+    }
+
+    @Test
+    fun `handle group_meta legacy group does not adopt author whose meta is not bound to the group id`() = runBlocking {
+        val createdAt = 1_700_000_000L
+        val boundId = GroupIdentity.derive(pubkey, createdAt)
+        val legacy = group.copy(id = boundId, createdBy = "")
+        coEvery { groupRepo.getById(boundId) } returns legacy
+        val impostor = "bb".repeat(32)
+
+        // Right createdAt, wrong author: id was derived from `pubkey`, not `impostor`.
+        val forged =
+            """{"name":"Hijack","created_by":"$impostor","created_at":$createdAt,""" +
+                """"members":["$impostor"],"relays":["wss://evil"]}"""
+        processor.handle("group_meta", forged, impostor, boundId, 2000, false)
+
+        // Right author, but created_at does not reproduce the id.
+        val staleClaim =
+            """{"name":"Hijack","created_by":"$pubkey","created_at":${createdAt + 1},""" +
+                """"members":["$pubkey"],"relays":["wss://evil"]}"""
+        processor.handle("group_meta", staleClaim, pubkey, boundId, 2001, false)
+
+        // Right author and created_at, but created_by names someone else.
+        val inconsistent =
+            """{"name":"Hijack","created_by":"$impostor","created_at":$createdAt,""" +
+                """"members":["$pubkey"],"relays":["wss://evil"]}"""
+        processor.handle("group_meta", inconsistent, pubkey, boundId, 2002, false)
+
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        // Every call stayed in restricted (non-creator) mode: name/relays preserved, no createdBy.
+        coVerify(exactly = 3) {
+            groupRepo.updateFromMeta(boundId, "Test", any(), listOf("wss://r"), any(), "", any())
         }
     }
 

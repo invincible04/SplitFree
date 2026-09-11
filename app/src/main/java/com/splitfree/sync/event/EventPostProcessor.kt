@@ -1,6 +1,7 @@
 package com.splitfree.sync.event
 
 import com.splitfree.di.ApplicationScope
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
@@ -73,9 +74,19 @@ constructor(
             if (meta.members.isEmpty()) return@runSafe
 
             val currentGroup = groupRepo.getById(groupId)
-            val isCreator =
-                currentGroup == null ||
-                    (currentGroup.createdBy.isNotEmpty() && authorHex == currentGroup.createdBy)
+            val isKnownCreator =
+                currentGroup != null &&
+                    currentGroup.createdBy.isNotEmpty() &&
+                    authorHex == currentGroup.createdBy
+            // Legacy/imported groups have no creator on record. The only author allowed to fill
+            // that gap is the one the group id was derived from, a claim anyone can verify, so a
+            // non-creator cannot promote themselves by publishing a group_meta.
+            val bootstrapsCreator =
+                currentGroup != null &&
+                    currentGroup.createdBy.isEmpty() &&
+                    meta.createdBy == authorHex &&
+                    GroupIdentity.matches(groupId, authorHex, meta.createdAt)
+            val isCreator = currentGroup == null || isKnownCreator || bootstrapsCreator
 
             val finalMembers =
                 if (isCreator) {
@@ -100,15 +111,18 @@ constructor(
                     }
                 }
             val trustedCreatedBy =
-                if (currentGroup != null &&
-                    currentGroup.createdBy.isNotEmpty() &&
-                    authorHex == currentGroup.createdBy
-                ) {
-                    meta.createdBy.ifEmpty { authorHex }
-                } else {
-                    ""
+                when {
+                    isKnownCreator -> meta.createdBy.ifEmpty { authorHex }
+                    bootstrapsCreator -> authorHex
+                    else -> ""
                 }
             val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != finalRelays.toSet()
+
+            if (bootstrapsCreator) {
+                Log.i(TAG, "Adopting verified creator ${authorHex.take(8)} for legacy group $groupId")
+                // Independent of the LWW watermark: the binding is cryptographic, not chronological.
+                groupRepo.updateCreator(groupId, authorHex, meta.createdAt)
+            }
 
             Log.i(TAG, "Applying group_meta for $groupId: ${finalMembers.size} members, name=$finalName")
             groupRepo.updateFromMeta(

@@ -5,6 +5,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -16,14 +17,19 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.slot
+import io.mockk.unmockkStatic
+import io.mockk.verify
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class ExportImportUseCaseTest {
@@ -40,6 +46,20 @@ class ExportImportUseCaseTest {
             every { isCorrectionAuthorValid(any(), any(), any()) } returns true
             every { isDeletedExpense(any(), any(), any()) } returns false
         }
+
+    @Before
+    fun setup() {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.i(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>()) } returns 0
+        every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
+    }
+
+    @After
+    fun teardown() {
+        unmockkStatic(android.util.Log::class)
+    }
 
     private val json = Json { ignoreUnknownKeys = true }
     private val groupKey =
@@ -82,6 +102,7 @@ class ExportImportUseCaseTest {
         expenseUuid: String? = "uuid1",
         contentEncrypted: String = "enc",
         createdAt: Long = 1700000000,
+        gid: String = groupId,
         mutateWrapper: (ExportedEvent) -> ExportedEvent = { it }
     ): ExportedEvent {
         val pubkey = NostrEvent.pubkeyFromPrivkey(privateKey)
@@ -90,7 +111,7 @@ class ExportImportUseCaseTest {
             createdAt = createdAt,
             kind = 30078,
             tags = buildList {
-                add(listOf("g", groupId))
+                add(listOf("g", gid))
                 add(listOf("t", eventType))
                 if (expenseUuid != null) add(listOf("x", expenseUuid))
             },
@@ -185,12 +206,12 @@ class ExportImportUseCaseTest {
         return mac.doFinal(data.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
-    private fun buildExportJson(events: List<ExportedEvent>, hmac: String = ""): String {
+    private fun buildExportJson(events: List<ExportedEvent>, hmac: String = "", gid: String = groupId): String {
         val serializer = kotlinx.serialization.builtins
             .ListSerializer(ExportedEvent.serializer())
         val eventsJson = Json.encodeToString(serializer, events)
         val h = if (hmac.isEmpty()) computeHmac(eventsJson, groupKey) else hmac
-        val export = SplitFreeExport(version = 1, groupId = groupId, exportedAt = 1700000000, events = events, hmac = h)
+        val export = SplitFreeExport(version = 1, groupId = gid, exportedAt = 1700000000, events = events, hmac = h)
         return Json.encodeToString(SplitFreeExport.serializer(), export)
     }
 
@@ -481,5 +502,143 @@ class ExportImportUseCaseTest {
         val useCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)
         val count = useCase(buildExportJson(events))
         assertEquals(31, count)
+    }
+
+    // --- ImportGroupUseCase.replayPostImport: creator bootstrap ---
+
+    private val strangerPubkey = NostrEvent.pubkeyFromPrivkey(strangerPrivKey)
+    private val boundCreatedAt = 1_690_000_000L
+
+    /** A legacy import: group id derived from [memberPubkey], but the local row has no creator yet. */
+    private val boundGroupId = GroupIdentity.derive(memberPubkey, boundCreatedAt)
+    private val legacyGroup =
+        Group(
+            id = boundGroupId,
+            name = "Imported Group",
+            createdBy = "",
+            createdAt = 1700000000,
+            members = listOf(memberPubkey),
+            relays = listOf("wss://relay.test")
+        )
+
+    private fun metaJson(createdBy: String, createdAt: Long, members: List<String>, name: String = "Trip") =
+        """{"name":"$name","created_by":"$createdBy","created_at":$createdAt,""" +
+            """"members":[${members.joinToString(",") { "\"$it\"" }}],"relays":["wss://relay.test"]}"""
+
+    private fun snapshotOf(event: ExportedEvent, gid: String) = EventSnapshot(
+        eventId = event.eventId,
+        groupId = gid,
+        pubkey = event.pubkey,
+        createdAt = event.createdAt,
+        kind = event.kind,
+        contentEncrypted = event.contentEncrypted,
+        eventType = event.eventType,
+        expenseUuid = event.expenseUuid,
+        sig = event.sig,
+        receivedAt = event.createdAt,
+        originalEventJson = event.originalEventJson
+    )
+
+    private fun stubReplayRepo(snapshots: List<EventSnapshot>) {
+        coEvery { groupRepo.getGroupKey(boundGroupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(boundGroupId, any()) } returns groupKey
+        coEvery { groupRepo.getById(boundGroupId) } returns legacyGroup
+        coEvery { groupRepo.updateCreator(any(), any(), any()) } just Runs
+        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } just Runs
+        coEvery { eventRepo.getEventIds(boundGroupId) } returns emptyList()
+        coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
+        coEvery { eventRepo.getEventsByGroup(boundGroupId) } returns snapshots
+    }
+
+    @Test
+    fun `replayPostImport sets createdBy only for the author the group id is bound to`() = runBlocking {
+        // Stranger publishes FIRST (earliest group_meta) and claims to be the creator.
+        val strangerMeta = buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-stranger",
+            createdAt = boundCreatedAt + 10,
+            gid = boundGroupId
+        )
+        val creatorMeta = buildSignedExportedEvent(
+            privateKey = memberPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-creator",
+            createdAt = boundCreatedAt + 20,
+            gid = boundGroupId
+        )
+        every { encryption.decrypt("enc-stranger", any()) } returns
+            metaJson(strangerPubkey, boundCreatedAt, listOf(strangerPubkey), name = "Hijacked")
+        every { encryption.decrypt("enc-creator", any()) } returns
+            metaJson(memberPubkey, boundCreatedAt, listOf(memberPubkey, strangerPubkey))
+        stubReplayRepo(listOf(snapshotOf(strangerMeta, boundGroupId), snapshotOf(creatorMeta, boundGroupId)))
+
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
+        val count = importUseCase(buildExportJson(listOf(strangerMeta, creatorMeta), gid = boundGroupId))
+
+        assertEquals(2, count)
+        coVerify(exactly = 1) { groupRepo.updateCreator(boundGroupId, memberPubkey, boundCreatedAt) }
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), strangerPubkey, any()) }
+        // Stranger's meta was applied in restricted mode (name preserved, no createdBy) ...
+        coVerify {
+            groupRepo.updateFromMeta(
+                boundGroupId,
+                "Imported Group",
+                any(),
+                any(),
+                boundCreatedAt + 10,
+                "",
+                any()
+            )
+        }
+        // ... while the bound creator's meta was applied with full authority.
+        coVerify {
+            groupRepo.updateFromMeta(
+                boundGroupId,
+                "Trip",
+                listOf(memberPubkey, strangerPubkey),
+                any(),
+                boundCreatedAt + 20,
+                memberPubkey,
+                any()
+            )
+        }
+    }
+
+    @Test
+    fun `replayPostImport leaves createdBy empty when no group_meta is bound to the group id`() = runBlocking {
+        // Same author as the id was derived from, but a created_at that does not reproduce the id.
+        val wrongCreatedAt = buildSignedExportedEvent(
+            privateKey = memberPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-wrong-ts",
+            createdAt = boundCreatedAt + 10,
+            gid = boundGroupId
+        )
+        // created_by names someone other than the signing author.
+        val inconsistent = buildSignedExportedEvent(
+            privateKey = memberPrivKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = "enc-inconsistent",
+            createdAt = boundCreatedAt + 20,
+            gid = boundGroupId
+        )
+        every { encryption.decrypt("enc-wrong-ts", any()) } returns
+            metaJson(memberPubkey, boundCreatedAt + 1, listOf(memberPubkey))
+        every { encryption.decrypt("enc-inconsistent", any()) } returns
+            metaJson(strangerPubkey, boundCreatedAt, listOf(memberPubkey))
+        stubReplayRepo(listOf(snapshotOf(wrongCreatedAt, boundGroupId), snapshotOf(inconsistent, boundGroupId)))
+
+        val importUseCase = ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)
+        val count = importUseCase(buildExportJson(listOf(wrongCreatedAt, inconsistent), gid = boundGroupId))
+
+        assertEquals(2, count)
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), not(""), any()) }
+        verify { android.util.Log.w("ImportGroupUseCase", match<String> { it.contains("creator stays unknown") }) }
     }
 }

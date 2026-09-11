@@ -213,6 +213,19 @@ class GroupRepositoryTest {
     }
 
     @Test
+    fun `updateCreator delegates to dao without touching the metadata watermark`() = runBlocking {
+        repo.updateCreator("g1", "creator", 1234)
+        coVerify { groupDao.updateCreator("g1", "creator", 1234) }
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `updateCreator rejects an empty creator`() = runBlocking {
+        repo.updateCreator("g1", "", 1234)
+    }
+
+    @Test
     fun `updateFromMeta rejects too many members`() = runBlocking {
         val bigList = (1..51).map { "pub$it" }
         repo.updateFromMeta("g1", "name", bigList, emptyList())

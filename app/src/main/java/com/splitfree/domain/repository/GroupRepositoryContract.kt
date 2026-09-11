@@ -43,6 +43,15 @@ interface GroupRepositoryContract {
     /** Update the group's current key epoch. */
     suspend fun updateKeyEpoch(groupId: String, epoch: Int)
 
+    /**
+     * Record the verified creator of a group whose creator was previously unknown (legacy import).
+     *
+     * Callers must only pass a `(createdBy, createdAt)` pair for which
+     * [com.splitfree.domain.model.group.GroupIdentity.matches] holds for [groupId]. Unlike
+     * [updateFromMeta] this does not touch the metadata watermark.
+     */
+    suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long)
+
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 
     /**

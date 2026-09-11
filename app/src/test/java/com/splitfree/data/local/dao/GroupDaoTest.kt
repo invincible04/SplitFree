@@ -109,4 +109,20 @@ class GroupDaoTest {
         assertEquals(0, updated)
         assertEquals("""["creator"]""", dao.getById("g1")!!.members)
     }
+
+    @Test
+    fun `updateCreator sets createdBy and createdAt without moving the watermark`() = runBlocking {
+        dao.insert(entity.copy(groupId = "legacy", createdBy = "", createdAt = 999_999, lastMetaTimestamp = 500))
+
+        dao.updateCreator("legacy", "verified-creator", 1234)
+
+        val row = dao.getById("legacy")!!
+        assertEquals("verified-creator", row.createdBy)
+        assertEquals(1234L, row.createdAt)
+        assertEquals(500L, row.lastMetaTimestamp)
+        assertEquals(entity.members, row.members)
+        // Historical metas newer than the watermark still apply after the creator is recorded.
+        assertEquals(1, dao.updateMetaIfNewer("legacy", "Trip", entity.members, entity.relays, "", 600, "{}"))
+        assertEquals("creator", dao.getById("g1")!!.createdBy) // other rows untouched
+    }
 }

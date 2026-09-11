@@ -1,25 +1,26 @@
 package com.splitfree.domain.invite
 
-import com.splitfree.domain.crypto.NostrEvent
-import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import java.io.ByteArrayOutputStream
-import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
 
 /**
  * Decoded invite link parameters.
  *
- * @property groupId UUID of the group to join
- * @property groupKey decrypted group symmetric key (base64)
+ * @property groupId UUID of the group to join; verified to equal
+ *   [GroupIdentity.derive]`(creatorPubkey, createdAt)`
+ * @property groupKey group symmetric key for [keyEpoch] (base64)
  * @property relays list of Nostr relay URLs for this group
- * @property name human-readable group name
+ * @property name human-readable group name (sanitised, at most 100 UTF-8 bytes)
  * @property expiry unix timestamp (seconds) after which the link should be rejected
- * @property inviterPubkey inviter public key hex decoded from invite payload
+ * @property creatorPubkey hex pubkey of the group creator, bound to [groupId]
+ * @property createdAt group creation time (unix seconds), bound to [groupId]
+ * @property keyEpoch epoch that [groupKey] belongs to
  */
 data class InviteParams(
     val groupId: String,
@@ -27,23 +28,35 @@ data class InviteParams(
     val relays: List<String>,
     val name: String,
     val expiry: Long,
-    val inviterPubkey: String
+    val creatorPubkey: String,
+    val createdAt: Long,
+    val keyEpoch: Int
 )
 
 /**
  * Encodes/decodes compact invite links for group sharing.
  *
  * SECURITY MODEL: Bearer-token invite — the URL itself is the credential.
- * Anyone with the link can join. Mitigated by 24h expiry and confirmation dialog.
  *
- * Format: `splitfree://join?d=<base64>` with direct NIP-44 encrypted key exchange.
- * The group key is NIP-44 encrypted using ECDH between the sender's private key and
- * an ephemeral key, then embedded in the URL. No relay involvement for key delivery.
+ * - **Confidentiality** of the link is the user's responsibility. The group key travels in the
+ *   clear inside the payload; anyone holding the link can join and read the group. Mitigated by
+ *   the 24h expiry and the confirmation dialog shown before joining. (Encrypting the key with
+ *   material that is itself carried in the same link adds bytes, not secrecy.)
+ * - **Creator authenticity** is verifiable. The group id is
+ *   [GroupIdentity.derive]`(creatorPubkey, createdAt)`, so [decode] rejects any link whose
+ *   `(groupId, creatorPubkey, createdAt)` triple does not agree. A member cannot forge a link that
+ *   makes the joiner believe someone else created the group, and every joiner of a given group
+ *   ends up with the same `createdBy` regardless of who invited them.
+ * - **Epoch correctness**: the link names the epoch its key belongs to, so a joiner stores the key
+ *   under the right epoch and accepts the creator's next `key_rotation` (which must be exactly
+ *   `epoch + 1`).
  *
- * Binary layout:
+ * Format: `splitfree://join?d=<base64url>`
+ *
+ * Binary layout (version 2):
  * ```
- * [uuid:16][ephPriv:32][senderPub:32][relayBitmap:1][customRelayLen:1]
- * [customRelays:N][expiry:4][encKeyLen:1][encryptedKey:M][name:rest]
+ * [version:1 = 0x02][groupId:16][creatorPub:32][createdAt:8][keyEpoch:2][groupKey:32]
+ * [relayBitmap:1][customRelayLen:1][customRelays:N][expiry:4][name:rest]
  * ```
  *
  * Relay URLs are bitmap-encoded against [RelayDefaults.KNOWN_RELAYS] for compactness.
@@ -54,66 +67,105 @@ object InviteLinkCodec {
     private const val MAX_RELAYS = 10
     private const val MAX_RELAY_URL_LENGTH = 256
     private const val MAX_PAYLOAD_LENGTH = 2048
+    private const val MAX_NAME_BYTES = 100
+    private const val DEFAULT_NAME = "Group"
 
-    /** uuid(16) + ephPriv(32) + senderPub(32) + bitmap(1) + customLen(1) */
-    private const val HEADER_SIZE = 16 + 32 + 32 + 1 + 1
+    private const val VERSION: Int = 0x02
+    private const val UUID_SIZE = 16
+    private const val PUBKEY_SIZE = 32
+    private const val CREATED_AT_SIZE = 8
+    private const val EPOCH_SIZE = 2
+    private const val GROUP_KEY_SIZE = 32
+    private const val MAX_EPOCH = 0xFFFF
+
+    /** version(1) + uuid(16) + creatorPub(32) + createdAt(8) + epoch(2) + key(32) + bitmap(1) + customLen(1) */
+    private const val HEADER_SIZE =
+        1 + UUID_SIZE + PUBKEY_SIZE + CREATED_AT_SIZE + EPOCH_SIZE + GROUP_KEY_SIZE + 1 + 1
     private const val EXPIRY_SIZE = 4
 
     /**
-     * Encode a group into a compact invite link with NIP-44 encrypted group key.
-     *
-     * @param group the group to create an invite for
-     * @param groupKey base64-encoded symmetric group key
-     * @param senderPrivKey sender's 32-byte private key for ECDH key agreement
-     * @return invite URL string (`splitfree://join?d=...`)
+     * Characters that must never appear in a group name: C0/C1 controls, DEL, and the Unicode
+     * bidi/embedding controls that can visually reorder or hide text in the join confirmation.
      */
-    fun encode(group: Group, groupKey: String, senderPrivKey: ByteArray): String {
-        val uuid = UUID.fromString(group.id)
-        val nameBytes = group.name.toByteArray(Charsets.UTF_8)
-        val exp = (System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS)
+    private val CONTROL_CHARS = Regex("[\\u0000-\\u001F\\u007F\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]")
 
+    /**
+     * Encode a group into a compact invite link.
+     *
+     * @param group the group to create an invite for; its `id` must equal
+     *   [GroupIdentity.derive]`(group.createdBy, group.createdAt)`
+     * @param groupKey base64-encoded 32-byte symmetric key for `group.keyEpoch`
+     * @return invite URL string (`splitfree://join?d=...`)
+     * @throws IllegalArgumentException if the group id is not bound to its creator, the key is not
+     *   32 bytes, or the epoch does not fit in 16 bits
+     */
+    fun encode(group: Group, groupKey: String): String {
+        val uuid = UUID.fromString(group.id)
+        require(group.createdBy.length == PUBKEY_SIZE * 2) { "Group creator pubkey must be 64 hex chars" }
+        require(GroupIdentity.matches(group.id, group.createdBy, group.createdAt)) {
+            "Group id does not match its creator"
+        }
+        require(group.keyEpoch in 0..MAX_EPOCH) { "Key epoch out of range" }
+        val keyBytes = Base64.getDecoder().decode(groupKey)
+        require(keyBytes.size == GROUP_KEY_SIZE) { "Group key must be $GROUP_KEY_SIZE bytes" }
+
+        val nameBytes = truncateUtf8(sanitizeName(group.name), MAX_NAME_BYTES)
+        val exp = (System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS)
         val (relayBitmap, customRelayBytes) = encodeRelays(group.relays)
-        val (ephPriv, encryptedKeyBytes) = encryptGroupKey(groupKey, senderPrivKey)
-        val senderPub = NostrEvent.pubkeyFromPrivkey(senderPrivKey).hexToBytes()
 
         val buf = ByteArrayOutputStream()
+        buf.write(VERSION)
         writeUuid(buf, uuid)
-        buf.write(ephPriv)
-        ephPriv.fill(0)
-        buf.write(senderPub)
+        buf.write(group.createdBy.hexToBytes())
+        writeInt64(buf, group.createdAt)
+        writeUint16(buf, group.keyEpoch)
+        buf.write(keyBytes)
+        keyBytes.fill(0)
         buf.write(relayBitmap and 0xFF)
         buf.write(customRelayBytes.size.coerceAtMost(255))
         if (customRelayBytes.isNotEmpty()) buf.write(customRelayBytes, 0, customRelayBytes.size.coerceAtMost(255))
         writeUint32(buf, exp)
-        buf.write(encryptedKeyBytes.size)
-        buf.write(encryptedKeyBytes)
-        buf.write(nameBytes, 0, nameBytes.size.coerceAtMost(100))
+        buf.write(nameBytes)
 
         val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(buf.toByteArray())
         return "splitfree://join?d=$payload"
     }
 
     /**
-     * Decode an invite link URI, decrypt the group key, and return all parameters.
+     * Decode an invite link URI and return all parameters.
      *
      * @param uri `splitfree://join?d=...` deep link
-     * @return parsed [InviteParams] with decrypted group key
-     * @throws IllegalArgumentException if the link is malformed or decryption fails
+     * @return parsed [InviteParams]
+     * @throws IllegalArgumentException if the link is malformed, expired, uses an unsupported version,
+     *   or its group id is not bound to the claimed creator
      */
     fun decode(uri: String): InviteParams {
         val dParam = extractPayloadParam(uri)
         require(dParam.length <= MAX_PAYLOAD_LENGTH) { "Invalid invite link: payload too large" }
         val data = Base64.getUrlDecoder().decode(dParam)
+        require(data.isNotEmpty()) { "Invalid invite link: payload too short" }
+        require((data[0].toInt() and 0xFF) == VERSION) { "Unsupported invite link version" }
         require(data.size >= HEADER_SIZE + EXPIRY_SIZE) { "Invalid invite link: payload too short" }
 
-        var pos = 0
+        var pos = 1
         val groupId = readUuid(data, pos)
-        pos += 16
+        pos += UUID_SIZE
 
-        val ephPriv = data.copyOfRange(pos, pos + 32)
-        pos += 32
-        val senderPub = data.copyOfRange(pos, pos + 32)
-        pos += 32
+        val creatorPubkey = data.copyOfRange(pos, pos + PUBKEY_SIZE).toHex()
+        pos += PUBKEY_SIZE
+
+        val createdAt = readInt64(data, pos)
+        pos += CREATED_AT_SIZE
+
+        val keyEpoch = readUint16(data, pos)
+        pos += EPOCH_SIZE
+
+        val groupKey = Base64.getEncoder().encodeToString(data.copyOfRange(pos, pos + GROUP_KEY_SIZE))
+        pos += GROUP_KEY_SIZE
+
+        require(GroupIdentity.matches(groupId, creatorPubkey, createdAt)) {
+            "Invite link does not match its claimed creator"
+        }
 
         val (relays, bytesRead) = decodeRelays(data, pos)
         pos += bytesRead
@@ -123,52 +175,28 @@ object InviteLinkCodec {
         pos += EXPIRY_SIZE
         require(System.currentTimeMillis() / 1000 <= exp) { "This invite link has expired" }
 
-        require(data.size >= pos + 1) { "Invalid invite link: missing encrypted key" }
-        val encKeyLen = data[pos].toInt() and 0xFF
-        pos++
-        require(data.size >= pos + encKeyLen) { "Invalid invite link: truncated encrypted key" }
-        val encKeyBytes = data.copyOfRange(pos, pos + encKeyLen)
-        pos += encKeyLen
+        val rawName = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else ""
+        val name = String(truncateUtf8(sanitizeName(rawName), MAX_NAME_BYTES), Charsets.UTF_8).ifBlank { DEFAULT_NAME }
 
-        val groupKey = try {
-            decryptGroupKey(encKeyBytes, ephPriv, senderPub)
-        } finally {
-            ephPriv.fill(0)
-        }
-
-        val name = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else "Group"
-
-        val inviterPubkey = senderPub.toHex()
-        return InviteParams(groupId, groupKey, relays, name, exp, inviterPubkey)
+        return InviteParams(groupId, groupKey, relays, name, exp, creatorPubkey, createdAt, keyEpoch)
     }
 
-    // --- Crypto helpers ---
+    // --- Name helpers ---
+
+    /** Strips control and bidi-override characters and surrounding whitespace. */
+    private fun sanitizeName(name: String): String = CONTROL_CHARS.replace(name, "").trim()
 
     /**
-     * Generates an ephemeral keypair and NIP-44 encrypts the group key.
-     *
-     * @return pair of (ephemeral private key bytes, encrypted key raw bytes)
+     * UTF-8 encodes [value] and truncates to at most [maxBytes] without splitting a code point,
+     * so a truncated name still decodes cleanly on the other side.
      */
-    private fun encryptGroupKey(groupKey: String, senderPrivKey: ByteArray): Pair<ByteArray, ByteArray> {
-        val ephPriv = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(ephPriv)) {
-            SecureRandom().nextBytes(ephPriv)
-        }
-        val ephPub = NostrEvent.pubkeyFromPrivkey(ephPriv).hexToBytes()
-        val convKey = Nip44.getConversationKey(senderPrivKey, ephPub)
-        val encryptedB64 = Nip44.encrypt(groupKey, convKey)
-        return ephPriv to Base64.getDecoder().decode(encryptedB64)
-    }
-
-    /**
-     * Decrypts the group key using the ephemeral private key and sender's public key.
-     *
-     * @return decrypted group key string
-     */
-    private fun decryptGroupKey(encKeyBytes: ByteArray, ephPriv: ByteArray, senderPub: ByteArray): String {
-        val convKey = Nip44.getConversationKey(ephPriv, senderPub)
-        val encryptedB64 = Base64.getEncoder().encodeToString(encKeyBytes)
-        return Nip44.decrypt(encryptedB64, convKey)
+    private fun truncateUtf8(value: String, maxBytes: Int): ByteArray {
+        val full = value.toByteArray(Charsets.UTF_8)
+        if (full.size <= maxBytes) return full
+        var end = maxBytes
+        // Back up over UTF-8 continuation bytes (10xxxxxx) to the start of a code point.
+        while (end > 0 && (full[end].toInt() and 0xC0) == 0x80) end--
+        return full.copyOf(end)
     }
 
     // --- Binary helpers ---
@@ -221,21 +249,32 @@ object InviteLinkCodec {
     }
 
     private fun writeUuid(buf: ByteArrayOutputStream, uuid: UUID) {
-        for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
-            buf.write((uuid.mostSignificantBits ushr shift).toInt() and 0xFF)
-        }
-        for (shift in listOf(56, 48, 40, 32, 24, 16, 8, 0)) {
-            buf.write((uuid.leastSignificantBits ushr shift).toInt() and 0xFF)
+        writeInt64(buf, uuid.mostSignificantBits)
+        writeInt64(buf, uuid.leastSignificantBits)
+    }
+
+    private fun readUuid(data: ByteArray, pos: Int): String =
+        UUID(readInt64(data, pos), readInt64(data, pos + 8)).toString()
+
+    private fun writeInt64(buf: ByteArrayOutputStream, value: Long) {
+        for (shift in 56 downTo 0 step 8) {
+            buf.write((value ushr shift).toInt() and 0xFF)
         }
     }
 
-    private fun readUuid(data: ByteArray, pos: Int): String {
-        var msb = 0L
-        for (i in 0 until 8) msb = (msb shl 8) or (data[pos + i].toLong() and 0xFF)
-        var lsb = 0L
-        for (i in 0 until 8) lsb = (lsb shl 8) or (data[pos + 8 + i].toLong() and 0xFF)
-        return UUID(msb, lsb).toString()
+    private fun readInt64(data: ByteArray, pos: Int): Long {
+        var v = 0L
+        for (i in 0 until 8) v = (v shl 8) or (data[pos + i].toLong() and 0xFF)
+        return v
     }
+
+    private fun writeUint16(buf: ByteArrayOutputStream, value: Int) {
+        buf.write((value ushr 8) and 0xFF)
+        buf.write(value and 0xFF)
+    }
+
+    private fun readUint16(data: ByteArray, pos: Int): Int =
+        ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
 
     private fun writeUint32(buf: ByteArrayOutputStream, value: Long) {
         val v = (value and 0xFFFFFFFFL).toInt()

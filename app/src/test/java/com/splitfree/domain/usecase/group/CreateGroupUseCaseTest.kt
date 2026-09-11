@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -74,6 +75,18 @@ class CreateGroupUseCaseTest {
         assertEquals(fakePubkey, group.createdBy)
         assertEquals(listOf(fakePubkey), group.members)
         assertEquals(RelayDefaults.DEFAULT_RELAYS, group.relays)
+    }
+
+    @Test
+    fun `invoke derives group id from creator and createdAt`() = runBlocking {
+        val before = System.currentTimeMillis() / 1000
+        val group = useCase("Trip to Goa")
+        val after = System.currentTimeMillis() / 1000
+
+        assertTrue(group.createdAt in before..after)
+        assertEquals(GroupIdentity.derive(fakePubkey, group.createdAt), group.id)
+        assertTrue(GroupIdentity.matches(group.id, fakePubkey, group.createdAt))
+        coVerify { groupRepo.save(match { it.id == GroupIdentity.derive(fakePubkey, it.createdAt) }, fakeGroupKey) }
     }
 
     @Test
