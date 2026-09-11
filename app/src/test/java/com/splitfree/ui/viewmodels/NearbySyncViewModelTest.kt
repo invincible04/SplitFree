@@ -3,6 +3,7 @@ package com.splitfree.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.splitfree.data.ble.BleEvent
+import com.splitfree.data.ble.BleHandshake
 import com.splitfree.data.ble.BleTransfer
 import com.splitfree.data.ble.NearbyPeer
 import com.splitfree.data.ble.NearbySync
@@ -63,7 +64,7 @@ class NearbySyncViewModelTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
 
         every { nearbySync.events } returns events
-        every { identity.getPublicKeyHex() } returns "aa".repeat(32)
+        every { identity.getPublicKeyHex() } returns OUR_PUB
         coEvery { groupRepo.getAll() } returns emptyList()
         coEvery { eventDao.getEventIds(any()) } returns emptyList()
 
@@ -149,5 +150,77 @@ class NearbySyncViewModelTest {
         assertFalse(vm.uiState.value.syncing)
         assertTrue(vm.uiState.value.status.startsWith("Scan failed"))
         verify { nearbySync.stop() }
+    }
+
+    // --- Handshake legs bind the peer's claimed pubkey into what BleTransfer signs ---
+
+    @Test
+    fun `leg 1 handshake is answered with the peer's claimed pubkey`() = runTest {
+        val leg1 = BleHandshake(PEER_PUB, emptyList(), challenge = CHALLENGE)
+        coEvery { bleTransfer.processPayload("peer-1", any()) } returns leg1
+
+        events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01)))
+
+        verify { bleTransfer.sendHandshakeResponse("peer-1", OUR_PUB, emptyList(), CHALLENGE, PEER_PUB) }
+        verify(exactly = 0) { nearbySync.disconnect(any()) }
+        assertEquals("Authenticating peer…", vm.uiState.value.status)
+    }
+
+    @Test
+    fun `leg 1 handshake with a NIP-01-shaped challenge is dropped before anything is signed`() = runTest {
+        val nip01 = "[0,\"$PEER_PUB\",1700000000,1,[],\"\"]"
+        val leg1 = BleHandshake(PEER_PUB, emptyList(), challenge = nip01)
+        coEvery { bleTransfer.processPayload("peer-1", any()) } returns leg1
+
+        events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01)))
+
+        verify(exactly = 0) { bleTransfer.sendHandshakeResponse(any(), any(), any(), any(), any()) }
+        verify { bleTransfer.clearPeer("peer-1") }
+        verify { nearbySync.disconnect("peer-1") }
+        assertEquals("Peer authentication failed", vm.uiState.value.status)
+    }
+
+    @Test
+    fun `leg 1 handshake with a malformed pubkey is dropped before anything is signed`() = runTest {
+        val leg1 = BleHandshake("not-a-pubkey", emptyList(), challenge = CHALLENGE)
+        coEvery { bleTransfer.processPayload("peer-1", any()) } returns leg1
+
+        events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01)))
+
+        verify(exactly = 0) { bleTransfer.sendHandshakeResponse(any(), any(), any(), any(), any()) }
+        verify { bleTransfer.clearPeer("peer-1") }
+        verify { nearbySync.disconnect("peer-1") }
+        assertEquals("Peer authentication failed", vm.uiState.value.status)
+    }
+
+    @Test
+    fun `leg 2 response is answered with the verified peer's pubkey`() = runTest {
+        val leg2 = BleHandshake(PEER_PUB, emptyList(), challenge = CHALLENGE, challengeResponse = "ee".repeat(64))
+        coEvery { bleTransfer.processPayload("peer-1", any()) } returns leg2
+        every { bleTransfer.verifyHandshake("peer-1", leg2) } returns true
+        every { bleTransfer.isAuthenticated("peer-1") } returns true
+
+        events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01)))
+
+        verify { bleTransfer.sendChallengeResponse("peer-1", OUR_PUB, CHALLENGE, PEER_PUB) }
+        coVerify { bleTransfer.sendGroupIds("peer-1", emptyList()) }
+    }
+
+    @Test
+    fun `leg 2 response that fails verification is not answered`() = runTest {
+        val leg2 = BleHandshake(PEER_PUB, emptyList(), challenge = CHALLENGE, challengeResponse = "ee".repeat(64))
+        coEvery { bleTransfer.processPayload("peer-1", any()) } returns leg2
+        every { bleTransfer.verifyHandshake("peer-1", leg2) } returns false
+
+        events.emit(BleEvent.PayloadReceived("peer-1", byteArrayOf(0x01)))
+
+        verify(exactly = 0) { bleTransfer.sendChallengeResponse(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { bleTransfer.sendGroupIds(any(), any()) }
+    }
+
+    private companion object {
+        val OUR_PUB = "aa".repeat(32)
+        val PEER_PUB = "bb".repeat(32)
+        val CHALLENGE = "cc".repeat(32)
     }
 }

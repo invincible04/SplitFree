@@ -41,10 +41,18 @@ data class BleSyncRequest(val groupId: String, val eventIds: List<String>)
  * Handles BLE data transfer: Schnorr-authenticated handshake, event exchange, and storage.
  *
  * Connection flow:
- * 1. Both peers exchange random challenges
- * 2. Each peer signs the other's challenge with their Nostr private key (BIP-340)
+ * 1. Both peers exchange random 32-byte challenges (hex-encoded)
+ * 2. Each peer signs a domain-separated transcript of the other's challenge with their Nostr
+ *    private key (BIP-340), see [authTranscriptHash]
  * 3. After mutual authentication, group IDs are exchanged for sync discovery
  * 4. Missing events are transferred using the compact [BleProtocol] binary format
+ *
+ * The signed message is never the raw challenge: an unauthenticated peer controls the challenge
+ * string, and a Nostr signature is a Schnorr signature over `SHA256(NIP-01 serialization)`.
+ * Signing `SHA256(challenge)` directly would let a peer submit a NIP-01 serialization as its
+ * "challenge" and receive a valid signature over an arbitrary Nostr event. The transcript hash
+ * is tagged so it cannot collide with any event ID, and challenges must be exactly 32 bytes of
+ * lowercase hex so no structured input can reach the signer.
  */
 @Singleton
 class BleTransfer
@@ -66,6 +74,13 @@ constructor(
     private val authenticatedPeers = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val handshakeTimeouts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /**
+     * Pubkey each peer claimed in its first handshake message, keyed by endpointId. A later
+     * handshake leg from the same endpoint must carry the same pubkey, so an endpoint cannot
+     * switch identities between the challenge and the response.
+     */
+    private val peerClaimedPubkey = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     companion object {
         private const val TAG = "BleTransfer"
         const val MSG_HANDSHAKE: Byte = 0x01
@@ -73,6 +88,82 @@ constructor(
         const val MSG_EVENT: Byte = 0x03
         const val MSG_GROUP_IDS: Byte = 0x04
         const val HANDSHAKE_TIMEOUT_MS = 10_000L
+
+        /**
+         * Domain-separation tag for the handshake transcript. A NIP-01 serialization always begins
+         * with `[0,`, so a SHA-256 preimage that begins with this tag can never be a Nostr event ID.
+         */
+        private const val AUTH_TAG = "splitfree-ble-auth-v1"
+        private const val HEX_ALPHABET = "0123456789abcdef"
+    }
+
+    /** Exactly 32 bytes as lowercase hex: the required shape of a challenge and of an x-only pubkey. */
+    private fun isHex32(s: String) = s.length == 64 && s.all { it in HEX_ALPHABET }
+
+    private fun isValidChallenge(c: String) = isHex32(c)
+
+    private fun isValidPubkey(p: String) = isHex32(p)
+
+    /**
+     * Hash of the handshake transcript that is actually signed:
+     *
+     *     SHA256(AUTH_TAG || 0x00 || challenge(32) || signerPubkey(32) || verifierPubkey(32))
+     *
+     * The tag separates this from every other use of the Nostr key (in particular NIP-01 event
+     * IDs). Binding the signer's pubkey stops a signature from being presented under a different
+     * identity; binding the verifier's pubkey stops it from being replayed to a third party who
+     * issued the same challenge.
+     */
+    private fun authTranscriptHash(challenge: String, signerPubkeyHex: String, verifierPubkeyHex: String): ByteArray {
+        require(isValidChallenge(challenge)) { "challenge must be 32 bytes of lowercase hex" }
+        require(isValidPubkey(signerPubkeyHex)) { "signer pubkey must be 32 bytes of lowercase hex" }
+        require(isValidPubkey(verifierPubkeyHex)) { "verifier pubkey must be 32 bytes of lowercase hex" }
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(AUTH_TAG.toByteArray(Charsets.UTF_8))
+        md.update(0x00.toByte())
+        md.update(challenge.hexToBytes())
+        md.update(signerPubkeyHex.hexToBytes())
+        md.update(verifierPubkeyHex.hexToBytes())
+        return md.digest()
+    }
+
+    /**
+     * Sign the transcript for [peerChallenge] with our long-term key. Inputs must already be
+     * validated; the private key is zeroed after use.
+     */
+    private fun signAuthTranscript(peerChallenge: String, ourPubkey: String, peerPubkey: String): String {
+        val hash = authTranscriptHash(peerChallenge, signerPubkeyHex = ourPubkey, verifierPubkeyHex = peerPubkey)
+        val privKey = identity.getPrivateKeyBytes()
+        try {
+            val auxRand = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+            return fr.acinq.secp256k1.Secp256k1
+                .signSchnorr(hash, privKey, auxRand)
+                .toHex()
+        } finally {
+            privKey.fill(0)
+        }
+    }
+
+    /** True if all handshake inputs have the required shape; logs and returns false otherwise. */
+    private fun validateSigningInputs(
+        endpointId: String,
+        ourPubkey: String,
+        peerChallenge: String,
+        peerPubkey: String
+    ): Boolean {
+        if (!isValidChallenge(peerChallenge)) {
+            Log.w(TAG, "Refusing to sign for $endpointId: challenge is not 32 bytes of lowercase hex")
+            return false
+        }
+        if (!isValidPubkey(peerPubkey)) {
+            Log.w(TAG, "Refusing to sign for $endpointId: peer pubkey is not 32 bytes of lowercase hex")
+            return false
+        }
+        if (!isValidPubkey(ourPubkey)) {
+            Log.w(TAG, "Refusing to sign for $endpointId: our pubkey is not 32 bytes of lowercase hex")
+            return false
+        }
+        return true
     }
 
     /**
@@ -96,27 +187,26 @@ constructor(
     /**
      * Send handshake response: includes our signature over the peer's challenge
      * AND a new challenge for the peer to sign (mutual authentication).
+     *
+     * [peerPubkey] is the pubkey the peer claimed in its initial handshake; it is bound into the
+     * signed transcript as the verifier and recorded so later legs cannot switch identity.
+     * Nothing is signed or sent if [peerChallenge] or [peerPubkey] is not 32 bytes of lowercase hex.
      */
-    fun sendHandshakeResponse(endpointId: String, pubkey: String, groupIds: List<String>, peerChallenge: String) {
+    fun sendHandshakeResponse(
+        endpointId: String,
+        pubkey: String,
+        groupIds: List<String>,
+        peerChallenge: String,
+        peerPubkey: String
+    ) {
+        if (!validateSigningInputs(endpointId, pubkey, peerChallenge, peerPubkey)) return
+        peerClaimedPubkey[endpointId] = peerPubkey
+
         val challengeBytes2 = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
         val ourChallenge = challengeBytes2.toHex()
         pendingChallenges[endpointId] = ourChallenge
 
-        val privKey = identity.getPrivateKeyBytes()
-        val signature: String
-        try {
-            val challengeBytes =
-                java.security.MessageDigest
-                    .getInstance("SHA-256")
-                    .digest(peerChallenge.toByteArray(Charsets.UTF_8))
-            val auxRand = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-            val sig =
-                fr.acinq.secp256k1.Secp256k1
-                    .signSchnorr(challengeBytes, privKey, auxRand)
-            signature = sig.toHex()
-        } finally {
-            privKey.fill(0)
-        }
+        val signature = signAuthTranscript(peerChallenge, ourPubkey = pubkey, peerPubkey = peerPubkey)
         val hs = json.encodeToString(
             BleHandshake.serializer(),
             BleHandshake(pubkey, emptyList(), challenge = ourChallenge, challengeResponse = signature)
@@ -126,23 +216,14 @@ constructor(
 
     /**
      * Send the final handshake leg: sign the responder's challenge to complete mutual auth.
+     *
+     * [peerPubkey] is the responder's (already verified) pubkey, bound into the transcript as the
+     * verifier. Nothing is signed or sent if [peerChallenge] or [peerPubkey] is malformed.
      */
-    fun sendChallengeResponse(endpointId: String, pubkey: String, peerChallenge: String) {
-        val privKey = identity.getPrivateKeyBytes()
-        val signature: String
-        try {
-            val challengeBytes =
-                java.security.MessageDigest
-                    .getInstance("SHA-256")
-                    .digest(peerChallenge.toByteArray(Charsets.UTF_8))
-            val auxRand = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-            val sig =
-                fr.acinq.secp256k1.Secp256k1
-                    .signSchnorr(challengeBytes, privKey, auxRand)
-            signature = sig.toHex()
-        } finally {
-            privKey.fill(0)
-        }
+    fun sendChallengeResponse(endpointId: String, pubkey: String, peerChallenge: String, peerPubkey: String) {
+        if (!validateSigningInputs(endpointId, pubkey, peerChallenge, peerPubkey)) return
+
+        val signature = signAuthTranscript(peerChallenge, ourPubkey = pubkey, peerPubkey = peerPubkey)
         val hs = json.encodeToString(
             BleHandshake.serializer(),
             BleHandshake(pubkey, emptyList(), challengeResponse = signature)
@@ -152,20 +233,39 @@ constructor(
 
     /**
      * Verify a peer's challenge response. Returns true if the peer proved ownership of their pubkey.
+     *
+     * The signature must cover [authTranscriptHash] of the challenge we issued, with the peer as
+     * signer and us as verifier. The pending challenge is consumed on every attempt, and the peer's
+     * pubkey must match whatever this endpoint claimed in its first handshake message.
      */
     fun verifyHandshake(endpointId: String, handshake: BleHandshake): Boolean {
         val response = handshake.challengeResponse
         if (response.isEmpty()) return false // initial handshake, not a response yet
         val challenge = pendingChallenges.remove(endpointId) ?: return false
+        if (!isValidChallenge(challenge)) {
+            Log.w(TAG, "Rejecting handshake from $endpointId: pending challenge is malformed")
+            return false
+        }
+        if (!isValidPubkey(handshake.pubkey)) {
+            Log.w(TAG, "Rejecting handshake from $endpointId: pubkey is not 32 bytes of lowercase hex")
+            return false
+        }
+        // Bind the endpoint to the first pubkey it claimed so it cannot switch identities mid-handshake.
+        val claimed = peerClaimedPubkey.putIfAbsent(endpointId, handshake.pubkey)
+        if (claimed != null && claimed != handshake.pubkey) {
+            Log.w(TAG, "Rejecting handshake from $endpointId: pubkey changed mid-handshake")
+            return false
+        }
         return try {
-            val challengeBytes =
-                java.security.MessageDigest
-                    .getInstance("SHA-256")
-                    .digest(challenge.toByteArray(Charsets.UTF_8))
-            val pubBytes = handshake.pubkey.hexToBytes()
+            val hash =
+                authTranscriptHash(
+                    challenge,
+                    signerPubkeyHex = handshake.pubkey,
+                    verifierPubkeyHex = identity.getPublicKeyHex()
+                )
             val verified =
                 fr.acinq.secp256k1.Secp256k1
-                    .verifySchnorr(response.hexToBytes(), challengeBytes, pubBytes)
+                    .verifySchnorr(response.hexToBytes(), hash, handshake.pubkey.hexToBytes())
             if (verified) authenticatedPeers[endpointId] = handshake.pubkey
             verified
         } catch (_: Exception) {
@@ -196,6 +296,7 @@ constructor(
         pendingChallenges.remove(endpointId)
         authenticatedPeers.remove(endpointId)
         handshakeTimeouts.remove(endpointId)
+        peerClaimedPubkey.remove(endpointId)
     }
 
     fun sendSyncRequest(endpointId: String, groupId: String, localEventIds: List<String>) {

@@ -117,7 +117,8 @@ constructor(
                                 bleTransfer.sendChallengeResponse(
                                     event.endpointId,
                                     identity.getPublicKeyHex(),
-                                    result.challenge
+                                    result.challenge,
+                                    result.pubkey
                                 )
                                 startSyncIfReady(event.endpointId, result)
                             } else {
@@ -131,6 +132,16 @@ constructor(
                                 _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
                             }
                         } else if (result.challenge.isNotEmpty()) {
+                            // Leg 1 arrives before any authentication. Refuse to sign anything for a
+                            // peer whose pubkey or challenge is not 32 bytes of hex: the challenge is
+                            // bound into a signature made with the user's long-term Nostr key.
+                            if (!isHex32(result.pubkey) || !isHex32(result.challenge)) {
+                                Log.w(TAG, "Rejecting malformed handshake from ${event.endpointId}")
+                                _uiState.value = _uiState.value.copy(status = "Peer authentication failed")
+                                bleTransfer.clearPeer(event.endpointId)
+                                nearbySync.disconnect(event.endpointId)
+                                return
+                            }
                             if (bleTransfer.isHandshakeTimedOut(event.endpointId)) {
                                 bleTransfer.clearPeer(event.endpointId)
                                 _uiState.value = _uiState.value.copy(status = "Handshake timed out")
@@ -141,7 +152,8 @@ constructor(
                                     event.endpointId,
                                     identity.getPublicKeyHex(),
                                     groups,
-                                    result.challenge
+                                    result.challenge,
+                                    result.pubkey
                                 )
                             }
                         }
@@ -188,6 +200,9 @@ constructor(
             bleTransfer.sendGroupIds(endpointId, groups)
         }
     }
+
+    /** Exactly 32 bytes as lowercase hex, the required shape of a handshake pubkey and challenge. */
+    private fun isHex32(s: String) = s.length == 64 && s.all { it in HEX_ALPHABET }
 
     private fun onGroupIdsReceived(endpointId: String, groupIds: List<String>) {
         if (!bleTransfer.isAuthenticated(endpointId)) return
@@ -264,5 +279,6 @@ constructor(
 
     companion object {
         private const val TAG = "NearbySyncVM"
+        private const val HEX_ALPHABET = "0123456789abcdef"
     }
 }

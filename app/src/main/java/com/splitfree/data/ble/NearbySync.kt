@@ -156,6 +156,16 @@ constructor(
 
     private val connectionLifecycleCallback =
         object : ConnectionLifecycleCallback() {
+            /**
+             * Auto-accepts any endpoint whose advertised name is an 8-char hex pubkey prefix.
+             *
+             * This is a UX decision, not an authentication step: the prefix is self-reported and
+             * an attacker can advertise any prefix. Accepting here only opens a transport so the
+             * Schnorr transcript handshake in [BleTransfer] can run. [BleTransfer.verifyHandshake]
+             * is what authenticates a peer, and [BleTransfer] refuses to sign anything for a peer
+             * whose challenge or pubkey is malformed and withholds all data until mutual
+             * authentication completes.
+             */
             override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
                 // Accept connection to allow handshake — actual authentication happens
                 // via Schnorr challenge-response in BleTransfer after connection.
