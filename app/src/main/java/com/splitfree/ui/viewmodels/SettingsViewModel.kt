@@ -37,7 +37,11 @@ constructor(
     private val groupRepo: GroupRepositoryContract,
     private val exportGroup: ExportGroupUseCase
 ) : ViewModel() {
-    private val _npub = MutableStateFlow(if (identity.hasIdentity()) identity.getPublicKeyHex() else "")
+    // Reading the pubkey hits Keystore-backed storage, which can throw SecureStorageException
+    // on transient failures. Never let that crash the screen on open; show an empty npub instead.
+    private val _npub = MutableStateFlow(
+        runCatching { if (identity.hasIdentity()) identity.getPublicKeyHex() else "" }.getOrDefault("")
+    )
     val npub: StateFlow<String> = _npub
 
     // V4 fix: lazy-load private key only on reveal, clear on hide

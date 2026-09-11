@@ -17,10 +17,11 @@ import kotlinx.serialization.json.Json
 /**
  * Removes a member via epoch-based key rotation (no group ID change).
  *
- * 1. Generate a new symmetric key for the next epoch
+ * 1. Generate a new symmetric key for the next epoch and persist it locally
+ *    (durably, before anything is published)
  * 2. Publish a `key_rotation` event encrypted with the CURRENT epoch key,
  *    containing per-member NIP-44 encrypted new keys
- * 3. Update local group: remove member, bump epoch, store new key
+ * 3. Update local group: remove member, bump epoch
  *
  * Receivers decrypt the rotation event, store the new epoch key, and update
  * their local member list. History is preserved — old events decrypt with
@@ -67,6 +68,12 @@ constructor(
                 privKey.fill(0)
             }
 
+            // Persist the new epoch key BEFORE anything leaves the device. saveGroupKeyForEpoch
+            // throws SecureStorageException if the Keystore write does not land, so we never
+            // publish rotation events for a key we would then be unable to use ourselves.
+            // The group's epoch is only advanced after publishing succeeds (below).
+            groupRepo.saveGroupKeyForEpoch(groupId, newEpoch, newGroupKey)
+
             // Publish key_rotation event encrypted per-member so the removed
             // member cannot decrypt the outer envelope and learn group metadata.
             // Each remaining member receives a dedicated event they can decrypt
@@ -97,8 +104,7 @@ constructor(
                 privKeyForWrap.fill(0)
             }
 
-            // Update local state
-            groupRepo.saveGroupKeyForEpoch(groupId, newEpoch, newGroupKey)
+            // Update local state (key already stored above)
             groupRepo.updateKeyEpoch(groupId, newEpoch)
             val updatedNames = group.memberNames.filterKeys { it in remainingMembers }
             groupRepo.updateFromMeta(

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
+import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.test.FakeSecureStorage
 import io.mockk.Runs
@@ -54,6 +55,23 @@ class IdentityManagerTest {
     @Test
     fun `hasIdentity false`() {
         assertFalse(mgr.hasIdentity())
+    }
+
+    @Test
+    fun `hasIdentity false when key is present but cannot be decrypted`() {
+        val lostKeyStorage = mockk<SecureStorage>()
+        every { lostKeyStorage.contains("nsec") } returns true
+        every { lostKeyStorage.canDecrypt("nsec") } returns false
+        assertFalse(IdentityManager(context, lostKeyStorage).hasIdentity())
+        verify(exactly = 1) { lostKeyStorage.canDecrypt("nsec") }
+    }
+
+    @Test
+    fun `hasIdentity skips decrypt attempt when key is absent`() {
+        val emptyStorage = mockk<SecureStorage>()
+        every { emptyStorage.contains("nsec") } returns false
+        assertFalse(IdentityManager(context, emptyStorage).hasIdentity())
+        verify(exactly = 0) { emptyStorage.canDecrypt(any()) }
     }
 
     @Test

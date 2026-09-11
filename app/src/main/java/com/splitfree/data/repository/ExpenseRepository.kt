@@ -112,7 +112,12 @@ constructor(
         require(settlement.amount > 0) { "Settlement amount must be positive" }
         require(settlement.amount <= 1_000_000_000_000L) { "Settlement amount exceeds maximum" }
 
-        val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group $groupId not found")
+        val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
+        require(myPubkey in group.members) { "You are no longer a member of this group" }
+        require(settlement.from in group.members) { "Payer is no longer a member of this group" }
+        require(settlement.to in group.members) { "Recipient is no longer a member of this group" }
+        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Settlement.serializer(), settlement)
         val encrypted = encryption.encrypt(plaintext, groupKey)
         val event =
@@ -128,9 +133,13 @@ constructor(
     override suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String) {
         val original = eventDao.getExpenseByUuid(expenseUuid, groupId)
         checkNotNull(original) { "Expense $expenseUuid not found" }
-        check(original.pubkey == identity.getPublicKeyHex()) { "Only the creator can delete this expense" }
+        val author = identity.getPublicKeyHex()
+        check(original.pubkey == author) { "Only the creator can delete this expense" }
 
-        val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group $groupId not found")
+        val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
+        require(author in group.members) { "You are no longer a member of this group" }
+        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(
             MapSerializer(String.serializer(), String.serializer()),
             mapOf(
@@ -151,9 +160,13 @@ constructor(
     override suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String) {
         val original = eventDao.getExpenseByUuid(originalUuid, groupId)
         checkNotNull(original) { "Expense $originalUuid not found" }
-        check(original.pubkey == identity.getPublicKeyHex()) { "Only the creator can correct this expense" }
+        val author = identity.getPublicKeyHex()
+        check(original.pubkey == author) { "Only the creator can correct this expense" }
 
-        val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group $groupId not found")
+        val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
+        require(author in group.members) { "You are no longer a member of this group" }
+        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), corrected)
         val encrypted = encryption.encrypt(plaintext, groupKey)
         val event =

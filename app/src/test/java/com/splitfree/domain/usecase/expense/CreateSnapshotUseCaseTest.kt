@@ -47,7 +47,7 @@ class CreateSnapshotUseCaseTest {
             lambda<suspend () -> Boolean>().captured.invoke()
         }
 
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns Group(
             id = groupId,
             name = "Test",
@@ -132,8 +132,30 @@ class CreateSnapshotUseCaseTest {
     fun `returns false when no group key`() = runBlocking {
         coEvery { eventRepo.getEventCount(groupId) } returns 200
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
-        coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns null
         val result = useCase(groupId)
         assertFalse(result)
+    }
+
+    @Test
+    fun `encrypts snapshot with the loaded group's epoch key and never calls getGroupKey`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns Group(
+            id = groupId,
+            name = "Test",
+            createdBy = myPubkey,
+            createdAt = 1000,
+            members = listOf(myPubkey),
+            relays = emptyList(),
+            keyEpoch = 2
+        )
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 2) } returns "epoch2"
+        every { encryption.encrypt(any(), "epoch2") } returns "encrypted2"
+        coEvery { eventRepo.getEventCount(groupId) } returns 150
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+
+        assertTrue(useCase(groupId))
+        coVerify { groupRepo.getGroupKeyForEpoch(groupId, 2) }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
+        coVerify { eventPublisher.saveAndQueue(any(), groupId, "encrypted2", "snapshot", any()) }
     }
 }

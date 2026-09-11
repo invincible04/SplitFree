@@ -26,7 +26,12 @@ constructor(
     @Named("identity") private val storage: SecureStorage
 ) : IdentityContract {
 
-    override fun hasIdentity(): Boolean = storage.contains(KEY_PRIVATE)
+    /**
+     * True only if a private key is stored AND can actually be decrypted. If the Android
+     * Keystore lost the wrapping key (identity storage never auto-resets), this returns false
+     * so the app routes to onboarding / mnemonic restore instead of crashing on first use.
+     */
+    override fun hasIdentity(): Boolean = storage.contains(KEY_PRIVATE) && storage.canDecrypt(KEY_PRIVATE)
 
     override fun getPublicKeyHex(): String = storage.getString(KEY_PUBLIC, "")!!
 

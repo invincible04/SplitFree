@@ -3,6 +3,7 @@ package com.splitfree.data.repository
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.SecureStorageException
 import com.splitfree.test.FakeSecureStorage
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -18,6 +19,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -87,6 +89,65 @@ class GroupRepositoryTest {
     @Test
     fun `getGroupKey returns null when missing`() = runBlocking {
         assertNull(repo.getGroupKey("g1"))
+    }
+
+    // --- epoch fallback (P1) ---
+
+    @Test
+    fun `getGroupKey at epoch 0 falls back to legacy un-epoched key`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 0)
+        keyStore.putString("g1", "legacyKey")
+        assertEquals("legacyKey", repo.getGroupKey("g1"))
+    }
+
+    @Test
+    fun `getGroupKey at epoch 2 with only legacy key present returns null`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 2)
+        keyStore.putString("g1", "legacyKey")
+        // Falling back here would encrypt post-rotation traffic with a key the removed member still holds.
+        assertNull(repo.getGroupKey("g1"))
+    }
+
+    @Test
+    fun `getGroupKey at epoch 2 returns the epoch key when present`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 2)
+        keyStore.putString("g1", "legacyKey")
+        keyStore.putString("g1:2", "epoch2Key")
+        assertEquals("epoch2Key", repo.getGroupKey("g1"))
+    }
+
+    @Test
+    fun `getGroupKeyForEpoch 0 still falls back to legacy key`() = runBlocking {
+        keyStore.putString("g1", "legacyKey")
+        assertEquals("legacyKey", repo.getGroupKeyForEpoch("g1", 0))
+    }
+
+    @Test
+    fun `getGroupKeyForEpoch non-zero does not fall back to legacy key`() = runBlocking {
+        keyStore.putString("g1", "legacyKey")
+        assertNull(repo.getGroupKeyForEpoch("g1", 1))
+        keyStore.putString("g1:1", "epoch1Key")
+        assertEquals("epoch1Key", repo.getGroupKeyForEpoch("g1", 1))
+    }
+
+    // --- failed key write must not leave a Room row behind (P3) ---
+
+    @Test
+    fun `save does not insert group when key write fails`() = runBlocking {
+        val group = Group("g1", "Test", "", "pub", 1000, listOf("pub"), listOf("wss://r"))
+        keyStore.failNextPut = true
+        val failure = runCatching { repo.save(group, "key123") }.exceptionOrNull()
+        assertTrue("expected SecureStorageException, got $failure", failure is SecureStorageException)
+        coVerify(exactly = 0) { groupDao.insert(any()) }
+        assertNull(keyStore.getString("g1:0", null))
+    }
+
+    @Test
+    fun `saveGroupKeyForEpoch propagates key write failure`() = runBlocking {
+        keyStore.failNextPut = true
+        val failure = runCatching { repo.saveGroupKeyForEpoch("g1", 1, "k") }.exceptionOrNull()
+        assertTrue(failure is SecureStorageException)
+        assertNull(keyStore.getString("g1:1", null))
     }
 
     @Test

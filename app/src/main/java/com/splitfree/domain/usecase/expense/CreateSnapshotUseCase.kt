@@ -44,7 +44,8 @@ constructor(
                 if (myPubkey != group.createdBy) return@withTransaction false
             }
             val eventCount = eventRepo.getEventCount(groupId)
-            val groupKey = groupRepo.getGroupKey(groupId) ?: return@withTransaction false
+            // Snapshots are new ciphertext: encrypt with the loaded group's current epoch key only.
+            val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return@withTransaction false
             val lastSnapshot = eventRepo.getLatestEventByType(groupId, "snapshot")
             val lastSnapshotCount =
                 lastSnapshot?.let {

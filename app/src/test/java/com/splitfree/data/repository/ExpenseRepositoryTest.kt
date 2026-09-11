@@ -234,6 +234,116 @@ class ExpenseRepositoryTest {
         repo().addSettlement(Settlement("s1", "bob", "alice", -1, "INR", timestamp = 1), "g1")
     }
 
+    // --- epoch key usage for new ciphertext (P1) ---
+
+    @Test
+    fun `addSettlement encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
+        coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
+        every { identity.getPublicKeyHex() } returns "bob"
+        repo().addSettlement(Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1), "g1")
+
+        coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
+        verify { encryption.encrypt(any(), "epoch3key") }
+    }
+
+    @Test
+    fun `deleteExpense encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
+        coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().deleteExpense("u1", "g1")
+
+        coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
+        verify { encryption.encrypt(any(), "epoch3key") }
+    }
+
+    @Test
+    fun `correctExpense encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
+        coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense("u1", expense.copy(amount = 200), "g1")
+
+        coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
+        coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
+        verify { encryption.encrypt(any(), "epoch3key") }
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `addSettlement throws when epoch key missing`() = runTest {
+        every { identity.getPublicKeyHex() } returns "bob"
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
+        repo().addSettlement(Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1), "g1")
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `deleteExpense throws when epoch key missing`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
+        repo().deleteExpense("u1", "g1")
+    }
+
+    // --- settlement membership checks ---
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `addSettlement rejects non-member to`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        repo().addSettlement(Settlement("s1", "alice", "outsider", 50, "INR", timestamp = 1), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `addSettlement rejects non-member from`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        repo().addSettlement(Settlement("s1", "outsider", "alice", 50, "INR", timestamp = 1), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `addSettlement rejects when author was removed from group`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        coEvery { groupRepo.getById("g1") } returns group.copy(members = listOf("bob", "carol"))
+        repo().addSettlement(Settlement("s1", "alice", "bob", 50, "INR", timestamp = 1), "g1")
+    }
+
+    @Test
+    fun `addSettlement rejection happens before any encryption or publish`() = runTest {
+        every { identity.getPublicKeyHex() } returns "alice"
+        val failure = runCatching {
+            repo().addSettlement(Settlement("s1", "alice", "outsider", 50, "INR", timestamp = 1), "g1")
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `addSettlement throws when group not found`() = runTest {
+        every { identity.getPublicKeyHex() } returns "bob"
+        coEvery { groupRepo.getById("g1") } returns null
+        repo().addSettlement(Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `deleteExpense rejects when author was removed from group`() = runTest {
+        coEvery { groupRepo.getById("g1") } returns group.copy(members = listOf("bob"))
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().deleteExpense("u1", "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects when author was removed from group`() = runTest {
+        coEvery { groupRepo.getById("g1") } returns group.copy(members = listOf("bob"))
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense("u1", expense, "g1")
+    }
+
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when no group key`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
@@ -250,7 +360,7 @@ class ExpenseRepositoryTest {
                 "sig",
                 receivedAt = 1
             )
-        coEvery { groupRepo.getGroupKey("g1") } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
         repo().correctExpense("u1", mockk(), "g1")
     }
 

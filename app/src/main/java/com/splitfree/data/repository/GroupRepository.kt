@@ -48,11 +48,19 @@ constructor(
 
     override fun observeById(groupId: String): Flow<Group?> = groupDao.observeById(groupId).map { it?.toDomain() }
 
+    /**
+     * Returns the key for the group's *current* epoch.
+     *
+     * The un-epoched legacy key (stored under the plain `groupId`) is only a valid
+     * substitute for epoch 0. Falling back to it for a later epoch would silently
+     * encrypt post-rotation traffic with a key the removed member still holds, so
+     * callers get `null` instead and must treat the group as unusable until the
+     * epoch key arrives.
+     */
     override suspend fun getGroupKey(groupId: String): String? {
         val group = groupDao.getById(groupId)
         val epoch = group?.keyEpoch ?: 0
-        return keyStore.getString("$groupId:$epoch", null)
-            ?: keyStore.getString(groupId, null) // fallback for epoch-0 legacy keys
+        return getGroupKeyForEpoch(groupId, epoch)
     }
 
     override suspend fun getGroupKeyForEpoch(groupId: String, epoch: Int): String? =
@@ -69,6 +77,9 @@ constructor(
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
 
     override suspend fun save(group: Group, groupKey: String) {
+        // Persist the key FIRST. SecureStorage.putString commits synchronously and throws
+        // SecureStorageException on failure, so if the key cannot be stored we never reach
+        // groupDao.insert and no Room row exists without a recoverable key behind it.
         keyStore.putString("${group.id}:${group.keyEpoch}", groupKey)
         // Also store under plain groupId for backward compat at epoch 0
         if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
@@ -88,6 +99,11 @@ constructor(
         )
     }
 
+    /**
+     * Store the key for [epoch]. Throws [com.splitfree.domain.repository.SecureStorageException]
+     * if the write cannot be durably committed; callers must not advance the group's epoch
+     * or publish rotation events until this returns.
+     */
     override suspend fun saveGroupKeyForEpoch(groupId: String, epoch: Int, groupKey: String) {
         keyStore.putString("$groupId:$epoch", groupKey)
     }
