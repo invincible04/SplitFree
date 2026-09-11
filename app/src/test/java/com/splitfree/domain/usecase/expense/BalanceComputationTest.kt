@@ -4,6 +4,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.repository.EventSnapshot
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -19,13 +20,16 @@ import org.junit.Test
 class BalanceComputationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    // Simulate applyExpense (mirrors ComputeBalancesUseCase.applyExpense)
-    private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>) {
+    // Simulate applyExpense (mirrors ComputeBalancesUseCase.applyExpense); sign = -1 reverses a payload
+    private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>, sign: Int = 1) {
         val cur = expense.currency
+        balances.getOrPut(expense.paidBy to cur) { 0L }
         for (split in expense.splitAmong) {
+            balances.getOrPut(split.pubkey to cur) { 0L }
             if (split.pubkey != expense.paidBy) {
-                balances[expense.paidBy to cur] = (balances[expense.paidBy to cur] ?: 0L) + split.share
-                balances[split.pubkey to cur] = (balances[split.pubkey to cur] ?: 0L) - split.share
+                val delta = if (sign > 0) split.share else -split.share
+                balances[expense.paidBy to cur] = (balances[expense.paidBy to cur] ?: 0L) + delta
+                balances[split.pubkey to cur] = (balances[split.pubkey to cur] ?: 0L) - delta
             }
         }
     }
@@ -57,6 +61,13 @@ class BalanceComputationTest {
         // Only bob's share creates a balance entry for alice
         assertEquals(50L, balances["alice" to "INR"])
         assertNull("Self-share should not appear", balances.entries.find { it.key.first == "alice" && it.value < 0 })
+    }
+
+    @Test
+    fun `expense paid for oneself alone records the currency with a zero net`() {
+        val balances = mutableMapOf<Pair<String, String>, Long>()
+        applyExpense(expense("1", 100, "alice", listOf(SplitEntry("alice", 100))), balances)
+        assertEquals(mapOf(("alice" to "INR") to 0L), balances)
     }
 
     @Test
@@ -165,6 +176,109 @@ class BalanceComputationTest {
         // Both deleted and corrected — deletion wins
         val shouldApply = "exp-1" !in deleted && "exp-1" !in corrections
         assertFalse("Deleted expense should not be applied even if corrected", shouldApply)
+    }
+
+    // --- Snapshot reversal (covered expense deleted/corrected after the snapshot) ---
+
+    @Test
+    fun `reversing an applied expense restores the previous balances`() {
+        val balances = mutableMapOf<Pair<String, String>, Long>()
+        val exp =
+            expense(
+                "1",
+                300,
+                "alice",
+                listOf(SplitEntry("alice", 100), SplitEntry("bob", 100), SplitEntry("charlie", 100))
+            )
+        applyExpense(exp, balances)
+        assertEquals(200L, balances["alice" to "INR"])
+        // Snapshot contained exp; a later delete must undo exactly its effect.
+        applyExpense(exp, balances, sign = -1)
+        assertEquals(0L, balances["alice" to "INR"])
+        assertEquals(0L, balances["bob" to "INR"])
+        assertEquals(0L, balances["charlie" to "INR"])
+        assertEquals(0L, balances.values.sum())
+    }
+
+    @Test
+    fun `reverse original then apply correction equals applying the correction alone`() {
+        val original = expense("exp-1", 100, "alice", listOf(SplitEntry("alice", 50), SplitEntry("bob", 50)))
+        val corrected = expense("exp-1", 200, "bob", listOf(SplitEntry("alice", 100), SplitEntry("bob", 100)))
+
+        // Path A: snapshot seeded with the original, then reversed and corrected.
+        val viaSnapshot = mutableMapOf<Pair<String, String>, Long>()
+        applyExpense(original, viaSnapshot)
+        applyExpense(original, viaSnapshot, sign = -1)
+        applyExpense(corrected, viaSnapshot)
+
+        // Path B: full replay that skips the original and applies only the correction.
+        val fullReplay = mutableMapOf<Pair<String, String>, Long>()
+        applyExpense(corrected, fullReplay)
+
+        assertEquals(fullReplay, viaSnapshot)
+        assertEquals(-100L, viaSnapshot["alice" to "INR"])
+        assertEquals(100L, viaSnapshot["bob" to "INR"])
+    }
+
+    @Test
+    fun `reversal is currency-aware`() {
+        val balances = mutableMapOf<Pair<String, String>, Long>()
+        applyExpense(
+            expense("1", 100, "alice", listOf(SplitEntry("alice", 50), SplitEntry("bob", 50)), "INR"),
+            balances
+        )
+        applyExpense(
+            expense("2", 100, "alice", listOf(SplitEntry("alice", 50), SplitEntry("bob", 50)), "USD"),
+            balances
+        )
+        applyExpense(
+            expense("2", 100, "alice", listOf(SplitEntry("alice", 50), SplitEntry("bob", 50)), "USD"),
+            balances,
+            sign = -1
+        )
+        assertEquals(50L, balances["alice" to "INR"])
+        assertEquals(0L, balances["alice" to "USD"])
+    }
+
+    // --- Ordering rules (createdAt, then eventId; never storage order) ---
+
+    private fun event(id: String, createdAt: Long, type: String = "expense_correction", uuid: String = "u1") =
+        EventSnapshot(
+            eventId = id,
+            groupId = "g1",
+            pubkey = "alice",
+            createdAt = createdAt,
+            contentEncrypted = "",
+            eventType = type,
+            expenseUuid = uuid
+        )
+
+    @Test
+    fun `latest correction is decided by createdAt regardless of storage order`() {
+        val stored = listOf(event("e3", 30), event("e1", 10), event("e2", 20))
+        val latest = stored.maxWithOrNull(EventSnapshot.CANONICAL_ORDER)
+        assertEquals("e3", latest?.eventId)
+    }
+
+    @Test
+    fun `equal createdAt is broken by eventId`() {
+        val stored = listOf(event("zz", 10), event("aa", 10), event("mm", 10))
+        assertEquals("zz", stored.maxWithOrNull(EventSnapshot.CANONICAL_ORDER)?.eventId)
+        assertEquals("aa", stored.minWithOrNull(EventSnapshot.CANONICAL_ORDER)?.eventId)
+    }
+
+    @Test
+    fun `duplicate x tag collapses to the earliest expense event`() {
+        val stored =
+            listOf(
+                event("later", 200, type = "expense"),
+                event("earliest", 5, type = "expense"),
+                event("mid", 50, type = "expense")
+            )
+        val earliestByUuid = stored.groupBy {
+            it.expenseUuid
+        }.mapValues { (_, dups) -> dups.minWith(EventSnapshot.CANONICAL_ORDER) }
+        assertEquals("earliest", earliestByUuid["u1"]?.eventId)
     }
 
     // --- Balances sum to zero ---

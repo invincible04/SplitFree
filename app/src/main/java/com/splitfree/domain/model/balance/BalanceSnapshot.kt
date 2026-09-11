@@ -7,7 +7,12 @@ import kotlinx.serialization.Serializable
  * Created every 100 events or 30 days so balance recalculation doesn't need to
  * replay the entire event history.
  *
- * @property event_hashes SHA-256 hashes of event IDs at snapshot time, used to detect divergence
+ * @property as_of_timestamp creation time of the snapshot; informational only, readers decide which
+ *   events to replay by [event_hashes] coverage, never by timestamp
+ * @property event_hashes hashes of every event ID the creator had stored when snapshotting. New snapshots
+ *   carry the first 24 hex chars of SHA-256(eventId) (see `HashUtil.eventHashPrefix`); older ones carry the
+ *   full 64-char digest. Readers match on the 24-char prefix so both remain valid. Used to detect
+ *   divergence and to decide which local events the snapshot already covers.
  */
 @Serializable
 data class BalanceSnapshot(

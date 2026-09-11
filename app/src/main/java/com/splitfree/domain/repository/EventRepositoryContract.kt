@@ -87,5 +87,11 @@ data class EventSnapshot(
          * `originalEventJson`. Empty signatures and [SEAL_SIG_PREFIX] markers are not.
          */
         fun isThirdPartyVerifiable(sig: String): Boolean = sig.isNotEmpty() && !sig.startsWith(SEAL_SIG_PREFIX)
+
+        /**
+         * Canonical ordering for deciding which of two events is "earlier"/"later": `createdAt`, then
+         * `eventId` as a deterministic tie-breaker. Callers must never rely on storage order instead.
+         */
+        val CANONICAL_ORDER: Comparator<EventSnapshot> = compareBy({ it.createdAt }, { it.eventId })
     }
 }

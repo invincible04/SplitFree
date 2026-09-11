@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.expense
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.repository.EventRepositoryContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +15,10 @@ import kotlinx.serialization.json.Json
 /**
  * Observes and decrypts expenses for a group as a reactive [Flow].
  * Supports epoch-based key rotation — each event is decrypted with its epoch's key.
+ *
+ * The emitted list reflects the same rules as balance computation: soft-deleted expenses are hidden,
+ * a corrected expense is shown with its latest correction's payload (latest by `createdAt`, then
+ * `eventId`), and duplicate `expense` events sharing an `x` tag collapse to the earliest one.
  */
 class GetExpensesUseCase
 @Inject
@@ -25,7 +30,8 @@ constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Observe decrypted expenses for a group, sorted newest-first.
+     * Observe decrypted expenses for a group, sorted newest-first by the original expense's timestamp.
+     * A corrected expense keeps its original position but carries the corrected payload (same `id`).
      *
      * @param groupId target group UUID
      * @return reactive [Flow] of expenses; emits empty list if group key is unavailable
@@ -33,18 +39,51 @@ constructor(
     fun observe(groupId: String): Flow<List<Expense>> = eventRepo.observeEventsByGroup(groupId).map { events ->
         // Build a cache of epoch -> key to avoid repeated lookups
         val keyCache = mutableMapOf<Int, String?>()
-        events
-            .filter { it.eventType == "expense" && it.expenseUuid != null }
-            .mapNotNull { e ->
-                val key = keyCache.getOrPut(e.keyEpoch) {
-                    groupRepo.getGroupKeyForEpoch(groupId, e.keyEpoch)
-                } ?: return@mapNotNull null
-                val content = try {
-                    encryption.decrypt(e.contentEncrypted, key)
-                } catch (_: Exception) {
-                    null
+        suspend fun decryptExpense(e: EventSnapshot): Expense? {
+            val key = keyCache.getOrPut(e.keyEpoch) {
+                groupRepo.getGroupKeyForEpoch(groupId, e.keyEpoch)
+            } ?: return null
+            val content = try {
+                encryption.decrypt(e.contentEncrypted, key)
+            } catch (_: Exception) {
+                null
+            }
+            return content?.let { runCatching { json.decodeFromString<Expense>(it) }.getOrNull() }
+        }
+
+        val deleted = mutableSetOf<String>()
+        val latestCorrection = mutableMapOf<String, EventSnapshot>()
+        val earliestOriginal = mutableMapOf<String, EventSnapshot>()
+        for (e in events) {
+            val uuid = e.expenseUuid ?: continue
+            when (e.eventType) {
+                "expense_delete" -> deleted.add(uuid)
+                "expense_correction" -> {
+                    val current = latestCorrection[uuid]
+                    if (current == null || EventSnapshot.CANONICAL_ORDER.compare(e, current) > 0) {
+                        latestCorrection[uuid] = e
+                    }
                 }
-                content?.let { runCatching { json.decodeFromString<Expense>(it) }.getOrNull() }
-            }.sortedByDescending { it.timestamp }
+
+                "expense" -> {
+                    val current = earliestOriginal[uuid]
+                    if (current == null || EventSnapshot.CANONICAL_ORDER.compare(e, current) < 0) {
+                        earliestOriginal[uuid] = e
+                    }
+                }
+            }
+        }
+
+        (earliestOriginal.keys + latestCorrection.keys)
+            .filter { it !in deleted }
+            .mapNotNull { uuid ->
+                val original = earliestOriginal[uuid]?.let { decryptExpense(it) }
+                val corrected = latestCorrection[uuid]?.let { decryptExpense(it) }
+                // Prefer the correction; fall back to the original if the correction is unreadable.
+                val shown = corrected?.copy(id = uuid) ?: original ?: return@mapNotNull null
+                shown to (original ?: shown).timestamp
+            }
+            .sortedByDescending { (_, sortTimestamp) -> sortTimestamp }
+            .map { (expense, _) -> expense }
     }.flowOn(Dispatchers.Default)
 }

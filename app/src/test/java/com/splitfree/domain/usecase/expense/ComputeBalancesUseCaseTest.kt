@@ -5,11 +5,13 @@ import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.util.HashUtil
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -482,6 +484,70 @@ class ComputeBalancesUseCaseTest {
 
         val useCase = ComputeBalancesUseCase(dao, repo, encryption())
         val balances = useCase("g1")
+
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
+    fun `expense paid and owed by the same member still reports that currency at zero`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    content = expenseJson("u1", 100, splits = split("alice" to 100L))
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(1, balances.size)
+        assertEquals("alice", balances.single().pubkey)
+        assertEquals("INR", balances.single().currency)
+        assertEquals(0L, balances.single().net)
+    }
+
+    @Test
+    fun `participants who owe nothing still appear in the expense currency`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    content = expenseJson("u1", 100, splits = split("alice" to 100L, "bob" to 0L))
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(setOf("alice" to 0L, "bob" to 0L), balances.mapTo(HashSet()) { it.pubkey to it.net })
+    }
+
+    @Test
+    fun `a deleted solo expense leaves no currency behind`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    content = expenseJson("u1", 100, splits = split("alice" to 100L))
+                ),
+                makeEvent("e2", type = "expense_delete", uuid = "u1", content = "{}", createdAt = 2)
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
 
         assertTrue(balances.isEmpty())
     }
@@ -984,10 +1050,12 @@ class ComputeBalancesUseCaseTest {
     }
 
     @Test
-    fun `snapshot filters events after snapshot timestamp`() = runTest {
+    fun `unverifiable snapshot falls back to a full replay regardless of timestamps`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
         coEvery { repo.getById("g1") } returns group("alice")
+        // Empty event_hashes: the snapshot cannot be verified, so its balances are ignored and every
+        // event is replayed, including e1, which predates as_of_timestamp.
         val snapshotContent =
             """{"as_of_timestamp":100,""" +
                 """"balances":""" +
@@ -1034,11 +1102,472 @@ class ComputeBalancesUseCaseTest {
             )
         val balances =
             ComputeBalancesUseCase(dao, repo, encryption())("g1")
-        // Snapshot: alice +50, e2 (post-snapshot):
-        // bob paid 200 split 100 each
-        // alice: 50+(-100)=-50, bob: 0+100=100
+        // e1: alice +50, bob -50; e2: alice -100, bob +100 => alice -50, bob +50
         val aliceInr = balances.find { it.pubkey == "alice" && it.currency == "INR" }
         assertNotNull(aliceInr)
         assertEquals(-50L, aliceInr!!.net)
+        assertEquals(50L, balances.find { it.pubkey == "bob" }?.net)
+    }
+
+    // --- Snapshot coverage (replay by event_hashes, not by timestamp) ---
+
+    /** Ten filler ids that are known locally and covered by the snapshot, so the trust checks pass. */
+    private val fillerIds = (1..10).map { "filler_$it" }
+
+    private fun hashArr(ids: List<String>, hash: (String) -> String = HashUtil::eventHashPrefix): String =
+        ids.joinToString(",", "[", "]") { "\"${hash(it)}\"" }
+
+    private fun mockLogW() {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
+    }
+
+    /**
+     * Installs a trusted creator snapshot with the given balances that covers [fillerIds] plus [coveredIds].
+     * `getEventIds` returns filler + every id in [events].
+     */
+    private fun installSnapshot(
+        dao: EventRepositoryContract,
+        repo: GroupRepositoryContract,
+        events: List<EventSnapshot>,
+        coveredIds: List<String>,
+        balances: String,
+        asOfTs: Long = 100,
+        hash: (String) -> String = HashUtil::eventHashPrefix
+    ) {
+        coEvery { repo.getById("g1") } returns group("alice")
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns makeEvent(
+            "snap",
+            type = "snapshot",
+            pubkey = "alice",
+            createdAt = asOfTs + 1,
+            content = snapJson(
+                eventCount = fillerIds.size + coveredIds.size,
+                asOfTs = asOfTs,
+                balances = balances,
+                hashes = hashArr(fillerIds + coveredIds, hash)
+            )
+        )
+        coEvery { dao.getEventIds("g1") } returns fillerIds + events.map { it.eventId }
+        coEvery { dao.getEventsByGroup("g1") } returns events
+    }
+
+    @Test
+    fun `event older than as_of_timestamp but not covered by the snapshot is replayed`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab100 = split("alice" to 100, "bob" to 100)
+        // Bob's expense was created at t=50 (< as_of_timestamp=100) but the creator never received
+        // it before snapshotting: it is absent from event_hashes and must still count.
+        val late = makeEvent(
+            "e_late",
+            type = "expense",
+            uuid = "u_late",
+            pubkey = "bob",
+            createdAt = 50,
+            content = expenseJson("u_late", 200, paidBy = "bob", splits = ab100, timestamp = 50)
+        )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(late),
+            coveredIds = emptyList(),
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        // Snapshot: alice +50, bob -50; late expense: alice -100, bob +100
+        assertEquals(-50L, balances.find { it.pubkey == "alice" }?.net)
+        assertEquals(50L, balances.find { it.pubkey == "bob" }?.net)
+    }
+
+    @Test
+    fun `covered expense deleted after the snapshot is reversed`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val original = makeEvent(
+            "e1",
+            type = "expense",
+            uuid = "u1",
+            createdAt = 10,
+            content = expenseJson("u1", 100, splits = ab50)
+        )
+        val delete = makeEvent("e2", type = "expense_delete", uuid = "u1", createdAt = 200, content = "{}")
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(original, delete),
+            coveredIds = listOf("e1"),
+            // Snapshot already contains e1's effect.
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+        assertTrue("Reversal must zero the covered expense", result.balances.all { it.net == 0L })
+        assertTrue("u1" in result.excludedExpenseUuids)
+    }
+
+    @Test
+    fun `covered expense corrected after the snapshot reverses the original and applies the correction`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val ab100 = split("alice" to 100, "bob" to 100)
+        val original = makeEvent(
+            "e1",
+            type = "expense",
+            uuid = "u1",
+            createdAt = 10,
+            content = expenseJson("u1", 100, splits = ab50)
+        )
+        val correction = makeEvent(
+            "e2",
+            type = "expense_correction",
+            uuid = "u1",
+            createdAt = 200,
+            content = expenseJson("u1", 200, splits = ab100, timestamp = 2)
+        )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(original, correction),
+            coveredIds = listOf("e1"),
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+        // -50 (reverse original) +100 (correction) = 100
+        assertEquals(100L, result.balances.find { it.pubkey == "alice" }?.net)
+        assertEquals(-100L, result.balances.find { it.pubkey == "bob" }?.net)
+        // Corrected expenses are shown (with the corrected payload), so they are not excluded.
+        assertTrue("u1" !in result.excludedExpenseUuids)
+    }
+
+    @Test
+    fun `covered correction superseded by a later uncovered correction is reversed`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val ab100 = split("alice" to 100, "bob" to 100)
+        val ab150 = split("alice" to 150, "bob" to 150)
+        val original =
+            makeEvent(
+                "e1",
+                type = "expense",
+                uuid = "u1",
+                createdAt = 10,
+                content = expenseJson("u1", 100, splits = ab50)
+            )
+        val c1 = makeEvent(
+            "e2",
+            type = "expense_correction",
+            uuid = "u1",
+            createdAt = 20,
+            content = expenseJson("u1", 200, splits = ab100, timestamp = 2)
+        )
+        val c2 = makeEvent(
+            "e3",
+            type = "expense_correction",
+            uuid = "u1",
+            createdAt = 300,
+            content = expenseJson("u1", 300, splits = ab150, timestamp = 3)
+        )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(original, c1, c2),
+            coveredIds = listOf("e1", "e2"),
+            // Snapshot holds c1's effect (alice +100).
+            balances = """[${balEntry("alice", 100, "INR")},${balEntry("bob", -100, "INR")}]"""
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        // -100 (reverse c1) +150 (c2) = 150
+        assertEquals(150L, balances.find { it.pubkey == "alice" }?.net)
+        assertEquals(-150L, balances.find { it.pubkey == "bob" }?.net)
+    }
+
+    @Test
+    fun `covered expense with no later events is not replayed again`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val original =
+            makeEvent(
+                "e1",
+                type = "expense",
+                uuid = "u1",
+                createdAt = 10,
+                content = expenseJson("u1", 100, splits = ab50)
+            )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(original),
+            coveredIds = listOf("e1"),
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(50L, balances.find { it.pubkey == "alice" }?.net)
+        assertEquals(-50L, balances.find { it.pubkey == "bob" }?.net)
+    }
+
+    @Test
+    fun `covered settlement re-sent after the snapshot is not double counted`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val first = makeEvent(
+            "e1",
+            type = "settlement",
+            uuid = "s1",
+            pubkey = "bob",
+            createdAt = 10,
+            content = settlementJson("s1", "bob", "alice", 50, timestamp = 10)
+        )
+        val resent = makeEvent(
+            "e2",
+            type = "settlement",
+            uuid = "s1",
+            pubkey = "bob",
+            createdAt = 200,
+            content = settlementJson("s1", "bob", "alice", 50, timestamp = 10)
+        )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(first, resent),
+            coveredIds = listOf("e1"),
+            // Snapshot already applied s1.
+            balances = """[${balEntry("alice", 0, "INR")},${balEntry("bob", 0, "INR")}]"""
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertTrue("Re-sent settlement must be ignored", balances.all { it.net == 0L })
+    }
+
+    @Test
+    fun `latest correction is chosen by createdAt regardless of storage order`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val ab100 = split("alice" to 100, "bob" to 100)
+        val ab150 = split("alice" to 150, "bob" to 150)
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    createdAt = 1,
+                    content = expenseJson("u1", 100, splits = ab50)
+                ),
+                // Newer correction stored first...
+                makeEvent(
+                    "e3",
+                    type = "expense_correction",
+                    uuid = "u1",
+                    createdAt = 3,
+                    content = expenseJson("u1", 300, splits = ab150, timestamp = 3)
+                ),
+                // ...older correction stored last.
+                makeEvent(
+                    "e2",
+                    type = "expense_correction",
+                    uuid = "u1",
+                    createdAt = 2,
+                    content = expenseJson("u1", 200, splits = ab100, timestamp = 2)
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(150L, balances.find { it.pubkey == "alice" }?.net)
+    }
+
+    @Test
+    fun `correction ties on createdAt are broken by eventId`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val ab100 = split("alice" to 100, "bob" to 100)
+        val ab150 = split("alice" to 150, "bob" to 150)
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    createdAt = 1,
+                    content = expenseJson("u1", 100, splits = ab50)
+                ),
+                makeEvent(
+                    "zz",
+                    type = "expense_correction",
+                    uuid = "u1",
+                    createdAt = 2,
+                    content = expenseJson("u1", 300, splits = ab150, timestamp = 2)
+                ),
+                makeEvent(
+                    "aa",
+                    type = "expense_correction",
+                    uuid = "u1",
+                    createdAt = 2,
+                    content = expenseJson("u1", 200, splits = ab100, timestamp = 2)
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        // Same createdAt: the lexicographically greater eventId ("zz") wins.
+        assertEquals(150L, balances.find { it.pubkey == "alice" }?.net)
+    }
+
+    @Test
+    fun `duplicate expense events with the same x tag apply only the earliest`() = runTest {
+        mockLogW()
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val ab100 = split("alice" to 100, "bob" to 100)
+        coEvery { dao.getEventsByGroup("g1") } returns
+            listOf(
+                // Later duplicate stored first to prove ordering is by createdAt, not position.
+                makeEvent(
+                    "e2",
+                    type = "expense",
+                    uuid = "u1",
+                    createdAt = 2,
+                    content = expenseJson("u1", 200, splits = ab100)
+                ),
+                makeEvent(
+                    "e1",
+                    type = "expense",
+                    uuid = "u1",
+                    createdAt = 1,
+                    content = expenseJson("u1", 100, splits = ab50)
+                )
+            )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(50L, balances.find { it.pubkey == "alice" }?.net)
+        assertEquals(-50L, balances.find { it.pubkey == "bob" }?.net)
+        verify(atLeast = 1) { android.util.Log.w("ComputeBalances", match<String> { "e2" in it && "u1" in it }) }
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `duplicate expense arriving after the snapshot is not applied on top of the covered one`() = runTest {
+        mockLogW()
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val covered =
+            makeEvent(
+                "e1",
+                type = "expense",
+                uuid = "u1",
+                createdAt = 1,
+                content = expenseJson("u1", 100, splits = ab50)
+            )
+        val dup =
+            makeEvent(
+                "e2",
+                type = "expense",
+                uuid = "u1",
+                createdAt = 500,
+                content = expenseJson("u1", 100, splits = ab50)
+            )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(covered, dup),
+            coveredIds = listOf("e1"),
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(50L, balances.find { it.pubkey == "alice" }?.net)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `snapshot with truncated 24-char hashes is matched`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        installSnapshot(
+            dao,
+            repo,
+            events = emptyList(),
+            coveredIds = emptyList(),
+            balances = """[${balEntry("alice", 500, "INR")}]""",
+            hash = HashUtil::eventHashPrefix
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
+    }
+
+    @Test
+    fun `legacy snapshot with full-length hashes is still matched`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val ab50 = split("alice" to 50, "bob" to 50)
+        val original =
+            makeEvent(
+                "e1",
+                type = "expense",
+                uuid = "u1",
+                createdAt = 1,
+                content = expenseJson("u1", 100, splits = ab50)
+            )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(original),
+            coveredIds = listOf("e1"),
+            balances = """[${balEntry("alice", 500, "INR")}]""",
+            hash = HashUtil::sha256Hex
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        // Snapshot trusted AND e1 recognised as covered (not replayed on top of the 500).
+        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
+    }
+
+    @Test
+    fun `snapshot mixing legacy and truncated hashes is matched`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        var toggle = false
+        installSnapshot(
+            dao,
+            repo,
+            events = emptyList(),
+            coveredIds = emptyList(),
+            balances = """[${balEntry("alice", 500, "INR")}]""",
+            hash = { id ->
+                toggle = !toggle
+                if (toggle) HashUtil.sha256Hex(id) else HashUtil.eventHashPrefix(id)
+            }
+        )
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
     }
 }

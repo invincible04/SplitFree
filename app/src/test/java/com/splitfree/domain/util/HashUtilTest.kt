@@ -45,4 +45,20 @@ class HashUtilTest {
         val hash = HashUtil.sha256Hex("🍕café₹")
         assertEquals(64, hash.length)
     }
+
+    @Test
+    fun `eventHashPrefix is 24 chars and a prefix of the full hash`() {
+        val id = "ab".repeat(32)
+        val prefix = HashUtil.eventHashPrefix(id)
+        assertEquals(24, prefix.length)
+        assertEquals(HashUtil.EVENT_HASH_PREFIX_LENGTH, prefix.length)
+        assertTrue(HashUtil.sha256Hex(id).startsWith(prefix))
+        assertTrue(prefix.all { it in '0'..'9' || it in 'a'..'f' })
+    }
+
+    @Test
+    fun `eventHashPrefix is deterministic and input-sensitive`() {
+        assertEquals(HashUtil.eventHashPrefix("e1"), HashUtil.eventHashPrefix("e1"))
+        assertNotEquals(HashUtil.eventHashPrefix("e1"), HashUtil.eventHashPrefix("e2"))
+    }
 }
