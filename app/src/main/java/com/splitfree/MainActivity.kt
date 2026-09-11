@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -32,6 +33,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -84,6 +86,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Draw behind the system bars; screens use Scaffold / safeDrawingPadding for their insets.
+        enableEdgeToEdge()
         ProcessHealthTracker.heartbeat(this, "main_activity_create")
         ThemePreference.init(this)
         sanitizeIntent(intent)
@@ -105,7 +109,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            // Set status bar icon colors to match app theme (dark icons on light bg, light icons on dark bg)
+            // System bar icon colours follow the app's ThemePreference (not only the OS dark-mode flag):
+            // dark icons on the light ivory surface, light icons on the dark one.
             val themeMode by ThemePreference.mode.collectAsState()
             val isDark =
                 when (themeMode) {
@@ -118,10 +123,9 @@ class MainActivity : ComponentActivity() {
             val revealDone = ThemeTransitionState.animationDone
             LaunchedEffect(isDark, revealDone) {
                 if (ThemeTransitionState.overlay == null) {
-                    val controller =
-                        androidx.core.view.WindowCompat
-                            .getInsetsController(window, window.decorView)
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
                     controller.isAppearanceLightStatusBars = !isDark
+                    controller.isAppearanceLightNavigationBars = !isDark
                 }
             }
 

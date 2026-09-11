@@ -319,6 +319,10 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 ```
 
+### Third-party licenses
+
+- **Inter** typeface by The Inter Project Authors, licensed under the [SIL Open Font License 1.1](app/src/main/assets/licenses/Inter-OFL.txt). Bundled as `res/font/inter_variable.ttf`.
+
 ---
 
 <p align="center">

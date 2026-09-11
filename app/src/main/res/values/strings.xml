@@ -255,6 +255,8 @@
     <string name="cd_status_disconnected">Disconnected</string>
     <string name="cd_status_connecting">Connecting</string>
     <string name="cd_status_unchecked">Not checked</string>
+    <string name="cd_close">Close</string>
+    <string name="cd_loading">Loading</string>
 
     <!-- ExpenseNotifier -->
     <string name="notif_channel_expenses_name">Expense Updates</string>

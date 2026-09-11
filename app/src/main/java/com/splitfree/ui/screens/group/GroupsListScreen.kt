@@ -63,6 +63,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.group.Group
+import com.splitfree.ui.components.avatarInitial
 import com.splitfree.ui.util.AdaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -331,14 +332,4 @@ private fun ConnectionDot(connected: Boolean) {
                 role = Role.Image
             }
     )
-}
-
-/**
- * First user-perceived character of [name] for an avatar, upper-cased. Uses the first code point so a
- * leading emoji or other supplementary-plane character is not split into a lone surrogate.
- */
-internal fun avatarInitial(name: String): String {
-    if (name.isEmpty()) return ""
-    val codePoint = name.codePointAt(0)
-    return String(Character.toChars(codePoint)).uppercase()
 }

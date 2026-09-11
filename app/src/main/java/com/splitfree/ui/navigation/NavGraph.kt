@@ -1,7 +1,5 @@
 package com.splitfree.ui.navigation
 
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -18,6 +16,7 @@ import com.splitfree.ui.screens.groupdetail.GroupDetailScreen
 import com.splitfree.ui.screens.nearby.NearbySyncScreen
 import com.splitfree.ui.screens.onboarding.OnboardingScreen
 import com.splitfree.ui.screens.settings.SettingsScreen
+import com.splitfree.ui.theme.SfMotion
 
 /**
  * Navigation route definitions for the app's screens.
@@ -51,10 +50,10 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
     NavHost(
         navController = navController,
         startDestination = startDestination,
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
+        enterTransition = { SfMotion.forwardEnter },
+        exitTransition = { SfMotion.forwardExit },
+        popEnterTransition = { SfMotion.popEnter },
+        popExitTransition = { SfMotion.popExit }
     ) {
         composable(Screen.Onboarding.route) {
             OnboardingScreen(onComplete = {

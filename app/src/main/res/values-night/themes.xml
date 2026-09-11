@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="splitfree_surface">#151914</color>
+
     <style name="Theme.SplitFree" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
+        <!-- Matches SplitFreeTheme's dark surface so the launch frame does not flash a different colour. -->
+        <item name="android:windowBackground">@color/splitfree_surface</item>
     </style>
 </resources>
