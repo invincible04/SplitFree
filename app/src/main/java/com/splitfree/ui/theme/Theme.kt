@@ -21,7 +21,7 @@ import com.splitfree.ui.util.rememberAdaptiveLayoutInfo
 import com.splitfree.ui.util.rememberAdaptiveSizeTokens
 
 // SplitFree brand colors — green/teal for money
-private val Green40 = Color(0xFF1B8C5A)
+private val Green40 = Color(0xFF226341)
 private val Green80 = Color(0xFF6EDAA0)
 private val Green90 = Color(0xFFB8F0D0)
 private val GreenDark = Color(0xFF005234)
@@ -100,9 +100,11 @@ fun SplitFreeTheme(
                     }
                 dynamic.copy(
                     primary = if (darkTheme) Green80 else Green40,
+                    onPrimary = if (darkTheme) Color(0xFF003822) else Color.White,
                     primaryContainer = if (darkTheme) Green40 else Green90,
                     onPrimaryContainer = if (darkTheme) Green90 else GreenDark,
-                    secondary = if (darkTheme) Teal80 else Teal40
+                    secondary = if (darkTheme) Teal80 else Teal40,
+                    onSecondary = if (darkTheme) Color(0xFF003730) else Color.White
                 )
             }
 

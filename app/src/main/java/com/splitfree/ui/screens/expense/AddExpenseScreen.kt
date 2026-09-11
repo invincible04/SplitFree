@@ -1,352 +1,259 @@
 package com.splitfree.ui.screens.expense
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitType
-import com.splitfree.ui.util.adaptiveLayoutInfo
-import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.viewmodels.AddExpenseUiState
 import com.splitfree.ui.viewmodels.AddExpenseViewModel
-import com.splitfree.util.CurrencyFormatter
+
+/** Route owns lifecycle and navigation; the editor below has no Android/service dependencies. */
+@Composable
+fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: AddExpenseViewModel = hiltViewModel()) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(state.saved) { if (state.saved) onExpenseAdded() }
+    AddExpenseContent(
+        state = state,
+        actions = ExpenseEditorActions(
+            amount = viewModel::updateAmount,
+            description = viewModel::updateDescription,
+            currency = viewModel::updateCurrency,
+            payer = viewModel::updatePayer,
+            category = viewModel::updateCategory,
+            splitType = viewModel::updateSplitType,
+            memberInput = viewModel::updateMemberInput,
+            participant = viewModel::toggleParticipant,
+            save = viewModel::submit,
+            retry = viewModel::retryLoad,
+            back = onBack
+        )
+    )
+}
+
+/** User intentions only, making screen fixtures and interaction tests independent of Hilt. */
+data class ExpenseEditorActions(
+    val amount: (String) -> Unit = {},
+    val description: (String) -> Unit = {},
+    val currency: (String) -> Unit = {},
+    val payer: (String) -> Unit = {},
+    val category: (String) -> Unit = {},
+    val splitType: (SplitType) -> Unit = {},
+    val memberInput: (String, String) -> Unit = { _, _ -> },
+    val participant: (String) -> Unit = {},
+    val save: () -> Unit = {},
+    val retry: () -> Unit = {},
+    val back: () -> Unit = {}
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddExpenseScreen(onExpenseAdded: () -> Unit, onBack: () -> Unit, viewModel: AddExpenseViewModel = hiltViewModel()) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var description by remember { mutableStateOf("") }
-    val adaptive = adaptiveLayoutInfo()
-    val tokens = adaptiveSizeTokens()
-
-    LaunchedEffect(uiState.saved) {
-        if (uiState.saved) onExpenseAdded()
-    }
-    var amount by remember { mutableStateOf("") }
-    var currency by remember { mutableStateOf("INR") }
-    var currencyExpanded by remember { mutableStateOf(false) }
-    var paidBy by remember { mutableStateOf("") }
-    var splitType by remember { mutableStateOf(SplitType.EQUAL) }
-    var memberInputs by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var category by remember { mutableStateOf("") }
-    var categoryExpanded by remember { mutableStateOf(false) }
-
-    val currencies = listOf("INR", "USD", "EUR", "GBP", "JPY", "AUD", "CAD")
-
-    val meLabel = stringResource(R.string.me)
-    fun displayName(pk: String): String = when (pk) {
-        uiState.myPubkey -> meLabel
-        else -> uiState.memberNames[pk]?.takeIf { it.isNotBlank() } ?: (pk.take(6) + "…")
-    }
-    val categories =
-        listOf(
-            "" to stringResource(R.string.category_none),
-            "food" to stringResource(R.string.category_food),
-            "transport" to stringResource(R.string.category_transport),
-            "shopping" to stringResource(R.string.category_shopping),
-            "entertainment" to stringResource(R.string.category_entertainment),
-            "utilities" to stringResource(R.string.category_utilities),
-            "rent" to stringResource(R.string.category_rent),
-            "health" to stringResource(R.string.category_health),
-            "other" to stringResource(R.string.category_other)
-        )
-
-    LaunchedEffect(uiState.myPubkey) {
-        if (paidBy.isEmpty() && uiState.myPubkey.isNotEmpty()) paidBy = uiState.myPubkey
-    }
-    LaunchedEffect(uiState.members) {
-        if (uiState.members.isNotEmpty() && memberInputs.isEmpty()) {
-            memberInputs = uiState.members.associateWith { "" }
+fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
+    var sheet by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmDiscard by rememberSaveable { mutableStateOf(false) }
+    val enabled = state.editable && !state.saving && !state.saved
+    val requestBack = {
+        if (!state.saving) {
+            if (state.dirty && !state.saved) confirmDiscard = true else actions.back()
         }
     }
+    BackHandler(enabled = sheet == null) { requestBack() }
+    LaunchedEffect(enabled) { if (!enabled) sheet = null }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.add_expense)) },
+                title = { Text(stringResource(R.string.add_expense), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
+                    IconButton(
+                        onClick = requestBack,
+                        enabled = !state.saving,
+                        modifier = Modifier.testTag("expense_back")
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.back))
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (!state.loading && state.loadingError == null) {
+                Surface(tonalElevation = 1.dp) {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Column(
+                            Modifier.navigationBarsPadding().widthIn(
+                                max = 600.dp
+                            ).fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (state.error != null) {
+                                Column(Modifier.fillMaxWidth().testTag("expense_save_error")) {
+                                    EditorError(state.error)
+                                    if (!enabled && !state.saving && !state.saved) {
+                                        TextButton(onClick = actions.retry) {
+                                            Text(stringResource(R.string.expense_retry))
+                                        }
+                                    }
+                                }
+                            }
+                            Button(
+                                onClick = actions.save,
+                                enabled = enabled,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp).testTag("expense_save"),
+                                shape = MaterialTheme.shapes.large,
+                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp)
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (state.saving) {
+                                        CircularProgressIndicator(
+                                            Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                    Text(
+                                        stringResource(
+                                            if (state.saving) R.string.expense_saving else R.string.expense_save
+                                        )
+                                    )
+                                }
+                            }
+                            Text(
+                                stringResource(R.string.expense_local_note),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
         }
     ) { padding ->
-        Column(
-            modifier =
-            Modifier
-                .padding(padding)
-                .padding(horizontal = tokens.screenPaddingHorizontal, vertical = tokens.screenPaddingVertical)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(tokens.sectionSpacing)
+        Box(
+            Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
+            contentAlignment = Alignment.TopCenter
         ) {
-            Spacer(Modifier.height(tokens.denseSpacing))
-
-            // Amount + Currency row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(tokens.fieldSpacing)
-            ) {
-                OutlinedTextField(
-                    value = amount,
-                    onValueChange = { amount = it },
-                    label = { Text(stringResource(R.string.amount)) },
-                    placeholder = { Text(stringResource(R.string.amount_placeholder)) },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    shape = MaterialTheme.shapes.medium
-                )
-                ExposedDropdownMenuBox(
-                    expanded = currencyExpanded,
-                    onExpandedChange = { currencyExpanded = it },
-                    modifier = Modifier.width(tokens.dropdownWidth)
+            when {
+                state.loading -> Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    OutlinedTextField(
-                        value = currency,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text(stringResource(R.string.currency)) },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = currencyExpanded) },
-                        modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-                        shape = MaterialTheme.shapes.medium
-                    )
-                    ExposedDropdownMenu(
-                        expanded = currencyExpanded,
-                        onDismissRequest = { currencyExpanded = false }
-                    ) {
-                        currencies.forEach { c ->
-                            DropdownMenuItem(
-                                text = { Text(c) },
-                                onClick = {
-                                    currency = c
-                                    currencyExpanded = false
-                                }
-                            )
-                        }
-                    }
+                    CircularProgressIndicator()
+                    Text(stringResource(R.string.expense_loading), Modifier.padding(20.dp))
                 }
-            }
-
-            OutlinedTextField(
-                value = description,
-                onValueChange = { description = it },
-                label = { Text(stringResource(R.string.description)) },
-                placeholder = { Text(stringResource(R.string.description_placeholder)) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = MaterialTheme.shapes.medium
-            )
-
-            // Category picker
-            ExposedDropdownMenuBox(
-                expanded = categoryExpanded,
-                onExpandedChange = { categoryExpanded = it }
-            ) {
-                OutlinedTextField(
-                    value = categories.find { it.first == category }?.second ?: "None",
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text(stringResource(R.string.category)) },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-                    shape = MaterialTheme.shapes.medium
-                )
-                ExposedDropdownMenu(
-                    expanded = categoryExpanded,
-                    onDismissRequest = { categoryExpanded = false }
+                state.loadingError != null -> Column(
+                    Modifier.widthIn(max = 600.dp).padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    categories.forEach { (key, label) ->
-                        DropdownMenuItem(
-                            text = { Text(label) },
-                            onClick = {
-                                category = key
-                                categoryExpanded = false
-                            }
-                        )
-                    }
+                    EditorError(state.loadingError)
+                    Button(onClick = actions.retry) { Text(stringResource(R.string.expense_retry)) }
                 }
-            }
-
-            // Paid by
-            if (uiState.members.size > 1) {
-                Text(
-                    stringResource(R.string.paid_by_label),
-                    style =
-                    if (adaptive.isCompact) {
-                        MaterialTheme.typography.labelMedium
-                    } else {
-                        MaterialTheme.typography.labelLarge
-                    }
-                )
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    uiState.members.forEachIndexed { index, pk ->
-                        SegmentedButton(
-                            selected = paidBy == pk,
-                            onClick = { paidBy = pk },
-                            shape = SegmentedButtonDefaults.itemShape(index, uiState.members.size)
-                        ) {
-                            Text(
-                                text = displayName(pk),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Split type
-            Text(
-                stringResource(R.string.split_type_label),
-                style = if (adaptive.isCompact) {
-                    MaterialTheme.typography.labelMedium
-                } else {
-                    MaterialTheme.typography.labelLarge
-                }
-            )
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                val labels =
-                    mapOf(
-                        SplitType.EQUAL to stringResource(R.string.split_equal),
-                        SplitType.EXACT to stringResource(R.string.split_exact),
-                        SplitType.PERCENTAGE to stringResource(R.string.split_percent),
-                        SplitType.SHARES to stringResource(R.string.split_shares)
-                    )
-                SplitType.entries.forEachIndexed { index, type ->
-                    SegmentedButton(
-                        selected = splitType == type,
-                        onClick = {
-                            splitType = type
-                            memberInputs = uiState.members.associateWith { "" }
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(index, SplitType.entries.size)
-                    ) {
+                else -> LazyColumn(
+                    modifier = Modifier.widthIn(max = 600.dp).fillMaxSize().testTag("expense_form"),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    item {
                         Text(
-                            text = labels[type] ?: type.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            state.groupName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    item { ExpenseAmountField(state, enabled, actions.amount) { sheet = "currency" } }
+                    item { ExpenseDescriptionField(state, enabled, actions.description) }
+                    item {
+                        ExpenseSummaryRows(
+                            state,
+                            enabled,
+                            onPayer = { sheet = "payer" },
+                            onSplit = { sheet = "split" },
+                            onCategory = { sheet = "category" }
+                        )
+                    }
+                    item { ExpenseSplitPreview(state) }
                 }
             }
-
-            // Per-member inputs
-            if (splitType != SplitType.EQUAL && uiState.members.isNotEmpty()) {
-                val label =
-                    when (splitType) {
-                        SplitType.EXACT -> stringResource(R.string.split_amount_label)
-                        SplitType.PERCENTAGE -> stringResource(R.string.split_percentage_label)
-                        SplitType.SHARES -> stringResource(R.string.split_shares_label)
-                        else -> ""
-                    }
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(tokens.cardPadding),
-                        verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
-                    ) {
-                        uiState.members.forEach { pk ->
-                            OutlinedTextField(
-                                value = memberInputs[pk] ?: "",
-                                onValueChange = { memberInputs = memberInputs + (pk to it) },
-                                label = { Text("${displayName(pk)} — $label") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                shape = MaterialTheme.shapes.medium
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Error
-            uiState.error?.let {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                ) {
-                    Text(
-                        it,
-                        modifier = Modifier.padding(tokens.cardPadding),
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            // Submit
-            Button(
-                onClick = {
-                    val amountCents =
-                        amount
-                            .toBigDecimalOrNull()
-                            ?.multiply(java.math.BigDecimal(CurrencyFormatter.minorMultiplier(currency)))
-                            ?.toLong()
-                            ?: 0L
-                    if (amountCents > 0 && description.isNotBlank()) {
-                        val inputs = memberInputs.mapValues { (_, v) -> v.toLongOrNull() ?: 0L }
-                        viewModel.addExpense(description, amountCents, currency, paidBy, splitType, inputs)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(tokens.buttonHeight),
-                enabled = amount.isNotBlank() && description.isNotBlank(),
-                shape = MaterialTheme.shapes.large
-            ) {
-                Text(
-                    text = stringResource(R.string.add_expense),
-                    style = if (adaptive.isCompact) {
-                        MaterialTheme.typography.titleSmall
-                    } else {
-                        MaterialTheme.typography.titleMedium
-                    }
-                )
-            }
-            Spacer(Modifier.height(tokens.screenBottomSpacer))
         }
     }
+    if (sheet != null && enabled) {
+        ExpenseEditorSheet(sheet!!, state, actions, onDismiss = { sheet = null })
+    }
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text(stringResource(R.string.expense_discard_title)) },
+            text = { Text(stringResource(R.string.expense_discard_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    actions.back()
+                }) { Text(stringResource(R.string.expense_discard)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.expense_keep_editing)) }
+            }
+        )
+    }
+}
+
+@Composable
+internal fun EditorError(message: String) {
+    Text(
+        message,
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+    )
 }

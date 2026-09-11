@@ -12,6 +12,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -145,5 +146,83 @@ class AddExpenseUseCaseTest {
         } catch (_: IllegalArgumentException) {
         }
         coVerify(exactly = 0) { repo.addExpense(any(), any()) }
+    }
+
+    @Test
+    fun `caller supplied operation and timestamp are preserved across retry`() = runTest {
+        val repo = repo()
+        val expenses = mutableListOf<Expense>()
+        coEvery { repo.addExpense(capture(expenses), "g1") } just Runs
+        repeat(2) {
+            useCase(repo)(
+                "g1", 100, "INR", "Lunch", "alice", SplitType.EQUAL,
+                listOf(SplitEntry("alice", 100)), category = "food", expenseId = "stable-operation", createdAt = 1234
+            )
+        }
+        assertEquals(2, expenses.size)
+        assertEquals(expenses.first(), expenses.last())
+        assertEquals("stable-operation", expenses.first().id)
+        assertEquals(1234L, expenses.first().timestamp)
+        assertEquals("food", expenses.first().category)
+    }
+
+    @Test
+    fun `isSaved recovers durable operation`() = runTest {
+        val repo = repo()
+        coEvery { repo.getSavedExpense("g1", "saved") } returns mockk<Expense>()
+        coEvery { repo.getSavedExpense("g1", "new") } returns null
+        assertTrue(useCase(repo).isSaved("g1", "saved"))
+        assertFalse(useCase(repo).isSaved("g1", "new"))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `recovery failure is not mistaken for unsaved`() = runTest {
+        val repo = repo()
+        coEvery { repo.getSavedExpense(any(), any()) } throws IllegalStateException("Key unavailable")
+        useCase(repo).isSaved("g1", "saved")
+    }
+
+    @Test
+    fun `save forwards persisted draft author to repository`() = runTest {
+        val repo = repo()
+        useCase(repo)(
+            "g1",
+            100,
+            "INR",
+            "Lunch",
+            "alice",
+            SplitType.EQUAL,
+            listOf(SplitEntry("alice", 100)),
+            expenseId = "stable-operation",
+            createdAt = 1234,
+            expectedAuthorPubkey = "draft-author"
+        )
+        coVerify { repo.addExpense(match { it.id == "stable-operation" }, "g1", "draft-author") }
+    }
+
+    @Test
+    fun `recovery returns exact original payload and forwards expected author`() = runTest {
+        val repo = repo()
+        val expense = Expense(
+            "stable-operation",
+            100,
+            "INR",
+            "Original lunch",
+            "alice",
+            SplitType.EQUAL,
+            listOf(SplitEntry("alice", 100)),
+            1234,
+            "food"
+        )
+        coEvery { repo.getSavedExpense("g1", "stable-operation", "draft-author") } returns expense
+        assertEquals(expense, useCase(repo).getSavedExpense("g1", "stable-operation", "draft-author"))
+        coVerify { repo.getSavedExpense("g1", "stable-operation", "draft-author") }
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `author mismatch recovery error propagates without becoming not saved`() = runTest {
+        val repo = repo()
+        coEvery { repo.getSavedExpense(any(), any(), "draft-author") } throws IllegalStateException("Identity changed")
+        useCase(repo).getSavedExpense("g1", "stable-operation", "draft-author")
     }
 }

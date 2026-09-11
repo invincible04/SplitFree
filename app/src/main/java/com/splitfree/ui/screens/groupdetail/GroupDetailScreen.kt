@@ -55,6 +55,8 @@ fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
     onNearbySync: (String) -> Unit = {},
     onBack: () -> Unit,
+    expenseSaved: Boolean = false,
+    onExpenseSavedConsumed: () -> Unit = {},
     viewModel: GroupDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -73,6 +75,13 @@ fun GroupDetailScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val snackScope = rememberCoroutineScope()
+
+    ExpenseSavedEffect(
+        expenseSaved = expenseSaved,
+        onConsumed = onExpenseSavedConsumed,
+        pagerState = pagerState,
+        snackbarHostState = snackbarHostState
+    )
 
     LaunchedEffect(error) {
         error?.let {

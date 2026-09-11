@@ -43,6 +43,12 @@ interface EventDao {
     suspend fun getExpenseByUuid(uuid: String, groupId: String): EventEntity?
 
     @Query(
+        "SELECT * FROM events WHERE expenseUuid = :uuid AND groupId = :groupId AND pubkey = :author " +
+            "AND eventType = 'expense' ORDER BY createdAt ASC, eventId ASC LIMIT 1"
+    )
+    suspend fun getExpenseByAuthor(uuid: String, groupId: String, author: String): EventEntity?
+
+    @Query(
         "SELECT expenseUuid FROM events WHERE groupId = :groupId AND eventType = 'expense_delete' AND expenseUuid IS NOT NULL"
     )
     suspend fun getDeletedExpenseUuids(groupId: String): List<String>

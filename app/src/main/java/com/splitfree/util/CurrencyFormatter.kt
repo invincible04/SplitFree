@@ -1,5 +1,9 @@
 package com.splitfree.util
 
+import java.math.BigDecimal
+import java.util.Currency
+import java.util.Locale
+
 /**
  * Formats smallest-unit amounts (paisa, cents) into display strings with currency symbols.
  *
@@ -8,10 +12,10 @@ package com.splitfree.util
  */
 object CurrencyFormatter {
     /** Number of decimal (minor unit) digits for a currency. */
-    fun minorDigits(currency: String): Int = when (currency.uppercase()) {
-        "JPY", "KRW", "VND" -> 0
-        "KWD", "BHD", "OMR" -> 3
-        else -> 2
+    fun minorDigits(currency: String): Int = try {
+        Currency.getInstance(currency.trim().uppercase(Locale.ROOT)).defaultFractionDigits.takeIf { it >= 0 } ?: 2
+    } catch (_: IllegalArgumentException) {
+        2
     }
 
     /** Multiplier to convert major units to smallest units. */
@@ -22,12 +26,16 @@ object CurrencyFormatter {
         return m
     }
 
-    fun format(amountSmallest: Long, currency: String): String {
+    fun format(amountSmallest: Long, currency: String): String =
+        formatMajor(BigDecimal.valueOf(amountSmallest, minorDigits(currency)), currency)
+
+    fun formatMagnitude(amountSmallest: Long, currency: String): String =
+        formatMajor(BigDecimal.valueOf(amountSmallest, minorDigits(currency)).abs(), currency)
+
+    private fun formatMajor(major: BigDecimal, currency: String): String {
         val digits = minorDigits(currency)
-        val divisor = minorMultiplier(currency).toDouble()
-        val major = amountSmallest / divisor
         val symbol =
-            when (currency.uppercase()) {
+            when (currency.uppercase(Locale.ROOT)) {
                 "INR" -> "₹"
                 "USD" -> "$"
                 "EUR" -> "€"

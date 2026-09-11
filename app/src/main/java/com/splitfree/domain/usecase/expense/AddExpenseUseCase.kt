@@ -34,8 +34,13 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
         paidBy: String,
         splitType: SplitType,
         splitAmong: List<SplitEntry>,
-        category: String = ""
+        category: String = "",
+        expenseId: String = UUID.randomUUID().toString(),
+        createdAt: Long = System.currentTimeMillis() / 1000,
+        expectedAuthorPubkey: String? = null
     ) {
+        require(expenseId.isNotBlank()) { "Expense ID must not be blank" }
+        require(createdAt >= 0) { "Expense timestamp must not be negative" }
         require(amount > 0) { "Amount must be positive" }
         require(amount <= 1_000_000_000_000L) { "Amount exceeds maximum ($10B)" }
         require(splitAmong.isNotEmpty()) { "Must split among at least one person" }
@@ -53,16 +58,22 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
 
         val expense =
             Expense(
-                id = UUID.randomUUID().toString(),
+                id = expenseId,
                 amount = amount,
                 currency = normalizedCurrency,
                 description = description,
                 paidBy = paidBy,
                 splitType = splitType,
                 splitAmong = splitAmong,
-                timestamp = System.currentTimeMillis() / 1000,
+                timestamp = createdAt,
                 category = category
             )
-        expenseRepo.addExpense(expense, groupId)
+        expenseRepo.addExpense(expense, groupId, expectedAuthorPubkey)
     }
+
+    suspend fun getSavedExpense(groupId: String, expenseId: String, expectedAuthorPubkey: String? = null): Expense? =
+        expenseRepo.getSavedExpense(groupId, expenseId, expectedAuthorPubkey)
+
+    suspend fun isSaved(groupId: String, expenseId: String, expectedAuthorPubkey: String? = null): Boolean =
+        getSavedExpense(groupId, expenseId, expectedAuthorPubkey) != null
 }

@@ -14,7 +14,10 @@ interface ExpenseRepositoryContract {
      * @param groupId target group UUID
      * @throws IllegalStateException if the group key is not found locally
      */
-    suspend fun addExpense(expense: Expense, groupId: String)
+    suspend fun addExpense(expense: Expense, groupId: String, expectedAuthorPubkey: String? = null)
+
+    /** Returns the original saved expense for the current author, including after process recreation. */
+    suspend fun getSavedExpense(groupId: String, expenseId: String, expectedAuthorPubkey: String? = null): Expense?
 
     /**
      * Record a settlement between two members.
@@ -45,3 +48,5 @@ interface ExpenseRepositoryContract {
      */
     suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String)
 }
+
+class ExpenseSaveConflictException : IllegalStateException("This expense was already saved with different details")

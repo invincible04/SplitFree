@@ -6,6 +6,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.sync.event.EventPublisher
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,12 +34,32 @@ constructor(
 ) : com.splitfree.domain.repository.ExpenseRepositoryContract {
     private val json = Json { ignoreUnknownKeys = true }
 
-    override suspend fun addExpense(expense: Expense, groupId: String) {
+    override suspend fun addExpense(expense: Expense, groupId: String, expectedAuthorPubkey: String?) {
+        val author = checkedAuthor(expectedAuthorPubkey)
+        require(expense.id.isNotBlank()) { "Expense ID must not be blank" }
         require(expense.amount > 0) { "Expense amount must be positive" }
         require(expense.amount <= 1_000_000_000_000L) { "Expense amount exceeds maximum" }
         require(expense.splitAmong.isNotEmpty()) { "Expense must have at least one split" }
-        require(expense.splitAmong.none { it.share < 0 }) { "Split shares must be non-negative" }
-        val groupKey = groupRepo.getGroupKey(groupId) ?: error("Group $groupId not found")
+        require(expense.splitAmong.all { it.share > 0 }) { "Split shares must be positive" }
+        require(expense.splitAmong.map { it.pubkey }.distinct().size == expense.splitAmong.size) {
+            "Split participants must be unique"
+        }
+        require(expense.splitAmong.fold(0L) { total, entry -> Math.addExact(total, entry.share) } == expense.amount) {
+            "Split shares must equal the expense amount"
+        }
+        val saved = getSavedExpense(groupId, expense.id, author)
+        if (saved != null) {
+            requireSameExpense(saved, expense)
+            return
+        }
+        val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
+        checkedAuthor(author)
+        require(author in group.members) { "You are no longer a member of this group" }
+        require(expense.paidBy in group.members) { "Payer is no longer a member of this group" }
+        require(expense.splitAmong.all { it.pubkey in group.members }) {
+            "Split participants must be current group members"
+        }
+        val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), expense)
         val encrypted = encryption.encrypt(plaintext, groupKey)
         val event =
@@ -48,7 +69,39 @@ constructor(
                 encryptedContent = encrypted,
                 expenseUuid = expense.id
             )
-        eventPublisher.publishToGroup(event, groupId, encrypted, "expense", expense.id)
+        checkedAuthor(author)
+        check(event.pubkey == author) { "Identity changed while saving" }
+        if (!eventPublisher.publishExpense(event, group, expense.id)) {
+            requireSameExpense(checkNotNull(getSavedExpense(groupId, expense.id, author)), expense)
+        }
+    }
+
+    override suspend fun getSavedExpense(groupId: String, expenseId: String, expectedAuthorPubkey: String?): Expense? {
+        val author = checkedAuthor(expectedAuthorPubkey)
+        val event = eventDao.getExpenseByAuthor(expenseId, groupId, author)
+        checkedAuthor(author)
+        if (event == null) return null
+        val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch) ?: error("Saved expense key not found")
+        return json.decodeFromString(Expense.serializer(), encryption.decrypt(event.contentEncrypted, key)).also {
+            checkedAuthor(author)
+            check(it.id == expenseId) { "Saved expense ID does not match its event" }
+        }
+    }
+
+    private fun checkedAuthor(expectedAuthorPubkey: String?): String {
+        val author = identity.getPublicKeyHex()
+        check(author.isNotBlank() && (expectedAuthorPubkey == null || author == expectedAuthorPubkey)) {
+            "Your identity changed. Close this draft and start a new expense"
+        }
+        return author
+    }
+
+    private fun requireSameExpense(saved: Expense, requested: Expense) {
+        if (saved.copy(splitAmong = saved.splitAmong.sortedBy { it.pubkey }) !=
+            requested.copy(splitAmong = requested.splitAmong.sortedBy { it.pubkey })
+        ) {
+            throw ExpenseSaveConflictException()
+        }
     }
 
     override suspend fun addSettlement(settlement: Settlement, groupId: String) {

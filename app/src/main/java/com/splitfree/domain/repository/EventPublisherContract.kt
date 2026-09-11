@@ -1,6 +1,7 @@
 package com.splitfree.domain.repository
 
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.group.Group
 
 /**
  * Domain contract for event publishing (local persistence + relay dispatch).
@@ -23,6 +24,12 @@ interface EventPublisherContract {
         eventType: String,
         expenseUuid: String? = null
     )
+
+    /**
+     * Atomically saves a new expense and all prepared deliveries against the validated group snapshot.
+     * Returns false if this author already saved the logical expense; the caller must compare its payload.
+     */
+    suspend fun publishExpense(event: NostrEvent, group: Group, expenseUuid: String): Boolean
 
     /**
      * Save event locally and publish directly (no gift wrap).
@@ -53,3 +60,5 @@ interface EventPublisherContract {
     /** @return true if any of the given event IDs are still in the outbox */
     suspend fun hasOutboxEventsById(eventIds: List<String>): Boolean
 }
+
+class OutboxFullException : IllegalStateException("Delivery queue is full. Try saving again after syncing")

@@ -3,6 +3,8 @@ package com.splitfree.ui.navigation
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -88,8 +90,11 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
         composable(
             Screen.GroupDetail.route,
             arguments = listOf(navArgument("groupId") { type = NavType.StringType })
-        ) {
+        ) { entry ->
+            val expenseSaved by entry.savedStateHandle.getStateFlow("expenseSaved", false).collectAsStateWithLifecycle()
             GroupDetailScreen(
+                expenseSaved = expenseSaved,
+                onExpenseSavedConsumed = { entry.savedStateHandle["expenseSaved"] = false },
                 onAddExpense = { groupId ->
                     navController.navigate(Screen.AddExpense.withGroupId(groupId))
                 },
@@ -104,7 +109,10 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
             arguments = listOf(navArgument("groupId") { type = NavType.StringType })
         ) {
             AddExpenseScreen(
-                onExpenseAdded = { navController.popBackStack() },
+                onExpenseAdded = {
+                    navController.previousBackStackEntry?.savedStateHandle?.set("expenseSaved", true)
+                    navController.popBackStack()
+                },
                 onBack = { navController.popBackStack() }
             )
         }

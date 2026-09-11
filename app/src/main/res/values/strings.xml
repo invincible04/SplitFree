@@ -66,33 +66,6 @@
     <string name="relay_editor_hint_creator">Manage relays for this group. Changes are broadcast to all members.</string>
     <string name="relay_editor_hint_member">Relays this group syncs through. Only the group creator can edit.</string>
 
-    <!-- AddExpenseScreen -->
-    <string name="amount">Amount</string>
-    <string name="amount_placeholder">0.00</string>
-    <string name="currency">Currency</string>
-    <string name="description">Description</string>
-    <string name="description_placeholder">What was this for?</string>
-    <string name="category">Category</string>
-    <string name="category_none">None</string>
-    <string name="category_food">🍕 Food</string>
-    <string name="category_transport">🚗 Transport</string>
-    <string name="category_shopping">🛍️ Shopping</string>
-    <string name="category_entertainment">🎬 Entertainment</string>
-    <string name="category_utilities">💡 Utilities</string>
-    <string name="category_rent">🏠 Rent</string>
-    <string name="category_health">💊 Health</string>
-    <string name="category_other">💰 Other</string>
-    <string name="paid_by_label">Paid by</string>
-    <string name="split_type_label">Split type</string>
-    <string name="split_equal">Equal</string>
-    <string name="split_exact">Exact</string>
-    <string name="split_percent">Percent</string>
-    <string name="split_shares">Shares</string>
-    <string name="split_amount_label">Amount</string>
-    <string name="split_percentage_label">Percentage</string>
-    <string name="split_shares_label">Shares</string>
-    <string name="me">Me</string>
-
     <!-- OnboardingScreen -->
     <string name="onboarding_subtitle">Split expenses with anyone.\nNo accounts. No servers. No cost.</string>
     <string name="chip_encrypted">🔒 Encrypted</string>
