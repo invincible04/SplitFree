@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -99,7 +100,7 @@ fun DebugLogScreen(onBack: () -> Unit) {
                     IconButton(onClick = { showFilter = !showFilter }) {
                         Icon(Icons.Outlined.FilterList, stringResource(R.string.filter))
                     }
-                    val copiedMsg = stringResource(R.string.copied_log_lines, entries.size)
+                    val copiedMsg = pluralStringResource(R.plurals.copied_log_lines, entries.size, entries.size)
                     IconButton(onClick = {
                         val text = entries.joinToString("\n") { it.format() }
                         val clip = ClipData.newPlainText("debug_logs", text)

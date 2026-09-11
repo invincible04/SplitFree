@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.text.format.DateFormat
+import androidx.core.content.edit
 import com.splitfree.BuildConfig
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -63,11 +64,11 @@ object ProcessHealthTracker {
     fun heartbeat(context: Context, source: String, detail: String? = null) {
         val safeSource = source.take(64)
         val safeDetail = detail?.take(256)
-        prefs(context).edit()
-            .putLong(KEY_HEARTBEAT_TS, System.currentTimeMillis())
-            .putString(KEY_HEARTBEAT_SOURCE, safeSource)
-            .putString(KEY_HEARTBEAT_DETAIL, safeDetail)
-            .apply()
+        prefs(context).edit {
+            putLong(KEY_HEARTBEAT_TS, System.currentTimeMillis())
+            putString(KEY_HEARTBEAT_SOURCE, safeSource)
+            putString(KEY_HEARTBEAT_DETAIL, safeDetail)
+        }
     }
 
     fun buildReport(context: Context): String {
@@ -135,16 +136,16 @@ object ProcessHealthTracker {
         val stack = DebugLog.sanitize(sw.toString()).take(MAX_STACK_CHARS)
         val p = prefs(context)
         // Snapshot the last operation now: the next launch overwrites the live heartbeat.
-        p.edit()
-            .putLong(KEY_CRASH_TS, System.currentTimeMillis())
-            .putString(KEY_CRASH_THREAD, thread.name.take(128))
-            .putString(KEY_CRASH_STACK, stack)
-            .putString(KEY_CRASH_VERSION, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-            .putString(KEY_CRASH_HEARTBEAT_SOURCE, p.getString(KEY_HEARTBEAT_SOURCE, null))
-            .putLong(KEY_CRASH_HEARTBEAT_TS, p.getLong(KEY_HEARTBEAT_TS, 0L))
-            // The default handler terminates the process immediately after this returns.
-            // apply() queues a write that can be lost along with the crash evidence.
-            .commit()
+        // commit = true: the default handler terminates the process immediately after this returns,
+        // and an asynchronous apply() would queue a write that dies along with the crash evidence.
+        p.edit(commit = true) {
+            putLong(KEY_CRASH_TS, System.currentTimeMillis())
+            putString(KEY_CRASH_THREAD, thread.name.take(128))
+            putString(KEY_CRASH_STACK, stack)
+            putString(KEY_CRASH_VERSION, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            putString(KEY_CRASH_HEARTBEAT_SOURCE, p.getString(KEY_HEARTBEAT_SOURCE, null))
+            putLong(KEY_CRASH_HEARTBEAT_TS, p.getLong(KEY_HEARTBEAT_TS, 0L))
+        }
     }
 
     private fun latestExitReason(context: Context): String {

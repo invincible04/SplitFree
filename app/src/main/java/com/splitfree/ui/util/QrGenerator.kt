@@ -2,6 +2,7 @@ package com.splitfree.ui.util
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.core.graphics.createBitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -23,7 +24,7 @@ object QrGenerator {
                 pixels[row + x] = if (matrix[x, y]) Color.BLACK else Color.WHITE
             }
         }
-        return Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565).apply {
+        return createBitmap(size, size, Bitmap.Config.RGB_565).apply {
             setPixels(pixels, 0, size, 0, 0, size, size)
         }
     }

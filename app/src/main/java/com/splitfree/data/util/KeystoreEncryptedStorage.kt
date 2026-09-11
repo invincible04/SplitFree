@@ -1,5 +1,6 @@
 package com.splitfree.data.util
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
@@ -140,6 +141,8 @@ class KeystoreEncryptedStorage(
     }
 
     /** Applies [edit] with a synchronous commit and throws if the write did not land. */
+    // UseKtx: the KTX edit(commit = true) {} discards commit()'s boolean, which this class must check.
+    @SuppressLint("UseKtx")
     private fun commitOrThrow(op: String, edit: (SharedPreferences.Editor) -> SharedPreferences.Editor) {
         if (!edit(prefs.edit()).commit()) {
             throw SecureStorageException("Failed to $op in '$keyAlias': SharedPreferences commit() returned false")
@@ -238,6 +241,8 @@ class KeystoreEncryptedStorage(
      * [KeyResetException] after deleting the alias and clearing the preferences so the next
      * [getOrCreateKey] call generates a fresh key lazily.
      */
+    // UseKtx: the KTX edit(commit = true) {} discards commit()'s boolean, which the reset path must check.
+    @SuppressLint("UseKtx")
     private fun handleLostKey(cause: Exception): Nothing {
         synchronized(keyLock) {
             cachedKey = null

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Themed-icon (monochrome) layer for the adaptive launcher icon.
+    Single-colour rendition of the SplitFree "split arrow" mark from assets/splitfree-logo.svg,
+    scaled to ~52dp and centred inside the 66dp adaptive-icon safe zone. The launcher tints it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Vertical bar + left arrow arm -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M50.67,80 L58.35,80 L58.35,50.8 L40.42,32.87 L45.29,28 L30.43,28 L30.43,42.6 L35.3,37.73 L50.67,53.1 Z" />
+    <!-- Right arrow arm -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M77.57,28 L77.57,42.6 L72.7,37.73 L63.22,47.21 L57.59,41.58 L67.58,32.87 L62.71,28 Z" />
+</vector>

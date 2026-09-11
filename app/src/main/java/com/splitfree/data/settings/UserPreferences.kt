@@ -2,6 +2,7 @@ package com.splitfree.data.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.splitfree.domain.repository.SettingsContract
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -22,13 +23,13 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
     override var giftWrapEnabled: Boolean
         get() = prefs.getBoolean(KEY_GIFT_WRAP, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_GIFT_WRAP, value).apply()
+            prefs.edit { putBoolean(KEY_GIFT_WRAP, value) }
         }
 
     override var displayName: String
         get() = prefs.getString(KEY_DISPLAY_NAME, "") ?: ""
         set(value) {
-            prefs.edit().putString(KEY_DISPLAY_NAME, value.take(50).trim()).apply()
+            prefs.edit { putString(KEY_DISPLAY_NAME, value.take(50).trim()) }
         }
 
     /**
@@ -38,7 +39,7 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
     var notificationsPrompted: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATIONS_PROMPTED, false)
         set(value) {
-            prefs.edit().putBoolean(KEY_NOTIFICATIONS_PROMPTED, value).apply()
+            prefs.edit { putBoolean(KEY_NOTIFICATIONS_PROMPTED, value) }
         }
 
     companion object {

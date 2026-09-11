@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -58,7 +59,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.group.Group
@@ -284,13 +285,7 @@ private fun GroupCard(group: Group, onClick: () -> Unit) {
                 )
                 Spacer(Modifier.height(tokens.denseSpacing))
                 Text(
-                    text = if (group.members.size !=
-                        1
-                    ) {
-                        stringResource(R.string.members_count, group.members.size)
-                    } else {
-                        stringResource(R.string.member_count, group.members.size)
-                    },
+                    text = pluralStringResource(R.plurals.member_count, group.members.size, group.members.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

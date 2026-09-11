@@ -54,11 +54,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
@@ -262,13 +263,7 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
             // Peers list
             if (uiState.peers.isNotEmpty()) {
                 Text(
-                    if (uiState.peers.size !=
-                        1
-                    ) {
-                        stringResource(R.string.found_peers_plural, uiState.peers.size)
-                    } else {
-                        stringResource(R.string.found_peers, uiState.peers.size)
-                    },
+                    pluralStringResource(R.plurals.found_peers, uiState.peers.size, uiState.peers.size),
                     style = if (adaptive.isCompact) {
                         MaterialTheme.typography.bodyLarge
                     } else {

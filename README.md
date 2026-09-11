@@ -149,7 +149,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Kotlin 2.1 |
+| Language | Kotlin 2.4 |
 | UI | Jetpack Compose + Material 3 |
 | DI | Hilt (Dagger) |
 | Database | Room (SQLite) |
@@ -160,7 +160,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 | Compression | LZ4 |
 | Background | WorkManager + Foreground Service |
 | QR | ZXing + ML Kit Code Scanner |
-| Build | Gradle 8.11.1 + Version Catalog |
+| Build | Gradle 9.7 + AGP 9.4 (built-in Kotlin) + Version Catalog |
 | Lint | Spotless + ktlint |
 | Testing | JUnit 4, MockK, Robolectric |
 
@@ -170,7 +170,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 
 - Android Studio Meerkat (2024.3+) or later
 - JDK 17
-- Android SDK 35 (compile) / SDK 26+ (min)
+- Android SDK 37 (compile) / SDK 26+ (min)
 
 ### Clone & Run
 

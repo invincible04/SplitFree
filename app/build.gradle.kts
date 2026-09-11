@@ -1,8 +1,8 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
@@ -12,12 +12,12 @@ plugins {
 
 android {
     namespace = "com.splitfree"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.splitfree"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"
     }
@@ -39,7 +39,6 @@ android {
         checkReleaseBuilds = true
         warningsAsErrors = false
         checkDependencies = true
-        baseline = file("lint-baseline.xml")
     }
 
     buildTypes {
@@ -48,6 +47,7 @@ android {
         }
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
@@ -56,10 +56,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -81,6 +77,12 @@ android {
         resources {
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 

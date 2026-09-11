@@ -53,9 +53,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.BuildConfig
 import com.splitfree.R
@@ -271,7 +272,14 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
                         Text(stringResource(R.string.diagnostics_supporting))
                         val (pendingOutbox, stuckOutbox) = outboxStatus
                         if (pendingOutbox > 0) {
-                            Text(stringResource(R.string.outbox_pending_status, pendingOutbox, stuckOutbox))
+                            Text(
+                                pluralStringResource(
+                                    R.plurals.outbox_pending_status,
+                                    pendingOutbox,
+                                    pendingOutbox,
+                                    stuckOutbox
+                                )
+                            )
                         }
                     }
                 },

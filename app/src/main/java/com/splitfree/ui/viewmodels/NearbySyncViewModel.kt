@@ -291,7 +291,6 @@ constructor(
 
     override fun onCleared() {
         nearbySync.stop()
-        super.onCleared()
     }
 
     companion object {

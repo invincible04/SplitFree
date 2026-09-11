@@ -1,6 +1,7 @@
 package com.splitfree.data.identity
 
 import android.content.Context
+import androidx.core.content.edit
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
 import com.splitfree.domain.repository.IdentityContract
@@ -147,9 +148,7 @@ constructor(
      */
     private fun markIdentityCreated() {
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("identity_created", true)
-            .apply()
+            .edit { putBoolean("identity_created", true) }
         identityState.value = true
     }
 

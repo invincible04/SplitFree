@@ -1,31 +1,31 @@
 [versions]
-agp = "8.9.2"
-kotlin = "2.1.0"
-ksp = "2.1.0-1.0.29"
-hilt = "2.55"
-room = "2.7.0"
-composeBom = "2026.01.01"
-activityCompose = "1.10.0"
-navigationCompose = "2.9.4"
-lifecycle = "2.10.0"
-workRuntime = "2.11.0"
-hiltNavCompose = "1.2.0"
-hiltWork = "1.2.0"
-coreKtx = "1.16.0"
-coroutines = "1.10.2"
-serialization = "1.8.1"
-okhttp = "4.12.0"
-secp256k1 = "0.22.0"
-bouncycastle = "1.83"
-playServicesNearby = "19.3.0"
+agp = "9.4.0"
+kotlin = "2.4.20"
+ksp = "2.3.12"
+hilt = "2.60.1"
+room = "2.8.5"
+composeBom = "2026.09.00"
+activityCompose = "1.13.0"
+navigationCompose = "2.10.1"
+lifecycle = "2.11.0"
+workRuntime = "2.11.2"
+hiltNavCompose = "1.4.0"
+hiltWork = "1.4.0"
+coreKtx = "1.19.0"
+coroutines = "1.11.0"
+serialization = "1.11.0"
+okhttp = "5.5.0"
+secp256k1 = "0.24.0"
+bouncycastle = "1.86"
+playServicesNearby = "19.5.0"
 playServicesCodeScanner = "16.1.0"
 zxing = "3.5.4"
-lz4 = "1.10.3"
+lz4 = "1.11.2"
 junit = "4.13.2"
-json = "20240303"
-mockk = "1.13.13"
-robolectric = "4.14.1"
-spotless = "7.0.2"
+json = "20260814"
+mockk = "1.14.11"
+robolectric = "4.17"
+spotless = "8.10.2"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -69,7 +69,6 @@ robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectr
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

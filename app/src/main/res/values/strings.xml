@@ -18,8 +18,10 @@
     <string name="no_groups_body">Create a group to start splitting expenses\nwith friends, family, or roommates.</string>
     <string name="paste_invite_link">Paste invite link</string>
     <string name="scan_qr">Scan QR code</string>
-    <string name="member_count">%1$d member</string>
-    <string name="members_count">%1$d members</string>
+    <plurals name="member_count">
+        <item quantity="one">%1$d member</item>
+        <item quantity="other">%1$d members</item>
+    </plurals>
 
     <!-- GroupDetailScreen -->
     <string name="relays">Relays</string>
@@ -115,7 +117,10 @@
     <string name="app_description">Decentralized expense splitting over Nostr.</string>
     <string name="diagnostics_report">Diagnostics Report</string>
     <string name="diagnostics_supporting">Copy crash/ANR and background sync health report</string>
-    <string name="outbox_pending_status">%1$d events waiting to sync (%2$d stuck)</string>
+    <plurals name="outbox_pending_status">
+        <item quantity="one">%1$d event waiting to sync (%2$d stuck)</item>
+        <item quantity="other">%1$d events waiting to sync (%2$d stuck)</item>
+    </plurals>
     <string name="debug_logs">Debug Logs</string>
     <string name="debug_logs_supporting">View live app logs for troubleshooting</string>
     <string name="open">Open</string>
@@ -182,8 +187,10 @@
     <string name="scan_for_nearby">Scan for nearby members</string>
     <string name="stop_scanning">Stop scanning</string>
     <string name="permissions_hint">Bluetooth permissions are required for nearby sync. Tap the button to grant access.</string>
-    <string name="found_peers">Found %1$d peer</string>
-    <string name="found_peers_plural">Found %1$d peers</string>
+    <plurals name="found_peers">
+        <item quantity="one">Found %1$d peer</item>
+        <item quantity="other">Found %1$d peers</item>
+    </plurals>
     <string name="peer_name">Peer %1$s</string>
     <string name="tap_sync">Tap Sync to exchange expenses</string>
     <string name="sync">Sync</string>
@@ -216,7 +223,10 @@
     <string name="copy_all">Copy all logs</string>
     <string name="clear">Clear logs</string>
     <string name="all">All</string>
-    <string name="copied_log_lines">Copied %1$d log lines</string>
+    <plurals name="copied_log_lines">
+        <item quantity="one">Copied %1$d log line</item>
+        <item quantity="other">Copied %1$d log lines</item>
+    </plurals>
 
     <!-- RelayEditor -->
     <string name="relay_placeholder">wss://relay.example.com</string>

@@ -29,7 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -67,8 +68,9 @@ fun ShareWarningDialog(inviteLink: String?, onShare: (String) -> Unit, onDismiss
 fun QrDialog(inviteLink: String?, groupName: String, onDismiss: () -> Unit) {
     val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
-    val configuration = LocalConfiguration.current
-    val effectiveWidthDp = configuration.screenWidthDp / adaptive.fontScale
+    val density = LocalDensity.current
+    val containerSize = LocalWindowInfo.current.containerSize
+    val effectiveWidthDp = with(density) { containerSize.width.toDp() }.value / adaptive.fontScale
     val qrSize =
         ((effectiveWidthDp * if (adaptive.isCompact) 0.62f else 0.7f).dp)
             .coerceIn(180.dp, 320.dp)

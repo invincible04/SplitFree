@@ -1,6 +1,7 @@
 package com.splitfree.ui.theme
 
 import android.content.Context
+import androidx.core.content.edit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -28,8 +29,6 @@ object ThemePreference {
         _mode.value = mode
         context
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY, mode.name)
-            .apply()
+            .edit { putString(KEY, mode.name) }
     }
 }

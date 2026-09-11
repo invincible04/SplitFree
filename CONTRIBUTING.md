@@ -48,9 +48,9 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 |-------------|---------|
 | Android Studio | Meerkat (2024.3+) |
 | JDK | 17 |
-| Android SDK | 35 (compile), 26+ (min) |
-| Kotlin | 2.1 |
-| Gradle | 8.11.1 |
+| Android SDK | 37 (compile), 26+ (min) |
+| Kotlin | 2.4 |
+| Gradle | 9.7 (AGP 9.4) |
 
 ### Getting Started
 
@@ -70,10 +70,10 @@ cd SplitFree
 
 ### Project Configuration
 
-- **Version catalog**: `gradle/libs.versions.toml` — all dependency versions live here
-- **Relay config**: `RelayConfig.kt` — default and fallback relay URLs
-- **ProGuard**: `app/proguard-rules.pro` — keep rules for crypto, serialization, and native libs
-- **Lint baseline**: `app/lint-baseline.xml` — known lint issues tracked here
+- **Version catalog**: `gradle/libs.versions.toml` holds all dependency versions
+- **Relay config**: `RelayConfig.kt` holds default and fallback relay URLs
+- **ProGuard**: `app/proguard-rules.pro` holds keep rules for crypto, serialization, and native libs
+- **Lint**: no baseline file; `./gradlew lint` must report zero issues (`abortOnError = true`)
 
 ### Local Relay (Optional)
 

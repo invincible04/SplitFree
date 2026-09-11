@@ -4,7 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -74,12 +75,15 @@ fun adaptiveSizeTokens(): AdaptiveSizeTokens = LocalAdaptiveSizeTokens.current ?
 
 @Composable
 fun rememberAdaptiveLayoutInfo(): AdaptiveLayoutInfo {
-    val configuration = LocalConfiguration.current
-    val fontScale = configuration.fontScale.takeIf { it > 0f } ?: 1f
+    val density = LocalDensity.current
+    val containerSize = LocalWindowInfo.current.containerSize
+    val fontScale = density.fontScale.takeIf { it > 0f } ?: 1f
 
-    // Treat larger font scales as less effective space and shift to compact sizing sooner.
-    val effectiveWidthDp = configuration.screenWidthDp / fontScale
-    val effectiveHeightDp = configuration.screenHeightDp / fontScale
+    // The window container size is the real available space (Configuration.screenWidthDp is rounded and
+    // its inset handling depends on targetSdk). Treat larger font scales as less effective space and
+    // shift to compact sizing sooner.
+    val effectiveWidthDp = with(density) { containerSize.width.toDp() }.value / fontScale
+    val effectiveHeightDp = with(density) { containerSize.height.toDp() }.value / fontScale
 
     val widthClass =
         when {
