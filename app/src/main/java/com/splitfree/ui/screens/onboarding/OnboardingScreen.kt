@@ -1,5 +1,6 @@
 package com.splitfree.ui.screens.onboarding
 
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -16,13 +17,17 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -31,13 +36,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -67,6 +79,15 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) viewModel.importBackup(uri)
+    }
+
+    // FLAG_SECURE: a private key / 24-word mnemonic may be typed or pasted here, so block
+    // screenshots and screen recording for as long as this screen is on the window.
+    val view = LocalView.current
+    DisposableEffect(Unit) {
+        val window = (view.context as? android.app.Activity)?.window
+        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
     }
 
     val horizontalPadding = tokens.screenPaddingHorizontal
@@ -203,22 +224,13 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
                                 }
                             }
                             "key" -> {
-                                OutlinedTextField(
+                                SecretKeyField(
                                     value = importInput,
                                     onValueChange = {
                                         importInput = it
                                         viewModel.clearError()
                                     },
-                                    label = { Text(stringResource(R.string.private_key_or_seed)) },
-                                    placeholder = { Text(stringResource(R.string.key_placeholder)) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 3,
-                                    maxLines = 5,
-                                    isError = error != null,
-                                    supportingText =
-                                    error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
-                                        ?: { Text(stringResource(R.string.key_supporting_text)) },
-                                    shape = MaterialTheme.shapes.medium
+                                    error = error
                                 )
                                 Spacer(Modifier.height(tokens.fieldSpacing))
                                 Button(
@@ -307,4 +319,48 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
             }
         }
     }
+}
+
+/**
+ * Entry field for a hex private key or 24-word seed phrase.
+ *
+ * Masked by default with a password keyboard (no autocorrect, no IME learning) so the secret is not
+ * echoed to the screen or the keyboard's dictionary; the trailing eye icon reveals it on demand.
+ */
+@Composable
+internal fun SecretKeyField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    error: String?,
+    modifier: Modifier = Modifier
+) {
+    var reveal by rememberSaveable { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(stringResource(R.string.private_key_or_seed)) },
+        placeholder = { Text(stringResource(R.string.key_placeholder)) },
+        modifier = modifier.fillMaxWidth().testTag("onboarding_secret_input"),
+        minLines = 3,
+        maxLines = 5,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+        visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(
+                onClick = { reveal = !reveal },
+                modifier = Modifier.testTag("onboarding_secret_toggle")
+            ) {
+                Icon(
+                    imageVector = if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    contentDescription =
+                    stringResource(if (reveal) R.string.cd_hide_secret else R.string.cd_show_secret)
+                )
+            }
+        },
+        isError = error != null,
+        supportingText =
+        error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
+            ?: { Text(stringResource(R.string.key_supporting_text)) },
+        shape = MaterialTheme.shapes.medium
+    )
 }

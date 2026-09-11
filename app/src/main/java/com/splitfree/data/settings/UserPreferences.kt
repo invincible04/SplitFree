@@ -31,8 +31,19 @@ constructor(@ApplicationContext private val context: Context) : SettingsContract
             prefs.edit().putString(KEY_DISPLAY_NAME, value.take(50).trim()).apply()
         }
 
+    /**
+     * True once the app has asked for `POST_NOTIFICATIONS` (API 33+). The system prompt is shown at
+     * most once per install so a user who declined is not nagged on every launch.
+     */
+    var notificationsPrompted: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFICATIONS_PROMPTED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_NOTIFICATIONS_PROMPTED, value).apply()
+        }
+
     companion object {
         private const val KEY_GIFT_WRAP = "gift_wrap_enabled"
         private const val KEY_DISPLAY_NAME = "display_name"
+        private const val KEY_NOTIFICATIONS_PROMPTED = "notifications_prompted"
     }
 }

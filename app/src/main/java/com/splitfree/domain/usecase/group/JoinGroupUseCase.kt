@@ -51,7 +51,8 @@ constructor(
      * @throws IllegalStateException if the link carries no relays
      */
     suspend operator fun invoke(uri: String): Group {
-        Log.i(TAG, "Joining via link: ${uri.take(80)}...")
+        // Never log the link itself: the payload is a bearer credential carrying the group key.
+        Log.i(TAG, "Joining via link")
         val invite = InviteLinkCodec.decode(uri)
 
         // Validate group ID is a valid UUID

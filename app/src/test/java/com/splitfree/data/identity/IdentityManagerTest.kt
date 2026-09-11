@@ -14,6 +14,12 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,6 +29,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class IdentityManagerTest {
     private val context = mockk<Context>(relaxed = true)
     private lateinit var storage: FakeSecureStorage
@@ -72,6 +79,72 @@ class IdentityManagerTest {
         every { emptyStorage.contains("nsec") } returns false
         assertFalse(IdentityManager(context, emptyStorage).hasIdentity())
         verify(exactly = 0) { emptyStorage.canDecrypt(any()) }
+    }
+
+    // --- observeHasIdentity ---
+
+    @Test
+    fun `observeHasIdentity starts false without a key`() {
+        assertFalse(mgr.observeHasIdentity().value)
+    }
+
+    @Test
+    fun `observeHasIdentity starts true when a key is already stored`() {
+        storage.putString("nsec", validPrivHex)
+        assertTrue(mgr.observeHasIdentity().value)
+    }
+
+    @Test
+    fun `observeHasIdentity emits true after generateKeyPair`() {
+        val state = mgr.observeHasIdentity()
+        assertFalse(state.value)
+        mgr.generateKeyPair()
+        assertTrue(state.value)
+    }
+
+    @Test
+    fun `observeHasIdentity emits true after importKey`() {
+        val state = mgr.observeHasIdentity()
+        assertFalse(state.value)
+        mgr.importKey(validPrivHex)
+        assertTrue(state.value)
+    }
+
+    @Test
+    fun `observeHasIdentity stays false when importKey rejects the input`() {
+        val state = mgr.observeHasIdentity()
+        assertThrows(IllegalArgumentException::class.java) { mgr.importKey("00".repeat(32)) }
+        assertFalse(state.value)
+    }
+
+    @Test
+    fun `observeHasIdentity emits true after commitPendingKeyPair`() {
+        val state = mgr.observeHasIdentity()
+        storage.putString("nsec_pending", "pendpriv")
+        storage.putString("npub_pending", "pendpub")
+        assertFalse(state.value)
+        mgr.commitPendingKeyPair()
+        assertTrue(state.value)
+    }
+
+    @Test
+    fun `observeHasIdentity is not evaluated until requested`() {
+        val lazyStorage = mockk<SecureStorage>()
+        every { lazyStorage.contains("nsec") } returns true
+        every { lazyStorage.canDecrypt("nsec") } returns true
+        IdentityManager(context, lazyStorage)
+        verify(exactly = 0) { lazyStorage.contains(any()) }
+        verify(exactly = 0) { lazyStorage.canDecrypt(any()) }
+    }
+
+    @Test
+    fun `observeHasIdentity delivers false then true to a live collector`() = runTest {
+        val state = mgr.observeHasIdentity()
+        val seen = mutableListOf<Boolean>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { state.take(2).toList(seen) }
+        mgr.generateKeyPair()
+        job.join()
+        assertEquals(listOf(false, true), seen)
     }
 
     @Test

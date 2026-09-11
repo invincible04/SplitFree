@@ -198,8 +198,28 @@
     <string name="cd_export_icon">Export</string>
     <string name="cd_show_key_icon">Show key</string>
     <string name="cd_show_seed_icon">Show seed phrase</string>
+    <string name="cd_hide_secret">Hide secret</string>
+    <string name="cd_show_secret">Show secret</string>
     <string name="cd_bluetooth_icon">Bluetooth</string>
     <string name="cd_sync_icon">Sync</string>
     <string name="cd_person_icon">Person</string>
     <string name="cd_theme_overlay">Theme transition overlay</string>
+
+    <!-- ExpenseNotifier -->
+    <string name="notif_channel_expenses_name">Expense Updates</string>
+    <string name="notif_channel_expenses_description">Notifications for new expenses and settlements</string>
+    <string name="notif_expense_title">New expense in %1$s</string>
+    <string name="notif_expense_text">%1$s for %2$s</string>
+    <string name="notif_settlement_title">Settlement in %1$s</string>
+    <string name="notif_settlement_text">%1$s settled</string>
+    <!-- Lock-screen (public) versions: deliberately carry no amount or description -->
+    <string name="notif_public_new_expense">New expense</string>
+    <string name="notif_public_new_settlement">New settlement</string>
+
+    <!-- MainActivity: invite deep links -->
+    <string name="join_group_title">Join Group?</string>
+    <string name="join_group_body">Join \"%1$s\"?\nRelays: %2$s\n\nOnly join if you trust the sender.</string>
+    <string name="join">Join</string>
+    <string name="invalid_invite_link">Invalid invite link</string>
+    <string name="join_failed">Join failed: %1$s</string>
 </resources>

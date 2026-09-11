@@ -1,5 +1,7 @@
 package com.splitfree.domain.repository
 
+import kotlinx.coroutines.flow.Flow
+
 /**
  * Domain contract for cryptographic identity management.
  * Abstracts key storage so the domain layer has no Android dependency.
@@ -7,6 +9,12 @@ package com.splitfree.domain.repository
 interface IdentityContract {
     /** @return true if a keypair has been generated or imported */
     fun hasIdentity(): Boolean
+
+    /**
+     * Emits [hasIdentity] now and again whenever a keypair is generated, imported or committed, so
+     * callers can react to onboarding completing without polling.
+     */
+    fun observeHasIdentity(): Flow<Boolean>
 
     /** @return 64-char hex-encoded secp256k1 public key */
     fun getPublicKeyHex(): String

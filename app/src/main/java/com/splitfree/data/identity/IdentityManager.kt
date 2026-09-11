@@ -13,6 +13,9 @@ import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Manages the user's secp256k1 keypair using ACINQ secp256k1-kmp.
@@ -32,6 +35,14 @@ constructor(
      * so the app routes to onboarding / mnemonic restore instead of crashing on first use.
      */
     override fun hasIdentity(): Boolean = storage.contains(KEY_PRIVATE) && storage.canDecrypt(KEY_PRIVATE)
+
+    /**
+     * Backs [observeHasIdentity]. Seeded lazily from [hasIdentity] so merely constructing the
+     * manager never touches the Keystore; flipped to true by every write that installs a key.
+     */
+    private val identityState: MutableStateFlow<Boolean> by lazy { MutableStateFlow(hasIdentity()) }
+
+    override fun observeHasIdentity(): StateFlow<Boolean> = identityState.asStateFlow()
 
     override fun getPublicKeyHex(): String = storage.getString(KEY_PUBLIC, "")!!
 
@@ -99,6 +110,7 @@ constructor(
         storage.remove(KEY_PENDING_PUBLIC)
         storage.remove(KEY_REVOCATION_EVENT_IDS)
         storage.remove(KEY_REVOCATION_START)
+        identityState.value = true
     }
 
     /** Discard a pending keypair (e.g., on revocation failure). */
@@ -112,12 +124,16 @@ constructor(
     /** Check if there's an incomplete revocation to resume. */
     override fun hasPendingKeyPair(): Boolean = storage.contains(KEY_PENDING_PRIVATE)
 
-    /** Set a plain SharedPreferences flag so BootReceiver can check without encrypted storage. */
+    /**
+     * Set a plain SharedPreferences flag so BootReceiver can check without encrypted storage, and
+     * wake anyone collecting [observeHasIdentity].
+     */
     private fun markIdentityCreated() {
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("identity_created", true)
             .apply()
+        identityState.value = true
     }
 
     override fun getPendingPublicKeyHex(): String? = storage.getString(KEY_PENDING_PUBLIC, null)

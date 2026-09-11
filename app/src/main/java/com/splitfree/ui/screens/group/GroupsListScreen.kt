@@ -161,7 +161,8 @@ private suspend fun extractInviteLink(clipboard: androidx.compose.ui.platform.Cl
         ?.trim()
         ?: return null
     val link = text.lines().firstOrNull { it.trimStart().startsWith("splitfree://join") }?.trim()
-    if (link != null) Log.i(TAG, "Pasted invite: ${link.take(60)}...")
+    // The link is a bearer credential (it carries the group key) — never log its payload.
+    if (link != null) Log.i(TAG, "Pasted invite link from clipboard")
     return link
 }
 
@@ -184,7 +185,7 @@ private fun ScanQrButton(context: android.content.Context, onScanResult: (String
             .startScan()
             .addOnSuccessListener { barcode ->
                 barcode.rawValue?.let {
-                    Log.i(TAG, "QR scanned: ${it.take(60)}...")
+                    Log.i(TAG, "QR scanned (${it.length} chars)")
                     onScanResult(it)
                 }
             }
