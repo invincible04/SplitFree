@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -16,9 +17,11 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -28,7 +31,8 @@ import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Nostr relay pool — manages multiple WebSocket connections, subscriptions,
@@ -256,6 +260,12 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
 
     /**
      * Internal: subscribe with filters, collect events until EOSE from all relays, then cleanup.
+     *
+     * Collectors are caller-scoped, so the returned list is a snapshot no coroutine can still
+     * append to. Subscriptions are always closed, including on cancellation.
+     *
+     * @throws IOException if the collectors do not attach
+     *   within [READY_TIMEOUT_MS] — the fetch is failed rather than returning partial history
      */
     private suspend fun fetchWithFilters(
         subId: String,
@@ -265,9 +275,12 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             list.none { it.id == event.id }
         }
     ): List<NostrEvent> {
-        if (relays.isEmpty()) return emptyList()
+        // Snapshot the relay set once. connect()/disconnect() can change it concurrently, and a
+        // count taken separately from the relays actually collected would leave collectorsReady
+        // and allEose permanently unreachable.
+        val targets = relays.values.toList()
+        if (targets.isEmpty()) return emptyList()
         val events = mutableListOf<NostrEvent>()
-        val relayCount = relays.size.coerceAtLeast(1)
         val eoseCount =
             java.util.concurrent.atomic
                 .AtomicInteger(0)
@@ -276,47 +289,66 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         val readyCount =
             java.util.concurrent.atomic
                 .AtomicInteger(0)
-        val collectJob =
-            scope.launch {
-                relays.values.forEach { relay ->
+        try {
+            // Caller-scoped: collectors cannot outlive this call, so the caller never receives a
+            // list that a collector is still appending to.
+            coroutineScope {
+                val collectJob =
                     launch {
-                        relay.messages
-                            .onSubscription {
-                                if (readyCount.incrementAndGet() >= relayCount) collectorsReady.complete(Unit)
-                            }.collect { msg ->
-                                when (msg) {
-                                    is RelayMessage.EventMsg -> {
-                                        if (msg.subId == subId && msg.event.verify()) {
-                                            synchronized(events) {
-                                                if (dedup(msg.event, events)) events.add(msg.event)
+                        targets.forEach { relay ->
+                            launch {
+                                // Per-collector: a relay that repeats EOSE must not be able to
+                                // satisfy the barrier on behalf of relays still sending history.
+                                var eoseSeen = false
+                                relay.messages
+                                    .onSubscription {
+                                        if (readyCount.incrementAndGet() >= targets.size) {
+                                            collectorsReady.complete(Unit)
+                                        }
+                                    }.collect { msg ->
+                                        when (msg) {
+                                            is RelayMessage.EventMsg -> {
+                                                if (msg.subId == subId && msg.event.verify()) {
+                                                    synchronized(events) {
+                                                        if (dedup(msg.event, events)) events.add(msg.event)
+                                                    }
+                                                }
                                             }
+
+                                            is RelayMessage.EoseMsg -> {
+                                                if (msg.subId == subId && !eoseSeen) {
+                                                    eoseSeen = true
+                                                    if (eoseCount.incrementAndGet() >= targets.size) {
+                                                        allEose.complete(Unit)
+                                                    }
+                                                }
+                                            }
+
+                                            else -> {}
                                         }
                                     }
-
-                                    is RelayMessage.EoseMsg -> {
-                                        if (msg.subId == subId &&
-                                            eoseCount.incrementAndGet() >= relayCount
-                                        ) {
-                                            allEose.complete(Unit)
-                                        }
-                                    }
-
-                                    else -> {}
-                                }
                             }
+                        }
                     }
+                try {
+                    // Subscribing before the collectors attach would silently drop the history the
+                    // relay sends back, so a readiness miss fails the fetch instead of returning a
+                    // partial result the caller would trust. Cleanup still runs in the finally blocks.
+                    withTimeoutOrNull(READY_TIMEOUT_MS) { collectorsReady.await() }
+                        ?: throw IOException("Relay collectors did not become ready")
+                    targets.forEach { it.subscribe(subId, filters) }
+                    // Timeout waiting for EOSE — proceed with whatever events we collected
+                    withTimeoutOrNull(timeoutMs) { allEose.await() }
+                } finally {
+                    // NonCancellable so the join still happens when the caller is cancelled;
+                    // returning before collectors stop is what allows concurrent mutation.
+                    withContext(NonCancellable) { collectJob.cancelAndJoin() }
                 }
             }
-        withTimeout(5_000) { collectorsReady.await() }
-        relays.values.forEach { it.subscribe(subId, filters) }
-        try {
-            withTimeout(timeoutMs) { allEose.await() }
-        } catch (_: TimeoutCancellationException) {
-            // Timeout waiting for EOSE — proceed with whatever events we collected
+        } finally {
+            targets.forEach { it.closeSubscription(subId) }
         }
-        relays.values.forEach { it.closeSubscription(subId) }
-        collectJob.cancel()
-        return events
+        return synchronized(events) { events.toList() }
     }
 
     /**
@@ -422,5 +454,6 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
 
     companion object {
         private const val TAG = "NostrClient"
+        private const val READY_TIMEOUT_MS = 5_000L
     }
 }

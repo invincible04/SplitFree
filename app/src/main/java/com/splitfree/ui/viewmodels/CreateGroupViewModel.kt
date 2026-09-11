@@ -8,8 +8,10 @@ import com.splitfree.domain.usecase.group.CreateGroupUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
+import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,42 +56,55 @@ constructor(
         val isKnown = url in RelayDefaults.DEFAULT_RELAYS || url in RelayDefaults.FALLBACK_RELAYS
         val host = url.removePrefix("wss://")
         viewModelScope.launch {
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
-            relayHealthMonitor.checkRelays(listOf(url))
-            val status = relayHealthMonitor.statuses[url]
-            if (status?.online == true) {
-                _relayInfo.value = _relayInfo.value +
-                    (
-                        url to
-                            RelayInfo(
-                                paid = status.paid,
-                                supportsGiftWrap = status.supportsGiftWrap,
-                                latencyMs = status.latencyMs
-                            )
-                        )
-            }
-            if (isKnown) {
-                // Default relays: ONLINE if NIP-11 passed, IDLE (grey) if not — never red
+            try {
+                runRelayCheck(url, host, isKnown)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay check failed for $host: ${e.message}")
                 _relayStatuses.value = _relayStatuses.value +
-                    (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
-                return@launch
+                    (url to if (isKnown) RelayCheckStatus.IDLE else RelayCheckStatus.OFFLINE)
+                _error.value = "Could not check $host"
             }
-            if (status?.online != true) {
-                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-                _relays.value = _relays.value - url
-                _error.value = "$host is offline or unreachable"
-                return@launch
-            }
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
-            val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
-            if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
-                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-                _relays.value = _relays.value - url
-                _error.value = "$host can't store events — write+read failed"
-                return@launch
-            }
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
         }
+    }
+
+    private suspend fun runRelayCheck(url: String, host: String, isKnown: Boolean) {
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
+        relayHealthMonitor.checkRelays(listOf(url))
+        val status = relayHealthMonitor.statuses[url]
+        if (status?.online == true) {
+            _relayInfo.value = _relayInfo.value +
+                (
+                    url to
+                        RelayInfo(
+                            paid = status.paid,
+                            supportsGiftWrap = status.supportsGiftWrap,
+                            latencyMs = status.latencyMs
+                        )
+                    )
+        }
+        if (isKnown) {
+            // Default relays: ONLINE if NIP-11 passed, IDLE (grey) if not — never red
+            _relayStatuses.value = _relayStatuses.value +
+                (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
+            return
+        }
+        if (status?.online != true) {
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
+            _relays.value = _relays.value - url
+            _error.value = "$host is offline or unreachable"
+            return
+        }
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
+        val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
+        if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
+            _relays.value = _relays.value - url
+            _error.value = "$host can't store events — write+read failed"
+            return
+        }
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
     }
 
     fun checkAllRelays() {
@@ -105,5 +120,9 @@ constructor(
                 _error.value = e.message ?: "Failed to create group"
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "CreateGroupVM"
     }
 }

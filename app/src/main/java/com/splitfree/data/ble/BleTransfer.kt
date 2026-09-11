@@ -11,6 +11,8 @@ import com.splitfree.sync.event.EventProcessor
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -234,11 +236,11 @@ constructor(
         val body = data.copyOfRange(1, data.size)
         return when (type) {
             MSG_HANDSHAKE -> {
-                json.decodeFromString<BleHandshake>(String(body))
+                decodeOrNull(BleHandshake.serializer(), body)
             }
 
             MSG_SYNC_REQ -> {
-                val req = json.decodeFromString<BleSyncRequest>(String(body))
+                val req = decodeOrNull(BleSyncRequest.serializer(), body) ?: return null
                 sendMissingEvents(endpointId, req.groupId, req.eventIds.toSet())
                 req
             }
@@ -256,7 +258,7 @@ constructor(
                     Log.w(TAG, "Rejecting group IDs from unauthenticated peer $endpointId")
                     return null
                 }
-                json.decodeFromString(ListSerializer(String.serializer()), String(body))
+                decodeOrNull(ListSerializer(String.serializer()), body)
             }
 
             else -> {
@@ -265,11 +267,26 @@ constructor(
         }
     }
 
+    /**
+     * Parse a peer-supplied payload. A peer is untrusted here — MSG_HANDSHAKE is handled
+     * before authentication — so malformed bytes must be discarded rather than thrown to
+     * the caller, which collects this in a flow whose collector would die with it.
+     */
+    private fun <T> decodeOrNull(serializer: DeserializationStrategy<T>, body: ByteArray): T? = try {
+        json.decodeFromString(serializer, String(body, Charsets.UTF_8))
+    } catch (e: IllegalArgumentException) {
+        // Covers SerializationException, which extends IllegalArgumentException.
+        Log.w(TAG, "Discarding unparseable BLE payload from peer: ${e.message}")
+        null
+    }
+
     private suspend fun storeReceivedEvent(eventJson: String): Boolean {
         return try {
             val event = NostrEvent.fromJson(eventJson) ?: return false
             val result = eventProcessor.process(rawEvent = event)
             result.stored
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to store BLE event: ${e.message}")
             false

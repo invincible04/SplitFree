@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -25,9 +26,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -90,38 +93,65 @@ constructor(
 
     init {
         viewModelScope.launch {
-            groupRepo.observeById(groupId).collect { group ->
-                val myPub = identity.getPublicKeyHex()
-                _uiState.update {
-                    it.copy(
-                        groupName = group?.name ?: "Group",
-                        memberCount = group?.members?.size ?: 1,
-                        members = group?.members ?: emptyList(),
-                        memberNames = group?.memberNames ?: emptyMap(),
-                        createdBy = group?.createdBy ?: "",
-                        myPubkey = myPub,
-                        relays = group?.relays ?: emptyList()
-                    )
+            groupRepo.observeById(groupId)
+                .catch { e -> reportObservationFailure("Group observation failed", e) }
+                .collect { group ->
+                    try {
+                        applyGroup(group)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        reportObservationFailure("Failed to apply group update", e)
+                    }
                 }
-                if (inviteLinkLoaded.compareAndSet(false, true)) {
-                    loadInviteLink()
-                }
-            }
         }
         viewModelScope.launch {
-            getExpenses.observe(groupId).collectLatest { allExpenses ->
-                try {
-                    val result = computeBalances.computeWithExclusions(groupId)
-                    val excluded = result.excludedExpenseUuids
-                    val debts = simplifyDebts(result.balances)
-                    val expenses = allExpenses.filter { e -> e.id !in excluded }
-                    _uiState.update { it.copy(debts = debts, expenses = expenses) }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to compute balances: ${e.message}", e)
-                    _error.value = e.message ?: "Failed to compute balances"
+            getExpenses.observe(groupId)
+                .catch { e -> reportObservationFailure("Expense observation failed", e) }
+                .collectLatest { allExpenses ->
+                    try {
+                        val result = computeBalances.computeWithExclusions(groupId)
+                        val excluded = result.excludedExpenseUuids
+                        val debts = simplifyDebts(result.balances)
+                        val expenses = allExpenses.filter { e -> e.id !in excluded }
+                        _uiState.update { it.copy(debts = debts, expenses = expenses) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to compute balances: ${e.message}", e)
+                        _error.value = e.message ?: "Failed to compute balances"
+                    }
                 }
-            }
         }
+    }
+
+    private fun applyGroup(group: Group?) {
+        val myPub = identity.getPublicKeyHex()
+        _uiState.update {
+            it.copy(
+                groupName = group?.name ?: "Group",
+                memberCount = group?.members?.size ?: 1,
+                members = group?.members ?: emptyList(),
+                memberNames = group?.memberNames ?: emptyMap(),
+                createdBy = group?.createdBy ?: "",
+                myPubkey = myPub,
+                relays = group?.relays ?: emptyList()
+            )
+        }
+        if (inviteLinkLoaded.compareAndSet(false, true)) {
+            loadInviteLink()
+        }
+    }
+
+    /**
+     * A failing Room query or an unreadable identity key must surface as an error,
+     * not as an uncaught exception that tears down the ViewModel scope. Cancellation
+     * and JVM [Error]s stay fatal.
+     */
+    private fun reportObservationFailure(what: String, e: Throwable) {
+        if (e is CancellationException || e !is Exception) throw e
+        Log.e(TAG, "$what: ${e.message}", e)
+        _error.value = e.message ?: what
     }
 
     private fun loadInviteLink() {
@@ -188,39 +218,52 @@ constructor(
         val isKnown = url in RelayDefaults.DEFAULT_RELAYS || url in RelayDefaults.FALLBACK_RELAYS
         val host = url.removePrefix("wss://")
         viewModelScope.launch {
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
-            relayHealthMonitor.checkRelays(listOf(url))
-            val status = relayHealthMonitor.statuses[url]
-            if (status?.online == true) {
-                _relayInfo.value = _relayInfo.value +
-                    (
-                        url to
-                            RelayInfo(
-                                paid = status.paid,
-                                supportsGiftWrap = status.supportsGiftWrap,
-                                latencyMs = status.latencyMs
-                            )
-                        )
-            }
-            if (isKnown) {
+            try {
+                runRelayCheck(url, host, isKnown)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay check failed for $host: ${e.message}")
                 _relayStatuses.value = _relayStatuses.value +
-                    (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
-                return@launch
+                    (url to if (isKnown) RelayCheckStatus.IDLE else RelayCheckStatus.OFFLINE)
+                _error.value = "Could not check $host"
             }
-            if (status?.online != true) {
-                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-                _error.value = "$host is offline or unreachable"
-                return@launch
-            }
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
-            val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
-            if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
-                _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-                _error.value = "$host can't store events — write+read failed"
-                return@launch
-            }
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
         }
+    }
+
+    private suspend fun runRelayCheck(url: String, host: String, isKnown: Boolean) {
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
+        relayHealthMonitor.checkRelays(listOf(url))
+        val status = relayHealthMonitor.statuses[url]
+        if (status?.online == true) {
+            _relayInfo.value = _relayInfo.value +
+                (
+                    url to
+                        RelayInfo(
+                            paid = status.paid,
+                            supportsGiftWrap = status.supportsGiftWrap,
+                            latencyMs = status.latencyMs
+                        )
+                    )
+        }
+        if (isKnown) {
+            _relayStatuses.value = _relayStatuses.value +
+                (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
+            return
+        }
+        if (status?.online != true) {
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
+            _error.value = "$host is offline or unreachable"
+            return
+        }
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
+        val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
+        if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
+            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
+            _error.value = "$host can't store events — write+read failed"
+            return
+        }
+        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
     }
 
     fun checkAllRelays() {

@@ -159,6 +159,7 @@
     <string name="export_hint">Save all groups to a .splitfree backup file.</string>
     <string name="export">Export</string>
     <string name="backup_exported">Backup exported successfully</string>
+    <string name="export_failed">Export failed — the backup file may be incomplete</string>
 
     <!-- DangerZoneSection -->
     <string name="danger_zone">Danger Zone</string>

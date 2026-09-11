@@ -112,19 +112,33 @@ constructor(
     }
 
     fun stopDiscovery() {
-        client.stopDiscovery()
+        guarded("stop_discovery") { client.stopDiscovery() }
     }
 
     fun disconnect(endpointId: String) {
-        client.disconnectFromEndpoint(endpointId)
+        guarded("disconnect") { client.disconnectFromEndpoint(endpointId) }
         connectedEndpoints.remove(endpointId)
     }
 
+    /**
+     * Tear down advertising, discovery and all endpoints. Each call is guarded separately so
+     * that one refusal — permissions revoked while connected — cannot skip the remaining
+     * teardown, and local state is cleared either way.
+     */
     fun stop() {
-        client.stopAdvertising()
-        client.stopDiscovery()
-        client.stopAllEndpoints()
+        guarded("stop_advertising") { client.stopAdvertising() }
+        guarded("stop_discovery") { client.stopDiscovery() }
+        guarded("stop_all_endpoints") { client.stopAllEndpoints() }
         connectedEndpoints.clear()
+    }
+
+    /** Run one Nearby call, reporting a revoked-permission refusal instead of propagating it. */
+    private inline fun guarded(operation: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: SecurityException) {
+            emitError(operation, e)
+        }
     }
 
     private val endpointDiscoveryCallback =
@@ -147,11 +161,17 @@ constructor(
                 // via Schnorr challenge-response in BleTransfer after connection.
                 // Validate endpoint name is a plausible hex pubkey prefix.
                 val name = info.endpointName
-                if (name.length == 8 && name.all { it in "0123456789abcdef" }) {
-                    client.acceptConnection(endpointId, payloadCallback)
-                } else {
-                    Log.w(TAG, "Rejecting connection from endpoint with invalid name: $name")
-                    client.rejectConnection(endpointId)
+                // This runs on a Nearby callback thread — an escaping SecurityException
+                // (permission revoked while connected) would kill the process.
+                try {
+                    if (name.length == 8 && name.all { it in "0123456789abcdef" }) {
+                        client.acceptConnection(endpointId, payloadCallback)
+                    } else {
+                        Log.w(TAG, "Rejecting connection from endpoint with invalid name: $name")
+                        client.rejectConnection(endpointId)
+                    }
+                } catch (e: SecurityException) {
+                    emitError("connection_initiated", e)
                 }
             }
 

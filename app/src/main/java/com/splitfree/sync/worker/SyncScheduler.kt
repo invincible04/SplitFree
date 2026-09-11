@@ -17,6 +17,19 @@ import java.util.concurrent.TimeUnit
  * Schedules periodic and midnight sync jobs via WorkManager.
  */
 object SyncScheduler {
+    /** A bounded, network-constrained fallback for boot and connectivity restoration. */
+    fun scheduleImmediateSync(context: Context) {
+        val request = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofSeconds(30))
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "splitfree_immediate_sync",
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
+
     fun schedulePeriodicSync(context: Context, intervalHours: Long) {
         val request =
             PeriodicWorkRequestBuilder<SyncWorker>(intervalHours, TimeUnit.HOURS)

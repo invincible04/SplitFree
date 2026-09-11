@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.text.format.DateFormat
+import com.splitfree.BuildConfig
 import java.io.PrintWriter
 import java.io.StringWriter
 import kotlin.system.exitProcess
@@ -27,6 +28,9 @@ object ProcessHealthTracker {
     private const val KEY_CRASH_TS = "crash_ts"
     private const val KEY_CRASH_THREAD = "crash_thread"
     private const val KEY_CRASH_STACK = "crash_stack"
+    private const val KEY_CRASH_VERSION = "crash_version"
+    private const val KEY_CRASH_HEARTBEAT_SOURCE = "crash_heartbeat_source"
+    private const val KEY_CRASH_HEARTBEAT_TS = "crash_heartbeat_ts"
     private const val MAX_STACK_CHARS = 16_000
 
     @Volatile
@@ -41,7 +45,9 @@ object ProcessHealthTracker {
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
                 try {
                     recordCrash(appContext, thread, throwable)
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
+                    // Diagnostics are best-effort, even under memory/stack exhaustion.
+                    // Never prevent Android from handling the original fatal error.
                 }
                 if (previous != null) {
                     previous.uncaughtException(thread, throwable)
@@ -79,6 +85,7 @@ object ProcessHealthTracker {
         sb.appendLine("Generated: ${formatTime(context, now)}")
         sb.appendLine("SDK: ${Build.VERSION.SDK_INT}")
         sb.appendLine("App package: ${context.packageName}")
+        sb.appendLine("App version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         sb.appendLine()
 
         sb.appendLine("Heartbeat")
@@ -95,6 +102,14 @@ object ProcessHealthTracker {
         if (crashTs > 0L) {
             sb.appendLine("- Last: ${formatTime(context, crashTs)} (${age(now - crashTs)})")
             sb.appendLine("- Thread: $crashThread")
+            p.getString(KEY_CRASH_VERSION, null)?.let { sb.appendLine("- Version at crash: $it") }
+            val crashHeartbeatTs = p.getLong(KEY_CRASH_HEARTBEAT_TS, 0L)
+            if (crashHeartbeatTs > 0L) {
+                sb.appendLine(
+                    "- Heartbeat before crash: ${p.getString(KEY_CRASH_HEARTBEAT_SOURCE, "")} " +
+                        "at ${formatTime(context, crashHeartbeatTs)}"
+                )
+            }
             if (crashStack.isNotBlank()) {
                 sb.appendLine("- Stacktrace:")
                 sb.appendLine(crashStack)
@@ -110,15 +125,22 @@ object ProcessHealthTracker {
         return sb.toString()
     }
 
-    private fun recordCrash(context: Context, thread: Thread, throwable: Throwable) {
+    internal fun recordCrash(context: Context, thread: Thread, throwable: Throwable) {
         val sw = StringWriter()
         throwable.printStackTrace(PrintWriter(sw))
         val stack = sw.toString().take(MAX_STACK_CHARS)
-        prefs(context).edit()
+        val p = prefs(context)
+        // Snapshot the last operation now: the next launch overwrites the live heartbeat.
+        p.edit()
             .putLong(KEY_CRASH_TS, System.currentTimeMillis())
             .putString(KEY_CRASH_THREAD, thread.name.take(128))
             .putString(KEY_CRASH_STACK, stack)
-            .apply()
+            .putString(KEY_CRASH_VERSION, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            .putString(KEY_CRASH_HEARTBEAT_SOURCE, p.getString(KEY_HEARTBEAT_SOURCE, null))
+            .putLong(KEY_CRASH_HEARTBEAT_TS, p.getLong(KEY_HEARTBEAT_TS, 0L))
+            // The default handler terminates the process immediately after this returns.
+            // apply() queues a write that can be lost along with the crash evidence.
+            .commit()
     }
 
     private fun latestExitReason(context: Context): String {

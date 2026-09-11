@@ -48,9 +48,13 @@ import com.splitfree.ui.util.HeightClass
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.OnboardingViewModel
+import com.splitfree.util.DebugLog as Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private const val TAG = "OnboardingScreen"
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -72,8 +76,17 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
             withContext(Dispatchers.IO) {
-                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                if (json != null) viewModel.importBackup(json)
+                // A picked file can be unreadable (deleted, permission revoked); that used to
+                // throw out of this scope and crash instead of reporting a failed import.
+                val json = try {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Backup read failed: ${e.message}")
+                    null
+                }
+                if (json != null) viewModel.importBackup(json) else viewModel.reportUnreadableBackup()
             }
         }
     }

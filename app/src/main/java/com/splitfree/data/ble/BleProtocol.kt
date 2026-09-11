@@ -100,6 +100,9 @@ object BleProtocol {
 
         val groupId =
             if (hasGroupId) {
+                // The size check above only covers header + senderId; a packet that claims a
+                // group ID without carrying one would underflow the buffer.
+                if (buf.remaining() < GROUP_ID_SIZE) return null
                 val gid = ByteArray(GROUP_ID_SIZE)
                 buf.get(gid)
                 String(gid, Charsets.UTF_8).trimEnd('\u0000')

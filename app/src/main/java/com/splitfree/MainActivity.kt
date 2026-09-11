@@ -3,7 +3,6 @@ package com.splitfree
 import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -19,7 +18,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.compose.rememberNavController
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.domain.usecase.group.JoinGroupUseCase
@@ -56,18 +57,19 @@ class MainActivity : ComponentActivity() {
         sanitizeIntent(intent)
         handleDeepLink(intent)
 
-        // Start real-time sync service when identity becomes available
+        // Start only while visible; repeat when returning after Android stops a timed-out service.
         lifecycleScope.launch {
-            while (!identity.hasIdentity()) delay(1000)
-            val serviceIntent = Intent(this@MainActivity, com.splitfree.sync.worker.ForegroundSyncService::class.java)
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    while (!identity.hasIdentity()) delay(1000)
+                    startForegroundService(
+                        Intent(this@MainActivity, com.splitfree.sync.worker.ForegroundSyncService::class.java)
+                    )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not start sync service: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not start sync service: ${e.message}")
             }
         }
 

@@ -66,10 +66,14 @@ import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.viewmodels.RevokeState
 import com.splitfree.ui.viewmodels.SettingsViewModel
+import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private const val TAG = "SettingsScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,19 +88,31 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     var showSeedPhrase by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    var pendingExport by remember { mutableStateOf(false) }
     val backupExportedMsg = stringResource(R.string.backup_exported)
+    val backupFailedMsg = stringResource(R.string.export_failed)
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
-            withContext(Dispatchers.IO) {
-                context.contentResolver.openOutputStream(uri)?.use { viewModel.exportAllGroups(it) }
+            // openOutputStream throws when the picked target is gone or permission was
+            // revoked, and the export itself can fail mid-write; both used to escape this
+            // scope uncaught, and a null stream reported success without writing anything.
+            val exported = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use {
+                        viewModel.exportAllGroups(it)
+                        true
+                    } ?: false
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Export failed: ${e.message}")
+                    false
+                }
             }
-            pendingExport = false
-            snackbarHostState.showSnackbar(backupExportedMsg)
+            snackbarHostState.showSnackbar(if (exported) backupExportedMsg else backupFailedMsg)
         }
     }
 

@@ -27,6 +27,7 @@ import io.mockk.unmockkStatic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -176,5 +177,66 @@ class GroupDetailViewModelTest {
     @Test
     fun `error is null initially`() {
         assertNull(vm.error.value)
+    }
+
+    // --- observation failure boundaries ---
+
+    private fun newViewModel() = GroupDetailViewModel(
+        SavedStateHandle(mapOf("groupId" to "g1")),
+        groupRepo, expenseRepo, computeBalances, simplifyDebts,
+        rotateGroupKey, identity, getExpenses,
+        createInviteLink, updateGroupRelays, relayHealthMonitor, eventSigner
+    )
+
+    @Test
+    fun `failing group query surfaces an error instead of killing the scope`() = runTest {
+        every { groupRepo.observeById("g1") } returns flow { throw IllegalStateException("database corrupt") }
+
+        val failing = newViewModel()
+
+        assertEquals("database corrupt", failing.error.value)
+        failing.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `unreadable identity while applying a group update surfaces an error`() = runTest {
+        every { identity.getPublicKeyHex() } throws IllegalStateException("keystore unavailable")
+
+        val failing = newViewModel()
+
+        assertEquals("keystore unavailable", failing.error.value)
+        failing.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `failing expense query surfaces an error instead of killing the scope`() = runTest {
+        every { getExpenses.observe("g1") } returns flow { throw IllegalStateException("disk io error") }
+
+        val failing = newViewModel()
+
+        assertEquals("disk io error", failing.error.value)
+        failing.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `relay check failure marks unknown relay offline and surfaces an error`() = runTest {
+        val url = "wss://custom.bad.relay"
+        coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
+
+        vm.addRelay(url)
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
+        assertEquals("Could not check custom.bad.relay", vm.error.value)
+    }
+
+    @Test
+    fun `relay check failure leaves a default relay grey`() = runTest {
+        val url = RelayDefaults.DEFAULT_RELAYS.first()
+        coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
+
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.IDLE, vm.relayStatuses.value[url])
     }
 }

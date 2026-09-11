@@ -1,5 +1,6 @@
 package com.splitfree.sync.event
 
+import android.app.Application
 import android.app.NotificationManager
 import com.splitfree.sync.event.ExpenseNotifier
 import org.junit.After
@@ -10,8 +11,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [35])
 class ExpenseNotifierTest {
     private val context by lazy { RuntimeEnvironment.getApplication() }
     private val notifManager by lazy { context.getSystemService(NotificationManager::class.java) }

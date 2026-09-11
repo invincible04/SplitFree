@@ -74,10 +74,10 @@ object ThemeTransitionState {
     }
 
     fun clear() {
-        val old = overlay
+        // No recycle(): the renderer may still draw the last composed frame from this
+        // bitmap. Dropping the reference is enough — GC reclaims it once nothing draws it.
         overlay = null
         pendingChange = null
-        old?.recycle()
     }
 }
 

@@ -225,4 +225,53 @@ class BleProtocolEncodeDecodeTest {
         val truncated = encoded.copyOf(encoded.size - 2)
         assertNull(BleProtocol.decode(truncated))
     }
+
+    @Test
+    fun `decode returns null when a packet claims a group ID it does not carry`() {
+        // Header + senderId only, but FLAG_HAS_GROUP_ID set: reading the group ID would
+        // underflow the buffer.
+        val packet = header(flags = BleProtocol.FLAG_HAS_GROUP_ID, payloadLen = 0)
+        assertEquals(BleProtocol.HEADER_SIZE + BleProtocol.SENDER_ID_SIZE, packet.size)
+        assertNull(BleProtocol.decode(packet))
+    }
+
+    @Test
+    fun `decode returns null for every truncation of a packet with a group ID`() {
+        val full =
+            BleProtocol.encode(
+                MessageType.EXPENSE,
+                "payload".toByteArray(),
+                "aa".repeat(32),
+                groupId = "group-1"
+            )
+        assertNotNull(BleProtocol.decode(full))
+        // No prefix of a valid packet may throw — a peer can cut a frame at any offset.
+        for (size in 0 until full.size) {
+            assertNull("prefix of length $size must decode to null", BleProtocol.decode(full.copyOf(size)))
+        }
+    }
+
+    @Test
+    fun `decode returns null when the group ID field is partially present`() {
+        val packet =
+            header(flags = BleProtocol.FLAG_HAS_GROUP_ID, payloadLen = 0) +
+                ByteArray(BleProtocol.GROUP_ID_SIZE - 1)
+        assertNull(BleProtocol.decode(packet))
+    }
+
+    /** Build a valid 22-byte header + senderId prefix with the given flags. */
+    private fun header(flags: Int, payloadLen: Int): ByteArray {
+        val buf =
+            java.nio.ByteBuffer
+                .allocate(BleProtocol.HEADER_SIZE + BleProtocol.SENDER_ID_SIZE)
+                .order(java.nio.ByteOrder.BIG_ENDIAN)
+        buf.put(BleProtocol.VERSION)
+        buf.put(MessageType.EXPENSE.value)
+        buf.put(7)
+        buf.putLong(System.currentTimeMillis())
+        buf.put(flags.toByte())
+        buf.putShort(payloadLen.toShort())
+        buf.put(ByteArray(BleProtocol.SENDER_ID_SIZE))
+        return buf.array()
+    }
 }

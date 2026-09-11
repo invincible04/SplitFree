@@ -7,6 +7,7 @@ import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ImportGroupUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
@@ -64,9 +65,16 @@ constructor(
                 importGroup(jsonContent)
             }
             _importStatus.value = "Restored $count events"
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _importStatus.value = "Import failed: ${e.message}"
         }
+    }
+
+    /** Report a backup file that could not be read at all (deleted, permission revoked). */
+    fun reportUnreadableBackup() {
+        _importStatus.value = "Import failed: could not read the backup file"
     }
 
     fun clearError() {

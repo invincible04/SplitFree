@@ -1,5 +1,6 @@
 package com.splitfree.data.nostr.protocol
 
+import android.app.Application
 import com.splitfree.data.nostr.protocol.ClientMessage
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
@@ -11,8 +12,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [35])
 class RelayProtocolTest {
     private val sampleEvent = NostrEvent("id1", "pub1", 100, 1, listOf(listOf("g", "grp")), "hello", "sig1")
 

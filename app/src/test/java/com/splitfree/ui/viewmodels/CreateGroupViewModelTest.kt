@@ -139,4 +139,28 @@ class CreateGroupViewModelTest {
 
         assertEquals("boom", vm.error.value)
     }
+
+    @Test
+    fun `relay check failure marks unknown relay offline and surfaces an error`() = runTest {
+        val url = "wss://custom.bad.relay"
+        coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
+
+        vm.addRelay(url)
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
+        assertEquals("Could not check custom.bad.relay", vm.error.value)
+        // The relay stays in the list — a failed probe is not a rejection.
+        assertTrue(url in vm.relays.value)
+    }
+
+    @Test
+    fun `relay check failure leaves a default relay grey`() = runTest {
+        val url = RelayDefaults.DEFAULT_RELAYS.first()
+        coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
+
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.IDLE, vm.relayStatuses.value[url])
+    }
 }
