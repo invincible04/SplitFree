@@ -16,7 +16,10 @@ interface IdentityContract {
      */
     fun observeHasIdentity(): Flow<Boolean>
 
-    /** @return 64-char hex-encoded secp256k1 public key */
+    /**
+     * @return 64-char hex-encoded secp256k1 public key derived from the stored private key, or an
+     *   empty string if no identity exists
+     */
     fun getPublicKeyHex(): String
 
     /**
@@ -32,15 +35,18 @@ interface IdentityContract {
     /** @return raw 32-byte public key */
     fun getPublicKeyBytes(): ByteArray
 
-    /** Generate and persist a new secp256k1 keypair. @return (privHex, pubHex) */
-    fun generateKeyPair(): Pair<String, String>
+    /**
+     * Generate and persist a new secp256k1 keypair, discarding any pending keypair.
+     * @return hex public key of the new identity
+     */
+    fun generateKeyPair(): String
 
     /**
      * Generate a pending keypair for key revocation.
      * The current key is NOT overwritten until [commitPendingKeyPair].
-     * @return (privHex, pubHex) of the pending key
+     * @return hex public key of the pending key
      */
-    fun generatePendingKeyPair(): Pair<String, String>
+    fun generatePendingKeyPair(): String
 
     /** Promote the pending keypair to active and delete the old one. */
     fun commitPendingKeyPair()
@@ -77,8 +83,9 @@ interface IdentityContract {
     fun exportAsMnemonic(): List<String>
 
     /**
-     * Import a key from hex string or BIP-39 mnemonic (space-separated words).
-     * @throws IllegalArgumentException if the key is invalid
+     * Import a key from hex string or BIP-39 mnemonic (space-separated words). Replaces the active
+     * identity and discards any pending keypair and revocation tracking state.
+     * @throws IllegalArgumentException if the key is invalid; nothing is written in that case
      */
     fun importKey(input: String)
 }

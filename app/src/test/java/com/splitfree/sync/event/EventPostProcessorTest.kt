@@ -72,7 +72,38 @@ class EventPostProcessorTest {
             """{"name":"New","description":"","created_by":"$pubkey",""" +
                 """"created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
-        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(pubkey), listOf("wss://r"), 2000, pubkey) }
+        coVerify {
+            groupRepo.updateFromMeta(groupId, "New", listOf(pubkey), listOf("wss://r"), 2000, pubkey, emptyMap(), "")
+        }
+    }
+
+    @Test
+    fun `handle group_meta from creator applies the description`() = runBlocking {
+        val meta =
+            """{"name":"Trip","description":"Ski week","created_by":"$pubkey",""" +
+                """"created_at":1000,"members":["$pubkey"],"relays":["wss://r"]}"""
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Trip",
+                listOf(pubkey),
+                listOf("wss://r"),
+                2000,
+                pubkey,
+                any(),
+                "Ski week"
+            )
+        }
+    }
+
+    @Test
+    fun `handle group_meta from a non-creator leaves the description alone`() = runBlocking {
+        val stranger = "bb".repeat(32)
+        val meta =
+            """{"name":"Hijack","description":"Spoofed","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
+        processor.handle("group_meta", meta, stranger, groupId, 2000, false)
+        coVerify { groupRepo.updateFromMeta(groupId, "Test", any(), listOf("wss://r"), 2000, "", any(), null) }
     }
 
     @Test
@@ -170,7 +201,8 @@ class EventPostProcessorTest {
                 listOf("wss://r"),
                 2000,
                 pubkey,
-                emptyMap()
+                emptyMap(),
+                ""
             )
         }
     }
@@ -219,7 +251,9 @@ class EventPostProcessorTest {
         val meta =
             """{"name":"NC","members":["$pubkey"],"relays":["wss://r"]}"""
         processor.handle("group_meta", meta, pubkey, groupId, 2000, true)
-        coVerify { groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), 2000, pubkey) }
+        coVerify {
+            groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), 2000, pubkey, emptyMap(), "")
+        }
     }
 
     @Test
@@ -229,7 +263,9 @@ class EventPostProcessorTest {
         val meta = """{"name":"New","members":["$stranger"],"relays":["wss://r2"]}"""
         // When currentGroup is null, isCreator is true regardless of author
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
-        coVerify { groupRepo.updateFromMeta(groupId, "New", listOf(stranger), listOf("wss://r2"), 2000, "") }
+        coVerify {
+            groupRepo.updateFromMeta(groupId, "New", listOf(stranger), listOf("wss://r2"), 2000, "", emptyMap(), "")
+        }
     }
 
     @Test
@@ -295,7 +331,8 @@ class EventPostProcessorTest {
                 listOf("wss://new"),
                 2000,
                 pubkey,
-                mapOf(pubkey to "Alice")
+                mapOf(pubkey to "Alice"),
+                ""
             )
         }
     }
@@ -369,7 +406,7 @@ class EventPostProcessorTest {
     private fun persistedTransition(before: Group, after: Group) {
         var current = before
         coEvery { groupRepo.getById(groupId) } answers { current }
-        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } answers
+        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any()) } answers
             { current = after }
     }
 

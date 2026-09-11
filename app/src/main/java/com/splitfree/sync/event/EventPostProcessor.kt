@@ -136,7 +136,9 @@ constructor(
                 finalRelays,
                 createdAt,
                 trustedCreatedBy,
-                finalMemberNames
+                finalMemberNames,
+                // Only the creator's meta is authoritative for the description; anyone else's leaves it alone.
+                description = if (isCreator) meta.description else null
             )
 
             if (relaysChanged) {

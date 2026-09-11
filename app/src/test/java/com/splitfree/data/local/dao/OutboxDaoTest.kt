@@ -119,4 +119,21 @@ class OutboxDaoTest {
         assertEquals(2, stored.retryCount)
         assertEquals(now + 10, stored.lastRetryAt)
     }
+
+    @Test
+    fun `inserting an already queued event id does not reset its retry state`() = runBlocking {
+        dao.insert(row("e1", createdAt = now, eventType = "expense"))
+        dao.incrementRetry("e1", now + 5)
+        dao.incrementRetry("e1", now + 10)
+
+        // A re-commit of the same event (fresh row, retryCount 0, no lastRetryAt) must be ignored.
+        dao.insert(row("e1", createdAt = now + 100, eventType = "group_meta"))
+
+        val stored = dao.getAll().single()
+        assertEquals(2, stored.retryCount)
+        assertEquals(now + 10, stored.lastRetryAt)
+        assertEquals(now, stored.createdAt)
+        assertEquals("expense", stored.eventType)
+        assertEquals(1, dao.count())
+    }
 }

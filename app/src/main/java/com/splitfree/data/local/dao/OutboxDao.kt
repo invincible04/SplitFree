@@ -15,7 +15,11 @@ import kotlinx.coroutines.flow.Flow
  */
 @Dao
 interface OutboxDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * Insert-or-ignore: a row that is already queued keeps its `retryCount` / `lastRetryAt`, so a
+     * re-commit of the same event id can never reset its backoff schedule.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(event: OutboxEntity)
 
     @Query("SELECT COUNT(*) FROM outbox")

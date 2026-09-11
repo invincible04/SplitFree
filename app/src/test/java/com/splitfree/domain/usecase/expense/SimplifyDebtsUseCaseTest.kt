@@ -16,13 +16,13 @@ class SimplifyDebtsUseCaseTest {
 
     @Test
     fun `all zero balances returns empty`() {
-        val balances = listOf(Balance("A", 0), Balance("B", 0))
+        val balances = listOf(Balance("A", 0, "INR"), Balance("B", 0, "INR"))
         assertTrue(useCase(balances).isEmpty())
     }
 
     @Test
     fun `simple two-person debt`() {
-        val balances = listOf(Balance("A", 100), Balance("B", -100))
+        val balances = listOf(Balance("A", 100, "INR"), Balance("B", -100, "INR"))
         val result = useCase(balances)
         assertEquals(1, result.size)
         assertEquals("B", result[0].from)
@@ -33,7 +33,7 @@ class SimplifyDebtsUseCaseTest {
     @Test
     fun `three-person simplification`() {
         // A is owed 100, B owes 60, C owes 40
-        val balances = listOf(Balance("A", 100), Balance("B", -60), Balance("C", -40))
+        val balances = listOf(Balance("A", 100, "INR"), Balance("B", -60, "INR"), Balance("C", -40, "INR"))
         val result = useCase(balances)
         // Should produce 2 transactions, total transferred = 100
         val totalTransferred = result.sumOf { it.amount }
@@ -62,10 +62,10 @@ class SimplifyDebtsUseCaseTest {
     fun `simplification minimizes transactions`() {
         // 4 people: A+50, B+30, C-40, D-40
         val balances = listOf(
-            Balance("A", 50),
-            Balance("B", 30),
-            Balance("C", -40),
-            Balance("D", -40)
+            Balance("A", 50, "INR"),
+            Balance("B", 30, "INR"),
+            Balance("C", -40, "INR"),
+            Balance("D", -40, "INR")
         )
         val result = useCase(balances)
         // Greedy algorithm: max 3 transactions for 4 people
@@ -76,7 +76,7 @@ class SimplifyDebtsUseCaseTest {
 
     @Test
     fun `single person with balance returns empty`() {
-        val balances = listOf(Balance("A", 100))
+        val balances = listOf(Balance("A", 100, "INR"))
         // No one to pay — creditor only
         val result = useCase(balances)
         assertTrue(result.isEmpty())

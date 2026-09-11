@@ -1,14 +1,16 @@
 package com.splitfree.data.repository
 
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.ExpenseSaveConflictException
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.builtins.MapSerializer
@@ -20,19 +22,19 @@ import kotlinx.serialization.json.Json
  * Handles add, settle, delete, and correct operations.
  *
  * All operations follow the same pattern: serialize → encrypt with group key →
- * sign as kind-30078 → publish via [EventPublisher].
+ * sign as kind-30078 → publish via [EventPublisherContract].
  */
 @Singleton
 class ExpenseRepository
 @Inject
 constructor(
     private val eventDao: EventDao,
-    private val groupRepo: GroupRepository,
+    private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
-    private val identity: IdentityManager,
+    private val identity: IdentityContract,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisher
-) : com.splitfree.domain.repository.ExpenseRepositoryContract {
+    private val eventPublisher: EventPublisherContract
+) : ExpenseRepositoryContract {
     private val json = Json { ignoreUnknownKeys = true }
 
     companion object {
@@ -40,16 +42,21 @@ constructor(
         private const val MAX_DELETE_REASON_CHARS = 200
     }
 
+    /**
+     * The author is pinned once up front and re-verified exactly once more, immediately before the
+     * publish. Every identity change in between is caught by that final check (the signed event's
+     * pubkey is compared as well), so no intermediate re-checks are needed; each one would cost
+     * a Keystore round-trip.
+     */
     override suspend fun addExpense(expense: Expense, groupId: String, expectedAuthorPubkey: String?) {
         val author = checkedAuthor(expectedAuthorPubkey)
         validateExpenseShape(expense)
-        val saved = getSavedExpense(groupId, expense.id, author)
+        val saved = loadSavedExpense(groupId, expense.id, author)
         if (saved != null) {
             requireSameExpense(saved, expense)
             return
         }
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
-        checkedAuthor(author)
         require(author in group.members) { "You are no longer a member of this group" }
         validateExpensePayload(expense, group)
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
@@ -65,18 +72,22 @@ constructor(
         checkedAuthor(author)
         check(event.pubkey == author) { "Identity changed while saving" }
         if (!eventPublisher.publishExpense(event, group, expense.id)) {
-            requireSameExpense(checkNotNull(getSavedExpense(groupId, expense.id, author)), expense)
+            requireSameExpense(checkNotNull(loadSavedExpense(groupId, expense.id, author)), expense)
         }
     }
 
     override suspend fun getSavedExpense(groupId: String, expenseId: String, expectedAuthorPubkey: String?): Expense? {
         val author = checkedAuthor(expectedAuthorPubkey)
-        val event = eventDao.getExpenseByAuthor(expenseId, groupId, author)
-        checkedAuthor(author)
-        if (event == null) return null
+        // Re-check once after the lookup + decrypt so an identity swap mid-way is reported, not
+        // mistaken for "nothing saved" or for another identity's expense.
+        return loadSavedExpense(groupId, expenseId, author).also { checkedAuthor(author) }
+    }
+
+    /** Load and decrypt the expense [author] saved under [expenseId] in [groupId], or null if none. */
+    private suspend fun loadSavedExpense(groupId: String, expenseId: String, author: String): Expense? {
+        val event = eventDao.getExpenseByAuthor(expenseId, groupId, author) ?: return null
         val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch) ?: error("Saved expense key not found")
         return json.decodeFromString(Expense.serializer(), encryption.decrypt(event.contentEncrypted, key)).also {
-            checkedAuthor(author)
             check(it.id == expenseId) { "Saved expense ID does not match its event" }
         }
     }

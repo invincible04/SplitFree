@@ -80,7 +80,7 @@ constructor(
 
         // 1. Generate new keypair alongside old (does NOT overwrite) and stamp the start time
         //    straight away so resumeIfNeeded can recognise an interrupted attempt.
-        val (_, newPubkey) = identity.generatePendingKeyPair()
+        val newPubkey = identity.generatePendingKeyPair()
         try {
             identity.markRevocationStarted()
 

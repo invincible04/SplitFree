@@ -51,4 +51,22 @@ class HexUtilTest {
     fun `hexToBytes rejects odd length`() {
         "abc".hexToBytes()
     }
+
+    @Test
+    fun `hexToBytes rejects non-hex characters`() {
+        for (bad in listOf("zz", "0g", "g0", "ab cd ", "ab-c", "abc!", "ÿÿ", "1234567z")) {
+            val failure = runCatching { bad.hexToBytes() }.exceptionOrNull()
+            assertTrue("expected rejection of '$bad', got $failure", failure is IllegalArgumentException)
+            assertEquals("invalid hex character", failure!!.message)
+        }
+    }
+
+    @Test
+    fun `hexToBytes accepts every hex digit in both cases`() {
+        assertArrayEquals(
+            byteArrayOf(0x01, 0x23, 0x45, 0x67, 0x89.toByte(), 0xAB.toByte(), 0xCD.toByte(), 0xEF.toByte()),
+            "0123456789abcdef".hexToBytes()
+        )
+        assertArrayEquals("0123456789abcdef".hexToBytes(), "0123456789ABCDEF".hexToBytes())
+    }
 }

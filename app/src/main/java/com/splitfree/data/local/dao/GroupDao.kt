@@ -24,10 +24,12 @@ interface GroupDao {
     @Update
     suspend fun update(group: GroupEntity)
 
-    @Query("SELECT * FROM `groups`")
+    /** Newest group first; `groupId` breaks ties so the order is deterministic across reads. */
+    @Query("SELECT * FROM `groups` ORDER BY createdAt DESC, groupId")
     fun observeAll(): Flow<List<GroupEntity>>
 
-    @Query("SELECT * FROM `groups`")
+    /** Newest group first; `groupId` breaks ties so the order is deterministic across reads. */
+    @Query("SELECT * FROM `groups` ORDER BY createdAt DESC, groupId")
     suspend fun getAll(): List<GroupEntity>
 
     @Query("SELECT * FROM `groups` WHERE groupId = :groupId")
@@ -44,10 +46,13 @@ interface GroupDao {
      * are written in a single statement so a concurrent writer can never observe the
      * new members with the old watermark (or vice versa).
      *
+     * @param description new description, or null to leave the stored one untouched (local
+     *   mutations such as rotation / revocation / join do not carry one)
      * @return number of rows updated: 1 if applied, 0 if [eventTimestamp] was not newer
      */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
+            "description = COALESCE(:description, description), " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
             "lastMetaTimestamp = :eventTimestamp " +
             "WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp"
@@ -59,16 +64,20 @@ interface GroupDao {
         relays: String,
         createdBy: String,
         eventTimestamp: Long,
-        memberNames: String = "{}"
+        memberNames: String = "{}",
+        description: String? = null
     ): Int
 
     /**
      * Unconditional metadata update used for local mutations (rotation, revocation, join).
      * Always advances `lastMetaTimestamp` to at least [eventTimestamp] so a stale
      * `group_meta` replayed from a relay cannot revert the local change.
+     *
+     * @param description new description, or null to leave the stored one untouched
      */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
+            "description = COALESCE(:description, description), " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
             "lastMetaTimestamp = MAX(lastMetaTimestamp, :eventTimestamp) " +
             "WHERE groupId = :groupId"
@@ -80,7 +89,8 @@ interface GroupDao {
         relays: String,
         createdBy: String,
         eventTimestamp: Long,
-        memberNames: String = "{}"
+        memberNames: String = "{}",
+        description: String? = null
     )
 
     @Delete

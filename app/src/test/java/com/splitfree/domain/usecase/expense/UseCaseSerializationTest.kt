@@ -101,6 +101,16 @@ class UseCaseSerializationTest {
     }
 
     @Test
+    fun `SnapshotBalance without a currency field on the wire decodes as INR`() {
+        // Snapshots are encoded without encodeDefaults, so every INR balance ever published omits
+        // `currency`. The default is what keeps those historical snapshots decodable.
+        val encoded = json.encodeToString(SnapshotBalance.serializer(), SnapshotBalance("alice", 100, "INR"))
+        assertEquals("""{"pubkey":"alice","net":100}""", encoded)
+        val d = json.decodeFromString<SnapshotBalance>("""{"pubkey":"alice","net":100}""")
+        assertEquals("INR", d.currency)
+    }
+
+    @Test
     fun `SnapshotBalance round-trip with custom currency`() {
         val sb = SnapshotBalance("bob", -200, "USD")
         val d = json.decodeFromString<SnapshotBalance>(json.encodeToString(SnapshotBalance.serializer(), sb))

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import com.splitfree.data.local.AppDatabase
 import com.splitfree.data.local.entities.GroupEntity
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -124,5 +125,64 @@ class GroupDaoTest {
         // Historical metas newer than the watermark still apply after the creator is recorded.
         assertEquals(1, dao.updateMetaIfNewer("legacy", "Trip", entity.members, entity.relays, "", 600, "{}"))
         assertEquals("creator", dao.getById("g1")!!.createdBy) // other rows untouched
+    }
+
+    // --- ordering ---
+
+    @Test
+    fun `getAll and observeAll return newest group first with groupId as tie-breaker`() = runBlocking {
+        dao.insert(entity.copy(groupId = "b-newer", createdAt = 3000))
+        dao.insert(entity.copy(groupId = "z-tie", createdAt = 2000))
+        dao.insert(entity.copy(groupId = "a-tie", createdAt = 2000))
+        dao.insert(entity.copy(groupId = "oldest", createdAt = 1))
+
+        val expected = listOf("b-newer", "a-tie", "z-tie", "g1", "oldest")
+        assertEquals(expected, dao.getAll().map { it.groupId })
+        assertEquals(expected, dao.observeAll().first().map { it.groupId })
+    }
+
+    // --- description ---
+
+    @Test
+    fun `updateMetaIfNewer sets the description when one is supplied`() = runBlocking {
+        dao.insert(entity.copy(groupId = "d", description = "old"))
+
+        dao.updateMetaIfNewer("d", "Trip", entity.members, entity.relays, "", 600, "{}", description = "new")
+        assertEquals("new", dao.getById("d")!!.description)
+
+        // A creator can also clear it: empty string is a real value, not "unspecified".
+        dao.updateMetaIfNewer("d", "Trip", entity.members, entity.relays, "", 700, "{}", description = "")
+        assertEquals("", dao.getById("d")!!.description)
+    }
+
+    @Test
+    fun `updateMetaIfNewer preserves the description when null is passed`() = runBlocking {
+        dao.insert(entity.copy(groupId = "d", description = "keep me"))
+
+        assertEquals(1, dao.updateMetaIfNewer("d", "Renamed", entity.members, entity.relays, "", 600, "{}", null))
+
+        val row = dao.getById("d")!!
+        assertEquals("Renamed", row.name)
+        assertEquals("keep me", row.description)
+    }
+
+    @Test
+    fun `updateMeta sets or preserves the description like updateMetaIfNewer`() = runBlocking {
+        dao.insert(entity.copy(groupId = "d", description = "keep me"))
+
+        dao.updateMeta("d", "Local", entity.members, entity.relays, "", 900, "{}", null)
+        assertEquals("keep me", dao.getById("d")!!.description)
+
+        dao.updateMeta("d", "Local", entity.members, entity.relays, "", 901, "{}", "replaced")
+        assertEquals("replaced", dao.getById("d")!!.description)
+    }
+
+    @Test
+    fun `a stale meta does not touch the description either`() = runBlocking {
+        dao.insert(entity.copy(groupId = "d", description = "current", lastMetaTimestamp = 500))
+
+        assertEquals(0, dao.updateMetaIfNewer("d", "Stale", entity.members, entity.relays, "", 400, "{}", "stale"))
+
+        assertEquals("current", dao.getById("d")!!.description)
     }
 }

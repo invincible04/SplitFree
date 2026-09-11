@@ -26,8 +26,12 @@ interface GroupRepositoryContract {
     /** @return list of member pubkeys for the group */
     suspend fun getMembers(groupId: String): List<String>
 
-    /** Remove a group key from encrypted storage (e.g. after migration). */
-    fun deleteGroupKey(groupId: String)
+    /**
+     * Remove every stored key for [groupId] (the un-epoched legacy entry and each epoch key)
+     * from encrypted storage. Intended for a "leave group" flow; the Room row itself is not
+     * touched, so callers must delete or hide the group separately.
+     */
+    suspend fun deleteGroupKey(groupId: String)
 
     /**
      * Persist a new group and its symmetric key.
@@ -68,6 +72,8 @@ interface GroupRepositoryContract {
      * @param eventTimestamp the `createdAt` of the incoming group_meta event, or 0 for a local mutation
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
      * @param memberNames optional map of member pubkey -> display name
+     * @param description new description, or null to preserve the existing value (local mutations and
+     *   non-creator metas carry none; only a creator's `group_meta` is authoritative for it)
      */
     suspend fun updateFromMeta(
         groupId: String,
@@ -76,6 +82,7 @@ interface GroupRepositoryContract {
         relays: List<String>,
         eventTimestamp: Long = 0,
         createdBy: String = "",
-        memberNames: Map<String, String> = emptyMap()
+        memberNames: Map<String, String> = emptyMap(),
+        description: String? = null
     )
 }

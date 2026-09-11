@@ -69,9 +69,18 @@ constructor(
 
     override suspend fun getMembers(groupId: String): List<String> = getById(groupId)?.members ?: emptyList()
 
-    /** Remove a group key from encrypted storage (e.g., after migration). */
-    override fun deleteGroupKey(groupId: String) {
+    /**
+     * Remove every key stored for [groupId]: the un-epoched legacy entry plus `"$groupId:$epoch"`
+     * for each epoch up to the group's current one. If the Room row is already gone the epoch is
+     * unknown, so epochs `0..MAX_ORPHAN_EPOCH_SWEEP` are swept instead.
+     *
+     * No caller yet. A "leave group" flow must call it so
+     * the device stops being able to decrypt a group it no longer belongs to.
+     */
+    override suspend fun deleteGroupKey(groupId: String) {
+        val maxEpoch = groupDao.getById(groupId)?.keyEpoch ?: MAX_ORPHAN_EPOCH_SWEEP
         keyStore.remove(groupId)
+        for (epoch in 0..maxEpoch) keyStore.remove("$groupId:$epoch")
     }
 
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
@@ -128,11 +137,12 @@ constructor(
         relays: List<String>,
         eventTimestamp: Long,
         createdBy: String,
-        memberNames: Map<String, String>
+        memberNames: Map<String, String>,
+        description: String?
     ) {
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
-                "GroupRepository",
+                TAG,
                 "Rejecting group_meta with ${members.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
             )
             return
@@ -151,30 +161,43 @@ constructor(
                 relaysJson,
                 createdBy,
                 eventTimestamp,
-                namesJson
+                namesJson,
+                description
             )
         } else {
             // Local mutation (rotation, revocation, join): apply unconditionally, but still advance
             // the watermark to "now" so a stale group_meta replayed from a relay cannot revert it.
             val localTimestamp = System.currentTimeMillis() / 1000
-            groupDao.updateMeta(groupId, name, membersJson, relaysJson, createdBy, localTimestamp, namesJson)
+            groupDao.updateMeta(
+                groupId,
+                name,
+                membersJson,
+                relaysJson,
+                createdBy,
+                localTimestamp,
+                namesJson,
+                description
+            )
         }
     }
 
     private fun GroupEntity.toDomain(): Group {
         val decodedMembers = try {
             json.decodeFromString(stringListSerializer, members)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Group $groupId has unreadable members JSON; treating as empty: ${e.javaClass.simpleName}")
             emptyList()
         }
         val decodedRelays = try {
             json.decodeFromString(stringListSerializer, relays)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Group $groupId has unreadable relays JSON; treating as empty: ${e.javaClass.simpleName}")
             emptyList()
         }
         val decodedNames = try {
             json.decodeFromString(nameMapSerializer, memberNames)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Group $groupId has unreadable memberNames JSON; treating as empty: ${e.javaClass.simpleName}")
             emptyMap()
         }
         return Group(
@@ -199,5 +222,16 @@ constructor(
             .map { it.key to it.value.trim().take(50) }
             .filter { it.second.isNotEmpty() }
             .toMap()
+    }
+
+    companion object {
+        private const val TAG = "GroupRepository"
+
+        /**
+         * Highest epoch [deleteGroupKey] sweeps when the group row is gone and the real epoch is
+         * unknown. Rotations are rare (one per member removal), so this comfortably covers any
+         * realistic group's lifetime.
+         */
+        private const val MAX_ORPHAN_EPOCH_SWEEP = 64
     }
 }

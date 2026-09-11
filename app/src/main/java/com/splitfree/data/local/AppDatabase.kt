@@ -17,7 +17,10 @@ import com.splitfree.data.local.entities.OutboxEntity
 /**
  * Room database for SplitFree's local-first storage.
  *
- * All expense data is stored encrypted — the database holds ciphertext, never plaintext.
+ * Only the *content* of expense, settlement, correction, deletion and snapshot events is stored as
+ * NIP-44 ciphertext. Everything else (group name and description, member pubkeys, relay URLs,
+ * member display names, event tags and event metadata such as author, timestamps, type, expense UUID) is
+ * stored in plaintext and protected solely by Android's file-based encryption of the app sandbox.
  * Group symmetric keys are stored separately in [KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage].
  */
 abstract class AppDatabase : RoomDatabase() {

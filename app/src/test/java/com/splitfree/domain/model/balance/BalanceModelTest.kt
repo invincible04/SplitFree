@@ -11,8 +11,8 @@ class BalanceModelTest {
     // --- Balance ---
 
     @Test
-    fun `Balance default currency is INR`() {
-        val b = Balance("alice", 100)
+    fun `Balance carries the currency it was built with`() {
+        val b = Balance("alice", 100, "INR")
         assertEquals("INR", b.currency)
     }
 
@@ -27,14 +27,14 @@ class BalanceModelTest {
     fun `Balance equality`() {
         assertEquals(Balance("a", 100, "INR"), Balance("a", 100, "INR"))
         assertNotEquals(Balance("a", 100, "INR"), Balance("a", 100, "USD"))
-        assertNotEquals(Balance("a", 100), Balance("b", 100))
+        assertNotEquals(Balance("a", 100, "INR"), Balance("b", 100, "INR"))
     }
 
     // --- DebtTransaction ---
 
     @Test
-    fun `DebtTransaction default currency is INR`() {
-        val dt = DebtTransaction("bob", "alice", 500)
+    fun `DebtTransaction carries the currency it was built with`() {
+        val dt = DebtTransaction("bob", "alice", 500, "INR")
         assertEquals("INR", dt.currency)
     }
 
@@ -54,8 +54,8 @@ class BalanceModelTest {
             DebtTransaction("a", "b", 100, "INR")
         )
         assertNotEquals(
-            DebtTransaction("a", "b", 100),
-            DebtTransaction("b", "a", 100)
+            DebtTransaction("a", "b", 100, "INR"),
+            DebtTransaction("b", "a", 100, "INR")
         )
     }
 

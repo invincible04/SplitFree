@@ -12,6 +12,7 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.spyk
 import io.mockk.unmockkAll
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -21,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -39,10 +41,15 @@ class IdentityManagerTest {
     private val validPrivHex = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a"
     private val validPubHex = NostrEvent.pubkeyFromPrivkey(validPrivHex.hexToBytes())
 
+    // A second valid key, used wherever a test needs a distinct pending / imported identity.
+    private val otherPrivHex = "1111111111111111111111111111111111111111111111111111111111111111"
+    private val otherPubHex = NostrEvent.pubkeyFromPrivkey(otherPrivHex.hexToBytes())
+
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.e(any(), any()) } returns 0
+        every { android.util.Log.w(any(), any<String>(), any()) } returns 0
 
         storage = FakeSecureStorage()
         mgr = IdentityManager(context, storage)
@@ -120,8 +127,8 @@ class IdentityManagerTest {
     @Test
     fun `observeHasIdentity emits true after commitPendingKeyPair`() {
         val state = mgr.observeHasIdentity()
-        storage.putString("nsec_pending", "pendpriv")
-        storage.putString("npub_pending", "pendpub")
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
         assertFalse(state.value)
         mgr.commitPendingKeyPair()
         assertTrue(state.value)
@@ -147,10 +154,59 @@ class IdentityManagerTest {
         assertEquals(listOf(false, true), seen)
     }
 
+    // --- getPublicKeyHex: derived from nsec, never trusted from npub ---
+
     @Test
-    fun `getPublicKeyHex`() {
-        storage.putString("npub", "aabb")
-        assertEquals("aabb", mgr.getPublicKeyHex())
+    fun `getPublicKeyHex is derived from the private key when npub is missing`() {
+        storage.putString("nsec", validPrivHex)
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+    }
+
+    @Test
+    fun `getPublicKeyHex ignores a stale or wrong npub`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("npub", otherPubHex) // mismatched pair, e.g. crash between two writes
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+    }
+
+    @Test
+    fun `getPublicKeyHex returns empty when there is no identity`() {
+        assertEquals("", mgr.getPublicKeyHex())
+        storage.putString("npub", otherPubHex) // orphaned npub without a private key is not an identity
+        assertEquals("", mgr.getPublicKeyHex())
+    }
+
+    @Test
+    fun `getPublicKeyHex falls back to stored npub only when derivation fails`() {
+        storage.putString("nsec", "not-a-key")
+        storage.putString("npub", "legacy-npub")
+        assertEquals("legacy-npub", mgr.getPublicKeyHex())
+        verify { android.util.Log.w("IdentityManager", any<String>(), any()) }
+    }
+
+    @Test
+    fun `getPublicKeyHex derives once and then serves the cached value`() {
+        val spy = spyk(FakeSecureStorage().also { it.putString("nsec", validPrivHex) })
+        val cached = IdentityManager(context, spy)
+        repeat(3) { assertEquals(validPubHex, cached.getPublicKeyHex()) }
+        verify(exactly = 1) { spy.getString("nsec", null) }
+    }
+
+    @Test
+    fun `getPublicKeyHex cache is invalidated when the private key changes`() {
+        storage.putString("nsec", validPrivHex)
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+
+        mgr.importKey(otherPrivHex)
+        assertEquals(otherPubHex, mgr.getPublicKeyHex())
+
+        storage.putString("nsec_pending", validPrivHex)
+        mgr.commitPendingKeyPair()
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+
+        val generated = mgr.generateKeyPair()
+        assertEquals(generated, mgr.getPublicKeyHex())
+        assertEquals(NostrEvent.pubkeyFromPrivkey(storage.getString("nsec", null)!!.hexToBytes()), generated)
     }
 
     @Test
@@ -167,17 +223,21 @@ class IdentityManagerTest {
 
     @Test
     fun `getPublicKeyBytes`() {
-        storage.putString("npub", validPubHex)
-        assertEquals(32, mgr.getPublicKeyBytes().size)
+        storage.putString("nsec", validPrivHex)
+        assertArrayEquals(validPubHex.hexToBytes(), mgr.getPublicKeyBytes())
     }
 
     @Test
-    fun `generateKeyPair stores keys and clears pending`() {
-        val (priv, pub) = mgr.generateKeyPair()
-        assertEquals(64, priv.length)
+    fun `generateKeyPair stores a matching pair and clears pending`() {
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
+        val pub = mgr.generateKeyPair()
         assertEquals(64, pub.length)
-        assertEquals(priv, storage.getString("nsec", null))
+        val priv = storage.getString("nsec", null)!!
+        assertEquals(64, priv.length)
+        assertEquals(NostrEvent.pubkeyFromPrivkey(priv.hexToBytes()), pub)
         assertEquals(pub, storage.getString("npub", null))
+        assertEquals(pub, mgr.getPublicKeyHex())
         assertFalse(storage.contains("nsec_pending"))
         assertFalse(storage.contains("npub_pending"))
     }
@@ -196,23 +256,37 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `generatePendingKeyPair stores pending keys`() {
-        val (priv, pub) = mgr.generatePendingKeyPair()
-        assertEquals(64, priv.length)
+    fun `generatePendingKeyPair stores a matching pending pair`() {
+        val pub = mgr.generatePendingKeyPair()
         assertEquals(64, pub.length)
-        assertEquals(priv, storage.getString("nsec_pending", null))
+        val priv = storage.getString("nsec_pending", null)!!
+        assertEquals(64, priv.length)
+        assertEquals(NostrEvent.pubkeyFromPrivkey(priv.hexToBytes()), pub)
         assertEquals(pub, storage.getString("npub_pending", null))
+        assertEquals(pub, mgr.getPendingPublicKeyHex())
     }
 
     @Test
     fun `commitPendingKeyPair promotes pending to active`() {
-        storage.putString("nsec_pending", "pendpriv")
-        storage.putString("npub_pending", "pendpub")
+        storage.putString("nsec", validPrivHex)
+        storage.putString("npub", validPubHex)
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
         mgr.commitPendingKeyPair()
-        assertEquals("pendpriv", storage.getString("nsec", null))
-        assertEquals("pendpub", storage.getString("npub", null))
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(otherPubHex, storage.getString("npub", null))
+        assertEquals(otherPubHex, mgr.getPublicKeyHex())
         assertFalse(storage.contains("nsec_pending"))
         assertFalse(storage.contains("npub_pending"))
+    }
+
+    @Test
+    fun `commitPendingKeyPair works without a stored pending npub`() {
+        storage.putString("nsec_pending", otherPrivHex)
+        mgr.commitPendingKeyPair()
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(otherPubHex, storage.getString("npub", null))
+        assertEquals(otherPubHex, mgr.getPublicKeyHex())
     }
 
     @Test
@@ -221,9 +295,10 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `commitPendingKeyPair throws when no pending public`() {
+    fun `commitPendingKeyPair throws when the pending private key is unusable and no pending public exists`() {
         storage.putString("nsec_pending", "priv")
         assertThrows(IllegalStateException::class.java) { mgr.commitPendingKeyPair() }
+        assertFalse(storage.contains("nsec"))
     }
 
     @Test
@@ -243,7 +318,17 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `getPendingPublicKeyHex`() {
+    fun `getPendingPublicKeyHex is derived from the pending private key`() {
+        assertNull(mgr.getPendingPublicKeyHex())
+        storage.putString("nsec_pending", otherPrivHex)
+        assertEquals(otherPubHex, mgr.getPendingPublicKeyHex())
+        storage.putString("npub_pending", validPubHex) // wrong mirror is ignored
+        assertEquals(otherPubHex, mgr.getPendingPublicKeyHex())
+    }
+
+    @Test
+    fun `getPendingPublicKeyHex falls back to stored npub_pending only when derivation fails`() {
+        storage.putString("nsec_pending", "garbage")
         assertNull(mgr.getPendingPublicKeyHex())
         storage.putString("npub_pending", "abc")
         assertEquals("abc", mgr.getPendingPublicKeyHex())
@@ -268,6 +353,53 @@ class IdentityManagerTest {
         mgr.importKey(validPrivHex)
         assertEquals(validPrivHex, storage.getString("nsec", null))
         assertEquals(validPubHex, storage.getString("npub", null))
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+    }
+
+    @Test
+    fun `importKey clears pending keypair and revocation tracking`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
+        mgr.markRevocationStarted()
+        mgr.setRevocationEventIds(listOf("e1", "e2"))
+
+        mgr.importKey(validPrivHex)
+
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertFalse(mgr.hasPendingKeyPair())
+        assertFalse(storage.contains("nsec_pending"))
+        assertFalse(storage.contains("npub_pending"))
+        assertEquals(0L, mgr.getRevocationStartTime())
+        assertEquals(emptyList<String>(), mgr.getRevocationEventIds())
+    }
+
+    @Test
+    fun `importKey failure leaves the active key and pending state untouched`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.putString("npub", otherPubHex)
+        storage.putString("nsec_pending", validPrivHex)
+        mgr.setRevocationEventIds(listOf("e1"))
+
+        // Wrong length, all-zero (fails secKeyVerify) and non-hex all take the failure path.
+        for (bad in listOf("abcd", "00".repeat(32), "zz".repeat(32))) {
+            assertThrows(IllegalArgumentException::class.java) { mgr.importKey(bad) }
+        }
+
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(otherPubHex, storage.getString("npub", null))
+        assertEquals(otherPubHex, mgr.getPublicKeyHex())
+        assertEquals(validPrivHex, storage.getString("nsec_pending", null))
+        assertEquals(listOf("e1"), mgr.getRevocationEventIds())
+    }
+
+    @Test
+    fun `importKey writes the private key before the public key`() {
+        val writes = mutableListOf<String>()
+        val recording = spyk(FakeSecureStorage())
+        every { recording.putString(capture(writes), any()) } answers { callOriginal() }
+        IdentityManager(context, recording).importKey(validPrivHex)
+        assertEquals(listOf("nsec", "npub"), writes.filter { it == "nsec" || it == "npub" })
     }
 
     @Test
@@ -329,8 +461,8 @@ class IdentityManagerTest {
 
     @Test
     fun `commitPendingKeyPair clears revocation tracking`() {
-        storage.putString("nsec_pending", "pendpriv")
-        storage.putString("npub_pending", "pendpub")
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
         mgr.markRevocationStarted()
         mgr.setRevocationEventIds(listOf("e1"))
         mgr.commitPendingKeyPair()
@@ -340,8 +472,8 @@ class IdentityManagerTest {
 
     @Test
     fun `discardPendingKeyPair clears revocation tracking`() {
-        storage.putString("nsec_pending", "pendpriv")
-        storage.putString("npub_pending", "pendpub")
+        storage.putString("nsec_pending", otherPrivHex)
+        storage.putString("npub_pending", otherPubHex)
         mgr.markRevocationStarted()
         mgr.setRevocationEventIds(listOf("e1"))
         mgr.discardPendingKeyPair()

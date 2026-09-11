@@ -38,7 +38,10 @@ interface EventRepositoryContract {
      */
     suspend fun insertIfNew(snapshot: EventSnapshot): Boolean
 
-    /** Insert an event unconditionally. */
+    /**
+     * Insert an event, silently skipping it if its ID is already stored (insert-or-ignore).
+     * Use [insertIfNew] when the caller needs to know whether the row was actually written.
+     */
     suspend fun insert(snapshot: EventSnapshot)
 
     /** Run [block] inside a database transaction. */

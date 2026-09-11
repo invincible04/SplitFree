@@ -22,8 +22,8 @@ class SimplifyDebtsTest {
     fun `all zero balances produce no transactions`() {
         val balances =
             listOf(
-                Balance("alice", 0),
-                Balance("bob", 0)
+                Balance("alice", 0, "INR"),
+                Balance("bob", 0, "INR")
             )
         assertEquals(emptyList<DebtTransaction>(), simplify(balances))
     }
@@ -33,8 +33,8 @@ class SimplifyDebtsTest {
         // Alice is owed 100, Bob owes 100
         val balances =
             listOf(
-                Balance("alice", 100),
-                Balance("bob", -100)
+                Balance("alice", 100, "INR"),
+                Balance("bob", -100, "INR")
             )
         val result = simplify(balances)
         assertEquals(1, result.size)
@@ -49,9 +49,9 @@ class SimplifyDebtsTest {
         // Net: Alice=-100, Bob=0, Charlie=+100
         val balances =
             listOf(
-                Balance("alice", -100),
-                Balance("bob", 0),
-                Balance("charlie", 100)
+                Balance("alice", -100, "INR"),
+                Balance("bob", 0, "INR"),
+                Balance("charlie", 100, "INR")
             )
         val result = simplify(balances)
         assertEquals(1, result.size)
@@ -66,9 +66,9 @@ class SimplifyDebtsTest {
         // Net: Alice = -100+50 = -50, Bob = 100-100 = 0, Charlie = 100-50 = 50
         val balances =
             listOf(
-                Balance("alice", -50),
-                Balance("bob", 0),
-                Balance("charlie", 50)
+                Balance("alice", -50, "INR"),
+                Balance("bob", 0, "INR"),
+                Balance("charlie", 50, "INR")
             )
         val result = simplify(balances)
         assertEquals(1, result.size)
@@ -79,11 +79,11 @@ class SimplifyDebtsTest {
     fun `five-person group produces at most N-1 transactions`() {
         val balances =
             listOf(
-                Balance("a", 500),
-                Balance("b", -200),
-                Balance("c", -150),
-                Balance("d", 100),
-                Balance("e", -250)
+                Balance("a", 500, "INR"),
+                Balance("b", -200, "INR"),
+                Balance("c", -150, "INR"),
+                Balance("d", 100, "INR"),
+                Balance("e", -250, "INR")
             )
         val result = simplify(balances)
         assertTrue("Should have at most 4 transactions", result.size <= 4)
@@ -97,9 +97,9 @@ class SimplifyDebtsTest {
     fun `balances sum to zero after simplification`() {
         val balances =
             listOf(
-                Balance("a", 300),
-                Balance("b", -100),
-                Balance("c", -200)
+                Balance("a", 300, "INR"),
+                Balance("b", -100, "INR"),
+                Balance("c", -200, "INR")
             )
         val result = simplify(balances)
         val totalTransferred = result.sumOf { it.amount }
@@ -128,7 +128,7 @@ class SimplifyDebtsTest {
 
     @Test
     fun `single person with balance produces no transactions`() {
-        val balances = listOf(Balance("alice", 100))
+        val balances = listOf(Balance("alice", 100, "INR"))
         // No one to pay — this is an inconsistent state but shouldn't crash
         val result = simplify(balances)
         assertEquals(0, result.size)
@@ -139,16 +139,16 @@ class SimplifyDebtsTest {
         // 10 people, various balances summing to 0
         val balances =
             listOf(
-                Balance("p1", 1000),
-                Balance("p2", -200),
-                Balance("p3", -300),
-                Balance("p4", 500),
-                Balance("p5", -400),
-                Balance("p6", -100),
-                Balance("p7", 200),
-                Balance("p8", -300),
-                Balance("p9", -200),
-                Balance("p10", -200)
+                Balance("p1", 1000, "INR"),
+                Balance("p2", -200, "INR"),
+                Balance("p3", -300, "INR"),
+                Balance("p4", 500, "INR"),
+                Balance("p5", -400, "INR"),
+                Balance("p6", -100, "INR"),
+                Balance("p7", 200, "INR"),
+                Balance("p8", -300, "INR"),
+                Balance("p9", -200, "INR"),
+                Balance("p10", -200, "INR")
             )
         assertEquals(0L, balances.sumOf { it.net }) // sanity check
         val result = simplify(balances)

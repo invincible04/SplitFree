@@ -60,7 +60,7 @@ class CreateSnapshotUseCaseTest {
             relays = emptyList()
         )
         every { identity.getPublicKeyHex() } returns myPubkey
-        coEvery { computeBalances(groupId) } returns listOf(Balance("pub1", 100), Balance("pub2", -100))
+        coEvery { computeBalances(groupId) } returns listOf(Balance("pub1", 100, "INR"), Balance("pub2", -100, "INR"))
         coEvery { eventRepo.getEventIds(groupId) } returns listOf("e1", "e2")
         every { encryption.encrypt(any(), groupKey) } returns "encrypted"
         every { encryption.decrypt(any(), groupKey) } answers { firstArg() }

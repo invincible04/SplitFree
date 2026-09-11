@@ -1,6 +1,5 @@
 package com.splitfree.data.repository
 
-import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.EventSigner
@@ -11,8 +10,10 @@ import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.ExpenseSaveConflictException
-import com.splitfree.sync.event.EventPublisher
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -30,11 +31,11 @@ import org.junit.Test
 
 class ExpenseRepositoryTest {
     private val eventDao = mockk<EventDao>(relaxed = true)
-    private val groupRepo = mockk<GroupRepository>(relaxed = true)
+    private val groupRepo = mockk<GroupRepositoryContract>(relaxed = true)
     private val encryption = mockk<GroupEncryption>(relaxed = true)
-    private val identity = mockk<IdentityManager>(relaxed = true)
+    private val identity = mockk<IdentityContract>(relaxed = true)
     private val signer = mockk<EventSigner>(relaxed = true)
-    private val eventPublisher = mockk<EventPublisher>(relaxed = true)
+    private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
 
     private fun repo() = ExpenseRepository(eventDao, groupRepo, encryption, identity, signer, eventPublisher)
 
@@ -548,8 +549,8 @@ class ExpenseRepositoryTest {
         }
         val failure = runCatching { repo().addExpense(expense, "g1", expectedAuthorPubkey = "alice") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
+        // The single pre-publish re-check catches the swap; nothing reaches the publisher.
         coVerify(exactly = 0) { eventPublisher.publishExpense(any(), any(), any()) }
-        verify(exactly = 0) { encryption.encrypt(any(), any()) }
     }
 
     @Test
@@ -561,6 +562,40 @@ class ExpenseRepositoryTest {
         val failure = runCatching { repo().addExpense(expense, "g1", expectedAuthorPubkey = "alice") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
         coVerify(exactly = 0) { eventPublisher.publishExpense(any(), any(), any()) }
+    }
+
+    @Test
+    fun `save rejects a signed event whose pubkey differs from the pinned author`() = runTest {
+        every { signer.createSignedEvent(any(), any(), any(), any()) } returns testEvent.copy(pubkey = "bob")
+        val failure = runCatching { repo().addExpense(expense, "g1", expectedAuthorPubkey = "alice") }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        coVerify(exactly = 0) { eventPublisher.publishExpense(any(), any(), any()) }
+    }
+
+    // --- identity lookups are a Keystore round-trip each; keep them to the two that matter ---
+
+    @Test
+    fun `addExpense reads the identity exactly twice on the publish path`() = runTest {
+        repo().addExpense(expense, "g1")
+        // Once to pin the author up front, once right before publish. No intermediate re-checks.
+        verify(exactly = 2) { identity.getPublicKeyHex() }
+        coVerify(exactly = 1) { eventPublisher.publishExpense(testEvent, group, "u1") }
+    }
+
+    @Test
+    fun `addExpense reads the identity once when the expense is already saved`() = runTest {
+        stubSavedExpense()
+        repo().addExpense(expense, "g1")
+        verify(exactly = 1) { identity.getPublicKeyHex() }
+    }
+
+    @Test
+    fun `addExpense reads the identity at most twice when it loses the save race`() = runTest {
+        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returnsMany listOf(null, savedEvent())
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+        coEvery { eventPublisher.publishExpense(any(), any(), any()) } returns false
+        repo().addExpense(expense, "g1")
+        verify(atLeast = 1, atMost = 2) { identity.getPublicKeyHex() }
     }
 
     @Test

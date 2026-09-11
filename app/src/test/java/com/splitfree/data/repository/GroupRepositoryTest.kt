@@ -12,6 +12,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -178,10 +179,35 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `deleteGroupKey removes from storage`() {
-        keyStore.putString("g1", "key")
+    fun `deleteGroupKey removes the legacy key and every epoch key up to the group's epoch`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 3)
+        keyStore.putString("g1", "legacy")
+        for (epoch in 0..3) keyStore.putString("g1:$epoch", "k$epoch")
+        keyStore.putString("g2:0", "other-group")
+
         repo.deleteGroupKey("g1")
+
         assertNull(keyStore.getString("g1", null))
+        for (epoch in 0..3) assertNull("g1:$epoch should be gone", keyStore.getString("g1:$epoch", null))
+        assertNull(repo.getGroupKeyForEpoch("g1", 0))
+        assertNull(repo.getGroupKeyForEpoch("g1", 3))
+        assertEquals("other-group", keyStore.getString("g2:0", null))
+    }
+
+    @Test
+    fun `deleteGroupKey sweeps a wide epoch range when the group row is already gone`() = runBlocking {
+        coEvery { groupDao.getById("gone") } returns null
+        keyStore.putString("gone", "legacy")
+        keyStore.putString("gone:0", "k0")
+        keyStore.putString("gone:7", "k7")
+        keyStore.putString("gone:64", "k64")
+
+        repo.deleteGroupKey("gone")
+
+        assertNull(keyStore.getString("gone", null))
+        assertNull(keyStore.getString("gone:0", null))
+        assertNull(keyStore.getString("gone:7", null))
+        assertNull(keyStore.getString("gone:64", null))
     }
 
     @Test
@@ -285,6 +311,37 @@ class GroupRepositoryTest {
         )
         coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), capture(namesJson)) }
         assertEquals("""{"pub1":"Alice"}""", namesJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta passes a null description through so the dao preserves the stored one`() = runBlocking {
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"))
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), null) }
+
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null) }
+    }
+
+    @Test
+    fun `updateFromMeta forwards an explicit description on both update paths`() = runBlocking {
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), description = "Ski trip")
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), "Ski trip") }
+
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500, description = "")
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), "") }
+    }
+
+    @Test
+    fun `toDomain logs and degrades to empty when stored JSON is unreadable`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(members = "not json", relays = "[", memberNames = "{oops")
+
+        val group = repo.getById("g1")!!
+
+        assertEquals(emptyList<String>(), group.members)
+        assertEquals(emptyList<String>(), group.relays)
+        assertEquals(emptyMap<String, String>(), group.memberNames)
+        verify(exactly = 3) { android.util.Log.w("GroupRepository", match<String> { "g1" in it }) }
     }
 
     @Test

@@ -61,7 +61,7 @@ class RevokeKeyUseCaseTest {
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
 
         every { identity.getPublicKeyHex() } returns oldPubkey
-        every { identity.generatePendingKeyPair() } returns Pair("privhex", newPubkey)
+        every { identity.generatePendingKeyPair() } returns newPubkey
         every { identity.markRevocationStarted() } just Runs
         every { identity.commitPendingKeyPair() } just Runs
         every { identity.discardPendingKeyPair() } just Runs
