@@ -3,6 +3,7 @@ package com.splitfree.sync.worker
 import android.content.Context
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -87,27 +88,28 @@ constructor(
     }
 
     /**
-     * Publish all pending outbox events to connected relays.
+     * Publish all due outbox events to connected relays.
+     *
+     * Rows are never evicted for failing to publish: the outbox holds user-authored content and
+     * a relay outage must not silently discard it. See [isDue] for the back-off applied instead.
      *
      * @return number of successfully published events
      */
     override suspend fun flushOutbox(): Int {
         val pending = outboxDao.getAll()
         if (pending.isEmpty()) return 0
-        Log.i(TAG, "Flushing ${pending.size} outbox events")
+        val now = System.currentTimeMillis() / 1000
+        val due = pending.filter { isDue(it, now) }
+        val backedOff = pending.size - due.size
+        Log.i(TAG, "Flushing ${due.size} outbox events" + if (backedOff > 0) " ($backedOff backed off)" else "")
         var published = 0
-        for (event in pending) {
+        for (event in due) {
             if (nostrClient.publishJson(event.eventJson)) {
                 outboxDao.delete(event.eventId)
                 published++
             } else {
-                outboxDao.incrementRetry(event.eventId, System.currentTimeMillis() / 1000)
-                // Never evict critical events (group_meta, key_rotation, key_revocation)
-                val isCritical = event.eventType in setOf("group_meta", "key_rotation", "key_revocation")
-                if (!isCritical && event.retryCount >= MAX_RETRIES) {
-                    Log.w(TAG, "Evicting event ${event.eventId} after ${event.retryCount} failed retries")
-                    outboxDao.delete(event.eventId)
-                } else if (event.retryCount >= WARN_RETRY_THRESHOLD) {
+                outboxDao.incrementRetry(event.eventId, now)
+                if (event.retryCount >= WARN_RETRY_THRESHOLD) {
                     Log.w(TAG, "Event ${event.eventId} has failed ${event.retryCount} retries")
                 }
             }
@@ -115,9 +117,32 @@ constructor(
         return published
     }
 
+    /**
+     * Whether [event] should be attempted in this flush pass.
+     *
+     * Below [MAX_RETRIES] every row is attempted. At or above it, a non-critical row is attempted
+     * at most once per [STUCK_RETRY_INTERVAL_SECS] so a permanently rejected event cannot burn
+     * the relay budget of every sync, while still getting a chance whenever relays change.
+     * Critical types (`group_meta`, `key_rotation`, `key_revocation`) keep unlimited retries.
+     */
+    private fun isDue(event: OutboxEntity, now: Long): Boolean {
+        if (event.retryCount < MAX_RETRIES) return true
+        if (event.eventType in CRITICAL_TYPES) return true
+        val lastRetry = event.lastRetryAt ?: return true
+        return now - lastRetry >= STUCK_RETRY_INTERVAL_SECS
+    }
+
     companion object {
         private const val TAG = "SyncEngine"
         private const val WARN_RETRY_THRESHOLD = 10
-        private const val MAX_RETRIES = 50
+
+        /** Failed attempts after which a non-critical row is considered stuck and backed off. */
+        const val MAX_RETRIES = 50
+
+        /** Minimum spacing between attempts for a stuck row: 6 hours. */
+        const val STUCK_RETRY_INTERVAL_SECS = 6 * 3600L
+
+        /** Never backed off: losing these breaks group membership or key state for everyone. */
+        val CRITICAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")
     }
 }

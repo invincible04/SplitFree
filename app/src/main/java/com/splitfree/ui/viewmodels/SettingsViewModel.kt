@@ -2,6 +2,7 @@ package com.splitfree.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -13,16 +14,20 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
  * Drives the settings screen: identity display, key backup/restore,
- * privacy toggles (gift wrap), and key revocation.
+ * privacy toggles (gift wrap), key revocation, and outbox health.
  */
 @OptIn(FlowPreview::class)
 @HiltViewModel
@@ -35,7 +40,8 @@ constructor(
     private val revokeKeyUseCase: RevokeKeyUseCase,
     private val updateDisplayName: UpdateDisplayNameUseCase,
     private val groupRepo: GroupRepositoryContract,
-    private val exportGroup: ExportGroupUseCase
+    private val exportGroup: ExportGroupUseCase,
+    outboxDao: OutboxDao
 ) : ViewModel() {
     // Reading the pubkey hits Keystore-backed storage, which can throw SecureStorageException
     // on transient failures. Never let that crash the screen on open; show an empty npub instead.
@@ -53,6 +59,16 @@ constructor(
 
     private val _displayName = MutableStateFlow(userPreferences.displayName)
     val displayName: StateFlow<String> = _displayName
+
+    /**
+     * `(pending, stuck)` outbox counts: events not yet accepted by any relay, and the subset that
+     * has failed enough attempts to be retried only every few hours. A DB error degrades to
+     * `(0, 0)` rather than crashing the screen.
+     */
+    val outboxStatus: StateFlow<Pair<Int, Int>> =
+        combine(outboxDao.pendingOutboxCount(), outboxDao.stuckOutboxCount()) { pending, stuck -> pending to stuck }
+            .catch { emit(0 to 0) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0 to 0)
 
     init {
         // Debounce name changes to avoid spamming relays on every keystroke

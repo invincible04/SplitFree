@@ -8,11 +8,15 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -21,6 +25,7 @@ import org.junit.Test
  * including mid-session. Teardown runs on screen exit and on Nearby callback threads, where an
  * escaping exception kills the process, so every call is guarded and reported instead.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class NearbySyncErrorHandlingTest {
     private val client = mockk<ConnectionsClient>(relaxed = true)
     private val identity = mockk<IdentityManager>(relaxed = true)
@@ -110,6 +115,47 @@ class NearbySyncErrorHandlingTest {
         val errors = collectEvents { nearbySync.startAdvertising() }
 
         assertEquals(listOf("advertise"), errors.map { (it as BleEvent.Error).operation })
+    }
+
+    // --- Backpressure ---
+
+    @Test
+    fun `events beyond the buffer are counted as dropped when the collector is stuck`() = runTest {
+        every { client.stopDiscovery() } throws SecurityException("denied")
+        // A collector that never finishes handling its first event, so the buffer cannot drain.
+        val collector = launch { nearbySync.events.collect { awaitCancellation() } }
+        runCurrent()
+
+        val extra = 7
+        repeat(NearbySync.EVENT_BUFFER_CAPACITY + extra) { nearbySync.stopDiscovery() }
+
+        // Depending on whether the collector took one event before sticking, either `extra` or
+        // `extra - 1` events had nowhere to go; none may vanish uncounted.
+        val dropped = nearbySync.droppedEvents.get()
+        assertTrue("expected ~$extra drops, got $dropped", dropped == extra.toLong() || dropped == extra - 1L)
+        collector.cancel()
+    }
+
+    @Test
+    fun `nothing is dropped while the buffer has room`() = runTest {
+        every { client.stopDiscovery() } throws SecurityException("denied")
+        val collector = launch { nearbySync.events.collect { awaitCancellation() } }
+        runCurrent()
+
+        repeat(NearbySync.EVENT_BUFFER_CAPACITY) { nearbySync.stopDiscovery() }
+
+        assertEquals(0L, nearbySync.droppedEvents.get())
+        collector.cancel()
+    }
+
+    @Test
+    fun `nothing is counted as dropped without a subscriber`() = runTest {
+        every { client.stopDiscovery() } throws SecurityException("denied")
+
+        // SharedFlow discards emissions with no collectors; that is by design, not a drop.
+        repeat(NearbySync.EVENT_BUFFER_CAPACITY + 5) { nearbySync.stopDiscovery() }
+
+        assertEquals(0L, nearbySync.droppedEvents.get())
     }
 
     /** Run [action] while collecting the events it emits. */

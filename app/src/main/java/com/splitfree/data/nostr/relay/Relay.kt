@@ -7,9 +7,13 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.util.DebugLog as Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +21,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
@@ -46,8 +51,14 @@ class Relay(
     private val _state = MutableStateFlow(State.DISCONNECTED)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    private val _messages = MutableSharedFlow<RelayMessage>(extraBufferCapacity = 256)
+    private val _messages = MutableSharedFlow<RelayMessage>(extraBufferCapacity = MESSAGE_BUFFER_CAPACITY)
     val messages: SharedFlow<RelayMessage> = _messages.asSharedFlow()
+
+    /**
+     * Messages that could not be handed to [messages] because the buffer was full: the
+     * downstream collector (Schnorr verify + DB) fell behind the socket. Diagnostics only.
+     */
+    val droppedMessages = AtomicLong(0)
 
     // OK callbacks: eventId → deferred result
     private val okCallbacks = ConcurrentHashMap<String, CompletableDeferred<RelayMessage.OkMsg>>()
@@ -58,9 +69,17 @@ class Relay(
     // Track last-seen event timestamp per subscription for reconnect gap prevention
     private val lastEventTimestamp = ConcurrentHashMap<String, Long>()
 
+    // Oldest created_at of an EVENT we dropped, per subscription: the window a re-REQ must cover
+    private val oldestDroppedTimestamp = ConcurrentHashMap<String, Long>()
+
     // Reconnect
+    @Volatile
     private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
+
+    // At most one pending catch-up re-REQ after a drop; guarded by [resubscribeLock]
+    private var resubscribeJob: Job? = null
+    private val resubscribeLock = Any()
 
     fun connect() {
         if (_state.value != State.DISCONNECTED) return
@@ -77,42 +96,15 @@ class Relay(
                         authAttempts = 0
                         // Re-send active subscriptions with updated since to cover reconnect gap
                         activeSubs.forEach { (subId, filters) ->
-                            val lastSeen = lastEventTimestamp[subId]
-                            val updatedFilters =
-                                if (lastSeen != null) {
-                                    filters.map { f -> f.copy(since = lastSeen - 60) } // 60s buffer
-                                } else {
-                                    filters
-                                }
-                            webSocket.send(ClientMessage.Req(subId, updatedFilters).toJson())
+                            val updated = catchUpFilters(subId, filters)
+                            oldestDroppedTimestamp.remove(subId) // covered by this REQ
+                            webSocket.send(ClientMessage.Req(subId, updated).toJson())
                         }
                         Log.d(TAG, "Connected to $url")
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        try {
-                            val msg = RelayMessage.parse(text) ?: return
-                            when (msg) {
-                                is RelayMessage.OkMsg -> {
-                                    okCallbacks.remove(msg.eventId)?.complete(msg)
-                                }
-
-                                is RelayMessage.AuthMsg -> {
-                                    handleAuth(msg.challenge)
-                                }
-
-                                else -> {
-                                    // Track last-seen event timestamp per subscription for reconnect
-                                    if (msg is RelayMessage.EventMsg) {
-                                        val ts = msg.event.createdAt
-                                        lastEventTimestamp.merge(msg.subId, ts) { old, new -> maxOf(old, new) }
-                                    }
-                                    _messages.tryEmit(msg)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "onMessage error from $url: ${e.message}")
-                        }
+                        handleIncoming(text)
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -136,17 +128,125 @@ class Relay(
     fun send(text: String): Boolean = ws?.send(text) ?: false
 
     /**
+     * Parse and dispatch one raw relay frame. Runs on the OkHttp reader thread, so it must never
+     * suspend or block; anything the collector cannot absorb is counted as a drop instead.
+     */
+    internal fun handleIncoming(text: String) {
+        try {
+            val msg = RelayMessage.parse(text) ?: return
+            when (msg) {
+                is RelayMessage.OkMsg -> {
+                    okCallbacks.remove(msg.eventId)?.complete(msg)
+                }
+
+                is RelayMessage.AuthMsg -> {
+                    handleAuth(msg.challenge)
+                }
+
+                else -> emitOrDrop(msg)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "onMessage error from $url: ${e.message}")
+        }
+    }
+
+    /**
+     * Hand [msg] to [messages]. [MutableSharedFlow.tryEmit] fails when the collector is slower
+     * than the socket (typically a historical backfill); we count the drop, log at most once per
+     * [DROP_LOG_INTERVAL] drops, and for EVENTs remember the gap so it can be re-requested.
+     */
+    private fun emitOrDrop(msg: RelayMessage) {
+        if (_messages.tryEmit(msg)) {
+            // Only events the collector actually received count as "seen" for gap prevention.
+            if (msg is RelayMessage.EventMsg) {
+                lastEventTimestamp.merge(msg.subId, msg.event.createdAt) { old, new -> maxOf(old, new) }
+            }
+            return
+        }
+        val dropped = droppedMessages.incrementAndGet()
+        if (dropped % DROP_LOG_INTERVAL == 1L) {
+            Log.w(TAG, "Message buffer full for $url: $dropped dropped so far (last: ${msg::class.simpleName})")
+        }
+        if (msg is RelayMessage.EventMsg) {
+            oldestDroppedTimestamp.merge(msg.subId, msg.event.createdAt) { old, new -> minOf(old, new) }
+            scheduleResubscribe()
+        }
+    }
+
+    /**
+     * Schedule a single delayed catch-up re-REQ for every subscription that lost an EVENT.
+     *
+     * Trade-off: [MutableSharedFlow] exposes no buffer occupancy, so we cannot wait for "drained
+     * below 50%". Instead we wait a fixed [RESUBSCRIBE_DELAY_MS] and re-REQ with `since` moved
+     * back to the oldest dropped event. If the collector is still behind by then the re-REQ may
+     * itself drop and schedule another round, but rounds are serialised (one pending job), the
+     * relay replaces the old subscription on a same-id REQ, and duplicates are deduped downstream
+     * by event id, so the worst case is extra traffic, never lost events. The alternative, a
+     * suspending `emit`, would block the OkHttp reader thread and stall PING/PONG.
+     */
+    private fun scheduleResubscribe() {
+        synchronized(resubscribeLock) {
+            if (resubscribeJob?.isActive == true) return
+            resubscribeJob =
+                scope.launch {
+                    delay(RESUBSCRIBE_DELAY_MS)
+                    val leftover = resubscribeDroppedSubs()
+                    synchronized(resubscribeLock) { resubscribeJob = null }
+                    // A drop that raced the re-REQ above saw this job still active and did not
+                    // schedule another; pick it up now instead of waiting for the next drop.
+                    if (leftover) scheduleResubscribe()
+                }
+        }
+    }
+
+    /** @return true if drop records remain that this pass did not cover and a further pass is needed */
+    private fun resubscribeDroppedSubs(): Boolean {
+        // Not connected: onOpen will re-REQ every active sub with catch-up filters anyway.
+        if (_state.value != State.CONNECTED) return false
+        val subIds = oldestDroppedTimestamp.keys.toList()
+        for (subId in subIds) {
+            val filters = activeSubs[subId]
+            if (filters == null) {
+                oldestDroppedTimestamp.remove(subId) // subscription was closed meanwhile
+                continue
+            }
+            val updated = catchUpFilters(subId, filters)
+            // Clear before sending so a drop that races this call is recorded for the next round.
+            oldestDroppedTimestamp.remove(subId)
+            Log.i(TAG, "Re-requesting $subId on $url after dropped events (since=${updated.firstOrNull()?.since})")
+            send(ClientMessage.Req(subId, updated).toJson())
+        }
+        return oldestDroppedTimestamp.isNotEmpty()
+    }
+
+    /**
+     * Filters for re-requesting [subId], narrowed to the window we may have missed: everything
+     * since the older of the last delivered event and the oldest dropped event, minus 60s slack.
+     */
+    private fun catchUpFilters(subId: String, filters: List<NostrFilter>): List<NostrFilter> {
+        val since =
+            listOfNotNull(lastEventTimestamp[subId], oldestDroppedTimestamp[subId]).minOrNull() ?: return filters
+        return filters.map { f -> f.copy(since = since - 60) } // 60s buffer
+    }
+
+    /**
      * Publish an event and wait for the relay's OK response.
+     *
+     * Concurrent publishes of the same event to this relay share one in-flight request: only the
+     * first caller sends the EVENT frame, later callers await the same OK.
      *
      * @param event signed Nostr event to publish
      * @param timeoutMs max time to wait for OK response
      * @return true if the relay accepted the event
+     * @throws CancellationException if the calling coroutine is cancelled while waiting
      */
     suspend fun sendEvent(event: NostrEvent, timeoutMs: Long = 7000): Boolean {
-        val deferred = CompletableDeferred<RelayMessage.OkMsg>()
-        okCallbacks[event.id] = deferred
-        if (!send(ClientMessage.Event(event).toJson())) {
-            okCallbacks.remove(event.id)
+        val fresh = CompletableDeferred<RelayMessage.OkMsg>()
+        val existing = okCallbacks.putIfAbsent(event.id, fresh)
+        val deferred = existing ?: fresh
+        if (existing == null && !send(ClientMessage.Event(event).toJson())) {
+            okCallbacks.remove(event.id, fresh)
+            fresh.cancel() // release anyone who attached to this attempt in the meantime
             Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: send failed (not connected?)")
             return false
         }
@@ -154,9 +254,20 @@ class Relay(
             val ok = withTimeout(timeoutMs) { deferred.await() }
             if (!ok.accepted) Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: rejected: ${ok.message}")
             ok.accepted
-        } catch (_: Exception) {
-            okCallbacks.remove(event.id)
+        } catch (_: TimeoutCancellationException) {
+            okCallbacks.remove(event.id, deferred)
             Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: timeout after ${timeoutMs}ms")
+            false
+        } catch (e: CancellationException) {
+            okCallbacks.remove(event.id, deferred)
+            // Our own coroutine was cancelled: propagate. Otherwise the deferred itself was
+            // cancelled (disconnect / failed send) and this is just a failed publish.
+            if (!currentCoroutineContext().isActive) throw e
+            Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: cancelled before OK (disconnected?)")
+            false
+        } catch (e: Exception) {
+            okCallbacks.remove(event.id, deferred)
+            Log.w(TAG, "sendEvent ${event.id.take(8)} to $url: failed: ${e.message}")
             false
         }
     }
@@ -173,15 +284,21 @@ class Relay(
 
     fun disconnect() {
         reconnectJob?.cancel()
+        synchronized(resubscribeLock) {
+            resubscribeJob?.cancel()
+            resubscribeJob = null
+        }
         okCallbacks.forEach { (_, d) -> d.cancel() }
         okCallbacks.clear()
         lastEventTimestamp.clear()
+        oldestDroppedTimestamp.clear()
         ws?.close(1000, "disconnect")
         ws = null
         _state.value = State.DISCONNECTED
     }
 
     /** NIP-42: respond to relay AUTH challenge. */
+    @Volatile
     private var authAttempts = 0
 
     private fun handleAuth(challenge: String) {
@@ -232,6 +349,15 @@ class Relay(
     companion object {
         private const val TAG = "Relay"
         private const val MAX_RECONNECT_ATTEMPTS = 20
+
+        /** Buffered relay frames before [tryEmit] starts failing; a backfill can burst thousands. */
+        const val MESSAGE_BUFFER_CAPACITY = 4096
+
+        /** Log every Nth drop rather than every drop. */
+        private const val DROP_LOG_INTERVAL = 100L
+
+        /** Grace period for the collector to drain before re-requesting dropped subscriptions. */
+        const val RESUBSCRIBE_DELAY_MS = 2000L
         val sharedClient: OkHttpClient =
             OkHttpClient
                 .Builder()

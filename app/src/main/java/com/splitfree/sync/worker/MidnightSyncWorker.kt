@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
  * Daily full sync worker scheduled at midnight.
  *
  * Unlike [SyncWorker], this pulls the complete event history (lenient timestamps)
- * and cleans up stale outbox entries older than 30 days. Reschedules itself for
+ * and abandons outbox entries idle for [OUTBOX_RETENTION_DAYS]. Reschedules itself for
  * the next midnight after completion.
  */
 @HiltWorker
@@ -60,8 +60,9 @@ constructor(
                 selfHeal(group.id)
                 createSnapshot(group.id)
             }
-            // Cleanup old outbox entries (self-heal has covered them by now)
-            outboxDao.deleteOlderThan(System.currentTimeMillis() / 1000 - 30 * 86400)
+            // Cleanup outbox rows with no publish activity for 90 days (self-heal has covered
+            // them by now). Keyed off the last attempt, not event time; see OutboxDao.deleteOlderThan.
+            outboxDao.deleteOlderThan(System.currentTimeMillis() / 1000 - OUTBOX_RETENTION_DAYS * 86400)
             reschedule()
             ProcessHealthTracker.heartbeat(applicationContext, "midnight_worker_success")
             Result.success()
@@ -95,5 +96,8 @@ constructor(
     companion object {
         private const val TAG = "MidnightSyncWorker"
         const val WORK_NAME = "splitfree_midnight_sync"
+
+        /** Outbox rows idle (no publish attempt) for this long are abandoned. */
+        const val OUTBOX_RETENTION_DAYS = 90L
     }
 }

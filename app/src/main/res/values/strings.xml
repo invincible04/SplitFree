@@ -91,6 +91,7 @@
     <string name="app_description">Decentralized expense splitting over Nostr.</string>
     <string name="diagnostics_report">Diagnostics Report</string>
     <string name="diagnostics_supporting">Copy crash/ANR and background sync health report</string>
+    <string name="outbox_pending_status">%1$d events waiting to sync (%2$d stuck)</string>
     <string name="debug_logs">Debug Logs</string>
     <string name="debug_logs_supporting">View live app logs for troubleshooting</string>
     <string name="open">Open</string>

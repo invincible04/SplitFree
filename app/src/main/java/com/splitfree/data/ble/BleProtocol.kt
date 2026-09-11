@@ -18,8 +18,11 @@ import java.util.UUID
  * Variable:
  * ┌──────────┬────────────┬─────────┐
  * │ SenderID │ GroupID    │ Payload │
- * │ 8 bytes  │ 8 bytes?   │ Variable│
+ * │ 8 bytes  │ 16 bytes?  │ Variable│
  * └──────────┴────────────┴─────────┘
+ *
+ * GroupID is the group UUID as its 16 raw bytes (most-significant 8, then least-significant 8),
+ * never the 36-char string, which would not fit in the header.
  */
 object BleProtocol {
     const val VERSION: Byte = 1
@@ -32,6 +35,10 @@ object BleProtocol {
     const val FLAG_HAS_GROUP_ID: Int = 0x01
     const val FLAG_IS_COMPRESSED: Int = 0x04
 
+    /**
+     * @param groupId group UUID string; must parse with [UUID.fromString]
+     * @throws IllegalArgumentException if [payload] is too large or [groupId] is not a UUID
+     */
     fun encode(
         type: MessageType,
         payload: ByteArray,
@@ -40,6 +47,7 @@ object BleProtocol {
         ttl: Byte = 7
     ): ByteArray {
         require(payload.size <= 65535) { "Payload too large for BLE protocol: ${payload.size}" }
+        val groupUuid = groupId?.let { parseGroupId(it) }
 
         // Compress if beneficial
         val (data, compressed) =
@@ -51,10 +59,10 @@ object BleProtocol {
             }
 
         var flags = 0
-        if (groupId != null) flags = flags or FLAG_HAS_GROUP_ID
+        if (groupUuid != null) flags = flags or FLAG_HAS_GROUP_ID
         if (compressed) flags = flags or FLAG_IS_COMPRESSED
 
-        val variableSize = SENDER_ID_SIZE + (if (groupId != null) GROUP_ID_SIZE else 0) + data.size
+        val variableSize = SENDER_ID_SIZE + (if (groupUuid != null) GROUP_ID_SIZE else 0) + data.size
         val buf = ByteBuffer.allocate(HEADER_SIZE + variableSize).order(ByteOrder.BIG_ENDIAN)
 
         // Header
@@ -68,9 +76,10 @@ object BleProtocol {
         // SenderID: first 8 bytes of hex pubkey decoded
         buf.put(senderPubkey.take(16).hexToBytes8())
 
-        // GroupID
-        if (groupId != null) {
-            buf.put(groupId.toByteArray(Charsets.UTF_8).copyOf(GROUP_ID_SIZE))
+        // GroupID: 16 raw UUID bytes
+        if (groupUuid != null) {
+            buf.putLong(groupUuid.mostSignificantBits)
+            buf.putLong(groupUuid.leastSignificantBits)
         }
 
         // Payload
@@ -103,9 +112,7 @@ object BleProtocol {
                 // The size check above only covers header + senderId; a packet that claims a
                 // group ID without carrying one would underflow the buffer.
                 if (buf.remaining() < GROUP_ID_SIZE) return null
-                val gid = ByteArray(GROUP_ID_SIZE)
-                buf.get(gid)
-                String(gid, Charsets.UTF_8).trimEnd('\u0000')
+                UUID(buf.getLong(), buf.getLong()).toString()
             } else {
                 null
             }
@@ -137,6 +144,24 @@ object BleProtocol {
         return ByteArray(8) { i ->
             ((Character.digit(padded[i * 2], 16) shl 4) + Character.digit(padded[i * 2 + 1], 16)).toByte()
         }
+    }
+
+    /**
+     * Parse [groupId] as a canonical 36-char UUID. [UUID.fromString] alone is lenient (it accepts
+     * short hex groups such as `1-2-3-4-5`), so we also require that the parsed value prints back
+     * to the input; otherwise the receiver would decode a different id than the sender meant.
+     *
+     * @throws IllegalArgumentException if [groupId] is not a canonical UUID
+     */
+    private fun parseGroupId(groupId: String): UUID {
+        val parsed =
+            try {
+                UUID.fromString(groupId)
+            } catch (e: IllegalArgumentException) {
+                throw IllegalArgumentException("groupId is not a UUID: $groupId", e)
+            }
+        require(parsed.toString().equals(groupId, ignoreCase = true)) { "groupId is not a canonical UUID: $groupId" }
+        return parsed
     }
 }
 
@@ -224,29 +249,32 @@ object FragmentManager {
         }
     }
 
-    private val pending =
-        java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, MutableMap<Int, ByteArray>>()
-    private val totalCounts = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Int>()
-    private val timestamps = java.util.concurrent.ConcurrentHashMap<Triple<String, Long, Long>, Long>()
+    /** Partial reassembly state for one (endpoint, message id). */
+    private class Reassembly(val total: Int, var lastSeen: Long) {
+        val frags = HashMap<Int, ByteArray>()
+
+        /** Running byte total of [frags], so the size bound is enforced before buffering, not after. */
+        var size = 0
+    }
+
+    // Insertion-ordered so that ties on lastSeen evict the earliest-started message first.
+    private val pending = LinkedHashMap<Triple<String, Long, Long>, Reassembly>()
     private const val MAX_PENDING = 20
+    private const val MAX_FRAGMENTS = 256
     private const val TIMEOUT_MS = 30_000L
     private const val MAX_REASSEMBLED_SIZE = 131_072 // 128 KB — matches relay max_event_bytes
 
+    /**
+     * Buffer one fragment; returns the reassembled message when the last piece arrives.
+     *
+     * Hardened against a misbehaving peer: an index outside `[0, total)` is rejected outright, a
+     * message whose running size would exceed [MAX_REASSEMBLED_SIZE] is discarded as soon as the
+     * offending chunk arrives (not after buffering all of it), and at most [MAX_PENDING] messages
+     * are held; beyond that the least recently touched one is evicted, stale or not.
+     */
     @Synchronized
     fun addFragment(endpointId: String, fragment: ByteArray): ByteArray? {
         if (fragment.size < FRAGMENT_HEADER_SIZE) return null
-
-        // Evict stale entries
-        val now = System.currentTimeMillis()
-        if (pending.size > MAX_PENDING) {
-            pending.keys.forEach { k ->
-                if (now - (timestamps[k] ?: 0) > TIMEOUT_MS) {
-                    pending.remove(k)
-                    totalCounts.remove(k)
-                    timestamps.remove(k)
-                }
-            }
-        }
 
         val buf = ByteBuffer.wrap(fragment).order(ByteOrder.BIG_ENDIAN)
         val msb = buf.getLong()
@@ -254,37 +282,59 @@ object FragmentManager {
         val key = Triple(endpointId, msb, lsb)
         val index = buf.getShort().toInt() and 0xFFFF
         val total = buf.getShort().toInt() and 0xFFFF
-        if (total == 0 || total > 256) return null // sanity bound on fragment count
-        val chunk = ByteArray(fragment.size - FRAGMENT_HEADER_SIZE)
-        buf.get(chunk)
+        if (total == 0 || total > MAX_FRAGMENTS) return null // sanity bound on fragment count
+        if (index >= total) return null // can never complete; do not let it occupy a slot
+        val chunkSize = fragment.size - FRAGMENT_HEADER_SIZE
 
-        val frags = pending.getOrPut(key) { mutableMapOf() }
-        totalCounts[key] = total
-        timestamps[key] = System.currentTimeMillis()
-        frags[index] = chunk
-
-        if (frags.size == total) {
-            pending.remove(key)
-            totalCounts.remove(key)
-            timestamps.remove(key)
-            val totalSize = frags.values.sumOf { it.size }
-            if (totalSize > MAX_REASSEMBLED_SIZE) return null // reject oversized payloads
-            val assembled = ByteArray(totalSize)
-            var offset = 0
-            for (i in 0 until total) {
-                val part = frags[i] ?: return null
-                part.copyInto(assembled, offset)
-                offset += part.size
+        val now = System.currentTimeMillis()
+        val entry =
+            pending[key] ?: run {
+                evictStale(now)
+                if (pending.size >= MAX_PENDING) evictOldest()
+                Reassembly(total, now).also { pending[key] = it }
             }
-            return assembled
+        if (entry.total != total) {
+            // The peer changed its mind about the fragment count; nothing consistent can be built.
+            pending.remove(key)
+            return null
         }
-        return null
+
+        val replacedSize = entry.frags[index]?.size ?: 0 // a retransmit replaces, not adds
+        val newSize = entry.size - replacedSize + chunkSize
+        if (newSize > MAX_REASSEMBLED_SIZE) {
+            pending.remove(key) // reject oversized payloads and free what was buffered so far
+            return null
+        }
+
+        val chunk = ByteArray(chunkSize)
+        buf.get(chunk)
+        entry.frags[index] = chunk
+        entry.size = newSize
+        entry.lastSeen = now
+
+        if (entry.frags.size < entry.total) return null
+        pending.remove(key)
+        val assembled = ByteArray(entry.size)
+        var offset = 0
+        for (i in 0 until entry.total) {
+            val part = entry.frags[i] ?: return null
+            part.copyInto(assembled, offset)
+            offset += part.size
+        }
+        return assembled
+    }
+
+    private fun evictStale(now: Long) {
+        pending.entries.removeAll { now - it.value.lastSeen > TIMEOUT_MS }
+    }
+
+    private fun evictOldest() {
+        val oldest = pending.entries.minByOrNull { it.value.lastSeen }?.key ?: return
+        pending.remove(oldest)
     }
 
     @Synchronized
     fun clear() {
         pending.clear()
-        totalCounts.clear()
-        timestamps.clear()
     }
 }

@@ -145,8 +145,113 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `flushOutbox never evicts a non-critical row however often it failed`() = runBlocking {
+        val longAgo = System.currentTimeMillis() / 1000 - 30 * 86400
+        val pending = listOf(stuckRow("e1", lastRetryAt = longAgo, eventType = "expense"))
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns false
+
+        engine.flushOutbox()
+
+        coVerify(exactly = 0) { outboxDao.delete(any()) }
+        coVerify { outboxDao.incrementRetry("e1", any()) }
+    }
+
+    @Test
+    fun `flushOutbox backs off a stuck row that was attempted recently`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        val pending = listOf(stuckRow("e1", lastRetryAt = now - 3600, eventType = "expense"))
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns true
+
+        val count = engine.flushOutbox()
+
+        assertEquals(0, count)
+        coVerify(exactly = 0) { nostrClient.publishJson(any()) }
+        coVerify(exactly = 0) { outboxDao.delete(any()) }
+        coVerify(exactly = 0) { outboxDao.incrementRetry(any(), any()) }
+    }
+
+    @Test
+    fun `flushOutbox attempts a stuck row once its back-off window has passed`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        val pending =
+            listOf(stuckRow("e1", lastRetryAt = now - SyncEngine.STUCK_RETRY_INTERVAL_SECS - 1, eventType = "expense"))
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns true
+
+        val count = engine.flushOutbox()
+
+        assertEquals(1, count)
+        coVerify(exactly = 1) { nostrClient.publishJson(any()) }
+        coVerify { outboxDao.delete("e1") }
+    }
+
+    @Test
+    fun `flushOutbox attempts a stuck row that has never recorded a retry time`() = runBlocking {
+        val pending = listOf(stuckRow("e1", lastRetryAt = null, eventType = "expense"))
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns false
+
+        engine.flushOutbox()
+
+        coVerify(exactly = 1) { nostrClient.publishJson(any()) }
+    }
+
+    @Test
+    fun `flushOutbox always attempts critical rows regardless of back-off`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        val pending =
+            listOf(
+                stuckRow("meta", lastRetryAt = now - 60, eventType = "group_meta"),
+                stuckRow("rot", lastRetryAt = now - 60, eventType = "key_rotation"),
+                stuckRow("rev", lastRetryAt = now - 60, eventType = "key_revocation"),
+                stuckRow("exp", lastRetryAt = now - 60, eventType = "expense")
+            )
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns true
+
+        val count = engine.flushOutbox()
+
+        assertEquals(3, count)
+        coVerify { outboxDao.delete("meta") }
+        coVerify { outboxDao.delete("rot") }
+        coVerify { outboxDao.delete("rev") }
+        coVerify(exactly = 0) { outboxDao.delete("exp") }
+    }
+
+    @Test
+    fun `flushOutbox still attempts rows below the stuck threshold`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        val pending =
+            listOf(
+                OutboxEntity(
+                    "e1",
+                    """{"id":"e1"}""",
+                    100,
+                    retryCount = SyncEngine.MAX_RETRIES - 1,
+                    lastRetryAt = now - 1,
+                    eventType = "expense"
+                )
+            )
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson(any()) } returns true
+
+        assertEquals(1, engine.flushOutbox())
+    }
+
+    @Test
     fun `flushOutbox returns 0 when outbox is empty`() = runBlocking {
         coEvery { outboxDao.getAll() } returns emptyList()
         assertEquals(0, engine.flushOutbox())
     }
+
+    private fun stuckRow(id: String, lastRetryAt: Long?, eventType: String) = OutboxEntity(
+        id,
+        """{"id":"$id"}""",
+        100,
+        retryCount = SyncEngine.MAX_RETRIES,
+        lastRetryAt = lastRetryAt,
+        eventType = eventType
+    )
 }

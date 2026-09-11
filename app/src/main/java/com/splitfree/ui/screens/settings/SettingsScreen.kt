@@ -140,6 +140,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         }
     }
     val displayName by viewModel.displayName.collectAsStateWithLifecycle()
+    val outboxStatus by viewModel.outboxStatus.collectAsStateWithLifecycle()
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -274,7 +275,15 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
             )
             ListItem(
                 headlineContent = { Text(stringResource(R.string.diagnostics_report)) },
-                supportingContent = { Text(stringResource(R.string.diagnostics_supporting)) },
+                supportingContent = {
+                    Column {
+                        Text(stringResource(R.string.diagnostics_supporting))
+                        val (pendingOutbox, stuckOutbox) = outboxStatus
+                        if (pendingOutbox > 0) {
+                            Text(stringResource(R.string.outbox_pending_status, pendingOutbox, stuckOutbox))
+                        }
+                    }
+                },
                 leadingContent = {
                     Icon(Icons.Outlined.BugReport, contentDescription = stringResource(R.string.cd_diagnostics_icon))
                 },

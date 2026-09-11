@@ -40,12 +40,44 @@ class BleProtocolEncodeDecodeTest {
     @Test
     fun `encode and decode round-trip with group ID`() {
         val payload = "data".toByteArray()
-        val encoded = BleProtocol.encode(MessageType.SETTLEMENT, payload, "aa".repeat(32), groupId = "group-123")
+        val groupId = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        val encoded = BleProtocol.encode(MessageType.SETTLEMENT, payload, "aa".repeat(32), groupId = groupId)
         val decoded = BleProtocol.decode(encoded)
         assertNotNull(decoded)
         assertEquals(MessageType.SETTLEMENT, decoded!!.type)
-        assertEquals("group-123", decoded.groupId)
+        // The full 36-char UUID must survive; it must not be truncated to 16 characters.
+        assertEquals(groupId, decoded.groupId)
         assertArrayEquals(payload, decoded.payload)
+    }
+
+    @Test
+    fun `group ID round-trips for random UUIDs and occupies exactly 16 bytes`() {
+        repeat(50) {
+            val groupId = java.util.UUID.randomUUID().toString()
+            val withGroup = BleProtocol.encode(MessageType.EXPENSE, "x".toByteArray(), "aa".repeat(32), groupId)
+            val without = BleProtocol.encode(MessageType.EXPENSE, "x".toByteArray(), "aa".repeat(32))
+            assertEquals(BleProtocol.GROUP_ID_SIZE, withGroup.size - without.size)
+            assertEquals(groupId, BleProtocol.decode(withGroup)!!.groupId)
+        }
+    }
+
+    @Test
+    fun `group ID decodes to canonical lowercase even if encoded from uppercase`() {
+        val upper = "0F8FAD5B-D9CB-469F-A165-70867728950E"
+        val encoded = BleProtocol.encode(MessageType.EXPENSE, "x".toByteArray(), "aa".repeat(32), groupId = upper)
+        assertEquals(upper.lowercase(), BleProtocol.decode(encoded)!!.groupId)
+    }
+
+    @Test
+    fun `encode rejects a group ID that is not a UUID`() {
+        for (bad in listOf("group-123", "", "not a uuid at all", "0f8fad5b-d9cb-469f-a165", "1-2-3-4-5")) {
+            try {
+                BleProtocol.encode(MessageType.EXPENSE, "x".toByteArray(), "aa".repeat(32), groupId = bad)
+                fail("Expected IllegalArgumentException for groupId='$bad'")
+            } catch (e: IllegalArgumentException) {
+                assertTrue(e.message!!.contains("UUID"))
+            }
+        }
     }
 
     @Test
@@ -242,7 +274,7 @@ class BleProtocolEncodeDecodeTest {
                 MessageType.EXPENSE,
                 "payload".toByteArray(),
                 "aa".repeat(32),
-                groupId = "group-1"
+                groupId = "0f8fad5b-d9cb-469f-a165-70867728950e"
             )
         assertNotNull(BleProtocol.decode(full))
         // No prefix of a valid packet may throw — a peer can cut a frame at any offset.

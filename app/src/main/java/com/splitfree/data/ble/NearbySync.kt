@@ -18,6 +18,7 @@ import com.splitfree.data.identity.IdentityManager
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -60,10 +61,29 @@ constructor(
     private val identity: IdentityManager
 ) {
     private val client: ConnectionsClient by lazy { Nearby.getConnectionsClient(context) }
-    private val _events = MutableSharedFlow<BleEvent>(extraBufferCapacity = 32)
+    private val _events = MutableSharedFlow<BleEvent>(extraBufferCapacity = EVENT_BUFFER_CAPACITY)
     val events: SharedFlow<BleEvent> = _events
 
+    /**
+     * Events that could not be handed to [events] because the buffer was full: a burst of
+     * payloads arrived faster than the collector processed them. Diagnostics only.
+     */
+    val droppedEvents = AtomicLong(0)
+
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Hand [event] to [events]. Nearby callbacks run on a binder thread and must not block, so a
+     * full buffer means the event is dropped; count it and log at most once per
+     * [DROP_LOG_INTERVAL] drops so a burst cannot flood logcat.
+     */
+    private fun emitOrDrop(event: BleEvent) {
+        if (_events.tryEmit(event)) return
+        val dropped = droppedEvents.incrementAndGet()
+        if (dropped % DROP_LOG_INTERVAL == 1L) {
+            Log.w(TAG, "Event buffer full: $dropped dropped so far (last: ${event::class.simpleName})")
+        }
+    }
 
     fun startAdvertising() {
         try {
@@ -145,12 +165,12 @@ constructor(
         object : EndpointDiscoveryCallback() {
             override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
                 if (info.serviceId == SERVICE_ID) {
-                    _events.tryEmit(BleEvent.PeerFound(NearbyPeer(endpointId, info.endpointName)))
+                    emitOrDrop(BleEvent.PeerFound(NearbyPeer(endpointId, info.endpointName)))
                 }
             }
 
             override fun onEndpointLost(endpointId: String) {
-                _events.tryEmit(BleEvent.PeerLost(endpointId))
+                emitOrDrop(BleEvent.PeerLost(endpointId))
             }
         }
 
@@ -188,24 +208,24 @@ constructor(
             override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
                 if (result.status.isSuccess) {
                     connectedEndpoints.add(endpointId)
-                    _events.tryEmit(BleEvent.Connected(endpointId))
+                    emitOrDrop(BleEvent.Connected(endpointId))
                 } else {
                     val reason = result.status.statusMessage ?: "status=${result.status.statusCode}"
                     Log.w(TAG, "Connection failed for $endpointId: $reason")
-                    _events.tryEmit(BleEvent.Error("connection_result", reason))
+                    emitOrDrop(BleEvent.Error("connection_result", reason))
                 }
             }
 
             override fun onDisconnected(endpointId: String) {
                 connectedEndpoints.remove(endpointId)
-                _events.tryEmit(BleEvent.Disconnected(endpointId))
+                emitOrDrop(BleEvent.Disconnected(endpointId))
             }
         }
 
     private val payloadCallback =
         object : PayloadCallback() {
             override fun onPayloadReceived(endpointId: String, payload: Payload) {
-                payload.asBytes()?.let { _events.tryEmit(BleEvent.PayloadReceived(endpointId, it)) }
+                payload.asBytes()?.let { emitOrDrop(BleEvent.PayloadReceived(endpointId, it)) }
             }
 
             override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
@@ -214,11 +234,17 @@ constructor(
     companion object {
         private const val TAG = "NearbySync"
         private const val SERVICE_ID = "com.splitfree.ble"
+
+        /** Buffered events before [MutableSharedFlow.tryEmit] starts failing; MSG_EVENT bursts can be large. */
+        const val EVENT_BUFFER_CAPACITY = 1024
+
+        /** Log every Nth drop rather than every drop. */
+        private const val DROP_LOG_INTERVAL = 100L
     }
 
     private fun emitError(operation: String, throwable: Exception) {
         val reason = throwable.message ?: throwable.javaClass.simpleName
         Log.w(TAG, "$operation failed: $reason")
-        _events.tryEmit(BleEvent.Error(operation, reason))
+        emitOrDrop(BleEvent.Error(operation, reason))
     }
 }

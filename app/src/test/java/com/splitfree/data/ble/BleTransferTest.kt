@@ -421,9 +421,11 @@ class BleTransferTest {
         val alice = Peer(ALICE_PRIV)
         val bob = Peer(BOB_PRIV)
         authenticate(alice, bob)
-        coEvery { alice.groupRepo.getById("g1") } returns
-            Group("g1", "Test", "", alice.pub, 1000, listOf(alice.pub, bob.pub), emptyList())
-        coEvery { alice.eventDao.getEventsByGroup("g1") } returns
+        // Real group ids are UUIDs; the binary protocol encodes them as 16 raw bytes.
+        val groupId = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        coEvery { alice.groupRepo.getById(groupId) } returns
+            Group(groupId, "Test", "", alice.pub, 1000, listOf(alice.pub, bob.pub), emptyList())
+        coEvery { alice.eventDao.getEventsByGroup(groupId) } returns
             listOf(
                 stored("signed", alice.pub, sig = "ab".repeat(64)),
                 stored("sealed", "cc".repeat(32), sig = EventSnapshot.SEAL_SIG_PREFIX + "cd".repeat(64)),
@@ -431,13 +433,14 @@ class BleTransferTest {
             )
         val handshakeFrames = alice.sent.size
 
-        alice.transfer.sendMissingEventsBinary("bob", "g1", peerEventIds = emptySet(), senderPubkey = alice.pub)
+        alice.transfer.sendMissingEventsBinary("bob", groupId, peerEventIds = emptySet(), senderPubkey = alice.pub)
 
         val frames = alice.sent.drop(handshakeFrames)
         // One event, small enough for a single unfragmented packet.
         assertEquals(1, frames.size)
         val packet = BleProtocol.decode(frames.single())
         assertEquals("""{"id":"signed"}""", String(packet!!.payload))
+        assertEquals(groupId, packet.groupId)
     }
 
     // --- processPayload ---
