@@ -24,6 +24,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -177,6 +178,34 @@ class GroupDetailViewModelTest {
     @Test
     fun `error is null initially`() {
         assertNull(vm.error.value)
+    }
+
+    // --- removeMember in-flight guard ---
+
+    @Test
+    fun `removeMember ignores a second tap while a rotation is in flight`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        coEvery { rotateGroupKey("g1", "bb".repeat(32)) } coAnswers { gate.await() }
+
+        vm.removeMember("bb".repeat(32))
+        vm.removeMember("bb".repeat(32))
+        coVerify(exactly = 1) { rotateGroupKey("g1", any()) }
+
+        gate.complete(Unit)
+        // Once the first rotation finished, removals are accepted again.
+        vm.removeMember("cc".repeat(32))
+        coVerify(exactly = 1) { rotateGroupKey("g1", "cc".repeat(32)) }
+    }
+
+    @Test
+    fun `removeMember surfaces the use case error and releases the guard`() = runTest {
+        coEvery { rotateGroupKey(any(), any()) } throws IllegalStateException("Group changed during rotation")
+
+        vm.removeMember("bb".repeat(32))
+
+        assertEquals("Group changed during rotation", vm.error.value)
+        vm.removeMember("bb".repeat(32))
+        coVerify(exactly = 2) { rotateGroupKey("g1", "bb".repeat(32)) }
     }
 
     // --- observation failure boundaries ---

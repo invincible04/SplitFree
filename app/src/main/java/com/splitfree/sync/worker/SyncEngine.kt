@@ -52,7 +52,9 @@ constructor(
         lenientTimestamp: Boolean = false,
         notifyContext: Context? = null
     ): Int {
-        val events = nostrClient.fetchEvents(groupId, since, identity.getPublicKeyHex())
+        // Relays return newest-first. key_rotation must be applied strictly in epoch order and
+        // group_meta is last-writer-wins on created_at, so process a catch-up batch oldest-first.
+        val events = nostrClient.fetchEvents(groupId, since, identity.getPublicKeyHex()).sortedBy { it.createdAt }
         val existingIds = eventDao.getEventIds(groupId).toSet()
         var count = 0
         for (event in events) {

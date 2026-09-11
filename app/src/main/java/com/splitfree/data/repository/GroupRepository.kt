@@ -138,7 +138,8 @@ constructor(
         val safeMemberNames = sanitizeMemberNames(memberNames, members)
         val namesJson = json.encodeToString(nameMapSerializer, safeMemberNames)
         if (eventTimestamp > 0) {
-            val updated = groupDao.updateMetaIfNewer(
+            // Single-statement LWW: metadata and lastMetaTimestamp land together or not at all.
+            groupDao.updateMetaIfNewer(
                 groupId,
                 name,
                 membersJson,
@@ -147,11 +148,11 @@ constructor(
                 eventTimestamp,
                 namesJson
             )
-            if (updated > 0) {
-                groupDao.updateLastMetaTimestamp(groupId, eventTimestamp)
-            }
         } else {
-            groupDao.updateMeta(groupId, name, membersJson, relaysJson, createdBy, namesJson)
+            // Local mutation (rotation, revocation, join): apply unconditionally, but still advance
+            // the watermark to "now" so a stale group_meta replayed from a relay cannot revert it.
+            val localTimestamp = System.currentTimeMillis() / 1000
+            groupDao.updateMeta(groupId, name, membersJson, relaysJson, createdBy, localTimestamp, namesJson)
         }
     }
 

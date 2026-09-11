@@ -84,6 +84,24 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `pullEvents processes a newest-first relay batch oldest-first`() = runBlocking {
+        // Relays hand back newest-first; key_rotation must land in epoch order and group_meta is LWW.
+        val newer = NostrEvent(id = "e2", pubkey = myPub, createdAt = 300, kind = 30078, content = "x", sig = "s")
+        val older = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(newer, older)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        val processed = mutableListOf<String>()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any()) } answers {
+            processed += firstArg<NostrEvent>().id
+            com.splitfree.sync.event.EventProcessor.ProcessResult(stored = false)
+        }
+
+        engine.pullEvents(groupId, 0, groupKey)
+
+        assertEquals(listOf("e1", "e2"), processed)
+    }
+
+    @Test
     fun `flushOutbox publishes and deletes successful events`() = runBlocking {
         val pending = listOf(OutboxEntity("e1", """{"id":"e1"}""", 100))
         coEvery { outboxDao.getAll() } returns pending

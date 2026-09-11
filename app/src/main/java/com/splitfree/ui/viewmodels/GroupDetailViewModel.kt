@@ -190,13 +190,19 @@ constructor(
         }
     }
 
+    private val removalInProgress = AtomicBoolean(false)
+
     fun removeMember(pubkey: String) {
+        // A second tap while a rotation is in flight would try to publish epoch N+1 twice.
+        if (!removalInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
                 rotateGroupKey(groupId, pubkey)
             } catch (e: Exception) {
                 Log.w(TAG, "Remove member failed: ${e.message}")
                 _error.value = e.message ?: "Failed to remove member"
+            } finally {
+                removalInProgress.set(false)
             }
         }
     }

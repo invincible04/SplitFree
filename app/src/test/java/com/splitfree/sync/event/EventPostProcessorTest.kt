@@ -54,7 +54,7 @@ class EventPostProcessorTest {
     fun `handle unknown event type is no-op`() = runBlocking {
         processor.handle("expense", """{"data":"x"}""", pubkey, groupId, 1000, false)
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any()) }
+        coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) }
         coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any()) }
     }
 
@@ -168,9 +168,9 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle key_rotation delegates to RotateGroupKeyUseCase`() = runBlocking {
-        processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        coVerify { rotateGroupKey.handleKeyRotation("""{"data":"x"}""", pubkey, groupId) }
+    fun `handle key_rotation delegates to RotateGroupKeyUseCase with the event timestamp`() = runBlocking {
+        processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 4321, false)
+        coVerify { rotateGroupKey.handleKeyRotation("""{"data":"x"}""", pubkey, groupId, 4321) }
     }
 
     @Test
@@ -181,14 +181,14 @@ class EventPostProcessorTest {
 
     @Test
     fun `handle catches exception from rotateGroupKey`() = runBlocking {
-        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any()) } throws RuntimeException("boom")
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } throws RuntimeException("boom")
         processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
         // Should not throw — exception is caught internally
     }
 
     @Test
     fun `handle rethrows CancellationException`() {
-        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any()) } throws
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } throws
             kotlinx.coroutines.CancellationException("cancel")
         try {
             runBlocking { processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false) }

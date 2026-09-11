@@ -39,9 +39,17 @@ interface GroupDao {
     @Query("UPDATE `groups` SET lastSyncTimestamp = :timestamp WHERE groupId = :groupId")
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 
+    /**
+     * Last-writer-wins metadata update. The metadata columns and `lastMetaTimestamp`
+     * are written in a single statement so a concurrent writer can never observe the
+     * new members with the old watermark (or vice versa).
+     *
+     * @return number of rows updated: 1 if applied, 0 if [eventTimestamp] was not newer
+     */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
-            "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END " +
+            "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
+            "lastMetaTimestamp = :eventTimestamp " +
             "WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp"
     )
     suspend fun updateMetaIfNewer(
@@ -54,9 +62,15 @@ interface GroupDao {
         memberNames: String = "{}"
     ): Int
 
+    /**
+     * Unconditional metadata update used for local mutations (rotation, revocation, join).
+     * Always advances `lastMetaTimestamp` to at least [eventTimestamp] so a stale
+     * `group_meta` replayed from a relay cannot revert the local change.
+     */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
-            "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END " +
+            "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
+            "lastMetaTimestamp = MAX(lastMetaTimestamp, :eventTimestamp) " +
             "WHERE groupId = :groupId"
     )
     suspend fun updateMeta(
@@ -65,11 +79,9 @@ interface GroupDao {
         members: String,
         relays: String,
         createdBy: String,
+        eventTimestamp: Long,
         memberNames: String = "{}"
     )
-
-    @Query("UPDATE `groups` SET lastMetaTimestamp = :timestamp WHERE groupId = :groupId")
-    suspend fun updateLastMetaTimestamp(groupId: String, timestamp: Long)
 
     @Delete
     suspend fun delete(group: GroupEntity)

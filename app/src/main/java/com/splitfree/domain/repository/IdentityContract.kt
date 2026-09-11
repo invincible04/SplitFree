@@ -49,13 +49,20 @@ interface IdentityContract {
     /** @return raw 32-byte pending private key, or null */
     fun getPendingPrivateKeyBytes(): ByteArray?
 
+    /**
+     * Record that a key revocation has started (epoch seconds, now). Called immediately after
+     * [generatePendingKeyPair] so an interrupted revocation can be told apart from a pending
+     * key left behind by an older build that never recorded a start time.
+     */
+    fun markRevocationStarted()
+
     /** Store event IDs created during key revocation so resumeIfNeeded can track them. */
     fun setRevocationEventIds(eventIds: List<String>)
 
     /** @return event IDs from the in-progress revocation, or empty */
     fun getRevocationEventIds(): List<String>
 
-    /** @return epoch seconds when the revocation was started, or 0 */
+    /** @return epoch seconds when the revocation was started (see [markRevocationStarted]), or 0 */
     fun getRevocationStartTime(): Long
 
     /** Export private key as a 24-word BIP-39 mnemonic. */

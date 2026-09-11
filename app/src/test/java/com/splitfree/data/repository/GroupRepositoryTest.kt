@@ -216,35 +216,48 @@ class GroupRepositoryTest {
     fun `updateFromMeta rejects too many members`() = runBlocking {
         val bigList = (1..51).map { "pub$it" }
         repo.updateFromMeta("g1", "name", bigList, emptyList())
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `updateFromMeta with timestamp uses atomic update`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any()) } returns 1
+    fun `updateFromMeta with timestamp uses the single-statement LWW update`() = runBlocking {
+        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) } returns 1
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500) }
-        coVerify { groupDao.updateLastMetaTimestamp("g1", 500) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any()) }
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `updateFromMeta without timestamp uses simple update`() = runBlocking {
+    fun `updateFromMeta without timestamp uses the unconditional update with a positive watermark`() = runBlocking {
+        val before = System.currentTimeMillis() / 1000
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"))
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "") }
+        coVerify {
+            groupDao.updateMeta(
+                "g1",
+                "name",
+                any(),
+                any(),
+                "",
+                match { it >= before && it <= System.currentTimeMillis() / 1000 },
+                any()
+            )
+        }
+        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `updateFromMeta with timestamp skips lastMetaTimestamp when not newer`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any()) } returns 0
+    fun `updateFromMeta with a stale timestamp does not fall back to the unconditional update`() = runBlocking {
+        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) } returns 0
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500) }
-        coVerify(exactly = 0) { groupDao.updateLastMetaTimestamp(any(), any()) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any()) }
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `updateFromMeta passes createdBy when provided`() = runBlocking {
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), createdBy = "creator")
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "creator") }
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "creator", any(), any()) }
     }
 
     @Test
@@ -257,7 +270,7 @@ class GroupRepositoryTest {
             listOf("wss://r"),
             memberNames = mapOf("pub1" to "  Alice  ", "pub2" to "Ignored")
         )
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", capture(namesJson)) }
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), capture(namesJson)) }
         assertEquals("""{"pub1":"Alice"}""", namesJson.captured)
     }
 

@@ -11,16 +11,19 @@ import com.splitfree.domain.repository.IdentityContract
 import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import io.mockk.verifyOrder
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -59,6 +62,7 @@ class RevokeKeyUseCaseTest {
 
         every { identity.getPublicKeyHex() } returns oldPubkey
         every { identity.generatePendingKeyPair() } returns Pair("privhex", newPubkey)
+        every { identity.markRevocationStarted() } just Runs
         every { identity.commitPendingKeyPair() } just Runs
         every { identity.discardPendingKeyPair() } just Runs
         every { identity.hasPendingKeyPair() } returns false
@@ -313,5 +317,165 @@ class RevokeKeyUseCaseTest {
     fun `invoke stores revocation event IDs`() = runBlocking {
         useCase()
         verify { identity.setRevocationEventIds(match { it.isNotEmpty() }) }
+    }
+
+    // --- crash windows (R2) ---
+
+    @Test
+    fun `invoke marks the revocation started immediately after generating the pending key`() = runBlocking {
+        useCase()
+        verifyOrder {
+            identity.generatePendingKeyPair()
+            identity.markRevocationStarted()
+        }
+        coVerifyOrder {
+            identity.markRevocationStarted()
+            eventPublisher.publishDirect(any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `invoke applies local membership only after every publish and before committing`() = runBlocking {
+        useCase()
+        coVerifyOrder {
+            eventPublisher.publishDirect(any(), groupId, any(), "key_revocation", any())
+            eventPublisher.publishDirect(any(), groupId, any(), "group_meta", any())
+            groupRepo.updateFromMeta(groupId, any(), any(), any(), any(), any(), any())
+            identity.setRevocationEventIds(any())
+            identity.commitPendingKeyPair()
+        }
+    }
+
+    @Test
+    fun `invoke failure while publishing leaves local membership untouched and discards the pending key`() {
+        coEvery { eventPublisher.publishDirect(any(), any(), any(), any(), any()) } throws RuntimeException("offline")
+
+        val failure = runCatching { runBlocking { useCase() } }.exceptionOrNull()
+
+        assertTrue("expected RuntimeException, got $failure", failure is RuntimeException)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { identity.setRevocationEventIds(any()) }
+        verify(exactly = 0) { identity.commitPendingKeyPair() }
+        verify { identity.discardPendingKeyPair() }
+    }
+
+    @Test
+    fun `invoke builds every event before publishing anything`() {
+        // Second signer call (the group_meta) fails: nothing at all may have been published.
+        every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent andThenThrows
+            IllegalStateException("signer offline")
+
+        runCatching { runBlocking { useCase() } }
+
+        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+        verify { identity.discardPendingKeyPair() }
+    }
+
+    @Test
+    fun `invoke warns once about groups without a key and still revokes the others`() = runBlocking {
+        val keyedGroup = group.copy(id = "group-2")
+        coEvery { groupRepo.getAll() } returns listOf(group, keyedGroup)
+        coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getGroupKey("group-2") } returns groupKey
+
+        val result = useCase()
+
+        assertEquals(newPubkey, result)
+        coVerify(exactly = 2) { eventPublisher.publishDirect(any(), "group-2", any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), groupId, any(), any(), any()) }
+        verify(exactly = 1) { android.util.Log.w(any<String>(), match<String> { "not published" in it }) }
+        verify { identity.commitPendingKeyPair() }
+    }
+
+    @Test
+    fun `resumeIfNeeded discards pending key when no event ids were recorded`() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns true
+        every { identity.getPendingPublicKeyHex() } returns newPubkey
+        every { identity.getRevocationEventIds() } returns emptyList()
+        every { identity.getRevocationStartTime() } returns System.currentTimeMillis() / 1000
+        useCase.resumeIfNeeded()
+        verify { identity.discardPendingKeyPair() }
+        verify(exactly = 0) { identity.commitPendingKeyPair() }
+        coVerify(exactly = 0) { eventPublisher.hasOutboxEventsById(any()) }
+    }
+
+    @Test
+    fun `resumeIfNeeded discards pending key when no start time was recorded`() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns true
+        every { identity.getPendingPublicKeyHex() } returns newPubkey
+        every { identity.getRevocationEventIds() } returns listOf("evt1")
+        every { identity.getRevocationStartTime() } returns 0L
+        coEvery { eventPublisher.hasOutboxEventsById(any()) } returns false
+        useCase.resumeIfNeeded()
+        verify { identity.discardPendingKeyPair() }
+        verify(exactly = 0) { identity.commitPendingKeyPair() }
+    }
+
+    // --- handleRevocation validation (R2) ---
+
+    @Test
+    fun `handleRevocation rejects a malformed new pubkey`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, "not-a-pubkey"))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleRevocation rejects an uppercase hex new pubkey`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, "BB".repeat(32)))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleRevocation rejects a revocation naming itself as the new key`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, oldPubkey))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleRevocation does not duplicate a new pubkey that already joined`() = runBlocking {
+        val alreadyJoined = group.copy(members = listOf(oldPubkey, newPubkey, "cc".repeat(32)))
+        coEvery { groupRepo.getById(groupId) } returns alreadyJoined
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Test",
+                listOf(newPubkey, "cc".repeat(32)),
+                any(),
+                0,
+                "",
+                any()
+            )
+        }
+    }
+
+    @Test
+    fun `handleRevocation keeps the name the new pubkey already announced`() = runBlocking {
+        val alreadyJoined = group.copy(
+            members = listOf(oldPubkey, newPubkey, "cc".repeat(32)),
+            memberNames = mapOf(oldPubkey to "Alice", newPubkey to "Alicia", "cc".repeat(32) to "Bob")
+        )
+        coEvery { groupRepo.getById(groupId) } returns alreadyJoined
+        val payload = Json.encodeToString(KeyRevocation.serializer(), KeyRevocation(oldPubkey, newPubkey))
+        useCase.handleRevocation(payload, oldPubkey, groupId)
+        coVerify {
+            groupRepo.updateFromMeta(
+                groupId,
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                match { it[newPubkey] == "Alicia" && oldPubkey !in it && it["cc".repeat(32)] == "Bob" }
+            )
+        }
     }
 }

@@ -53,7 +53,7 @@ constructor(
         when (eventType) {
             "group_meta" -> handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable)
             "key_rotation" -> runSafe(nonCancellable, "key_rotation", groupId) {
-                rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId)
+                rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt)
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
                 revokeKey.handleRevocation(decrypted, authorHex, groupId)

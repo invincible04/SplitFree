@@ -61,12 +61,12 @@ constructor(
         if (snapshotEvent != null) {
             try {
                 val group = groupRepo.getById(groupId)
-                if (group != null &&
-                    (
-                        snapshotEvent.pubkey == group.createdBy ||
-                            (group.createdBy.isEmpty() && snapshotEvent.pubkey in group.members)
-                        )
-                ) {
+                // Snapshots are only trusted from a known creator. With an unknown creator there is
+                // no trusted author, so any member's snapshot is ignored and balances are replayed.
+                val trusted = group != null &&
+                    group.createdBy.isNotEmpty() &&
+                    snapshotEvent.pubkey == group.createdBy
+                if (trusted) {
                     val content = decrypt(snapshotEvent, groupId, keyCache)
                     if (content != null) {
                         val snap = json.decodeFromString<BalanceSnapshot>(content)

@@ -597,6 +597,56 @@ class ComputeBalancesUseCaseTest {
     }
 
     @Test
+    fun `snapshot from a member is ignored when the group has no known creator`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        // createdBy empty, and the snapshot author IS a member: still not trusted.
+        coEvery { repo.getById("g1") } returns group("").copy(members = listOf("alice", "bob"))
+        val eventIds = (1..10).map { "event_$it" }
+        val hashArr = eventIds.joinToString(",", "[", "]") {
+            "\"${com.splitfree.domain.util.HashUtil.sha256Hex(it)}\""
+        }
+        val snapContent = snapJson(
+            eventCount = 10,
+            balances = """[${balEntry("alice", 9999, "INR")}]""",
+            hashes = hashArr
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
+            makeEvent("s1", type = "snapshot", pubkey = "alice", content = snapContent)
+        coEvery { dao.getEventIds("g1") } returns eventIds
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertTrue("Snapshot must not be trusted without a known creator", balances.isEmpty())
+    }
+
+    @Test
+    fun `snapshot from an empty pubkey is ignored when the group has no known creator`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        // Guard against the degenerate equality "" == "" being read as "author is the creator".
+        coEvery { repo.getById("g1") } returns group("").copy(members = listOf("alice", "bob"))
+        val eventIds = (1..10).map { "event_$it" }
+        val hashArr = eventIds.joinToString(",", "[", "]") {
+            "\"${com.splitfree.domain.util.HashUtil.sha256Hex(it)}\""
+        }
+        val snapContent = snapJson(
+            eventCount = 10,
+            balances = """[${balEntry("alice", 9999, "INR")}]""",
+            hashes = hashArr
+        )
+        coEvery { dao.getLatestEventByType("g1", "snapshot") } returns
+            makeEvent("s1", type = "snapshot", pubkey = "", content = snapContent)
+        coEvery { dao.getEventIds("g1") } returns eventIds
+        coEvery { dao.getEventsByGroup("g1") } returns emptyList()
+
+        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
+
+        assertTrue(balances.isEmpty())
+    }
+
+    @Test
     fun `snapshot with valid hash match applies balances`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()

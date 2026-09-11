@@ -238,10 +238,42 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `setRevocationEventIds stores ids and timestamp`() {
+    fun `setRevocationEventIds stores ids only`() {
         mgr.setRevocationEventIds(listOf("e1", "e2"))
         assertEquals("e1,e2", storage.getString("revocation_event_ids", null))
-        assertTrue(storage.getLong("revocation_start", 0L) > 0)
+        assertEquals(listOf("e1", "e2"), mgr.getRevocationEventIds())
+        // The start time is owned by markRevocationStarted, not by the event-id write.
+        assertEquals(0L, storage.getLong("revocation_start", 0L))
+    }
+
+    @Test
+    fun `markRevocationStarted records the current epoch seconds`() {
+        val before = System.currentTimeMillis() / 1000
+        mgr.markRevocationStarted()
+        val start = mgr.getRevocationStartTime()
+        assertTrue(start >= before && start <= System.currentTimeMillis() / 1000)
+    }
+
+    @Test
+    fun `commitPendingKeyPair clears revocation tracking`() {
+        storage.putString("nsec_pending", "pendpriv")
+        storage.putString("npub_pending", "pendpub")
+        mgr.markRevocationStarted()
+        mgr.setRevocationEventIds(listOf("e1"))
+        mgr.commitPendingKeyPair()
+        assertEquals(0L, mgr.getRevocationStartTime())
+        assertEquals(emptyList<String>(), mgr.getRevocationEventIds())
+    }
+
+    @Test
+    fun `discardPendingKeyPair clears revocation tracking`() {
+        storage.putString("nsec_pending", "pendpriv")
+        storage.putString("npub_pending", "pendpub")
+        mgr.markRevocationStarted()
+        mgr.setRevocationEventIds(listOf("e1"))
+        mgr.discardPendingKeyPair()
+        assertEquals(0L, mgr.getRevocationStartTime())
+        assertEquals(emptyList<String>(), mgr.getRevocationEventIds())
     }
 
     @Test

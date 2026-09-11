@@ -124,9 +124,12 @@ constructor(
 
     override fun getPendingPrivateKeyBytes(): ByteArray? = storage.getString(KEY_PENDING_PRIVATE, null)?.hexToBytes()
 
+    override fun markRevocationStarted() {
+        storage.putLong(KEY_REVOCATION_START, System.currentTimeMillis() / 1000)
+    }
+
     override fun setRevocationEventIds(eventIds: List<String>) {
         storage.putString(KEY_REVOCATION_EVENT_IDS, eventIds.joinToString(","))
-        storage.putLong(KEY_REVOCATION_START, System.currentTimeMillis() / 1000)
     }
 
     override fun getRevocationEventIds(): List<String> = storage.getString(KEY_REVOCATION_EVENT_IDS, null)

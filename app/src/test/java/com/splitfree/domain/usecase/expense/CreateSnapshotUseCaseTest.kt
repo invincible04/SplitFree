@@ -138,6 +138,43 @@ class CreateSnapshotUseCaseTest {
     }
 
     @Test
+    fun `does not create a snapshot when I am not the creator`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns Group(
+            id = groupId,
+            name = "Test",
+            createdBy = "someone-else",
+            createdAt = 1000,
+            members = listOf("someone-else", myPubkey),
+            relays = emptyList()
+        )
+        coEvery { eventRepo.getEventCount(groupId) } returns 200
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `does not create a snapshot when the group has no known creator`() = runBlocking {
+        // With createdBy empty there is no trusted snapshot author, so nobody (not even a
+        // member) may publish one.
+        coEvery { groupRepo.getById(groupId) } returns Group(
+            id = groupId,
+            name = "Test",
+            createdBy = "",
+            createdAt = 1000,
+            members = listOf(myPubkey),
+            relays = emptyList()
+        )
+        coEvery { eventRepo.getEventCount(groupId) } returns 200
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.getGroupKeyForEpoch(any(), any()) }
+    }
+
+    @Test
     fun `encrypts snapshot with the loaded group's epoch key and never calls getGroupKey`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns Group(
             id = groupId,

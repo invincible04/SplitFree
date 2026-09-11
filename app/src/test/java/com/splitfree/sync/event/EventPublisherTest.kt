@@ -215,22 +215,32 @@ class EventPublisherTest {
         every { identity.getPrivateKeyBytes() } answers { privateKey.copyOf() }
         val encryption = mockk<GroupEncryption>()
         every { encryption.generateGroupKey() } returns "rotated-key"
+        every { encryption.encrypt(any(), "rotated-key") } answers { "meta:${firstArg<String>()}" }
         val signer = mockk<EventSigner>()
         every { signer.createSignedEvent(any(), "key_rotation", any(), any()) } answers {
             event.copy(id = UUID.randomUUID().toString(), pubkey = creator, content = thirdArg())
         }
+        every { signer.createSignedEvent(any(), "group_meta", any(), any()) } answers {
+            event.copy(id = "post-rotation-meta", pubkey = creator, content = thirdArg())
+        }
 
         RotateGroupKeyUseCase(groupRepo, encryption, identity, signer, publisher)("g1", thirdPub)
 
-        val rotations = db.eventDao().getEventsByGroup("g1")
+        val stored = db.eventDao().getEventsByGroup("g1")
+        val rotations = stored.filter { it.eventType == "key_rotation" }
+        val metas = stored.filter { it.eventType == "group_meta" }
         assertEquals(2, rotations.size)
-        assertTrue(rotations.all { it.eventType == "key_rotation" })
-        assertEquals(5001, db.outboxDao().count())
-        assertEquals(2, db.outboxDao().countByEventIds(rotations.map { it.eventId }))
+        assertEquals(1, metas.size)
+        assertEquals(5002, db.outboxDao().count())
+        assertEquals(3, db.outboxDao().countByEventIds(stored.map { it.eventId }))
         assertEquals(1, groupRepo.getById("g1")?.keyEpoch)
         assertEquals(listOf(creator, peer), groupRepo.getMembers("g1"))
+        // The post-rotation group_meta is encrypted with, and recorded under, the NEW epoch.
+        assertEquals(1, metas.single().keyEpoch)
+        assertTrue(metas.single().contentEncrypted.startsWith("meta:"))
+        assertTrue(thirdPub !in metas.single().contentEncrypted)
         verify { keyStore.putString("g1:1", "rotated-key") }
-        verify(exactly = 2) { throttler.enqueue(any()) }
+        verify(exactly = 3) { throttler.enqueue(any()) }
         verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), any()) }
     }
 

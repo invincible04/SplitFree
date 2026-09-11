@@ -39,10 +39,10 @@ constructor(
     suspend operator fun invoke(groupId: String): Boolean {
         return eventRepo.withTransaction {
             val group = groupRepo.getById(groupId) ?: return@withTransaction false
-            if (group.createdBy.isNotEmpty()) {
-                val myPubkey = identity.getPublicKeyHex()
-                if (myPubkey != group.createdBy) return@withTransaction false
-            }
+            // Only the creator may author snapshots (ComputeBalancesUseCase trusts no one else).
+            // A group whose creator is unknown has no trusted snapshot author, so none are created.
+            if (group.createdBy.isEmpty()) return@withTransaction false
+            if (identity.getPublicKeyHex() != group.createdBy) return@withTransaction false
             val eventCount = eventRepo.getEventCount(groupId)
             // Snapshots are new ciphertext: encrypt with the loaded group's current epoch key only.
             val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return@withTransaction false

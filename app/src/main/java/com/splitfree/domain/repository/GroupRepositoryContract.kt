@@ -47,13 +47,16 @@ interface GroupRepositoryContract {
 
     /**
      * Apply a `group_meta` update. Only overwrites if [eventTimestamp] is newer
-     * than the stored `lastMetaTimestamp` (or unconditionally when 0).
+     * than the stored `lastMetaTimestamp`. When [eventTimestamp] is 0 (a local
+     * mutation such as rotation, revocation or join) the update is unconditional
+     * and the watermark is advanced to the current time so stale replayed metas
+     * cannot revert it.
      *
      * @param groupId target group UUID
      * @param name updated group name
      * @param members updated member pubkey list
      * @param relays updated relay URL list
-     * @param eventTimestamp the `createdAt` of the incoming group_meta event
+     * @param eventTimestamp the `createdAt` of the incoming group_meta event, or 0 for a local mutation
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
      * @param memberNames optional map of member pubkey -> display name
      */
