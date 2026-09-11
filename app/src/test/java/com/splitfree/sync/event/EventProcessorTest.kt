@@ -1,6 +1,7 @@
 package com.splitfree.sync.event
 
 import com.splitfree.data.local.dao.EventDao
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.GroupEncryption
@@ -17,6 +18,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -39,18 +41,21 @@ class EventProcessorTest {
 
     private val groupId = "group-123"
     private val pubkey = "ab".repeat(32)
+    private val bob = "bb".repeat(32)
     private val groupKey = "key123"
     private val group = Group(groupId, "Test", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
+    private val twoMemberGroup = group.copy(members = listOf(pubkey, bob))
 
     private fun makeEvent(
         eventType: String = "expense",
         author: String = pubkey,
         expenseUuid: String? = "uuid1",
-        content: String = "encrypted"
+        content: String = "encrypted",
+        createdAt: Long = System.currentTimeMillis() / 1000
     ) = NostrEvent(
         id = "evt-${System.nanoTime()}",
         pubkey = author,
-        createdAt = System.currentTimeMillis() / 1000,
+        createdAt = createdAt,
         kind = 30078,
         tags =
         buildList {
@@ -62,15 +67,31 @@ class EventProcessorTest {
         sig = "sig"
     )
 
+    private fun expenseJson(
+        id: String = "uuid1",
+        amount: Long = 100,
+        currency: String = "USD",
+        paidBy: String = pubkey,
+        splits: List<Pair<String, Long>> = listOf(pubkey to 100L)
+    ): String {
+        val splitJson = splits.joinToString(",") { (pk, share) -> """{"pubkey":"$pk","share":$share}""" }
+        return """{"id":"$id","amount":$amount,"currency":"$currency","description":"test",""" +
+            """"paid_by":"$paidBy","split_type":"equal","split_among":[$splitJson],"timestamp":1000}"""
+    }
+
     private fun settlementJson(
         id: String = "s1",
         from: String = pubkey,
-        to: String = "bb".repeat(32),
+        to: String = bob,
         amount: Long = 100,
         currency: String = "USD",
         timestamp: Long = 1000
     ): String =
         """{"id":"$id","from":"$from","to":"$to","amount":$amount,"currency":"$currency","timestamp":$timestamp}"""
+
+    /** Processor wired to a real [EventValidator] so payload rules are actually exercised. */
+    private fun realValidatorProcessor() =
+        EventProcessor(eventDao, groupRepo, encryption, signer, identity, giftWrap, EventValidator(), postProcessor)
 
     @Before
     fun setup() {
@@ -87,18 +108,16 @@ class EventProcessorTest {
         every { eventValidator.isContentSafe(any()) } returns true
         every { eventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns true
         every { eventValidator.isDeletedExpense(any(), any(), any()) } returns false
-        every { eventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns true
-        every { eventValidator.isExpenseAmountValid(any(), any()) } returns true
+        every { eventValidator.isExpenseValid(any(), any()) } returns true
+        every { eventValidator.isSettlementValid(any(), any(), any()) } returns true
 
         every { giftWrap.tryUnwrap(any()) } returns null
         every { signer.verify(any()) } returns true
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
-        every { encryption.decrypt(any(), groupKey) } returns
-            """{"id":"uuid1","amount":100,"currency":"USD","description":"test","paid_by":"$pubkey","split_type":"equal","split_among":[{"pubkey":"$pubkey","share":100}],"timestamp":1000}"""
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         coEvery { eventDao.insertIfNew(any()) } returns true
         coEvery { eventDao.getDeletedExpenseUuids(any()) } returns emptyList()
-        coEvery { eventDao.getLatestEventByType(any(), any()) } returns null
         coEvery { eventDao.getExpenseByUuid(any(), any()) } returns null
 
         processor =
@@ -197,10 +216,15 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects backdated expense`() = runBlocking {
-        every { eventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
-        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        assertFalse(result.stored)
+    fun `process accepts expense created before the latest settlement`() = runBlocking {
+        // Regression for the removed backdating rule: clock skew between phones must not
+        // cause legitimate expenses to be silently dropped on peers.
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getLatestEventByType(groupId, "settlement") } returns
+            EventEntity("settle-evt", groupId, pubkey, now, 30078, "enc", "settlement", "s1", "sig", now)
+        val result = realValidatorProcessor().process(makeEvent(createdAt = now - 3600), knownGroupKey = groupKey)
+        assertTrue("Expense older than latest settlement must be accepted", result.stored)
+        coVerify(exactly = 0) { eventDao.getLatestEventByType(any(), eq("settlement")) }
     }
 
     @Test
@@ -330,11 +354,33 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process handles decryption failure gracefully`() = runBlocking {
+    fun `process rejects undecryptable expense instead of storing ciphertext`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
-        // Still stored — decrypted is null but event is kept
-        assertTrue(result.stored)
+        assertFalse("Undecryptable expense must not be stored", result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `process rejects undecryptable settlement instead of storing ciphertext`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
+        val result = processor.process(makeEvent(eventType = "settlement"), knownGroupKey = groupKey)
+        assertFalse("Undecryptable settlement must not be stored", result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process rejects undecryptable expense after exhausting older epoch keys`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 2)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "old1"
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns "old0"
+        every { encryption.decrypt(any(), any<String>()) } throws RuntimeException("bad")
+        val result = processor.process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse(result.stored)
+        coVerify { groupRepo.getGroupKeyForEpoch(groupId, 1) }
+        coVerify { groupRepo.getGroupKeyForEpoch(groupId, 0) }
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
     }
 
     @Test
@@ -474,10 +520,18 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process expense_correction checks backdating`() = runBlocking {
-        every { eventValidator.isNotBackdatedBeforeSettlement(any(), any()) } returns false
-        val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
-        assertFalse(result.stored)
+    fun `process expense_correction accepts events created before the latest settlement`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getLatestEventByType(groupId, "settlement") } returns
+            EventEntity("settle-evt", groupId, pubkey, now, 30078, "enc", "settlement", "s1", "sig", now)
+        coEvery { eventDao.getExpenseByUuid("uuid1", groupId) } returns
+            EventEntity("orig", groupId, pubkey, now - 7200, 30078, "enc", "expense", "uuid1", "sig", now)
+        val result =
+            realValidatorProcessor().process(
+                makeEvent(eventType = "expense_correction", createdAt = now - 3600),
+                knownGroupKey = groupKey
+            )
+        assertTrue(result.stored)
     }
 
     @Test
@@ -497,7 +551,7 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process settlement type skips tombstone and backdating checks`() = runBlocking {
+    fun `process settlement type skips tombstone check`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns settlementJson()
         val result = processor.process(
             makeEvent(eventType = "settlement", expenseUuid = null),
@@ -518,12 +572,78 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects settlement not authored by participant`() = runBlocking {
-        val alice = "aa".repeat(32)
-        val bob = "bb".repeat(32)
-        every { encryption.decrypt(any(), groupKey) } returns settlementJson(from = alice, to = bob)
+    fun `process rejects settlement when validator rejects payload`() = runBlocking {
+        every { eventValidator.isSettlementValid(any(), any(), any()) } returns false
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson()
         val result = processor.process(
-            makeEvent(eventType = "settlement", author = "cc".repeat(32), expenseUuid = null),
+            makeEvent(eventType = "settlement", expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects settlement not authored by participant`() = runBlocking {
+        val carol = "cc".repeat(32)
+        coEvery { groupRepo.getById(groupId) } returns group.copy(members = listOf(pubkey, bob, carol))
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(from = pubkey, to = bob)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", author = carol, expenseUuid = "s1"),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process accepts settlement authored by a participant with matching x tag`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(id = "s1", from = pubkey, to = bob)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", expenseUuid = "s1"),
+            knownGroupKey = groupKey
+        )
+        assertTrue(result.stored)
+    }
+
+    @Test
+    fun `process accepts settlement without x tag`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(id = "s1", from = pubkey, to = bob)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", expenseUuid = null),
+            knownGroupKey = groupKey
+        )
+        assertTrue(result.stored)
+    }
+
+    @Test
+    fun `process rejects settlement whose x tag does not match payload id`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(id = "s1", from = pubkey, to = bob)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", expenseUuid = "s-other"),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process rejects self-settlement`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(from = pubkey, to = pubkey)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", expenseUuid = "s1"),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects settlement to non-member`() = runBlocking {
+        // default group only contains pubkey; bob is not a member
+        every { encryption.decrypt(any(), groupKey) } returns settlementJson(from = pubkey, to = bob)
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "settlement", expenseUuid = "s1"),
             knownGroupKey = groupKey
         )
         assertFalse(result.stored)
@@ -606,26 +726,31 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process expense with null expenseUuid skips tombstone check`() = runBlocking {
-        val result = processor.process(
-            makeEvent(eventType = "expense", expenseUuid = null),
-            knownGroupKey = groupKey
-        )
-        assertTrue(result.stored)
-        coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
-    }
+    fun `process expense with null expenseUuid skips tombstone check but is rejected for missing x tag`() =
+        runBlocking {
+            val result = processor.process(
+                makeEvent(eventType = "expense", expenseUuid = null),
+                knownGroupKey = groupKey
+            )
+            assertFalse("Expense without x tag cannot match its payload id", result.stored)
+            coVerify(exactly = 0) { eventDao.getDeletedExpenseUuids(any()) }
+            coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        }
 
     @Test
-    fun `process expense_correction with null expenseUuid skips original creator lookup`() = runBlocking {
-        val result = processor.process(
-            makeEvent(
-                eventType = "expense_correction",
-                expenseUuid = null
-            ),
-            knownGroupKey = groupKey
-        )
-        assertTrue(result.stored)
-    }
+    fun `process expense_correction with null expenseUuid skips original creator lookup but is rejected`() =
+        runBlocking {
+            val result = processor.process(
+                makeEvent(
+                    eventType = "expense_correction",
+                    expenseUuid = null
+                ),
+                knownGroupKey = groupKey
+            )
+            assertFalse("Correction without x tag cannot match its payload id", result.stored)
+            coVerify(exactly = 0) { eventDao.getExpenseByUuid(any(), any()) }
+            coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        }
 
     @Test
     fun `process expense_delete with null expenseUuid`() = runBlocking {
@@ -729,17 +854,24 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects expense with invalid amount`() = runBlocking {
-        every { eventValidator.isExpenseAmountValid(any(), any()) } returns false
+    fun `process rejects expense when validator rejects payload`() = runBlocking {
+        every { eventValidator.isExpenseValid(any(), any()) } returns false
         val result = processor.process(makeEvent(eventType = "expense"), knownGroupKey = groupKey)
-        assertFalse("Expense with invalid amount must be rejected", result.stored)
+        assertFalse("Expense with invalid payload must be rejected", result.stored)
     }
 
     @Test
-    fun `process rejects expense_correction with invalid amount`() = runBlocking {
-        every { eventValidator.isExpenseAmountValid(any(), any()) } returns false
+    fun `process rejects expense_correction when validator rejects payload`() = runBlocking {
+        every { eventValidator.isExpenseValid(any(), any()) } returns false
         val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
         assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process passes current group members to expense validator`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        processor.process(makeEvent(), knownGroupKey = groupKey)
+        verify { eventValidator.isExpenseValid(any(), eq(setOf(pubkey, bob))) }
     }
 
     @Test
@@ -747,6 +879,95 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } returns "not-valid-expense-json"
         val result = processor.process(makeEvent(eventType = "expense"), knownGroupKey = groupKey)
         assertFalse("Unparseable expense content must be rejected", result.stored)
+    }
+
+    // --- Remote payload rules exercised with a real EventValidator ---
+
+    @Test
+    fun `process rejects expense whose shares do not sum to amount`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(amount = 100, splits = listOf(pubkey to 50L, bob to 40L))
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse("sum(shares) != amount must be rejected", result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process accepts expense whose shares sum to amount`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(amount = 100, splits = listOf(pubkey to 60L, bob to 40L))
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertTrue(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense whose x tag does not match payload id`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson(id = "uuid-payload")
+        val result = realValidatorProcessor().process(makeEvent(expenseUuid = "uuid-tag"), knownGroupKey = groupKey)
+        assertFalse("x tag must match payload id", result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process rejects expense_correction whose payload id does not match original uuid`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getExpenseByUuid("uuid1", groupId) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson(id = "uuid-new")
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "expense_correction", expenseUuid = "uuid1"),
+            knownGroupKey = groupKey
+        )
+        assertFalse("Correction payload must keep the original uuid", result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process rejects expense_correction whose shares do not sum to amount`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        coEvery { eventDao.getExpenseByUuid("uuid1", groupId) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(amount = 200, splits = listOf(pubkey to 100L, bob to 50L))
+        val result = realValidatorProcessor().process(
+            makeEvent(eventType = "expense_correction", expenseUuid = "uuid1"),
+            knownGroupKey = groupKey
+        )
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense paid by non-member`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson(paidBy = bob)
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense split with non-member`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(amount = 100, splits = listOf(pubkey to 50L, bob to 50L))
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense with zero share`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(amount = 100, splits = listOf(pubkey to 100L, bob to 0L))
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse(result.stored)
+    }
+
+    @Test
+    fun `process rejects expense with invalid currency`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson(currency = "usd")
+        val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
+        assertFalse(result.stored)
     }
 
     @Test

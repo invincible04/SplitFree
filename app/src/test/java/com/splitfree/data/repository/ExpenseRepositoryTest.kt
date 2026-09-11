@@ -17,8 +17,11 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -187,7 +190,7 @@ class ExpenseRepositoryTest {
             )
         val corrected =
             Expense(
-                "u1c",
+                "u1",
                 200,
                 "INR",
                 "corrected",
@@ -199,6 +202,101 @@ class ExpenseRepositoryTest {
         repo().correctExpense("u1", corrected, "g1")
 
         coVerify { signer.createSignedEvent("g1", "expense_correction", "encrypted", "u1") }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects corrected id that differs from original uuid`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense("u1", expense.copy(id = "u1c"), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects share sum mismatch`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        // shares 50 + 50 = 100 but amount is 200
+        repo().correctExpense("u1", expense.copy(amount = 200), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects zero share`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense(
+            "u1",
+            expense.copy(splitAmong = listOf(SplitEntry("alice", 100), SplitEntry("bob", 0))),
+            "g1"
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects duplicate participants`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense(
+            "u1",
+            expense.copy(splitAmong = listOf(SplitEntry("alice", 50), SplitEntry("alice", 50))),
+            "g1"
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects non-member payer`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense("u1", expense.copy(paidBy = "outsider"), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects non-member split participant`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        repo().correctExpense("u1", expense.copy(splitAmong = listOf(SplitEntry("outsider", 100))), "g1")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `correctExpense rejects amount exceeding max`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        val huge = 1_000_000_000_001L
+        repo().correctExpense("u1", expense.copy(amount = huge, splitAmong = listOf(SplitEntry("alice", huge))), "g1")
+    }
+
+    @Test
+    fun `correctExpense rejection happens before any encryption or publish`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        val failure = runCatching { repo().correctExpense("u1", expense.copy(amount = 200), "g1") }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `deleteExpense caps reason at 200 characters`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        val plaintext = slot<String>()
+        every { encryption.encrypt(capture(plaintext), any()) } returns "encrypted"
+
+        repo().deleteExpense("u1", "g1", reason = "r".repeat(500))
+
+        val payload = Json.decodeFromString(MapSerializer(String.serializer(), String.serializer()), plaintext.captured)
+        assertEquals(200, payload.getValue("reason").length)
+    }
+
+    @Test
+    fun `deleteExpense keeps short reason intact`() = runTest {
+        coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
+            EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+        val plaintext = slot<String>()
+        every { encryption.encrypt(capture(plaintext), any()) } returns "encrypted"
+
+        repo().deleteExpense("u1", "g1", reason = "duplicate")
+
+        val payload = Json.decodeFromString(MapSerializer(String.serializer(), String.serializer()), plaintext.captured)
+        assertEquals("duplicate", payload.getValue("reason"))
     }
 
     @Test(expected = IllegalStateException::class)
@@ -267,7 +365,11 @@ class ExpenseRepositoryTest {
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
         coEvery { eventDao.getExpenseByUuid("u1", "g1") } returns
             EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
-        repo().correctExpense("u1", expense.copy(amount = 200), "g1")
+        val corrected = expense.copy(
+            amount = 200,
+            splitAmong = listOf(SplitEntry("alice", 100), SplitEntry("bob", 100))
+        )
+        repo().correctExpense("u1", corrected, "g1")
 
         coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
         coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
@@ -361,7 +463,7 @@ class ExpenseRepositoryTest {
                 receivedAt = 1
             )
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
-        repo().correctExpense("u1", mockk(), "g1")
+        repo().correctExpense("u1", expense, "g1")
     }
 
     @Test(expected = IllegalStateException::class)

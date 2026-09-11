@@ -120,6 +120,11 @@ object Nip59 {
         // Verify sender consistency: rumor.pubkey must match seal.pubkey (prevents impersonation)
         if (rumor.pubkey != seal.pubkey) return null
 
+        // The rumor is unsigned, but its id must still be self-consistent. Otherwise a sender
+        // could attach arbitrary ids to bypass event-id based deduplication downstream.
+        // We deliberately ignore rumor.sig here (lenient toward non-compliant senders).
+        if (rumor.id != rumor.computeId().toHex()) return null
+
         return rumor to seal.pubkey
     }
 

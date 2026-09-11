@@ -159,54 +159,26 @@ constructor(
             }
         }
 
-        if (decrypted == null && eventType in setOf("key_rotation", "key_revocation", "group_meta")) {
+        // There is no legitimate reason to store ciphertext we cannot read: the epoch
+        // fallback loop above already tried every known group key.
+        if (decrypted == null) {
             Log.w(TAG, "Rejecting undecryptable $eventType from $authorHex in group $groupId")
             return ProcessResult(false)
         }
 
-        if (decrypted != null && !eventValidator.isContentSafe(decrypted)) {
+        if (!eventValidator.isContentSafe(decrypted)) {
             Log.w(TAG, "Rejecting event with unsafe content: ${inner.id}")
             return ProcessResult(false)
         }
 
         // 7. Business rule validations
-        if (!validateBusinessRules(eventType, authorHex, expenseUuid, groupId, inner.createdAt)) {
+        if (!validateBusinessRules(eventType, authorHex, expenseUuid, groupId)) {
             return ProcessResult(false)
         }
 
         // 7b. Validate remote payloads before storing
-        if (decrypted != null) {
-            when (eventType) {
-                "expense", "expense_correction" -> {
-                    try {
-                        val expense = json.decodeFromString<Expense>(decrypted)
-                        if (!eventValidator.isExpenseAmountValid(expense.amount, expense.splitAmong.map { it.share })) {
-                            Log.w(TAG, "Rejecting $eventType with invalid amount/splits: ${inner.id}")
-                            return ProcessResult(false)
-                        }
-                    } catch (_: Exception) {
-                        Log.w(TAG, "Rejecting $eventType with unparseable content: ${inner.id}")
-                        return ProcessResult(false)
-                    }
-                }
-
-                "settlement" -> {
-                    try {
-                        val settlement = json.decodeFromString<Settlement>(decrypted)
-                        if (!eventValidator.isExpenseAmountValid(settlement.amount, listOf(settlement.amount))) {
-                            Log.w(TAG, "Rejecting settlement with invalid amount: ${inner.id}")
-                            return ProcessResult(false)
-                        }
-                        if (authorHex != settlement.from && authorHex != settlement.to) {
-                            Log.w(TAG, "Rejecting settlement not authored by a participant: ${inner.id}")
-                            return ProcessResult(false)
-                        }
-                    } catch (_: Exception) {
-                        Log.w(TAG, "Rejecting settlement with unparseable content: ${inner.id}")
-                        return ProcessResult(false)
-                    }
-                }
-            }
+        if (!validatePayload(eventType, decrypted, authorHex, expenseUuid, group.members.toSet(), inner.id)) {
+            return ProcessResult(false)
         }
 
         // 8. Store
@@ -291,8 +263,7 @@ constructor(
         eventType: String,
         authorHex: String,
         expenseUuid: String?,
-        groupId: String,
-        createdAt: Long
+        groupId: String
     ): Boolean {
         if (eventType == "expense_correction" || eventType == "expense_delete") {
             val originalCreator = expenseUuid?.let { eventDao.getExpenseByUuid(it, groupId)?.pubkey }
@@ -308,11 +279,63 @@ constructor(
                 return false
             }
         }
-        if (eventType == "expense" || eventType == "expense_correction") {
-            val lastSettlement = eventDao.getLatestEventByType(groupId, "settlement")
-            if (!eventValidator.isNotBackdatedBeforeSettlement(createdAt, lastSettlement?.createdAt)) {
-                Log.w(TAG, "Rejecting backdated event: before last settlement")
-                return false
+        // Intentionally no timestamp-ordering rule between expenses and settlements.
+        // Balances are order-independent sums over all stored events, so accepting an
+        // expense whose created_at precedes a settlement cannot corrupt the ledger.
+        // Ordinary clock skew between phones (plus the +1h future tolerance) would
+        // otherwise silently and permanently drop legitimate expenses on every peer
+        // except the author.
+        return true
+    }
+
+    /**
+     * Parse and validate the decrypted payload of expense/settlement events.
+     * The `x` tag ([expenseUuid]) must match the id embedded in the payload so a
+     * sender cannot attach one UUID in the envelope and a different one inside.
+     */
+    private fun validatePayload(
+        eventType: String,
+        decrypted: String,
+        authorHex: String,
+        expenseUuid: String?,
+        members: Set<String>,
+        eventId: String
+    ): Boolean {
+        when (eventType) {
+            "expense", "expense_correction" -> {
+                val expense =
+                    try {
+                        json.decodeFromString<Expense>(decrypted)
+                    } catch (_: Exception) {
+                        Log.w(TAG, "Rejecting $eventType with unparseable content: $eventId")
+                        return false
+                    }
+                if (!eventValidator.isExpenseValid(expense, members)) {
+                    Log.w(TAG, "Rejecting $eventType with invalid payload: $eventId")
+                    return false
+                }
+                if (expense.id != expenseUuid) {
+                    Log.w(TAG, "Rejecting $eventType: x tag $expenseUuid does not match payload id ${expense.id}")
+                    return false
+                }
+            }
+
+            "settlement" -> {
+                val settlement =
+                    try {
+                        json.decodeFromString<Settlement>(decrypted)
+                    } catch (_: Exception) {
+                        Log.w(TAG, "Rejecting settlement with unparseable content: $eventId")
+                        return false
+                    }
+                if (!eventValidator.isSettlementValid(settlement, authorHex, members)) {
+                    Log.w(TAG, "Rejecting settlement with invalid payload: $eventId")
+                    return false
+                }
+                if (expenseUuid != null && settlement.id != expenseUuid) {
+                    Log.w(TAG, "Rejecting settlement: x tag $expenseUuid does not match payload id ${settlement.id}")
+                    return false
+                }
             }
         }
         return true

@@ -215,6 +215,76 @@ class Nip59Test {
         assertNull("Should reject mismatched pubkeys", Nip59.unwrap(wrap, recipientPriv))
     }
 
+    /** Build a seal + gift wrap around an arbitrary (possibly malformed) rumor, signed by [senderPriv]. */
+    private fun wrapRawRumor(rumor: NostrEvent): NostrEvent {
+        val sealConvKey = Nip44.getConversationKey(senderPriv, recipientPub)
+        val sealContent = Nip44.encrypt(rumor.toJson(), sealConvKey)
+        val seal =
+            NostrEvent(
+                pubkey = senderPub,
+                createdAt = 1L,
+                kind = 13,
+                tags = emptyList(),
+                content = sealContent
+            ).sign(senderPriv)
+
+        val ephPriv = randomKey()
+        val ephPub = NostrEvent.pubkeyFromPrivkey(ephPriv)
+        val wrapConvKey = Nip44.getConversationKey(ephPriv, recipientPub)
+        val wrapContent = Nip44.encrypt(seal.toJson(), wrapConvKey)
+        return NostrEvent(
+            pubkey = ephPub,
+            createdAt = 1L,
+            kind = 1059,
+            tags = listOf(listOf("p", recipientPub.toHex())),
+            content = wrapContent
+        ).sign(ephPriv)
+    }
+
+    @Test
+    fun `unwrap rejects rumor with tampered id`() {
+        val genuine = makeRumor()
+        val goodId = genuine.computeId().toHex()
+        val forgedId = "f".repeat(64)
+        assertNotEquals(goodId, forgedId)
+
+        // Same content and sender, but the rumor claims an id it did not derive from its fields.
+        val wrap = wrapRawRumor(genuine.copy(id = forgedId))
+        assertNull("Rumor id must be self-consistent", Nip59.unwrap(wrap, recipientPriv))
+    }
+
+    @Test
+    fun `unwrap rejects rumor whose content was altered after id computation`() {
+        val genuine = makeRumor()
+        val rumorWithId = genuine.copy(id = genuine.computeId().toHex())
+        // Attacker keeps the (valid-looking) id but swaps the content → id no longer matches.
+        val altered = rumorWithId.copy(content = "different-content")
+        assertNull("Altered rumor must be rejected", Nip59.unwrap(wrapRawRumor(altered), recipientPriv))
+    }
+
+    @Test
+    fun `unwrap rejects rumor with empty id`() {
+        val wrap = wrapRawRumor(makeRumor().copy(id = ""))
+        assertNull("Rumor without id must be rejected", Nip59.unwrap(wrap, recipientPriv))
+    }
+
+    @Test
+    fun `unwrap accepts hand-built rumor with correct id`() {
+        val genuine = makeRumor()
+        val rumorWithId = genuine.copy(id = genuine.computeId().toHex())
+        val result = Nip59.unwrap(wrapRawRumor(rumorWithId), recipientPriv)
+        assertNotNull("Self-consistent rumor must unwrap", result)
+        assertEquals(rumorWithId.id, result!!.first.id)
+    }
+
+    @Test
+    fun `unwrap is lenient toward a signed rumor as long as id is correct`() {
+        val genuine = makeRumor()
+        val signedRumor = genuine.sign(senderPriv) // sets a correct id plus a non-empty sig
+        val result = Nip59.unwrap(wrapRawRumor(signedRumor), recipientPriv)
+        assertNotNull("Signed rumor with consistent id should still unwrap", result)
+    }
+
     @Test
     fun `unwrap rejects seal with wrong kind`() {
         val ephPriv = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".hexToBytes()

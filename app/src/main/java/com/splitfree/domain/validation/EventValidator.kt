@@ -1,11 +1,14 @@
 package com.splitfree.domain.validation
 
+import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.Settlement
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Validates event timestamps, payload authenticity, and rate limits.
+ * Validates event timestamps, payload authenticity, rate limits, and remote
+ * expense/settlement payloads.
  * Rejects events with timestamps too far in the future (>1 hour)
  * to prevent timestamp manipulation attacks on event ordering.
  */
@@ -143,19 +146,8 @@ constructor() {
     }
 
     /**
-     * Reject expenses/corrections backdated before the last settlement.
-     *
-     * @param eventCreatedAt timestamp of the incoming event
-     * @param lastSettlementTimestamp timestamp of the most recent settlement, or null
-     * @return true if the event is not backdated
-     */
-    fun isNotBackdatedBeforeSettlement(eventCreatedAt: Long, lastSettlementTimestamp: Long?): Boolean {
-        if (lastSettlementTimestamp == null) return true
-        return eventCreatedAt >= lastSettlementTimestamp
-    }
-
-    /**
      * Reject content exceeding 65,536 characters or with JSON nesting deeper than 32 levels.
+     * Brackets inside `"`-delimited strings (honoring `\` escapes) do not count toward depth.
      *
      * @param content decrypted event content
      * @return true if content passes safety checks
@@ -164,8 +156,19 @@ constructor() {
         if (content == null) return false
         if (content.length > MAX_CONTENT_BYTES) return false
         var depth = 0
+        var inString = false
+        var escaped = false
         for (c in content) {
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+                continue
+            }
             when (c) {
+                '"' -> inString = true
                 '{', '[' -> if (++depth > MAX_JSON_DEPTH) return false
                 '}', ']' -> depth--
             }
@@ -174,12 +177,46 @@ constructor() {
     }
 
     /**
-     * Validate expense/settlement amounts and splits from remote peers.
+     * Validate a remote expense (or expense correction) payload against group membership.
      *
-     * @param amount total expense amount
-     * @param shares per-member share values
-     * @return true if the expense passes sanity checks
+     * @param expense parsed expense payload
+     * @param members current group member pubkeys
+     * @return true if the expense is structurally and semantically valid
      */
-    fun isExpenseAmountValid(amount: Long, shares: List<Long>): Boolean =
-        amount > 0 && amount <= MAX_EXPENSE_AMOUNT && shares.isNotEmpty() && shares.none { it < 0 }
+    fun isExpenseValid(expense: Expense, members: Set<String>): Boolean {
+        if (expense.id.isBlank()) return false
+        if (expense.amount !in 1..MAX_EXPENSE_AMOUNT) return false
+        if (!isCurrencyValid(expense.currency)) return false
+        if (expense.splitAmong.isEmpty()) return false
+        if (expense.splitAmong.any { it.share <= 0 }) return false
+        if (expense.splitAmong.map { it.pubkey }.distinct().size != expense.splitAmong.size) return false
+        if (expense.paidBy !in members) return false
+        if (expense.splitAmong.any { it.pubkey !in members }) return false
+        val total =
+            try {
+                expense.splitAmong.fold(0L) { acc, entry -> Math.addExact(acc, entry.share) }
+            } catch (_: ArithmeticException) {
+                return false
+            }
+        return total == expense.amount
+    }
+
+    /**
+     * Validate a remote settlement payload against its author and group membership.
+     *
+     * @param settlement parsed settlement payload
+     * @param authorHex pubkey of the event author
+     * @param members current group member pubkeys
+     * @return true if the settlement is structurally and semantically valid
+     */
+    fun isSettlementValid(settlement: Settlement, authorHex: String, members: Set<String>): Boolean {
+        if (settlement.id.isBlank()) return false
+        if (settlement.amount !in 1..MAX_EXPENSE_AMOUNT) return false
+        if (!isCurrencyValid(settlement.currency)) return false
+        if (settlement.from == settlement.to) return false
+        if (settlement.from !in members || settlement.to !in members) return false
+        return authorHex == settlement.from || authorHex == settlement.to
+    }
+
+    private fun isCurrencyValid(currency: String): Boolean = currency.length == 3 && currency.all { it in 'A'..'Z' }
 }

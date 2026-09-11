@@ -39,7 +39,6 @@ class ExportImportUseCaseTest {
             every { isContentSafe(any()) } returns true
             every { isCorrectionAuthorValid(any(), any(), any()) } returns true
             every { isDeletedExpense(any(), any(), any()) } returns false
-            every { isNotBackdatedBeforeSettlement(any(), any()) } returns true
         }
 
     private val json = Json { ignoreUnknownKeys = true }

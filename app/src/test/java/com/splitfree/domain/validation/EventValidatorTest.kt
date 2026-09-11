@@ -1,5 +1,9 @@
 package com.splitfree.domain.validation
 
+import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.expense.SplitEntry
+import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.validation.EventValidator
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,12 +12,34 @@ import org.junit.Test
 
 /**
  * Tests for EventValidator — timestamp, correction auth, rate limiting,
- * content safety, deletion, group meta auth, and backdating checks.
+ * content safety, deletion, group meta auth, and remote payload validation.
  */
 class EventValidatorTest {
     private lateinit var validator: EventValidator
 
     private fun nowSecs() = System.currentTimeMillis() / 1000
+
+    private val alice = "aa".repeat(32)
+    private val bob = "bb".repeat(32)
+    private val carol = "cc".repeat(32)
+    private val stranger = "dd".repeat(32)
+    private val members = setOf(alice, bob, carol)
+
+    private fun expense(
+        id: String = "exp-1",
+        amount: Long = 100,
+        currency: String = "INR",
+        paidBy: String = alice,
+        splitAmong: List<SplitEntry> = listOf(SplitEntry(alice, 50), SplitEntry(bob, 50))
+    ) = Expense(id, amount, currency, "test", paidBy, SplitType.EQUAL, splitAmong, 1000)
+
+    private fun settlement(
+        id: String = "s-1",
+        from: String = alice,
+        to: String = bob,
+        amount: Long = 100,
+        currency: String = "INR"
+    ) = Settlement(id, from, to, amount, currency, timestamp = 1000)
 
     @Before
     fun setUp() {
@@ -266,28 +292,6 @@ class EventValidatorTest {
         assertTrue(validator.isGroupMetaAuthorValid("alice", null))
     }
 
-    // --- isNotBackdatedBeforeSettlement ---
-
-    @Test
-    fun `event after settlement is accepted`() {
-        assertTrue(validator.isNotBackdatedBeforeSettlement(200, 100))
-    }
-
-    @Test
-    fun `event at settlement time is accepted`() {
-        assertTrue(validator.isNotBackdatedBeforeSettlement(100, 100))
-    }
-
-    @Test
-    fun `event before settlement is rejected`() {
-        assertFalse(validator.isNotBackdatedBeforeSettlement(99, 100))
-    }
-
-    @Test
-    fun `null settlement timestamp always accepts`() {
-        assertTrue(validator.isNotBackdatedBeforeSettlement(1, null))
-    }
-
     // --- isContentSafe ---
 
     @Test
@@ -337,5 +341,226 @@ class EventValidatorTest {
     fun `mixed nesting counts together`() {
         val deep = "{".repeat(20) + "[".repeat(13) + "]".repeat(13) + "}".repeat(20)
         assertFalse(validator.isContentSafe(deep))
+    }
+
+    @Test
+    fun `brackets inside a JSON string do not count toward depth`() {
+        val content = """{"a":"${"[".repeat(33)}"}"""
+        assertTrue(validator.isContentSafe(content))
+    }
+
+    @Test
+    fun `braces inside a JSON string do not count toward depth`() {
+        val content = """{"description":"${"{".repeat(40)}"}"""
+        assertTrue(validator.isContentSafe(content))
+    }
+
+    @Test
+    fun `escaped quote inside string does not terminate the string`() {
+        // The \" keeps us inside the string, so the following brackets must be ignored.
+        val content = """{"a":"x\"${"[".repeat(33)}"}"""
+        assertTrue(validator.isContentSafe(content))
+    }
+
+    @Test
+    fun `escaped backslash before closing quote terminates the string`() {
+        // "x\\" ends the string; the 33 real brackets that follow must be counted.
+        val content = """{"a":"x\\"${"[".repeat(33)}${"]".repeat(33)}}"""
+        assertFalse(validator.isContentSafe(content))
+    }
+
+    @Test
+    fun `33 real nesting levels is unsafe even with strings present`() {
+        val content = "{".repeat(32) + """"k":[{"a":1}]""" + "}".repeat(32)
+        // 32 objects + 1 array + 1 object = 34 real levels
+        assertFalse(validator.isContentSafe(content))
+    }
+
+    @Test
+    fun `33 real nesting levels around a string is unsafe`() {
+        val content = "[".repeat(33) + "\"[[[\"" + "]".repeat(33)
+        assertFalse(validator.isContentSafe(content))
+    }
+
+    // --- isExpenseValid ---
+
+    @Test
+    fun `valid expense is accepted`() {
+        assertTrue(validator.isExpenseValid(expense(), members))
+    }
+
+    @Test
+    fun `valid single-participant expense is accepted`() {
+        assertTrue(validator.isExpenseValid(expense(splitAmong = listOf(SplitEntry(alice, 100))), members))
+    }
+
+    @Test
+    fun `expense with blank id is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(id = "  "), members))
+    }
+
+    @Test
+    fun `expense with zero amount is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(amount = 0, splitAmong = listOf(SplitEntry(alice, 0))), members))
+    }
+
+    @Test
+    fun `expense with negative amount is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(amount = -100), members))
+    }
+
+    @Test
+    fun `expense exceeding max amount is rejected`() {
+        val huge = 1_000_000_000_001L
+        assertFalse(
+            validator.isExpenseValid(expense(amount = huge, splitAmong = listOf(SplitEntry(alice, huge))), members)
+        )
+    }
+
+    @Test
+    fun `expense at max amount is accepted`() {
+        val max = 1_000_000_000_000L
+        assertTrue(
+            validator.isExpenseValid(expense(amount = max, splitAmong = listOf(SplitEntry(alice, max))), members)
+        )
+    }
+
+    @Test
+    fun `expense with share sum not equal to amount is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(amount = 101), members))
+    }
+
+    @Test
+    fun `expense with share sum exceeding amount is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(amount = 99), members))
+    }
+
+    @Test
+    fun `expense with empty splits is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(splitAmong = emptyList()), members))
+    }
+
+    @Test
+    fun `expense with zero share is rejected`() {
+        val splits = listOf(SplitEntry(alice, 100), SplitEntry(bob, 0))
+        assertFalse(validator.isExpenseValid(expense(splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with negative share is rejected even when sum matches`() {
+        val splits = listOf(SplitEntry(alice, 150), SplitEntry(bob, -50))
+        assertFalse(validator.isExpenseValid(expense(splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with non-member payer is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(paidBy = stranger), members))
+    }
+
+    @Test
+    fun `expense with non-member split participant is rejected`() {
+        val splits = listOf(SplitEntry(alice, 50), SplitEntry(stranger, 50))
+        assertFalse(validator.isExpenseValid(expense(splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with duplicate split pubkeys is rejected`() {
+        val splits = listOf(SplitEntry(alice, 50), SplitEntry(alice, 50))
+        assertFalse(validator.isExpenseValid(expense(splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with overflowing shares is rejected instead of throwing`() {
+        val splits = listOf(SplitEntry(alice, Long.MAX_VALUE), SplitEntry(bob, 1))
+        assertFalse(validator.isExpenseValid(expense(amount = 100, splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with overflowing shares that wrap to the amount is rejected`() {
+        // MAX + MAX wraps to -2; a naive sum could be coerced to match a crafted amount.
+        val splits = listOf(SplitEntry(alice, Long.MAX_VALUE), SplitEntry(bob, Long.MAX_VALUE), SplitEntry(carol, 102))
+        assertFalse(validator.isExpenseValid(expense(amount = 100, splitAmong = splits), members))
+    }
+
+    @Test
+    fun `expense with lowercase currency is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(currency = "inr"), members))
+    }
+
+    @Test
+    fun `expense with too-short currency is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(currency = "IN"), members))
+    }
+
+    @Test
+    fun `expense with too-long currency is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(currency = "INRR"), members))
+    }
+
+    @Test
+    fun `expense with non-ASCII currency is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(currency = "ÉUR"), members))
+    }
+
+    @Test
+    fun `expense with digits in currency is rejected`() {
+        assertFalse(validator.isExpenseValid(expense(currency = "US1"), members))
+    }
+
+    // --- isSettlementValid ---
+
+    @Test
+    fun `valid settlement authored by payer is accepted`() {
+        assertTrue(validator.isSettlementValid(settlement(), alice, members))
+    }
+
+    @Test
+    fun `valid settlement authored by recipient is accepted`() {
+        assertTrue(validator.isSettlementValid(settlement(), bob, members))
+    }
+
+    @Test
+    fun `settlement with blank id is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(id = ""), alice, members))
+    }
+
+    @Test
+    fun `self-settlement is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(from = alice, to = alice), alice, members))
+    }
+
+    @Test
+    fun `settlement from non-member is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(from = stranger, to = alice), alice, members))
+    }
+
+    @Test
+    fun `settlement to non-member is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(from = alice, to = stranger), alice, members))
+    }
+
+    @Test
+    fun `settlement authored by third party is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(from = alice, to = bob), carol, members))
+    }
+
+    @Test
+    fun `settlement with zero amount is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(amount = 0), alice, members))
+    }
+
+    @Test
+    fun `settlement with negative amount is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(amount = -1), alice, members))
+    }
+
+    @Test
+    fun `settlement exceeding max amount is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(amount = 1_000_000_000_001L), alice, members))
+    }
+
+    @Test
+    fun `settlement with invalid currency is rejected`() {
+        assertFalse(validator.isSettlementValid(settlement(currency = "usd"), alice, members))
     }
 }

@@ -6,6 +6,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.sync.event.EventPublisher
 import javax.inject.Inject
@@ -34,19 +35,14 @@ constructor(
 ) : com.splitfree.domain.repository.ExpenseRepositoryContract {
     private val json = Json { ignoreUnknownKeys = true }
 
+    companion object {
+        private const val MAX_AMOUNT = 1_000_000_000_000L
+        private const val MAX_DELETE_REASON_CHARS = 200
+    }
+
     override suspend fun addExpense(expense: Expense, groupId: String, expectedAuthorPubkey: String?) {
         val author = checkedAuthor(expectedAuthorPubkey)
-        require(expense.id.isNotBlank()) { "Expense ID must not be blank" }
-        require(expense.amount > 0) { "Expense amount must be positive" }
-        require(expense.amount <= 1_000_000_000_000L) { "Expense amount exceeds maximum" }
-        require(expense.splitAmong.isNotEmpty()) { "Expense must have at least one split" }
-        require(expense.splitAmong.all { it.share > 0 }) { "Split shares must be positive" }
-        require(expense.splitAmong.map { it.pubkey }.distinct().size == expense.splitAmong.size) {
-            "Split participants must be unique"
-        }
-        require(expense.splitAmong.fold(0L) { total, entry -> Math.addExact(total, entry.share) } == expense.amount) {
-            "Split shares must equal the expense amount"
-        }
+        validateExpenseShape(expense)
         val saved = getSavedExpense(groupId, expense.id, author)
         if (saved != null) {
             requireSameExpense(saved, expense)
@@ -55,10 +51,7 @@ constructor(
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         checkedAuthor(author)
         require(author in group.members) { "You are no longer a member of this group" }
-        require(expense.paidBy in group.members) { "Payer is no longer a member of this group" }
-        require(expense.splitAmong.all { it.pubkey in group.members }) {
-            "Split participants must be current group members"
-        }
+        validateExpensePayload(expense, group)
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), expense)
         val encrypted = encryption.encrypt(plaintext, groupKey)
@@ -104,13 +97,37 @@ constructor(
         }
     }
 
+    /** Structural checks that do not depend on group state (safe to run before any I/O). */
+    private fun validateExpenseShape(expense: Expense) {
+        require(expense.id.isNotBlank()) { "Expense ID must not be blank" }
+        require(expense.amount > 0) { "Expense amount must be positive" }
+        require(expense.amount <= MAX_AMOUNT) { "Expense amount exceeds maximum" }
+        require(expense.splitAmong.isNotEmpty()) { "Expense must have at least one split" }
+        require(expense.splitAmong.all { it.share > 0 }) { "Split shares must be positive" }
+        require(expense.splitAmong.map { it.pubkey }.distinct().size == expense.splitAmong.size) {
+            "Split participants must be unique"
+        }
+        require(expense.splitAmong.fold(0L) { total, entry -> Math.addExact(total, entry.share) } == expense.amount) {
+            "Split shares must equal the expense amount"
+        }
+    }
+
+    /** Full payload validation: structural checks plus membership checks against [group]. */
+    private fun validateExpensePayload(expense: Expense, group: Group) {
+        validateExpenseShape(expense)
+        require(expense.paidBy in group.members) { "Payer is no longer a member of this group" }
+        require(expense.splitAmong.all { it.pubkey in group.members }) {
+            "Split participants must be current group members"
+        }
+    }
+
     override suspend fun addSettlement(settlement: Settlement, groupId: String) {
         val myPubkey = identity.getPublicKeyHex()
         require(settlement.from == myPubkey || settlement.to == myPubkey) {
             "You can only record settlements you're involved in"
         }
         require(settlement.amount > 0) { "Settlement amount must be positive" }
-        require(settlement.amount <= 1_000_000_000_000L) { "Settlement amount exceeds maximum" }
+        require(settlement.amount <= MAX_AMOUNT) { "Settlement amount exceeds maximum" }
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(myPubkey in group.members) { "You are no longer a member of this group" }
@@ -143,7 +160,7 @@ constructor(
         val plaintext = json.encodeToString(
             MapSerializer(String.serializer(), String.serializer()),
             mapOf(
-                "reason" to reason
+                "reason" to reason.take(MAX_DELETE_REASON_CHARS)
             )
         )
         val encrypted = encryption.encrypt(plaintext, groupKey)
@@ -165,6 +182,8 @@ constructor(
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
+        require(corrected.id == originalUuid) { "Corrected expense must keep the original expense ID" }
+        validateExpensePayload(corrected, group)
         // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), corrected)
