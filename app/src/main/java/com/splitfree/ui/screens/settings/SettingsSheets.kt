@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,7 +37,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -50,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.ui.components.ChoiceRow
+import com.splitfree.ui.components.DetailRow
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.SettingsRow
@@ -564,28 +563,6 @@ private fun DiagnosticsSheet(state: SettingsUiState, onCopyReport: () -> Unit, o
                 )
             },
             primary = { SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss) }
-        )
-    }
-}
-
-/** Label on the left, tabular value on the right (mock `.detail-row`). */
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 15.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(Modifier.width(16.dp))
-        Text(
-            value,
-            style = MaterialTheme.typography.titleSmall.tabular(),
-            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }

@@ -8,7 +8,6 @@ import android.os.PersistableBundle
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -25,10 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -63,6 +59,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.ui.components.CurrencyLine
 import com.splitfree.ui.components.MemberStack
 import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.RelayCheckStatus
@@ -70,7 +67,6 @@ import com.splitfree.ui.components.RelayInfo
 import com.splitfree.ui.components.SegmentedTabs
 import com.splitfree.ui.components.SfAccentButton
 import com.splitfree.ui.components.SfIconButton
-import com.splitfree.ui.components.SfSecondaryButton
 import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.SignedMoneyText
@@ -338,7 +334,14 @@ internal fun GroupDetailContent(
             ) {
                 Column(Modifier.padding(horizontal = tokens.screenPaddingHorizontal)) {
                     GroupHeader(state)
-                    CurrencyLine(currencies = currencies, currency = currency, onSelect = actions.selectCurrency)
+                    CurrencyLine(
+                        currencies = currencies,
+                        selected = currency,
+                        onSelect = actions.selectCurrency,
+                        modifier = Modifier.padding(top = 14.dp),
+                        chipModifier = Modifier.testTag("group_currency"),
+                        itemModifier = { Modifier.testTag("group_currency_$it") }
+                    )
                     SummaryCard(state = state, currency = currency)
                     SegmentedTabs(
                         options =
@@ -446,55 +449,6 @@ private fun GroupHeader(state: GroupDetailUiState) {
     }
 }
 
-/**
- * "Balances in" eyebrow with a currency chip when the group uses more than one currency, a single eyebrow when
- * it uses exactly one, and nothing at all before any expense exists (mock `.currency-line`).
- */
-@Composable
-private fun CurrencyLine(currencies: List<String>, currency: String?, onSelect: (String) -> Unit) {
-    if (currency == null) return
-    if (currencies.size > 1) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            MiniLabel(text = stringResource(R.string.group_balances_in), modifier = Modifier.weight(1f))
-            CurrencyChip(currency = currency, currencies = currencies, onSelect = onSelect)
-        }
-    } else {
-        MiniLabel(
-            text = stringResource(R.string.group_balances_in_currency, currency),
-            modifier = Modifier.padding(top = 18.dp, bottom = 4.dp)
-        )
-    }
-}
-
-@Composable
-private fun CurrencyChip(currency: String, currencies: List<String>, onSelect: (String) -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Box {
-        SfSecondaryButton(
-            text = currency,
-            onClick = { expanded = true },
-            leadingIcon = Icons.Outlined.ArrowDropDown,
-            modifier = Modifier.testTag("group_currency")
-        )
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            currencies.forEach { code ->
-                DropdownMenuItem(
-                    text = { Text(code, style = MaterialTheme.typography.titleSmall) },
-                    onClick = {
-                        expanded = false
-                        onSelect(code)
-                    },
-                    modifier = Modifier.testTag("group_currency_$code")
-                )
-            }
-        }
-    }
-}
-
 /** `primaryContainer` wash with eyebrow, signed net balance and an honest footnote. */
 @Composable
 private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
@@ -502,8 +456,8 @@ private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
     val direction =
         stringResource(
             when {
-                net > 0 -> R.string.group_you_are_owed
-                net < 0 -> R.string.group_you_owe
+                net > 0 -> R.string.you_are_owed
+                net < 0 -> R.string.you_owe
                 else -> R.string.group_your_balance
             }
         )
@@ -516,7 +470,7 @@ private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
         Column(Modifier.padding(22.dp)) {
             MiniLabel(
                 text =
-                if (currency != null) stringResource(R.string.group_summary_label, direction, currency) else direction,
+                if (currency != null) stringResource(R.string.dot_separated, direction, currency) else direction,
                 color = MaterialTheme.colorScheme.primary
             )
             if (currency != null) {

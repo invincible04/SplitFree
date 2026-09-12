@@ -27,41 +27,16 @@ data class AdaptiveLayoutInfo(val widthClass: WidthClass, val heightClass: Heigh
         get() = widthClass == WidthClass.Compact || heightClass == HeightClass.Compact
 }
 
+/**
+ * Screen-level spacing that follows the window class. The kit owns every other dimension (card padding, row
+ * heights, icon sizes), so only the two values screens still read are kept here.
+ */
 @Immutable
 data class AdaptiveSizeTokens(
+    /** Horizontal inset of every screen's content: 14 / 20 / 24dp by width class. Never hard-code 16. */
     val screenPaddingHorizontal: Dp,
-    val screenPaddingVertical: Dp,
-    val screenBottomSpacer: Dp,
-    val sectionSpacing: Dp,
-    val itemSpacing: Dp,
-    val denseSpacing: Dp,
-    val fieldSpacing: Dp,
-    val cardPadding: Dp,
-    val chipSpacing: Dp,
-    val chipContentSpacing: Dp,
-    val buttonHeight: Dp,
-    val inlineButtonMinHeight: Dp,
-    val iconTiny: Dp,
-    val iconSmall: Dp,
-    val iconMedium: Dp,
-    val iconLarge: Dp,
-    val avatarSize: Dp,
-    val listAvatarSize: Dp,
-    val avatarFallbackIconSize: Dp,
-    val emptyStatePadding: Dp,
-    val emptyStateIcon: Dp,
-    val listBottomSpacer: Dp,
-    val dropdownWidth: Dp,
-    val sectionHeaderVerticalPadding: Dp,
-    val seedWordVerticalPadding: Dp,
-    val nearbyTopSectionVerticalPadding: Dp,
-    val nearbyPeersHeaderVerticalPadding: Dp,
-    val nearbyProgressIndicatorSize: Dp,
-    val nearbyProgressStrokeWidth: Dp,
-    val relayRemoveButtonSize: Dp,
-    val relayStatusDotSize: Dp,
-    val dialogProgressPadding: Dp,
-    val pubkeyChipAvatarSize: Dp
+    /** Breathing room under the last element of a scrolling screen. */
+    val screenBottomSpacer: Dp
 )
 
 val LocalAdaptiveLayoutInfo = compositionLocalOf<AdaptiveLayoutInfo?> { null }
@@ -106,163 +81,19 @@ fun rememberAdaptiveLayoutInfo(): AdaptiveLayoutInfo {
 
 @Composable
 fun rememberAdaptiveSizeTokens(adaptive: AdaptiveLayoutInfo = rememberAdaptiveLayoutInfo()): AdaptiveSizeTokens {
-    val compact = adaptive.widthClass == WidthClass.Compact
-    val expanded = adaptive.widthClass == WidthClass.Expanded
-
     val screenPaddingHorizontal =
         when (adaptive.widthClass) {
             WidthClass.Compact -> 14.dp
             WidthClass.Medium -> 20.dp
             WidthClass.Expanded -> 24.dp
         }
-    val screenPaddingVertical =
-        when (adaptive.heightClass) {
-            HeightClass.Compact -> 10.dp
-            HeightClass.Medium -> 16.dp
-            HeightClass.Expanded -> 20.dp
-        }
     val screenBottomSpacer =
         when {
             adaptive.isCompact -> 24.dp
-            expanded -> 40.dp
+            adaptive.widthClass == WidthClass.Expanded -> 40.dp
             else -> 32.dp
         }
-    val sectionSpacing = when {
-        adaptive.isCompact -> 12.dp
-        expanded -> 20.dp
-        else -> 16.dp
-    }
-    val itemSpacing = when {
-        adaptive.isCompact -> 6.dp
-        expanded -> 10.dp
-        else -> 8.dp
-    }
-    val denseSpacing = if (compact) 4.dp else 6.dp
-    val fieldSpacing = when {
-        adaptive.isCompact -> 12.dp
-        expanded -> 18.dp
-        else -> 16.dp
-    }
-    val cardPadding = when {
-        adaptive.isCompact -> 12.dp
-        expanded -> 20.dp
-        else -> 16.dp
-    }
-    val chipSpacing =
-        when (adaptive.widthClass) {
-            WidthClass.Compact -> 6.dp
-            WidthClass.Medium -> 8.dp
-            WidthClass.Expanded -> 10.dp
-        }
-    val chipContentSpacing = if (compact) 4.dp else 6.dp
-    val buttonHeight =
-        when {
-            adaptive.isCompact -> 48.dp
-            expanded -> 56.dp
-            else -> 52.dp
-        }
-    val inlineButtonMinHeight = if (compact) 40.dp else 44.dp
-    val iconTiny = if (compact) 10.dp else 12.dp
-    val iconSmall =
-        when (adaptive.widthClass) {
-            WidthClass.Compact -> 16.dp
-            WidthClass.Medium -> 18.dp
-            WidthClass.Expanded -> 20.dp
-        }
-    val iconMedium =
-        when (adaptive.widthClass) {
-            WidthClass.Compact -> 20.dp
-            WidthClass.Medium -> 24.dp
-            WidthClass.Expanded -> 28.dp
-        }
-    val iconLarge =
-        when {
-            adaptive.isCompact -> 52.dp
-            expanded -> 72.dp
-            else -> 60.dp
-        }
-    val avatarSize =
-        when {
-            adaptive.isCompact -> 44.dp
-            expanded -> 60.dp
-            else -> 52.dp
-        }
-    val listAvatarSize = if (compact) 36.dp else 40.dp
-    val avatarFallbackIconSize = when {
-        compact -> 24.dp
-        expanded -> 32.dp
-        else -> 28.dp
-    }
-    val emptyStatePadding =
-        when {
-            adaptive.isCompact -> 24.dp
-            expanded -> 56.dp
-            else -> 40.dp
-        }
-    val emptyStateIcon =
-        when {
-            adaptive.isCompact -> 48.dp
-            expanded -> 72.dp
-            else -> 56.dp
-        }
-    val listBottomSpacer =
-        when {
-            adaptive.isCompact -> 72.dp
-            expanded -> 96.dp
-            else -> 80.dp
-        }
-    val dropdownWidth =
-        when (adaptive.widthClass) {
-            WidthClass.Compact -> 94.dp
-            WidthClass.Medium -> 110.dp
-            WidthClass.Expanded -> 122.dp
-        }
-    val sectionHeaderVerticalPadding = if (compact) 10.dp else 12.dp
-    val seedWordVerticalPadding = if (compact) 4.dp else 6.dp
-    val nearbyTopSectionVerticalPadding = if (compact) 12.dp else 16.dp
-    val nearbyPeersHeaderVerticalPadding = if (compact) 2.dp else 4.dp
-    val nearbyProgressIndicatorSize = if (compact) 28.dp else 32.dp
-    val nearbyProgressStrokeWidth = 3.dp
-    val relayRemoveButtonSize = if (compact) 24.dp else 28.dp
-    val relayStatusDotSize = iconTiny
-    val dialogProgressPadding = if (compact) 24.dp else 32.dp
-    val pubkeyChipAvatarSize = if (compact) 16.dp else 18.dp
-
     return remember(adaptive.widthClass, adaptive.heightClass, adaptive.fontScale) {
-        AdaptiveSizeTokens(
-            screenPaddingHorizontal = screenPaddingHorizontal,
-            screenPaddingVertical = screenPaddingVertical,
-            screenBottomSpacer = screenBottomSpacer,
-            sectionSpacing = sectionSpacing,
-            itemSpacing = itemSpacing,
-            denseSpacing = denseSpacing,
-            fieldSpacing = fieldSpacing,
-            cardPadding = cardPadding,
-            chipSpacing = chipSpacing,
-            chipContentSpacing = chipContentSpacing,
-            buttonHeight = buttonHeight,
-            inlineButtonMinHeight = inlineButtonMinHeight,
-            iconTiny = iconTiny,
-            iconSmall = iconSmall,
-            iconMedium = iconMedium,
-            iconLarge = iconLarge,
-            avatarSize = avatarSize,
-            listAvatarSize = listAvatarSize,
-            avatarFallbackIconSize = avatarFallbackIconSize,
-            emptyStatePadding = emptyStatePadding,
-            emptyStateIcon = emptyStateIcon,
-            listBottomSpacer = listBottomSpacer,
-            dropdownWidth = dropdownWidth,
-            sectionHeaderVerticalPadding = sectionHeaderVerticalPadding,
-            seedWordVerticalPadding = seedWordVerticalPadding,
-            nearbyTopSectionVerticalPadding = nearbyTopSectionVerticalPadding,
-            nearbyPeersHeaderVerticalPadding = nearbyPeersHeaderVerticalPadding,
-            nearbyProgressIndicatorSize = nearbyProgressIndicatorSize,
-            nearbyProgressStrokeWidth = nearbyProgressStrokeWidth,
-            relayRemoveButtonSize = relayRemoveButtonSize,
-            relayStatusDotSize = relayStatusDotSize,
-            dialogProgressPadding = dialogProgressPadding,
-            pubkeyChipAvatarSize = pubkeyChipAvatarSize
-        )
+        AdaptiveSizeTokens(screenPaddingHorizontal = screenPaddingHorizontal, screenBottomSpacer = screenBottomSpacer)
     }
 }

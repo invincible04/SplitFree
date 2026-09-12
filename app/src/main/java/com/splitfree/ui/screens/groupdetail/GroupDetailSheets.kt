@@ -47,11 +47,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.ui.components.DetailRow
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MoneyText
 import com.splitfree.ui.components.RelayCheckStatus
@@ -348,7 +348,7 @@ private fun SettleSheet(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val from = memberLabel(debt.from, state, youLabel = stringResource(R.string.group_you))
+    val from = memberLabel(debt.from, state, youLabel = stringResource(R.string.you))
     val to = memberLabel(debt.to, state, youLabel = stringResource(R.string.group_you_object))
     SfSheet(
         onDismiss = onDismiss,
@@ -401,7 +401,7 @@ private fun ExpenseDetailSheet(
         DeleteExpenseConfirmation(onConfirm = onDelete, onCancel = { confirmingDelete = false }, onDismiss = onDismiss)
         return
     }
-    val payer = memberLabel(expense.paidBy, state, youLabel = stringResource(R.string.group_you))
+    val payer = memberLabel(expense.paidBy, state, youLabel = stringResource(R.string.you))
     val category = categoryLabel(expense.category)
     val date = remember(expense.timestamp) {
         DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.getDefault()).format(
@@ -437,19 +437,7 @@ private fun ExpenseDetailSheet(
             SfListCard {
                 expense.splitAmong.forEachIndexed { index, entry ->
                     if (index > 0) SfDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 15.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            memberLabel(entry.pubkey, state, youLabel = stringResource(R.string.group_you)),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(Modifier.size(16.dp))
+                    DetailRow(label = memberLabel(entry.pubkey, state, youLabel = stringResource(R.string.you))) {
                         MoneyText(
                             amountMinor = entry.share,
                             currency = expense.currency,
@@ -464,7 +452,7 @@ private fun ExpenseDetailSheet(
                 Text(
                     stringResource(
                         R.string.group_expense_only_author,
-                        memberLabel(author, state, youLabel = stringResource(R.string.group_you))
+                        memberLabel(author, state, youLabel = stringResource(R.string.you))
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -548,7 +536,7 @@ private fun RemoveMemberSheet(pubkey: String, state: GroupDetailUiState, onConfi
     val name = state.memberNames[pubkey]?.takeIf { it.isNotBlank() } ?: shortPubkey(pubkey)
     SfSheet(
         onDismiss = onDismiss,
-        title = stringResource(R.string.remove_member_title),
+        title = stringResource(R.string.remove_member),
         modifier = Modifier.testTag("group_sheet_remove")
     ) {
         Text(

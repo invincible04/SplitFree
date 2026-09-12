@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
@@ -40,7 +41,7 @@ private const val DISABLED_CONTAINER_ALPHA = 0.35f
 
 /**
  * The single main action of a screen: "ink" fill (`inverseSurface` / `inverseOnSurface`), 56dp, full width,
- * `large` corners (mock `.primary`). While [loading] the label is hidden behind an 18dp ring and the button
+ * `large` corners. While [loading] the label is hidden behind an 18dp ring and the button
  * is not clickable, but it keeps its full colour so the screen does not appear to have lost its action.
  * [containerColor] / [contentColor] exist for the destructive confirm in a sheet (`error` / `onError`);
  * every other caller keeps the ink default.
@@ -70,7 +71,7 @@ fun SfPrimaryButton(
 
 /**
  * Citron/lime variant of [SfPrimaryButton] (`tertiaryContainer` / `onTertiaryContainer`) reserved for
- * create/add actions: New group, Create group, Add expense FAB, Get started (mock `.primary.lime`, `.fab`).
+ * create/add actions: New group, Create group, Add expense FAB, Get started.
  */
 @Composable
 fun SfAccentButton(
@@ -150,7 +151,7 @@ private fun SfFilledButton(
 
 /**
  * Quiet alternative action: card fill (`surfaceContainerLowest`) with a 1dp `outlineVariant` border, 50dp
- * tall, `medium` corners (mock `.secondary`). Sizes to its content; pass a width/weight modifier as needed.
+ * tall, `medium` corners. Sizes to its content; pass a width/weight modifier as needed.
  */
 @Composable
 fun SfSecondaryButton(
@@ -185,7 +186,8 @@ fun SfSecondaryButton(
 
 /**
  * Inline text action (Invite, See all, Edit, Record payment). 48dp tall, `labelMedium`, `primary` by
- * default; pass another [color] for a destructive or quiet variant.
+ * default. Pass `onSurfaceVariant` as [color] for a quiet secondary path that must not compete with the
+ * screen's primary button (for example "Restore an existing identity" under Get started).
  */
 @Composable
 fun SfTextButton(
@@ -210,13 +212,14 @@ fun SfTextButton(
         Text(
             text,
             style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
     }
 }
 
-/** 48dp round icon button with a ripple-only pressed state (mock `.icon-btn`). Always give it a description. */
+/** 48dp round icon button with a ripple-only pressed state. Always give it a description. */
 @Composable
 fun SfIconButton(
     icon: ImageVector,

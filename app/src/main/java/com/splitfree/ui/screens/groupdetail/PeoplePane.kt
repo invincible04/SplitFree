@@ -51,7 +51,7 @@ internal fun PeoplePane(state: GroupDetailUiState, onInvite: () -> Unit, onRemov
         }
     }
     Column(Modifier.fillMaxWidth().testTag("group_pane_people")) {
-        SectionHead(title = pluralStringResource(R.plurals.group_people_heading, members.size, members.size)) {
+        SectionHead(title = pluralStringResource(R.plurals.people_count, members.size, members.size)) {
             SfTextButton(
                 text = stringResource(R.string.group_invite),
                 onClick = onInvite,
@@ -94,7 +94,7 @@ private fun MemberRow(row: MemberRowModel, state: GroupDetailUiState, onRemove: 
         when {
             isMe && isCreator -> stringResource(R.string.group_you_creator)
             isCreator -> stringResource(R.string.group_creator)
-            isMe -> stringResource(R.string.group_you)
+            isMe -> stringResource(R.string.you)
             displayName != null -> shortKey
             else -> null
         }

@@ -34,7 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,11 +68,9 @@ import com.splitfree.ui.components.SfSheet
 import com.splitfree.ui.components.SfSheetFooter
 import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph
-import com.splitfree.ui.theme.CircularRevealTheme
 import com.splitfree.ui.theme.SplitFreeTheme
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
-import com.splitfree.ui.theme.ThemeTransitionState
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
@@ -140,48 +138,42 @@ class MainActivity : ComponentActivity() {
                     ThemeMode.DARK -> true
                     ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 }
-            // Defer status bar icon update until after reveal animation so icons
-            // don't become invisible against the old-theme bitmap overlay.
-            val revealDone = ThemeTransitionState.animationDone
-            LaunchedEffect(isDark, revealDone) {
-                if (ThemeTransitionState.overlay == null) {
-                    val controller = WindowCompat.getInsetsController(window, window.decorView)
-                    controller.isAppearanceLightStatusBars = !isDark
-                    controller.isAppearanceLightNavigationBars = !isDark
-                }
+            DisposableEffect(isDark) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = !isDark
+                controller.isAppearanceLightNavigationBars = !isDark
+                onDispose {}
             }
 
-            CircularRevealTheme {
-                SplitFreeTheme {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        val nav = rememberNavController()
-                        navController = nav
-                        val start =
-                            remember {
-                                if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
-                            }
-                        SplitFreeNavGraph(
-                            navController = nav,
-                            startDestination = start,
-                            onScanResult = ::offerInvite
-                        )
-
-                        pendingInvite?.let { invite ->
-                            InviteConfirmSheet(
-                                invite = invite,
-                                onJoin = {
-                                    pendingInvite = null
-                                    processJoin(invite.link)
-                                },
-                                onDismiss = { pendingInvite = null }
-                            )
+            SplitFreeTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    val nav = rememberNavController()
+                    navController = nav
+                    val start =
+                        remember {
+                            if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
                         }
+                    SplitFreeNavGraph(
+                        navController = nav,
+                        startDestination = start,
+                        onScanResult = ::offerInvite
+                    )
 
-                        if (isJoining) JoiningScrim()
+                    pendingInvite?.let { invite ->
+                        InviteConfirmSheet(
+                            invite = invite,
+                            onJoin = {
+                                pendingInvite = null
+                                processJoin(invite.link)
+                            },
+                            onDismiss = { pendingInvite = null }
+                        )
                     }
+
+                    if (isJoining) JoiningScrim()
                 }
             }
         }

@@ -93,7 +93,7 @@ internal data class ExpenseRowModel(
 /** Builds [ExpenseRowModel]s for [expenses], keyed on everything the strings depend on. */
 @Composable
 internal fun rememberExpenseRows(expenses: List<Expense>, state: GroupDetailUiState): List<ExpenseRowModel> {
-    val you = stringResource(R.string.group_you)
+    val you = stringResource(R.string.you)
     return remember(expenses, state.myPubkey, state.memberNames, state.members, you) {
         val now = System.currentTimeMillis()
         expenses.map { expense ->

@@ -28,7 +28,7 @@ import org.robolectric.annotation.GraphicsMode
  * tall so the whole gallery is captured without scrolling.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(application = Application::class, sdk = [35], qualifiers = "en-rUS-w390dp-h3400dp-mdpi")
+@Config(application = Application::class, sdk = [35], qualifiers = "en-rUS-w390dp-h3900dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class UiKitRenderTest {
     @get:Rule
@@ -50,7 +50,7 @@ class UiKitRenderTest {
     }
 
     @Test
-    @Config(qualifiers = "en-rUS-w360dp-h5600dp-mdpi")
+    @Config(qualifiers = "en-rUS-w360dp-h6200dp-mdpi")
     fun `gallery survives 200 percent text without clipping its bottom dock`() {
         RuntimeEnvironment.setFontScale(2f)
         render(dark = false)

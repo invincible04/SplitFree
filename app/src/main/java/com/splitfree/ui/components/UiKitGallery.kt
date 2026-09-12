@@ -17,12 +17,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.WbSunny
+import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -30,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,7 +41,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.splitfree.ui.theme.SplitFreeColors
 import com.splitfree.ui.theme.splitFree
+import com.splitfree.ui.util.AdaptiveSizeTokens
 import com.splitfree.ui.util.adaptiveSizeTokens
 
 private val SampleKeys = listOf("you", "member-1", "member-2", "member-3", "member-4", "member-5")
@@ -65,24 +70,36 @@ internal fun UiKitGallery(modifier: Modifier = Modifier) {
     val palette = MaterialTheme.splitFree
     var segment by rememberSaveable { mutableIntStateOf(0) }
     var choice by rememberSaveable { mutableIntStateOf(0) }
+    var currency by rememberSaveable { mutableStateOf("INR") }
 
     // A Surface (not a bare background) so LocalContentColor is provided exactly as MainActivity does.
     Surface(
         modifier = modifier.fillMaxSize().testTag("ui_kit_gallery"),
         color = MaterialTheme.colorScheme.background
     ) {
-        GalleryBody(tokens, palette, segment, { segment = it }, choice, { choice = it })
+        GalleryBody(
+            tokens = tokens,
+            palette = palette,
+            segment = segment,
+            onSegment = { segment = it },
+            choice = choice,
+            onChoice = { choice = it },
+            currency = currency,
+            onCurrency = { currency = it }
+        )
     }
 }
 
 @Composable
 private fun GalleryBody(
-    tokens: com.splitfree.ui.util.AdaptiveSizeTokens,
-    palette: com.splitfree.ui.theme.SplitFreeColors,
+    tokens: AdaptiveSizeTokens,
+    palette: SplitFreeColors,
     segment: Int,
     onSegment: (Int) -> Unit,
     choice: Int,
-    onChoice: (Int) -> Unit
+    onChoice: (Int) -> Unit,
+    currency: String,
+    onCurrency: (String) -> Unit
 ) {
     Column {
         SfTopBar(
@@ -91,6 +108,8 @@ private fun GalleryBody(
             actions = {
                 SfTextButton(text = "Invite", onClick = {})
                 SfIconButton(icon = Icons.Outlined.MoreHoriz, contentDescription = "Group tools", onClick = {})
+                IdentityTile(initial = null, contentDescription = "Settings", onClick = {})
+                Spacer(Modifier.width(tokens.screenPaddingHorizontal - 4.dp))
             }
         )
 
@@ -98,6 +117,10 @@ private fun GalleryBody(
             SfLargeTitleHeader(eyebrow = "A little less keeping score", title = "Your groups.") {
                 StatusPill(text = "Demo data", tone = PillTone.Online)
             }
+
+            // Currency chooser line
+            CurrencyLine(currencies = listOf("INR", "USD"), selected = currency, onSelect = onCurrency)
+            Spacer(Modifier.height(12.dp))
 
             // Balance hero
             HeroCardSample()
@@ -133,7 +156,13 @@ private fun GalleryBody(
                 SfPrimaryButton(text = "Save expense", onClick = {})
                 SfPrimaryButton(text = "Saving", onClick = {}, loading = true)
                 SfPrimaryButton(text = "Disabled", onClick = {}, enabled = false)
-                SfAccentButton(text = "Create group", onClick = {}, leadingIcon = Icons.Filled.Add)
+                SfPrimaryButton(
+                    text = "Replace identity",
+                    onClick = {},
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+                SfAccentButton(text = "Create group", onClick = {}, leadingIcon = Icons.Outlined.Add)
                 SfAccentButton(text = "Disabled", onClick = {}, enabled = false)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -144,12 +173,17 @@ private fun GalleryBody(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SfTextButton(text = "See all", onClick = {})
+                    SfTextButton(
+                        text = "Restore an existing identity",
+                        onClick = {},
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.weight(1f))
                     SfIconButton(icon = Icons.Outlined.MoreHoriz, contentDescription = "More", onClick = {})
                 }
             }
 
-            SectionHead(title = "People") { Meta("avatars, stack, pills") }
+            SectionHead(title = "People") { Meta("avatars, stack, pills, tile") }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MemberAvatar(pubkey = "you", name = "You")
                 MemberAvatar(pubkey = "member-1", name = "Member 2", size = 40.dp)
@@ -164,6 +198,12 @@ private fun GalleryBody(
                 StatusPill(text = "Offline", tone = PillTone.Offline)
                 StatusDot(connected = true, contentDescription = "Connected")
                 StatusDot(connected = false, contentDescription = "Disconnected")
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                IdentityTile(initial = "P", contentDescription = null, size = 55.dp)
+                IdentityTile(initial = null, contentDescription = "Person")
+                Meta("identity tile · 55 / 48")
             }
 
             SectionHead(title = "Brand") { Meta("launcher mark · 96 / 48") }
@@ -184,6 +224,11 @@ private fun GalleryBody(
                 "Anyone with a real invite may be able to join and read group history. " +
                     "Share it only with people you trust."
             )
+            Spacer(Modifier.height(10.dp))
+            WarningCard(
+                text = "Offline: changes are saved on this phone and sync when you reconnect.",
+                icon = Icons.Outlined.WifiOff
+            )
 
             SectionHead(title = "Segmented tabs")
             SegmentedTabs(
@@ -192,7 +237,7 @@ private fun GalleryBody(
                 onSelect = onSegment
             )
 
-            SectionHead(title = "Rows") { Meta("choice · settings") }
+            SectionHead(title = "Rows") { Meta("choice · settings · detail") }
             SfListCard {
                 Column(Modifier.padding(horizontal = 14.dp)) {
                     ChoiceRow(
@@ -228,6 +273,23 @@ private fun GalleryBody(
                     onClick = {},
                     trailing = { Switch(checked = true, onCheckedChange = null) }
                 )
+                SfDivider()
+                SettingsRow(
+                    icon = Icons.Outlined.Lock,
+                    title = "Replace identity",
+                    subtitle = "Advanced security action",
+                    onClick = {},
+                    iconTint = MaterialTheme.colorScheme.error,
+                    titleColor = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            SfListCard {
+                DetailRow(label = "Pending events", value = "3")
+                SfDivider()
+                DetailRow(label = "Member 3") {
+                    MoneyText(amountMinor = 40000, currency = "INR", style = MaterialTheme.typography.titleSmall)
+                }
             }
 
             SectionHead(title = "Money") { Meta("tabular · signed") }
@@ -276,7 +338,7 @@ private fun GalleryBody(
                     title = "No groups yet",
                     body = "Create a group for a trip, a flat or a night out, then invite people."
                 ) {
-                    SfSecondaryButton(text = "New group", onClick = {}, leadingIcon = Icons.Filled.Add)
+                    SfSecondaryButton(text = "New group", onClick = {}, leadingIcon = Icons.Outlined.Add)
                 }
             }
 

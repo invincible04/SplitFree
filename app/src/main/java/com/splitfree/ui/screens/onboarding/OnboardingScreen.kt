@@ -101,7 +101,6 @@ import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.SfAccentButton
 import com.splitfree.ui.components.SfBottomDock
 import com.splitfree.ui.components.SfIconButton
-import com.splitfree.ui.components.SfMutedTextButton
 import com.splitfree.ui.components.SfPrimaryButton
 import com.splitfree.ui.components.SfSecondaryButton
 import com.splitfree.ui.components.SfSheet
@@ -426,9 +425,10 @@ private fun WelcomePane(onGetStarted: () -> Unit, onRestore: () -> Unit) {
                         modifier = Modifier.testTag("onboarding_get_started")
                     )
                     Spacer(Modifier.height(9.dp))
-                    SfMutedTextButton(
+                    SfTextButton(
                         text = stringResource(R.string.existing_key),
                         onClick = onRestore,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().testTag("onboarding_restore_link")
                     )
                 }

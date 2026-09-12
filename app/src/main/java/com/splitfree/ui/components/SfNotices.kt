@@ -57,18 +57,33 @@ fun HintCard(text: String, modifier: Modifier = Modifier, icon: ImageVector = Ic
 }
 
 /**
- * Cautionary note (mock invite-sheet warning): `warningContainer` fill with `onSurfaceVariant` body text.
- * The wording must stand on its own; there is deliberately no icon or colour-only signal.
+ * Cautionary note (invite warning, offline banner): `warningContainer` fill with `onSurfaceVariant`
+ * body text and an optional leading 18dp [icon] in `warning` (e.g. `WifiOff` for the offline banner). The
+ * wording must stand on its own; the icon and wash only reinforce it.
  */
 @Composable
-fun WarningCard(text: String, modifier: Modifier = Modifier) {
+fun WarningCard(text: String, modifier: Modifier = Modifier, icon: ImageVector? = null) {
     Surface(modifier = modifier.fillMaxWidth(), shape = NoticeShape, color = MaterialTheme.splitFree.warningContainer) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = if (icon == null) 16.dp else 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            if (icon != null) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.splitFree.warning
+                )
+                Spacer(Modifier.size(10.dp))
+            }
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
 }
 

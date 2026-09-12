@@ -103,7 +103,7 @@ internal fun ExpenseEditorSheet(
             emptyList()
         }
     }
-    val youLabel = stringResource(R.string.expense_you)
+    val youLabel = stringResource(R.string.you)
     val matchesPeople: (String) -> Boolean = { key ->
         query.isBlank() ||
             key.contains(query, ignoreCase = true) ||
@@ -192,7 +192,7 @@ internal fun ExpenseEditorSheet(
                 }
             }
             SfSheetFooter(secondary = null) {
-                SfPrimaryButton(text = stringResource(R.string.expense_split_done), onClick = onDismiss)
+                SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
             }
         }
     }
@@ -274,7 +274,7 @@ private fun SplitPersonRow(state: AddExpenseUiState, key: String, actions: Expen
             }
             if (showsShareUnderName) {
                 MoneyText(
-                    amountMinor = share ?: 0L,
+                    amountMinor = share,
                     currency = state.currency,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

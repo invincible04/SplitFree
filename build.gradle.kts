@@ -14,7 +14,8 @@ spotless {
     val ktlintVersion = "1.5.0"
     kotlin {
         target("**/*.kt")
-        targetExclude("**/build/**")
+        // Git-ignored scratch space (audit notes, reproductions) is never compiled, so skip it.
+        targetExclude("**/build/**", "docs/**")
         ktlint(ktlintVersion)
     }
     kotlinGradle {

@@ -120,7 +120,7 @@ fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             SfTopBar(
-                title = stringResource(if (state.editing) R.string.expense_edit_title else R.string.expense_add_title),
+                title = stringResource(if (state.editing) R.string.expense_edit_title else R.string.add_expense),
                 onBack = requestBack,
                 backEnabled = !state.saving,
                 backModifier = Modifier.testTag("expense_back")

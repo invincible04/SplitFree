@@ -24,10 +24,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.ui.theme.splitFree
+import com.splitfree.ui.theme.tabular
 
 private val ChoiceRowMinHeight = 56.dp
 private val SettingsRowMinHeight = 64.dp
@@ -79,8 +83,11 @@ fun ChoiceRow(
 }
 
 /**
- * Navigation/settings row for [SfListCard] (mock `.settings-row`): `primary`-tinted [icon], `titleSmall`
- * [title], muted `bodySmall` [subtitle] and a [trailing] slot that defaults to a chevron. 64dp minimum.
+ * Navigation/settings row for [SfListCard]: [iconTint]ed [icon] (`primary` by default), `titleSmall` [title]
+ * in [titleColor] (`onSurface`), muted `bodySmall` [subtitle] and a [trailing] slot that defaults to a
+ * chevron. 64dp minimum. For a destructive or irreversible action pass `error` for both colours; the
+ * subtitle and chevron stay muted so the row reads as a caution, not an alarm, and the wording must still
+ * say what happens.
  */
 @Composable
 fun SettingsRow(
@@ -90,6 +97,8 @@ fun SettingsRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    iconTint: Color = MaterialTheme.colorScheme.primary,
+    titleColor: Color = MaterialTheme.colorScheme.onSurface,
     trailing: @Composable () -> Unit = { SettingsChevron() }
 ) {
     Row(
@@ -101,10 +110,10 @@ fun SettingsRow(
             .padding(horizontal = 13.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+        Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = iconTint)
         Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            Text(title, style = MaterialTheme.typography.titleSmall, color = titleColor)
             if (!subtitle.isNullOrBlank()) {
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -128,4 +137,41 @@ fun SettingsChevron(modifier: Modifier = Modifier) {
         modifier = modifier.size(22.dp),
         tint = MaterialTheme.splitFree.faint
     )
+}
+
+/**
+ * Label → value row for read-only breakdowns in sheets: `bodyMedium` [label] taking the
+ * width, 16dp gap, then the tabular `titleSmall` [value]. Rows own 14dp/15dp padding so several can sit in one
+ * [SfListCard] with [SfDivider]s between them.
+ */
+@Composable
+fun DetailRow(label: String, value: String, modifier: Modifier = Modifier) {
+    DetailRow(label = label, modifier = modifier) {
+        Text(
+            value,
+            style = MaterialTheme.typography.titleSmall.tabular(),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End
+        )
+    }
+}
+
+/** [DetailRow] with a composable [trailing] slot instead of a plain value, e.g. a [MoneyText]. */
+@Composable
+fun DetailRow(label: String, modifier: Modifier = Modifier, trailing: @Composable () -> Unit) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(16.dp))
+        trailing()
+    }
 }

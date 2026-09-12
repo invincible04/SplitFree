@@ -74,7 +74,7 @@ class SettingsContentTest {
         render()
 
         compose.onNodeWithTag("settings_hero_name").assertTextEquals("Priya")
-        compose.onNodeWithTag("settings_hero_initial").assertTextEquals("P")
+        compose.onNodeWithTag("settings_hero_tile").assertTextEquals("P")
         compose.onNodeWithTag("settings_hero_npub").assertTextEquals("a1b2c3d4e5f6…7e8f90")
         compose.onNodeWithTag("settings_version").assertTextEquals("SplitFree v1.0.0")
     }
@@ -99,7 +99,7 @@ class SettingsContentTest {
         render()
 
         compose.onNodeWithTag("settings_hero_name").assertTextEquals(text(R.string.settings_your_profile))
-        compose.onNodeWithTag("settings_hero_initial").assertDoesNotExist()
+        compose.onNodeWithTag("settings_hero_tile").assertContentDescriptionEquals(text(R.string.cd_person_icon))
         compose.onNodeWithContentDescription(text(R.string.cd_person_icon)).assertExists()
         compose.onNodeWithTag("settings_hero_npub").assertTextEquals(text(R.string.settings_no_identity))
     }

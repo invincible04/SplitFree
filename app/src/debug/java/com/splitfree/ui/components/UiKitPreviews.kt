@@ -4,7 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.splitfree.ui.theme.SplitFreeTheme
 
-private const val GALLERY_HEIGHT_DP = 3400
+private const val GALLERY_HEIGHT_DP = 3900
 
 /** Studio previews of the whole kit; the same gallery is rendered to PNG by `UiKitRenderTest`. */
 @Preview(name = "Light", widthDp = 390, heightDp = GALLERY_HEIGHT_DP, showBackground = true)
@@ -19,7 +19,7 @@ private fun UiKitGalleryDarkPreview() {
     SplitFreeTheme(darkTheme = true) { UiKitGallery() }
 }
 
-@Preview(name = "Large text", widthDp = 360, heightDp = GALLERY_HEIGHT_DP + 2200, fontScale = 2f, showBackground = true)
+@Preview(name = "Large text", widthDp = 360, heightDp = GALLERY_HEIGHT_DP + 2300, fontScale = 2f, showBackground = true)
 @Composable
 private fun UiKitGalleryLargeTextPreview() {
     SplitFreeTheme(darkTheme = false) { UiKitGallery() }

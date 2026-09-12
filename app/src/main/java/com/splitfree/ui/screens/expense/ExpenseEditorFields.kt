@@ -20,7 +20,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CallSplit
+import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.LocalOffer
@@ -80,7 +80,7 @@ private const val SPLIT_PREVIEW_FACES = 3
 /** Editor context line: a small group glyph and "Group · N people" in muted `bodySmall`. */
 @Composable
 internal fun ExpenseEditorContext(state: AddExpenseUiState) {
-    val people = pluralStringResource(R.plurals.expense_people_count, state.members.size, state.members.size)
+    val people = pluralStringResource(R.plurals.people_count, state.members.size, state.members.size)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             Icons.Outlined.Group,
@@ -90,7 +90,7 @@ internal fun ExpenseEditorContext(state: AddExpenseUiState) {
         )
         Spacer(Modifier.width(7.dp))
         Text(
-            stringResource(R.string.expense_editor_context, state.groupName, people),
+            stringResource(R.string.dot_separated, state.groupName, people),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
@@ -243,7 +243,7 @@ internal fun memberName(state: AddExpenseUiState, pubkey: String): String = disa
     pubkey = pubkey,
     memberNames = state.memberNames,
     everyone = state.members + state.participants + state.paidBy,
-    youLabel = stringResource(R.string.expense_you),
+    youLabel = stringResource(R.string.you),
     myPubkey = state.myPubkey
 )
 
@@ -286,7 +286,7 @@ internal fun ExpenseSummaryRows(
     onSplit: () -> Unit,
     onCategory: () -> Unit
 ) {
-    val people = pluralStringResource(R.plurals.expense_people_count, state.participants.size, state.participants.size)
+    val people = pluralStringResource(R.plurals.people_count, state.participants.size, state.participants.size)
     SfListCard {
         EditorSummaryRow(
             icon = Icons.Outlined.Person,
@@ -298,9 +298,9 @@ internal fun ExpenseSummaryRows(
         )
         SfDivider()
         EditorSummaryRow(
-            icon = Icons.Outlined.CallSplit,
+            icon = Icons.AutoMirrored.Outlined.CallSplit,
             label = stringResource(R.string.expense_split_with),
-            value = stringResource(R.string.expense_editor_context, splitLabel(state.splitType), people),
+            value = stringResource(R.string.dot_separated, splitLabel(state.splitType), people),
             enabled = enabled,
             tag = "expense_split",
             onClick = onSplit
@@ -435,7 +435,7 @@ internal fun ExpenseSplitPreviewCard(state: AddExpenseUiState, enabled: Boolean,
             }
             Spacer(Modifier.width(10.dp))
             SfSecondaryButton(
-                text = stringResource(R.string.expense_edit_split),
+                text = stringResource(R.string.edit),
                 onClick = onEdit,
                 enabled = enabled,
                 modifier = Modifier.semantics { contentDescription = editDescription }

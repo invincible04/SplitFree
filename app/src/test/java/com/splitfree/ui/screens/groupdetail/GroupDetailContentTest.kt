@@ -429,7 +429,7 @@ class GroupDetailContentTest {
         showPage(R.string.tab_members)
 
         compose.onNodeWithText(text(R.string.group_creator)).assertIsDisplayed()
-        compose.onNodeWithText(text(R.string.group_you)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.you)).assertIsDisplayed()
         compose.onAllNodesWithText(text(R.string.remove_member)).assertCountEquals(0)
     }
 

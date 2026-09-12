@@ -14,9 +14,7 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,22 +22,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.WbSunny
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -78,13 +72,14 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.BuildConfig
 import com.splitfree.R
-import com.splitfree.ui.components.DangerRow
+import com.splitfree.ui.components.IdentityTile
 import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.SettingsRow
 import com.splitfree.ui.components.SfDivider
 import com.splitfree.ui.components.SfListCard
 import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.SfTopBar
+import com.splitfree.ui.components.avatarInitial
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.theme.splitFree
@@ -161,9 +156,9 @@ data class SettingsUiState(
     val appVersion: String = "",
     val isDebugBuild: Boolean = false
 ) {
-    /** Upper-cased first character of the display name, or null when there is no name to draw. */
+    /** First user-perceived character of the display name, upper-cased, or null when there is no name to draw. */
     val avatarInitial: String?
-        get() = displayName.trim().firstOrNull()?.uppercase()
+        get() = avatarInitial(displayName.trim()).takeIf { it.isNotEmpty() }
 
     /** True while any secret is on screen; the window must carry `FLAG_SECURE`. */
     val secretVisible: Boolean
@@ -305,8 +300,6 @@ private const val SOURCE_URL = "https://github.com/invincible04/SplitFree"
 private const val PRIVACY_URL = "https://github.com/invincible04/SplitFree/blob/mainline/PRIVACY.md"
 
 private val HeroTileSize = 55.dp
-private val HeroTileShape = RoundedCornerShape(18.dp)
-private val HeroIconSize = 26.dp
 private val EditButtonMaxWidth = 132.dp
 private val SectionGap = 22.dp
 private const val NPUB_HEAD = 12
@@ -407,11 +400,13 @@ internal fun SettingsContent(
                         )
                     }
                     SfDivider()
-                    DangerRow(
+                    SettingsRow(
                         icon = Icons.Outlined.Lock,
                         title = stringResource(R.string.settings_replace_identity),
                         subtitle = stringResource(R.string.settings_replace_identity_subtitle),
                         onClick = { onSheet(SettingsSheet.Revoke) },
+                        iconTint = MaterialTheme.colorScheme.error,
+                        titleColor = MaterialTheme.colorScheme.error,
                         modifier = Modifier.testTag("settings_revoke")
                     )
                 }
@@ -454,27 +449,12 @@ private fun ProfileHero(state: SettingsUiState, onEdit: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(top = 13.dp, bottom = 24.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier.size(HeroTileSize).background(MaterialTheme.colorScheme.inverseSurface, HeroTileShape),
-            contentAlignment = Alignment.Center
-        ) {
-            val initial = state.avatarInitial
-            if (initial != null) {
-                Text(
-                    initial,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.inverseOnSurface,
-                    modifier = Modifier.testTag("settings_hero_initial")
-                )
-            } else {
-                Icon(
-                    Icons.Outlined.Person,
-                    contentDescription = stringResource(R.string.cd_person_icon),
-                    modifier = Modifier.size(HeroIconSize),
-                    tint = MaterialTheme.colorScheme.inverseOnSurface
-                )
-            }
-        }
+        IdentityTile(
+            initial = state.avatarInitial,
+            contentDescription = stringResource(R.string.cd_person_icon),
+            size = HeroTileSize,
+            modifier = Modifier.testTag("settings_hero_tile")
+        )
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -498,7 +478,7 @@ private fun ProfileHero(state: SettingsUiState, onEdit: () -> Unit) {
         }
         Spacer(Modifier.width(8.dp))
         SfTextButton(
-            text = stringResource(R.string.settings_edit),
+            text = stringResource(R.string.edit),
             onClick = onEdit,
             modifier = Modifier.widthIn(max = EditButtonMaxWidth).testTag("settings_edit")
         )

@@ -24,16 +24,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Group
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.WifiOff
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -44,10 +39,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,7 +64,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.sync.ConnectionStatus
 import com.splitfree.domain.usecase.group.GroupSummary
+import com.splitfree.ui.components.CurrencyLine
 import com.splitfree.ui.components.EmptyState
+import com.splitfree.ui.components.IdentityTile
 import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.MoneyText
 import com.splitfree.ui.components.PillTone
@@ -81,10 +76,10 @@ import com.splitfree.ui.components.SfBottomDock
 import com.splitfree.ui.components.SfCard
 import com.splitfree.ui.components.SfIconButton
 import com.splitfree.ui.components.SfLargeTitleHeader
-import com.splitfree.ui.components.SfSecondaryButton
 import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.SignedMoneyText
 import com.splitfree.ui.components.StatusPill
+import com.splitfree.ui.components.WarningCard
 import com.splitfree.ui.theme.splitFree
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
@@ -105,10 +100,8 @@ private val GroupMoneyMaxWidth = 125.dp
 private val QuickTileMinHeight = 74.dp
 private val QuickIconSize = 39.dp
 private val HeroMinHeight = 190.dp
-private val SettingsTileSize = 48.dp
 private val Tile16 = RoundedCornerShape(16.dp)
 private val Tile13 = RoundedCornerShape(13.dp)
-private val BannerShape = RoundedCornerShape(15.dp)
 
 /** Large-text threshold above which invite tiles and card balances stack instead of sitting side by side. */
 private const val STACK_FONT_SCALE = 1.5f
@@ -224,8 +217,8 @@ private fun startQrScan(context: Context, onScanResult: (String) -> Unit) {
 // --- Stateless content ---
 
 /**
- * Stateless home layout (mock `screens.home()`): top bar, optional offline banner, greeting with a
- * connection pill, currency line, balance hero, group cards, invite tiles and the "New group" dock.
+ * Stateless home layout: top bar, optional offline banner, greeting with a connection pill,
+ * currency line, balance hero, group cards, invite tiles and the "New group" dock.
  * Three states: `loading` shows a skeleton, an empty list shows [EmptyState], otherwise the ledger.
  */
 @Composable
@@ -249,7 +242,7 @@ internal fun GroupsListContent(
                 SfAccentButton(
                     text = stringResource(R.string.new_group),
                     onClick = actions.createGroup,
-                    leadingIcon = Icons.Filled.Add,
+                    leadingIcon = Icons.Outlined.Add,
                     modifier = Modifier.testTag("home_new_group")
                 )
                 Spacer(Modifier.height(8.dp))
@@ -275,7 +268,11 @@ internal fun GroupsListContent(
                 // banner that appears later grows this item in place instead of landing above the viewport.
                 Column {
                     if (state.connection == ConnectionStatus.Offline) {
-                        OfflineBanner()
+                        WarningCard(
+                            text = stringResource(R.string.offline_banner),
+                            icon = Icons.Outlined.WifiOff,
+                            modifier = Modifier.padding(bottom = 13.dp).testTag("home_offline")
+                        )
                     }
                     SfLargeTitleHeader(
                         eyebrow = stringResource(R.string.home_eyebrow),
@@ -303,7 +300,10 @@ private fun LazyListScope.readyItems(state: GroupsListUiState, actions: GroupsLi
         CurrencyLine(
             currencies = state.currencies,
             selected = state.selectedCurrency,
-            onSelect = actions.selectCurrency
+            onSelect = actions.selectCurrency,
+            modifier = Modifier.padding(top = 6.dp, bottom = 12.dp),
+            chipModifier = Modifier.testTag("home_currency"),
+            itemModifier = { Modifier.testTag("home_currency_$it") }
         )
     }
     item(key = "hero") { BalanceHero(state) }
@@ -343,60 +343,19 @@ private fun HomeTopBar(actions: GroupsListActions, endInset: Dp) {
             modifier = Modifier.testTag("home_paste")
         )
         Spacer(Modifier.width(4.dp))
-        SettingsTile(onClick = actions.openSettings)
+        // The ink identity tile is the Settings entry point.
+        IdentityTile(
+            initial = null,
+            contentDescription = stringResource(R.string.settings),
+            onClick = actions.openSettings,
+            modifier = Modifier.testTag("home_settings")
+        )
         // TopAppBar keeps 4dp after the last action; pad the rest so the tile lines up with the content edge.
         Spacer(Modifier.width((endInset - 4.dp).coerceAtLeast(0.dp)))
     }
 }
 
-/** 48dp ink tile with a person glyph (mock `.avatar-btn`): the Settings entry point. */
-@Composable
-private fun SettingsTile(onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.size(SettingsTileSize).semantics { role = Role.Button }.testTag("home_settings"),
-        shape = Tile16,
-        color = MaterialTheme.colorScheme.inverseSurface,
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                Icons.Outlined.Person,
-                contentDescription = stringResource(R.string.settings),
-                modifier = Modifier.size(22.dp)
-            )
-        }
-    }
-}
-
-// --- Banner, pill, currency ---
-
-/** Offline notice (mock `.offline-banner`): honest about what still works — nothing is lost. */
-@Composable
-private fun OfflineBanner() {
-    val palette = MaterialTheme.splitFree
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(bottom = 13.dp).testTag("home_offline"),
-        shape = BannerShape,
-        color = palette.warningContainer
-    ) {
-        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
-            Icon(
-                Icons.Outlined.WifiOff,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = palette.warning
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                stringResource(R.string.offline_banner),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
+// --- Pill ---
 
 /** Connecting, Online or Offline in words; the dot tone only reinforces the word. */
 @Composable
@@ -423,72 +382,10 @@ private fun ConnectionPill(status: ConnectionStatus) {
     )
 }
 
-/**
- * "Balances in" line (mock `.currency-line`). Hidden entirely when nothing has a currency yet, a plain label
- * with one currency, and a dropdown selector once balances exist in more than one.
- */
-@Composable
-private fun CurrencyLine(currencies: List<String>, selected: String?, onSelect: (String) -> Unit) {
-    when {
-        currencies.isEmpty() || selected == null -> Unit
-        currencies.size == 1 ->
-            MiniLabel(
-                stringResource(R.string.balances_in_currency, selected),
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)
-            )
-
-        else ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                MiniLabel(stringResource(R.string.balances_in), modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(12.dp))
-                CurrencySelector(currencies = currencies, selected = selected, onSelect = onSelect)
-            }
-    }
-}
-
-@Composable
-private fun CurrencySelector(currencies: List<String>, selected: String, onSelect: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    val description = stringResource(R.string.cd_change_balance_currency, selected)
-    Box {
-        SfSecondaryButton(
-            text = selected,
-            onClick = { expanded = true },
-            leadingIcon = Icons.Outlined.ArrowDropDown,
-            modifier = Modifier.semantics { contentDescription = description }.testTag("home_currency")
-        )
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            currencies.forEach { code ->
-                DropdownMenuItem(
-                    text = { Text(code, style = MaterialTheme.typography.titleSmall) },
-                    onClick = {
-                        expanded = false
-                        onSelect(code)
-                    },
-                    trailingIcon = {
-                        if (code == selected) {
-                            Icon(
-                                Icons.Outlined.Check,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    },
-                    modifier = Modifier.testTag("home_currency_$code")
-                )
-            }
-        }
-    }
-}
-
 // --- Hero ---
 
 /**
- * Inverted balance card (mock `.balance-hero`). With no currency anywhere it says so plainly instead of
+ * Inverted balance card. With no currency anywhere it says so plainly instead of
  * inventing a zero. Read by TalkBack as one node.
  */
 @Composable
@@ -528,7 +425,7 @@ private fun BalanceHero(state: GroupsListUiState) {
                     val net = state.netMinor
                     val label = stringResource(if (net >= 0) R.string.net_to_receive else R.string.net_to_pay)
                     MiniLabel(
-                        text = stringResource(R.string.hero_label_currency, label, currency),
+                        text = stringResource(R.string.dot_separated, label, currency),
                         color = palette.heroMuted
                     )
                     Spacer(Modifier.height(12.dp))
@@ -540,7 +437,7 @@ private fun BalanceHero(state: GroupsListUiState) {
                         maxLines = 2
                     )
                     Spacer(Modifier.height(20.dp))
-                    // Stats sit 30dp apart at their natural width (mock `.hero-row`); at large text the second
+                    // Stats sit 30dp apart at their natural width; at large text the second
                     // one flows onto its own line instead of breaking a number in half.
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(30.dp),
@@ -582,7 +479,7 @@ private fun HeroStat(label: String, amountMinor: Long, currency: String, modifie
 // --- Group cards ---
 
 /**
- * One group (mock `.group-card`): symbol tile, name and meta, then the user's balance in [currency] with the
+ * One group card: symbol tile, name and meta, then the user's balance in [currency] with the
  * direction spelled out. [net] is null when the user has no balance entry in [currency]. [stacked] puts the
  * balance under the title (large text on compact widths) instead of in a capped trailing column.
  */
@@ -596,8 +493,8 @@ private fun GroupCard(
     modifier: Modifier = Modifier
 ) {
     val people = summary.group.members.size
-    val peopleText = pluralStringResource(R.plurals.member_count, people, people)
-    val meta = if (currency == null) peopleText else stringResource(R.string.group_card_meta, peopleText, currency)
+    val peopleText = pluralStringResource(R.plurals.people_count, people, people)
+    val meta = if (currency == null) peopleText else stringResource(R.string.dot_separated, peopleText, currency)
     val showAmount = currency != null && (net != null || currency in summary.currencies)
     val shownNet = net ?: 0L
     val direction =
@@ -609,7 +506,7 @@ private fun GroupCard(
             else -> stringResource(R.string.direction_no_expenses, currency)
         }
     val description =
-        if (showAmount && currency != null) {
+        if (showAmount) {
             stringResource(
                 R.string.cd_group_card,
                 summary.group.name,
@@ -716,7 +613,7 @@ private fun GroupBalance(
     }
 }
 
-/** 47dp `surfaceContainer` tile with the group glyph (mock `.group-symbol`). Decorative. */
+/** 47dp `surfaceContainer` tile with the group glyph. Decorative. */
 @Composable
 private fun GroupSymbol() {
     Box(
@@ -769,14 +666,14 @@ private fun HomeEmpty(onCreate: () -> Unit) {
             SfAccentButton(
                 text = stringResource(R.string.new_group),
                 onClick = onCreate,
-                leadingIcon = Icons.Filled.Add,
+                leadingIcon = Icons.Outlined.Add,
                 modifier = Modifier.testTag("home_empty_new_group")
             )
         }
     }
 }
 
-/** Two invite shortcuts (mock `.quick-grid`); stacked when large text leaves no room side by side. */
+/** Two invite shortcuts; stacked when large text leaves no room side by side. */
 @Composable
 private fun InviteQuickGrid(stacked: Boolean, onScan: () -> Unit, onPaste: () -> Unit) {
     if (stacked) {

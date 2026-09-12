@@ -224,7 +224,7 @@ class AddExpenseContentTest {
             sheetNode(unselected)
                 .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton))
                 .assertIsNotSelected()
-            compose.onNodeWithText(text(R.string.expense_split_done)).performAccessibleClick()
+            compose.onNodeWithText(text(R.string.done)).performAccessibleClick()
             compose.onNodeWithTag("expense_sheet_list").assertDoesNotExist()
         }
     }
@@ -602,7 +602,7 @@ class AddExpenseContentTest {
         compose.onNode(
             hasText("Enter a positive amount in INR.") and hasAnyAncestor(hasTestTag("expense_sheet_list"))
         ).assertIsDisplayed()
-        compose.onNodeWithText(text(R.string.expense_split_done)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.done)).assertIsDisplayed()
         captureFixture("sheet-split", overlay = sheetWindowView("expense_sheet_list"))
     }
 
@@ -660,7 +660,7 @@ class AddExpenseContentTest {
         captureFixture("320dp-long-names", expectedWidth = 320)
         formNode("expense_split").performClick()
         sheetNode("participant_member_24").assertIsOn().assertTextContains(lastName)
-        compose.onNodeWithText(text(R.string.expense_split_done)).assertIsDisplayed().performAccessibleClick()
+        compose.onNodeWithText(text(R.string.done)).assertIsDisplayed().performAccessibleClick()
         compose.onNodeWithTag("expense_sheet_list").assertDoesNotExist()
         compose.onNodeWithTag("expense_save").assertIsDisplayed().assertIsEnabled()
     }

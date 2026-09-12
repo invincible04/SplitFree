@@ -12,18 +12,21 @@
     <string name="settings">Settings</string>
     <string name="add">Add</string>
     <string name="remove">Remove</string>
-
-    <!-- GroupsListScreen -->
-    <string name="new_group">New group</string>
-    <string name="no_groups_yet">No groups yet</string>
-    <string name="no_groups_body">Create a group for a trip, a flat or a night out, then invite people.</string>
-    <string name="paste_invite_link">Paste invite link</string>
-    <string name="scan_qr">Scan QR code</string>
-    <plurals name="member_count">
+    <string name="you">You</string>
+    <plurals name="people_count">
         <item quantity="one">%1$d person</item>
         <item quantity="other">%1$d people</item>
     </plurals>
-    <string name="home_eyebrow">A little less keeping score</string>
+    <!-- Joins two fragments with a middle dot: "4 people · INR", "You owe · USD", "Goa trip · 4 people" -->
+    <string name="dot_separated">%1$s · %2$s</string>
+
+    <!-- Home (GroupsListScreen) -->
+    <string name="new_group">New group</string>
+    <string name="no_groups_yet">No groups yet</string>
+    <string name="no_groups_body">Create a group for a trip or a flat, then invite people.</string>
+    <string name="paste_invite_link">Paste invite link</string>
+    <string name="scan_qr">Scan QR code</string>
+    <string name="home_eyebrow">Shared expenses</string>
     <string name="home_title">Your groups.</string>
     <string name="status_connecting">Connecting</string>
     <string name="status_online">Online</string>
@@ -35,17 +38,15 @@
     <string name="cd_change_balance_currency">Change balance currency, %1$s selected</string>
     <string name="net_to_receive">Net to receive</string>
     <string name="net_to_pay">Net to pay</string>
-    <string name="hero_label_currency">%1$s · %2$s</string>
     <string name="you_are_owed">You are owed</string>
     <string name="you_owe">You owe</string>
     <string name="nothing_to_settle_yet">Nothing to settle yet</string>
-    <string name="nothing_to_settle_body">Add an expense in any group and your balances will show up here.</string>
-    <string name="your_shared_spaces">Your shared spaces</string>
+    <string name="nothing_to_settle_body">Add an expense in any group to see balances here.</string>
+    <string name="your_shared_spaces">Groups</string>
     <plurals name="group_count">
         <item quantity="one">%1$d group</item>
         <item quantity="other">%1$d groups</item>
     </plurals>
-    <string name="group_card_meta">%1$s · %2$s</string>
     <string name="cd_group_card">%1$s, %2$s, %3$s %4$s</string>
     <string name="cd_group_card_no_amount">%1$s, %2$s, %3$s</string>
     <string name="direction_owed_to_you">owed to you</string>
@@ -53,30 +54,25 @@
     <string name="direction_settled">settled</string>
     <string name="direction_no_expenses">no %1$s expenses</string>
     <string name="direction_no_expenses_yet">no expenses yet</string>
-    <string name="have_an_invite">Have an invite?</string>
+    <string name="have_an_invite">Join a group</string>
     <string name="quick_scan_qr">Scan QR</string>
     <string name="quick_paste_link">Paste link</string>
     <string name="currencies_stay_separate">Balances stay separate per currency</string>
     <string name="clipboard_no_invite">No invite link on the clipboard</string>
 
-    <!-- GroupDetailScreen -->
+    <!-- Group overview (GroupDetailScreen) -->
     <string name="nearby_sync">Nearby sync</string>
     <string name="group_nearby_sync_subtitle">Exchange updates in person over Bluetooth</string>
     <string name="group_invite">Invite</string>
     <string name="group_tools">Group tools</string>
     <string name="group_sync_status_relays">Sync status &amp; relays</string>
-    <string name="group_sync_status_subtitle">Connection details, separate from delivery</string>
+    <string name="group_sync_status_subtitle">Relay connections for this group</string>
     <string name="add_expense">Add expense</string>
     <plurals name="group_people_private">
         <item quantity="one">%1$d person · private group</item>
         <item quantity="other">%1$d people · private group</item>
     </plurals>
-    <string name="group_balances_in">Balances in</string>
-    <string name="group_balances_in_currency">Balances in %1$s</string>
-    <string name="group_you_are_owed">You are owed</string>
-    <string name="group_you_owe">You owe</string>
     <string name="group_your_balance">Your balance</string>
-    <string name="group_summary_label">%1$s · %2$s</string>
     <string name="group_summary_others_open">Other members still have open balances</string>
     <string name="group_summary_settled_in">Everyone is settled in %1$s</string>
     <string name="group_summary_no_currency_expenses">No %1$s expenses yet</string>
@@ -88,7 +84,7 @@
     <string name="tab_expenses">Expenses</string>
     <string name="tab_members">People</string>
 
-    <!-- BalancesTab -->
+    <!-- Group overview: summary pane -->
     <string name="group_who_pays_whom">Who pays whom</string>
     <plurals name="group_open_debts">
         <item quantity="one">%1$d open</item>
@@ -102,7 +98,7 @@
     <string name="group_recent_activity">Recent activity</string>
     <string name="group_see_all">See all</string>
 
-    <!-- ExpensesTab -->
+    <!-- Group overview: expenses pane -->
     <string name="group_expense_history">Expense history</string>
     <plurals name="group_expense_entries">
         <item quantity="one">%1$d entry</item>
@@ -116,40 +112,34 @@
     <string name="group_delta_no_change">no balance change</string>
     <string name="group_delta_not_involved">not involved</string>
 
-    <!-- MembersTab -->
-    <plurals name="group_people_heading">
-        <item quantity="one">%1$d person</item>
-        <item quantity="other">%1$d people</item>
-    </plurals>
-    <string name="group_you">You</string>
+    <!-- Group overview: people pane -->
     <string name="group_you_object">you</string>
     <string name="group_you_creator">You · group creator</string>
     <string name="group_creator">Group creator</string>
     <string name="remove_member">Remove member</string>
 
-    <!-- GroupDetailDialogs -->
+    <!-- Group overview: sheets (invite, settle, expense detail, remove member, relays) -->
     <string name="group_invite_title">Invite to %1$s</string>
-    <string name="group_invite_copy">Scan in person, or send the private invite directly.</string>
+    <string name="group_invite_copy">Scan in person, or send the link privately.</string>
     <string name="group_copy_link">Copy link</string>
     <string name="group_link_copied">Invite link copied</string>
     <string name="share">Share</string>
-    <string name="share_invite_warning">This invite carries the group key: anyone who has it can join and read the whole history. Share it only with people you trust, in a private message, never in a public channel or group chat where bots preview links.</string>
+    <string name="share_invite_warning">Anyone with this link holds the group key and can read the whole history. Share it only in a private message.</string>
     <string name="invite_qr_content_desc">Invite QR code</string>
     <string name="generating_invite_link">Generating invite link…</string>
-    <string name="group_share_text">Join my SplitFree group!\n\n1. Install SplitFree\n2. Copy this link\n3. Open SplitFree and choose Paste invite\n\n%1$s</string>
+    <string name="group_share_text">Join my SplitFree group.\n\n1. Install SplitFree\n2. Copy this link\n3. Open SplitFree and tap Paste link\n\n%1$s</string>
     <string name="group_share_chooser">Share invite</string>
     <string name="record_payment">Record payment</string>
     <string name="group_settle_path">%1$s paid %2$s</string>
-    <string name="group_settle_warning">Only record this after the money has actually changed hands. SplitFree does not make a payment.</string>
+    <string name="group_settle_warning">Record this only after the money has changed hands. SplitFree does not make the payment.</string>
     <string name="confirm_payment">Confirm payment</string>
     <string name="group_expense_details">Expense details</string>
     <string name="group_expense_detail_meta">%1$s paid · %2$s · %3$s</string>
-    <string name="remove_member_title">Remove member</string>
     <string name="group_expense_delete">Delete</string>
     <string name="group_expense_delete_title">Delete this expense?</string>
     <string name="group_expense_delete_body">Balances update for everyone in the group.</string>
     <string name="group_expense_only_author">Only %1$s can change this.</string>
-    <string name="remove_member_body">Remove %1$s? This creates a new group without them. All remaining members will be migrated automatically.</string>
+    <string name="remove_member_body">Remove %1$s? This creates a new group without them; the other members move over when they sync.</string>
     <string name="group_relays_title">Group relays (%1$d)</string>
     <string name="relay_editor_hint_creator">Manage relays for this group. Changes are broadcast to all members.</string>
     <string name="relay_editor_hint_member">Relays this group syncs through. Only the group creator can edit.</string>
@@ -169,37 +159,37 @@
     <!-- Relay checks (CreateGroupViewModel, GroupDetailViewModel) -->
     <string name="relay_check_failed">Could not check %1$s</string>
     <string name="relay_offline">%1$s is offline or unreachable</string>
-    <string name="relay_write_read_failed">%1$s can\'t store events — write+read failed</string>
+    <string name="relay_write_read_failed">%1$s can\'t store events: write+read check failed</string>
     <string name="create_group_failed">Could not create group</string>
 
     <!-- OnboardingScreen -->
     <string name="onboarding_eyebrow">Private by design</string>
     <string name="onboarding_title">Split freely.\nKeep it yours.</string>
-    <string name="onboarding_subtitle">Shared expenses without accounts or subscriptions. Your data stays in your control.</string>
+    <string name="onboarding_subtitle">Shared expenses with no accounts or subscriptions. Only your groups can read your data.</string>
     <string name="chip_encrypted">Encrypted</string>
     <string name="chip_decentralized">Offline-ready</string>
     <string name="chip_free">Free</string>
     <string name="your_name">Your name</string>
     <string name="your_name_placeholder">How friends will see you</string>
     <string name="get_started">Get started</string>
-    <string name="existing_key">Restore an existing identity</string>
-    <string name="onboarding_name_sheet_title">What should we call you?</string>
+    <string name="existing_key">Restore identity</string>
+    <string name="onboarding_name_sheet_title">Choose a name</string>
     <string name="onboarding_name_note">Optional. Shared only with groups you join.</string>
     <string name="onboarding_restore_eyebrow">Restore</string>
-    <string name="onboarding_restore_title">Enter your key or recovery phrase</string>
-    <string name="onboarding_restore_subtitle">Paste the private key or type the 24 words you saved when you first set up SplitFree.</string>
-    <string name="onboarding_restore_private_hint">Do this somewhere private. Screenshots are blocked on this screen and nothing you type leaves your phone.</string>
-    <string name="private_key_or_seed">Private key or seed phrase</string>
-    <string name="key_placeholder">nsec / hex key / 24 words</string>
+    <string name="onboarding_restore_title">Restore your identity</string>
+    <string name="onboarding_restore_subtitle">Paste your private key or type your 24 recovery words.</string>
+    <string name="onboarding_restore_private_hint">Screenshots are blocked here and nothing you type leaves your phone.</string>
+    <string name="private_key_or_seed">Private key or recovery phrase</string>
+    <string name="key_placeholder">hex key / 24 words</string>
     <string name="key_supporting_text">Hex private key or 24 words separated by spaces</string>
     <string name="import_key">Import key</string>
-    <string name="onboarding_backup_title">Bring back your groups</string>
+    <string name="onboarding_backup_title">Restore your groups</string>
     <string name="key_imported">Key imported. Your identity is back on this phone.</string>
-    <string name="import_backup_hint">If you have a .splitfree backup file, import it now to restore your groups and their history. Your key alone does not bring back group keys or past expenses.</string>
+    <string name="import_backup_hint">Import a .splitfree backup to restore your groups and their history. Your key alone does not restore group keys or past expenses.</string>
     <string name="import_backup_file">Import backup file</string>
     <string name="importing_backup">Importing backup…</string>
     <string name="continue_button">Continue</string>
-    <string name="invalid_key_input">Invalid key. Enter a hex private key or 24-word seed phrase.</string>
+    <string name="invalid_key_input">Invalid key. Enter a hex private key or your 24 recovery words.</string>
     <plurals name="backup_restored_events">
         <item quantity="one">Restored %1$d event</item>
         <item quantity="other">Restored %1$d events</item>
@@ -210,17 +200,16 @@
     <!-- SettingsScreen -->
     <string name="appearance">Appearance</string>
     <string name="settings_your_profile">Your profile</string>
-    <string name="settings_edit">Edit</string>
     <string name="settings_no_identity">No identity on this device yet</string>
-    <string name="settings_section_make_it_yours">Make it yours</string>
-    <string name="settings_section_keep_it_yours">Keep it yours</string>
+    <string name="settings_section_make_it_yours">Display</string>
+    <string name="settings_section_keep_it_yours">Security</string>
     <string name="settings_section_tools_support">Tools &amp; support</string>
     <string name="settings_theme_system">System default</string>
     <string name="settings_theme_system_subtitle">Follows your phone\'s light or dark setting</string>
     <string name="settings_theme_light">Light theme</string>
     <string name="settings_theme_dark">Dark theme</string>
     <string name="settings_diagnostics">Diagnostics</string>
-    <string name="settings_diagnostics_subtitle">Sync health and crash report</string>
+    <string name="settings_diagnostics_subtitle">Sync health report</string>
     <plurals name="outbox_pending_status">
         <item quantity="one">%1$d event waiting to sync (%2$d stuck)</item>
         <item quantity="other">%1$d events waiting to sync (%2$d stuck)</item>
@@ -236,67 +225,66 @@
     <string name="settings_privacy_policy">Privacy policy</string>
     <string name="open_link_failed">No app can open this link</string>
     <string name="clipboard_copied">Copied</string>
-    <string name="clipboard_copied_30s">Copied — clipboard will auto-clear in 30s</string>
+    <string name="clipboard_copied_30s">Copied. Clipboard clears in 30 s</string>
 
-    <!-- SettingsScreen - Security Dialogs -->
+    <!-- Settings: copy confirmation and identity replacement -->
     <string name="security_warning">Security warning</string>
-    <string name="copy_key_warning">Your private key will be copied to the clipboard. Other apps may be able to read it. Only do this to back up your key, then clear your clipboard.</string>
-    <string name="copy_seed_warning">Your recovery phrase will be copied to the clipboard. Anyone with these 24 words can access your identity. Write them down on paper instead if possible.</string>
+    <string name="copy_key_warning">Other apps can read the clipboard. Copy your private key only to back it up.</string>
+    <string name="copy_seed_warning">Other apps can read the clipboard, and anyone with these 24 words owns your identity. Prefer writing them on paper.</string>
     <string name="copy_anyway">Copy anyway</string>
     <string name="revoke_key_title">Replace your identity?</string>
-    <string name="revoke_key_warning">This generates a new identity and notifies all your groups. Your old key is invalidated. This cannot be undone.</string>
-    <string name="settings_revoke_consequences">Every group you belong to is told about the new key the next time it syncs. Anyone still holding your old key can no longer read what you post. Afterwards, back up your new recovery phrase — the old one no longer restores this identity.</string>
+    <string name="revoke_key_warning">This creates a new identity and cannot be undone.</string>
+    <string name="settings_revoke_consequences">Each group learns the new key the next time it syncs. Your old key stops working, and the old recovery phrase no longer restores this identity, so back up the new one.</string>
     <string name="settings_replace_identity">Replace identity</string>
-    <string name="settings_replace_identity_subtitle">Advanced security action</string>
+    <string name="settings_replace_identity_subtitle">Generates a new key</string>
 
-    <!-- IdentitySection -->
+    <!-- Settings: backup &amp; recovery sheet -->
     <string name="settings_backup_recovery">Backup &amp; recovery</string>
-    <string name="settings_backup_recovery_subtitle">Recovery phrase + encrypted group export</string>
-    <string name="settings_recovery_intro">Two parts protect two different things. Your recovery phrase restores your identity; a group backup preserves group keys and history.</string>
+    <string name="settings_backup_recovery_subtitle">Recovery phrase and encrypted export</string>
+    <string name="settings_recovery_intro">Your recovery phrase restores your identity; a group backup restores group keys and history.</string>
 
-    <!-- KeyBackupSection -->
-    <string name="key_backup_warning">This is your identity. Anyone who sees it can act as you, and if you lose it you lose access to all your groups forever. Keep it offline.</string>
+    <!-- Settings: recovery phrase and private key sheets -->
+    <string name="key_backup_warning">Anyone who sees this can act as you; if you lose it you lose your groups. Keep it offline.</string>
     <string name="settings_recovery_phrase">Recovery phrase</string>
-    <string name="settings_recovery_phrase_subtitle">24 words. Keep them offline and never share them.</string>
+    <string name="settings_recovery_phrase_subtitle">24 words that restore your identity</string>
     <string name="settings_phrase_title">Your recovery phrase</string>
     <string name="settings_phrase_hidden">Recovery phrase hidden</string>
     <string name="settings_phrase_masked_cell">%1$d · ••••••</string>
     <string name="settings_phrase_word">%1$d · %2$s</string>
     <string name="private_key">Private key</string>
-    <string name="settings_private_key_subtitle">Raw secret key for advanced use</string>
+    <string name="settings_private_key_subtitle">Raw hex secret key</string>
     <string name="settings_private_key_title">Your private key</string>
     <string name="settings_private_key_hidden">Private key hidden</string>
     <string name="settings_private_key_masked">••••••••••••••••••••••••••••••••</string>
     <string name="reveal">Reveal</string>
     <string name="hide">Hide</string>
 
-    <!-- PrivacySection -->
+    <!-- Settings: gift wrap toggle -->
     <string name="settings_hide_sender_metadata">Hide sender metadata</string>
-    <string name="gift_wrap_hint">NIP-59 gift wrap hides the sender from relays. Larger events.</string>
+    <string name="gift_wrap_hint">NIP-59 gift wrap hides the sender from relays; events get larger.</string>
 
-    <!-- BackupSection -->
+    <!-- Settings: export sheet -->
     <string name="settings_export_group_backup">Export group backup</string>
     <string name="settings_export_group_backup_subtitle">Group keys and history in one encrypted file</string>
-    <string name="settings_export_title">Export a group backup</string>
-    <string name="export_hint">Saves every group to one .splitfree file. Group keys are encrypted to your identity, so keep your recovery phrase separately — it is the only way to unlock this file.</string>
+    <string name="settings_export_title">Export backup</string>
+    <string name="export_hint">Saves every group to one .splitfree file, encrypted to your identity. Only your recovery phrase can unlock it.</string>
     <string name="export">Export</string>
     <string name="backup_exported">Backup exported. Keep the file somewhere safe.</string>
-    <string name="export_failed">Export failed — the backup file may be incomplete</string>
+    <string name="export_failed">Export failed. No usable backup was written</string>
 
-    <!-- DangerZoneSection -->
+    <!-- Settings: identity replaced -->
     <string name="key_revoked">Identity replaced. Your groups will receive the new key as they sync.</string>
     <string name="new_pubkey">New pubkey: %1$s…</string>
 
-    <!-- ProfileSection -->
+    <!-- Settings: profile sheet -->
     <string name="display_name">Display name</string>
     <string name="display_name_placeholder">How friends see you</string>
     <string name="settings_profile_title">Your display name</string>
     <string name="settings_display_name_note">Shared with the groups you belong to. Optional.</string>
 
     <!-- NearbySyncScreen -->
-    <string name="nearby_sync_title">Nearby sync</string>
     <string name="nearby_explanation">Group members can exchange encrypted updates over Bluetooth, without internet.</string>
-    <string name="nearby_headline_idle">Keep everyone up to date</string>
+    <string name="nearby_headline_idle">Sync over Bluetooth</string>
     <string name="nearby_headline_scanning">Looking for members nearby</string>
     <plurals name="nearby_headline_found">
         <item quantity="one">A member is nearby</item>
@@ -305,12 +293,12 @@
     <string name="nearby_headline_syncing">Syncing…</string>
     <string name="nearby_footer_note">Both people keep SplitFree open</string>
     <string name="bluetooth_unavailable">Bluetooth unavailable</string>
-    <string name="nearby_bluetooth_unavailable_hint">This device has no Bluetooth, so nearby sync is not available here.</string>
+    <string name="nearby_bluetooth_unavailable_hint">This device has no Bluetooth, so nearby sync is unavailable.</string>
     <string name="permissions_required">Grant permissions</string>
     <string name="enable_bluetooth">Turn on Bluetooth</string>
-    <string name="scan_for_nearby">Scan for nearby members</string>
+    <string name="scan_for_nearby">Scan for members</string>
     <string name="stop_scanning">Stop scanning</string>
-    <string name="permissions_hint">SplitFree needs Bluetooth and nearby-device permissions to find members around you. Nothing is shared until you tap Sync.</string>
+    <string name="permissions_hint">Bluetooth and nearby-device permissions are needed to find members. Nothing is shared until you tap Sync.</string>
     <string name="peer_name">Peer %1$s</string>
     <string name="tap_sync">Tap Sync to exchange expenses</string>
     <string name="sync">Sync</string>
@@ -330,19 +318,19 @@
 
     <!-- CreateGroupScreen -->
     <string name="create_group">Create group</string>
-    <string name="create_group_hint">Name it now. Invite people when you are ready.</string>
-    <string name="create_group_eyebrow">Start something shared</string>
-    <string name="create_group_headline">A group for\nevery plan.</string>
+    <string name="create_group_hint">Name the group now and invite people later.</string>
+    <string name="create_group_eyebrow">Create</string>
+    <string name="create_group_headline">Name your\ngroup.</string>
     <string name="group_name">Group name</string>
     <string name="group_name_placeholder">Weekend away</string>
     <plurals name="relays_count">
         <item quantity="one">%1$d relay selected</item>
         <item quantity="other">%1$d relays selected</item>
     </plurals>
-    <string name="relay_section_hint">Choose which Nostr relays this group syncs through. Default relays work for most users.</string>
+    <string name="relay_section_hint">Nostr relays this group syncs through; the defaults suit most groups.</string>
     <string name="sync_relays">Sync relays</string>
-    <string name="relay_default_configuration">Default configuration</string>
-    <string name="encrypted_on_device_hint">Expenses are encrypted on the device before sharing. No account needed.</string>
+    <string name="relay_default_configuration">Default relays</string>
+    <string name="encrypted_on_device_hint">Expenses are encrypted on this phone before they leave it.</string>
     <string name="cd_expanded">Expanded</string>
     <string name="cd_collapsed">Collapsed</string>
 
@@ -382,7 +370,6 @@
     <string name="cd_bluetooth_icon">Bluetooth</string>
     <string name="cd_sync_icon">Sync</string>
     <string name="cd_person_icon">Person</string>
-    <string name="cd_theme_overlay">Theme transition overlay</string>
     <string name="cd_status_connected">Connected</string>
     <string name="cd_status_disconnected">Disconnected</string>
     <string name="cd_status_connecting">Connecting</string>
@@ -391,7 +378,7 @@
     <string name="cd_loading">Loading</string>
 
     <!-- ExpenseNotifier -->
-    <string name="notif_channel_expenses_name">Expense Updates</string>
+    <string name="notif_channel_expenses_name">Expense updates</string>
     <string name="notif_channel_expenses_description">Notifications for new expenses and settlements</string>
     <string name="notif_expense_title">New expense in %1$s</string>
     <string name="notif_expense_text">%1$s for %2$s</string>

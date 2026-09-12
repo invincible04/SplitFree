@@ -251,7 +251,7 @@ internal fun NearbySyncContent(
         modifier = modifier,
         topBar = {
             SfTopBar(
-                title = stringResource(R.string.nearby_sync_title),
+                title = stringResource(R.string.nearby_sync),
                 onBack = actions.back,
                 backModifier = Modifier.testTag("nearby_back")
             )
