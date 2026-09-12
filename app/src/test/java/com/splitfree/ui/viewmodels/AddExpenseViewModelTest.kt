@@ -11,6 +11,9 @@ import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.domain.usecase.expense.AuthoredExpense
+import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
+import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -42,9 +45,11 @@ import org.junit.Test
 class AddExpenseViewModelTest {
     private val groupRepo = mockk<GroupRepositoryContract>()
     private val expenseRepo = mockk<ExpenseRepositoryContract>()
+    private val getExpenses = mockk<GetExpensesUseCase>()
     private val identity = mockk<IdentityContract>()
     private val instances = mutableListOf<AddExpenseViewModel>()
     private val commands = mutableListOf<Expense>()
+    private val corrections = mutableListOf<Pair<String, Expense>>()
     private val saved = mutableMapOf<String, Expense>()
     private val dispatcher = UnconfinedTestDispatcher()
     private val group =
@@ -77,6 +82,9 @@ class AddExpenseViewModelTest {
             val expense = firstArg<Expense>()
             commands += expense
             writeExpense(expense)
+        }
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+            corrections += firstArg<String>() to secondArg<Expense>()
         }
     }
 
@@ -594,6 +602,218 @@ class AddExpenseViewModelTest {
         assertNull(vm.uiState.value.loadingError)
     }
 
+    // --- editing an existing expense ---
+
+    private val storedExpense =
+        Expense(
+            id = "exp-1",
+            amount = 12_050,
+            currency = "INR",
+            description = "Boat trip",
+            paidBy = "b",
+            splitType = SplitType.EXACT,
+            splitAmong = listOf(SplitEntry("a", 5_000), SplitEntry("b", 7_050)),
+            timestamp = 1_700_000_000L,
+            category = "transport"
+        )
+
+    private fun editHandle(expenseId: String = "exp-1") =
+        SavedStateHandle(mapOf("groupId" to "g1", "expenseId" to expenseId))
+
+    private fun stored(expense: Expense = storedExpense, author: String = "a") {
+        coEvery { getExpenses.get("g1", expense.id) } returns AuthoredExpense(expense, author)
+    }
+
+    @Test
+    fun `editing seeds the draft from the stored expense without marking it dirty`() = runTest {
+        stored()
+        val state = create(editHandle()).uiState.value
+        assertTrue(state.editing)
+        assertFalse(state.loading)
+        assertTrue(state.editable)
+        assertEquals("120.50", state.amount)
+        assertEquals("Boat trip", state.description)
+        assertEquals("INR", state.currency)
+        assertEquals("b", state.paidBy)
+        assertEquals("transport", state.category)
+        assertEquals(SplitType.EXACT, state.splitType)
+        assertEquals(setOf("a", "b"), state.participants)
+        assertEquals(mapOf("a" to "50", "b" to "70.50"), state.memberInputs)
+        assertEquals(listOf(SplitEntry("a", 5_000), SplitEntry("b", 7_050)), state.previewSplits)
+        assertFalse(state.dirty)
+        assertNull(state.splitError)
+    }
+
+    @Test
+    fun `equal percentage and share splits reopen in their own mode when the inputs reproduce the shares`() = runTest {
+        groups.value = group.copy(members = listOf("a", "b", "c"))
+        val equal = storedExpense.copy(
+            amount = 9_000,
+            splitType = SplitType.EQUAL,
+            splitAmong = listOf(SplitEntry("a", 3_000), SplitEntry("b", 3_000), SplitEntry("c", 3_000))
+        )
+        stored(equal)
+        val equalState = create(editHandle()).uiState.value
+        assertEquals(SplitType.EQUAL, equalState.splitType)
+        assertEquals(setOf("a", "b", "c"), equalState.participants)
+        assertEquals(equal.splitAmong, equalState.previewSplits)
+
+        val percent = storedExpense.copy(
+            amount = 10_000,
+            splitType = SplitType.PERCENTAGE,
+            splitAmong = listOf(SplitEntry("a", 1_250), SplitEntry("b", 8_750))
+        )
+        stored(percent)
+        val percentState = create(editHandle()).uiState.value
+        assertEquals(SplitType.PERCENTAGE, percentState.splitType)
+        assertEquals(mapOf("a" to "12.5", "b" to "87.5"), percentState.memberInputs)
+        assertEquals(percent.splitAmong, percentState.previewSplits)
+
+        val shares = storedExpense.copy(
+            amount = 3_000,
+            splitType = SplitType.SHARES,
+            splitAmong = listOf(SplitEntry("a", 2_000), SplitEntry("b", 1_000))
+        )
+        stored(shares)
+        val sharesState = create(editHandle()).uiState.value
+        assertEquals(SplitType.SHARES, sharesState.splitType)
+        assertEquals(mapOf("a" to "2", "b" to "1"), sharesState.memberInputs)
+        assertEquals(shares.splitAmong, sharesState.previewSplits)
+    }
+
+    @Test
+    fun `a split whose inputs cannot be reconstructed reopens as exact amounts`() = runTest {
+        // Labelled equal, but the stored shares are not an equal split of the total.
+        val uneven = storedExpense.copy(
+            amount = 10_000,
+            splitType = SplitType.EQUAL,
+            splitAmong = listOf(SplitEntry("a", 1_000), SplitEntry("b", 9_000))
+        )
+        stored(uneven)
+        val state = create(editHandle()).uiState.value
+        assertEquals(SplitType.EXACT, state.splitType)
+        assertEquals(mapOf("a" to "10", "b" to "90"), state.memberInputs)
+        assertEquals(uneven.splitAmong, state.previewSplits)
+        assertNull(state.splitError)
+    }
+
+    @Test
+    fun `submitting an edit publishes a correction with the original id and timestamp`() = runTest {
+        stored()
+        val vm = create(editHandle())
+        vm.updateDescription("Boat trip and lunch")
+        vm.updateAmount("200")
+        vm.updateSplitType(SplitType.EQUAL)
+        assertTrue(vm.uiState.value.dirty)
+
+        vm.submit()
+
+        val (originalId, corrected) = corrections.single()
+        assertEquals("exp-1", originalId)
+        assertEquals("exp-1", corrected.id)
+        assertEquals(1_700_000_000L, corrected.timestamp)
+        assertEquals(20_000L, corrected.amount)
+        assertEquals("Boat trip and lunch", corrected.description)
+        assertEquals("b", corrected.paidBy)
+        assertEquals("transport", corrected.category)
+        assertEquals(SplitType.EQUAL, corrected.splitType)
+        assertEquals(listOf(SplitEntry("a", 10_000), SplitEntry("b", 10_000)), corrected.splitAmong)
+        assertTrue(commands.isEmpty())
+        assertTrue(vm.uiState.value.saved)
+        assertFalse(vm.uiState.value.dirty)
+        assertFalse(vm.uiState.value.editable)
+        coVerify(exactly = 0) { expenseRepo.getSavedExpense(any(), any(), any()) }
+    }
+
+    @Test
+    fun `saving an edit ignores a second tap and a failed edit can be retried`() = runTest {
+        stored()
+        val gate = CompletableDeferred<Unit>()
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+            gate.await()
+            corrections += firstArg<String>() to secondArg<Expense>()
+        }
+        val vm = create(editHandle())
+        vm.submit()
+        assertTrue(vm.uiState.value.saving)
+        vm.submit()
+        gate.complete(Unit)
+        assertEquals(1, corrections.size)
+        assertTrue(vm.uiState.value.saved)
+
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } throws IOException("relay down")
+        val failing = create(editHandle())
+        failing.submit()
+        assertEquals(UiMessage.Raw("relay down"), failing.uiState.value.error)
+        assertFalse(failing.uiState.value.saved)
+        assertTrue(failing.uiState.value.editable)
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+            corrections += firstArg<String>() to secondArg<Expense>()
+        }
+        failing.submit()
+        assertTrue(failing.uiState.value.saved)
+        assertEquals(2, corrections.size)
+    }
+
+    @Test
+    fun `an expense that cannot be loaded shows a loading error and retries`() = runTest {
+        coEvery { getExpenses.get("g1", "exp-1") } returns null
+        val vm = create(editHandle())
+        assertTrue(vm.uiState.value.editing)
+        assertFalse(vm.uiState.value.loading)
+        assertFalse(vm.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_edit_missing), vm.uiState.value.loadingError)
+        vm.submit()
+        assertTrue(corrections.isEmpty())
+
+        stored()
+        vm.retryLoad()
+        assertTrue(vm.uiState.value.editable)
+        assertEquals("Boat trip", vm.uiState.value.description)
+    }
+
+    @Test
+    fun `an expense authored by someone else cannot be edited`() = runTest {
+        stored(author = "b")
+        val vm = create(editHandle())
+        assertFalse(vm.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_edit_not_author), vm.uiState.value.loadingError)
+    }
+
+    @Test
+    fun `a failing expense lookup is reported as a loading error`() = runTest {
+        coEvery { getExpenses.get("g1", "exp-1") } throws IOException("decrypt failed")
+        val vm = create(editHandle())
+        assertEquals(UiMessage.Raw("decrypt failed"), vm.uiState.value.loadingError)
+        assertFalse(vm.uiState.value.editable)
+    }
+
+    @Test
+    fun `restored edit keeps the user's changes instead of reseeding`() = runTest {
+        stored()
+        val handle = editHandle()
+        val first = create(handle)
+        first.updateDescription("Changed")
+        first.viewModelScope.cancel()
+        coEvery { getExpenses.get("g1", "exp-1") } throws AssertionError("must not reload after restore")
+
+        val restored = create(restore(handle))
+
+        assertTrue(restored.uiState.value.editing)
+        assertEquals("Changed", restored.uiState.value.description)
+        assertEquals("120.50", restored.uiState.value.amount)
+        assertTrue(restored.uiState.value.dirty)
+        assertTrue(restored.uiState.value.editable)
+        restored.submit()
+        assertEquals("Changed", corrections.single().second.description)
+        assertEquals(1_700_000_000L, corrections.single().second.timestamp)
+    }
+
+    @Test
+    fun `a new expense is not in editing mode`() {
+        assertFalse(create().uiState.value.editing)
+    }
+
     private fun handle() = SavedStateHandle(mapOf("groupId" to "g1"))
 
     private fun restore(handle: SavedStateHandle) = SavedStateHandle(
@@ -602,8 +822,14 @@ class AddExpenseViewModelTest {
         }
     )
 
-    private fun create(handle: SavedStateHandle = handle()): AddExpenseViewModel =
-        AddExpenseViewModel(handle, AddExpenseUseCase(expenseRepo), groupRepo, identity).also { instances += it }
+    private fun create(handle: SavedStateHandle = handle()): AddExpenseViewModel = AddExpenseViewModel(
+        handle,
+        AddExpenseUseCase(expenseRepo),
+        CorrectExpenseUseCase(expenseRepo),
+        getExpenses,
+        groupRepo,
+        identity
+    ).also { instances += it }
 
     private fun AddExpenseViewModel.validExpense() {
         updateAmount("100")

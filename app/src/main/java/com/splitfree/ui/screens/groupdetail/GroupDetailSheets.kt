@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -148,6 +150,10 @@ internal fun GroupDetailSheetHost(
                 ExpenseDetailSheet(
                     expense = expense,
                     state = state,
+                    onEdit = {
+                        dismiss()
+                        actions.editExpense(expense.id)
+                    },
                     onDelete = {
                         dismiss()
                         actions.deleteExpense(expense.id)
@@ -379,13 +385,14 @@ private fun SettleSheet(
 }
 
 /**
- * Breakdown of one expense: amount, title, meta line and per-member shares. The author gets a Delete action
- * that swaps the body for a confirmation step; everyone else reads who can change it.
+ * Breakdown of one expense: amount, title, meta line and per-member shares. The author gets Edit and a Delete
+ * action that swaps the body for a confirmation step; everyone else reads who can change it.
  */
 @Composable
 private fun ExpenseDetailSheet(
     expense: Expense,
     state: GroupDetailUiState,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -479,7 +486,24 @@ private fun ExpenseDetailSheet(
             } else {
                 null
             },
-            primary = { SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss) }
+            primary = {
+                if (mine) {
+                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        SfSecondaryButton(
+                            text = stringResource(R.string.edit),
+                            onClick = onEdit,
+                            modifier = Modifier.weight(1f).fillMaxHeight().testTag("group_expense_edit")
+                        )
+                        SfPrimaryButton(
+                            text = stringResource(R.string.done),
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        )
+                    }
+                } else {
+                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
+                }
+            }
         )
     }
 }

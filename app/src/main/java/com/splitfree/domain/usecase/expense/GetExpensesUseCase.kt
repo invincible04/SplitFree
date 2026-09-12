@@ -8,6 +8,7 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -44,6 +45,10 @@ constructor(
      */
     fun observe(groupId: String): Flow<List<Expense>> =
         observeWithAuthors(groupId).map { authored -> authored.map { it.expense } }
+
+    /** The current payload and author of one visible expense, or null when it is unknown or deleted. */
+    suspend fun get(groupId: String, expenseId: String): AuthoredExpense? =
+        observeWithAuthors(groupId).first().firstOrNull { it.expense.id == expenseId }
 
     /**
      * Same list as [observe], each entry paired with the pubkey of its original `expense` event. When

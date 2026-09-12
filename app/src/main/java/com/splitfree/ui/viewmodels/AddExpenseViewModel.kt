@@ -16,9 +16,12 @@ import com.splitfree.domain.money.ExpenseSplitPreview
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
+import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.util.toUiMessage
 import com.splitfree.ui.viewmodels.expense.ExpenseDraft
+import com.splitfree.ui.viewmodels.expense.ExpenseDraftSeeder
 import com.splitfree.ui.viewmodels.expense.ExpenseDraftStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
@@ -33,8 +36,11 @@ import kotlinx.coroutines.launch
 /**
  * Screen state for the expense editor. Every message field is a [UiMessage]: ViewModel-produced text
  * is a string resource, while domain validation messages pass through as [UiMessage.Raw].
+ *
+ * @property editing true when the editor corrects an existing expense instead of adding a new one.
  */
 data class AddExpenseUiState(
+    val editing: Boolean = false,
     val loading: Boolean = true,
     val loadingError: UiMessage? = null,
     val groupName: String = "",
@@ -67,10 +73,16 @@ class AddExpenseViewModel
 constructor(
     savedStateHandle: SavedStateHandle,
     private val addExpense: AddExpenseUseCase,
+    private val correctExpense: CorrectExpenseUseCase,
+    private val getExpenses: GetExpensesUseCase,
     private val groupRepo: GroupRepositoryContract,
     private val identity: IdentityContract
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
+
+    /** Id of the expense being corrected, or null when adding a new one. */
+    private val editingExpenseId: String? = savedStateHandle.get<String?>("expenseId")?.takeIf { it.isNotBlank() }
+    private val editing: Boolean get() = editingExpenseId != null
     private val store = ExpenseDraftStore(savedStateHandle)
     private var draftLoadError: UiMessage? = null
     private var recoveryError: UiMessage? = null
@@ -82,12 +94,13 @@ constructor(
     }
     private val parser = ExpenseInputParser(Locale.forLanguageTag(draft.localeTag))
     private val calculator = ExpenseSplitCalculator(parser)
+    private val seeder = ExpenseDraftSeeder(parser, calculator, Locale.forLanguageTag(draft.localeTag))
     private var mustRecover = store.restored || draft.needsRecovery
     private var group: Group? = null
     private var attempted = false
     private var loadJob: Job? = null
     private var observing: Job? = null
-    private val _uiState = MutableStateFlow(AddExpenseUiState())
+    private val _uiState = MutableStateFlow(AddExpenseUiState(editing = editing))
     val uiState: StateFlow<AddExpenseUiState> = _uiState.asStateFlow()
 
     init {
@@ -150,6 +163,7 @@ constructor(
                 val pubkey = currentAuthor()
                 if (!recoverIfNeeded()) return@launch
                 val current = groupRepo.getById(groupId) ?: throw groupUnavailable()
+                if (editing && !draft.initialized) seedFromExpense(pubkey)
                 applyGroup(current, pubkey)
                 observeGroup()
             } catch (e: CancellationException) {
@@ -197,6 +211,25 @@ constructor(
         )
     }
 
+    /** Fills the draft from the expense being edited; only its author may open it, mirroring the protocol. */
+    private suspend fun seedFromExpense(pubkey: String) {
+        val id = editingExpenseId ?: return
+        val authored = try {
+            getExpenses.get(groupId, id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw UiMessageException(e.toUiMessage(R.string.expense_edit_load_failed))
+        } ?: throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
+        if (authored.authorPubkey != pubkey) throw UiMessageException(UiMessage.Res(R.string.expense_edit_not_author))
+        draft = try {
+            seeder.seed(draft, authored.expense, pubkey)
+        } catch (e: IllegalArgumentException) {
+            throw UiMessageException(e.toUiMessage(R.string.expense_edit_load_failed))
+        }
+        store.write(draft)
+    }
+
     private fun observeGroup() {
         observing = viewModelScope.launch {
             try {
@@ -237,22 +270,39 @@ constructor(
                 val current = groupRepo.getById(groupId) ?: throw groupUnavailable()
                 applyGroup(current, currentAuthor())
                 if (!valid()) return@launch
-                draft = draft.copy(needsRecovery = true)
-                mustRecover = true
-                store.write(draft)
-                addExpense(
-                    groupId = groupId,
-                    amount = parser.money(draft.amount, draft.currency),
-                    currency = draft.currency,
-                    description = draft.description.trim(),
-                    paidBy = draft.paidBy,
-                    splitType = draft.splitType,
-                    splitAmong = _uiState.value.previewSplits,
-                    category = draft.category,
-                    expenseId = draft.expenseId,
-                    createdAt = draft.createdAt,
-                    expectedAuthorPubkey = draft.authorPubkey
-                )
+                val originalId = editingExpenseId
+                if (originalId != null) {
+                    // A repeated correction with the same payload is harmless, so edits skip the recovery dance.
+                    correctExpense(
+                        groupId = groupId,
+                        originalId = originalId,
+                        amount = parser.money(draft.amount, draft.currency),
+                        currency = draft.currency,
+                        description = draft.description.trim(),
+                        paidBy = draft.paidBy,
+                        splitType = draft.splitType,
+                        splitAmong = _uiState.value.previewSplits,
+                        timestamp = draft.createdAt,
+                        category = draft.category
+                    )
+                } else {
+                    draft = draft.copy(needsRecovery = true)
+                    mustRecover = true
+                    store.write(draft)
+                    addExpense(
+                        groupId = groupId,
+                        amount = parser.money(draft.amount, draft.currency),
+                        currency = draft.currency,
+                        description = draft.description.trim(),
+                        paidBy = draft.paidBy,
+                        splitType = draft.splitType,
+                        splitAmong = _uiState.value.previewSplits,
+                        category = draft.category,
+                        expenseId = draft.expenseId,
+                        createdAt = draft.createdAt,
+                        expectedAuthorPubkey = draft.authorPubkey
+                    )
+                }
                 markSaved()
             } catch (e: CancellationException) {
                 if (mustRecover) {
@@ -269,6 +319,7 @@ constructor(
     }
 
     private suspend fun recoverIfNeeded(): Boolean {
+        if (editing) mustRecover = false
         if (!mustRecover) return true
         return try {
             currentAuthor()

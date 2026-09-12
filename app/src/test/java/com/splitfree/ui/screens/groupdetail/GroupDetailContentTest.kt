@@ -318,6 +318,7 @@ class GroupDetailContentTest {
         sheet = GroupSheet.ExpenseDetail("taxi")
 
         compose.onNodeWithTag("group_expense_delete").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_edit").assertDoesNotExist()
         compose.onNodeWithTag("group_expense_only_author")
             .assertIsDisplayed()
             .assertTextEquals(text(R.string.group_expense_only_author, "Meera"))
@@ -325,7 +326,23 @@ class GroupDetailContentTest {
         sheet = GroupSheet.ExpenseDetail("beach")
 
         compose.onNodeWithTag("group_expense_delete").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_edit").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.done)).assertIsDisplayed()
         compose.onNodeWithTag("group_expense_only_author").assertDoesNotExist()
+    }
+
+    @Test
+    fun `edit closes the sheet and hands the expense to the editor`() {
+        val edited = mutableListOf<String>()
+        render(GroupDetailActions(editExpense = { edited += it }))
+        sheet = GroupSheet.ExpenseDetail("beach")
+
+        compose.onNodeWithTag("group_expense_edit").performClick()
+
+        compose.runOnIdle {
+            assertEquals(listOf("beach"), edited)
+            assertNull(sheet)
+        }
     }
 
     @Test

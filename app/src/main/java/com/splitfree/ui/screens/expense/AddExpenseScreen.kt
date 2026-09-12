@@ -4,34 +4,26 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,16 +37,30 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.ui.components.EmptyState
+import com.splitfree.ui.components.SfBottomDock
+import com.splitfree.ui.components.SfPrimaryButton
+import com.splitfree.ui.components.SfSecondaryButton
+import com.splitfree.ui.components.SfSheet
+import com.splitfree.ui.components.SfSheetFooter
+import com.splitfree.ui.components.SfTextButton
+import com.splitfree.ui.components.SfTopBar
+import com.splitfree.ui.theme.splitFree
 import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.AddExpenseUiState
 import com.splitfree.ui.viewmodels.AddExpenseViewModel
+
+/** Widest the form and the dock's controls grow on tablets; both are centred within the window. */
+internal val ExpenseFormMaxWidth: Dp = 600.dp
 
 /** Route owns lifecycle and navigation; the editor below has no Android/service dependencies. */
 @Composable
@@ -94,7 +100,6 @@ data class ExpenseEditorActions(
     val back: () -> Unit = {}
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
     var sheet by rememberSaveable { mutableStateOf<String?>(null) }
@@ -107,75 +112,33 @@ fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
     }
     BackHandler(enabled = sheet == null) { requestBack() }
     LaunchedEffect(enabled) { if (!enabled) sheet = null }
+    val horizontal = adaptiveSizeTokens().screenPaddingHorizontal
 
     Scaffold(
         modifier = Modifier.imePadding(),
         contentWindowInsets = WindowInsets.safeDrawing,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.add_expense), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = {
-                    IconButton(
-                        onClick = requestBack,
-                        enabled = !state.saving,
-                        modifier = Modifier.testTag("expense_back")
-                    ) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.back))
-                    }
-                }
+            SfTopBar(
+                title = stringResource(if (state.editing) R.string.expense_edit_title else R.string.expense_add_title),
+                onBack = requestBack,
+                backEnabled = !state.saving,
+                backModifier = Modifier.testTag("expense_back")
             )
         },
         bottomBar = {
             if (!state.loading && state.loadingError == null) {
-                Surface(tonalElevation = 1.dp) {
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Column(
-                            Modifier.navigationBarsPadding().widthIn(
-                                max = 600.dp
-                            ).fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (state.error != null) {
-                                Column(Modifier.fillMaxWidth().testTag("expense_save_error")) {
-                                    EditorError(state.error)
-                                    if (!enabled && !state.saving && !state.saved) {
-                                        TextButton(onClick = actions.retry) {
-                                            Text(stringResource(R.string.expense_retry))
-                                        }
-                                    }
-                                }
-                            }
-                            Button(
-                                onClick = actions.save,
-                                enabled = enabled,
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp).testTag("expense_save"),
-                                shape = MaterialTheme.shapes.large,
-                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (state.saving) {
-                                        CircularProgressIndicator(
-                                            Modifier.size(18.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    }
-                                    Text(
-                                        stringResource(
-                                            if (state.saving) R.string.expense_saving else R.string.expense_save
-                                        )
-                                    )
-                                }
-                            }
-                            Text(
-                                stringResource(R.string.expense_local_note),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                SfBottomDock {
+                    // The dock already pads by the screen token; cap the controls to the form's field width.
+                    Column(
+                        Modifier
+                            .widthIn(max = ExpenseFormMaxWidth - horizontal * 2)
+                            .fillMaxWidth()
+                            .align(Alignment.CenterHorizontally),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ExpenseDockContent(state, enabled, actions)
                     }
                 }
             }
@@ -186,46 +149,9 @@ fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
             contentAlignment = Alignment.TopCenter
         ) {
             when {
-                state.loading -> Column(
-                    Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator()
-                    Text(stringResource(R.string.expense_loading), Modifier.padding(20.dp))
-                }
-                state.loadingError != null -> Column(
-                    Modifier.widthIn(max = 600.dp).padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    EditorError(state.loadingError)
-                    Button(onClick = actions.retry) { Text(stringResource(R.string.expense_retry)) }
-                }
-                else -> LazyColumn(
-                    modifier = Modifier.widthIn(max = 600.dp).fillMaxSize().testTag("expense_form"),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(24.dp)
-                ) {
-                    item {
-                        Text(
-                            state.groupName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    item { ExpenseAmountField(state, enabled, actions.amount) { sheet = "currency" } }
-                    item { ExpenseDescriptionField(state, enabled, actions.description) }
-                    item {
-                        ExpenseSummaryRows(
-                            state,
-                            enabled,
-                            onPayer = { sheet = "payer" },
-                            onSplit = { sheet = "split" },
-                            onCategory = { sheet = "category" }
-                        )
-                    }
-                    item { ExpenseSplitPreview(state) }
-                }
+                state.loading -> ExpenseLoading()
+                state.loadingError != null -> ExpenseLoadingError(state.loadingError, actions.retry)
+                else -> ExpenseForm(state, enabled, actions, horizontal) { sheet = it }
             }
         }
     }
@@ -233,19 +159,141 @@ fun AddExpenseContent(state: AddExpenseUiState, actions: ExpenseEditorActions) {
         ExpenseEditorSheet(sheet!!, state, actions, onDismiss = { sheet = null })
     }
     if (confirmDiscard) {
-        AlertDialog(
-            onDismissRequest = { confirmDiscard = false },
-            title = { Text(stringResource(R.string.expense_discard_title)) },
-            text = { Text(stringResource(R.string.expense_discard_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDiscard = false
-                    actions.back()
-                }) { Text(stringResource(R.string.expense_discard)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.expense_keep_editing)) }
+        ExpenseDiscardSheet(
+            editing = state.editing,
+            onKeepEditing = { confirmDiscard = false },
+            onDiscard = {
+                confirmDiscard = false
+                actions.back()
             }
+        )
+    }
+}
+
+@Composable
+private fun ColumnScope.ExpenseDockContent(state: AddExpenseUiState, enabled: Boolean, actions: ExpenseEditorActions) {
+    if (state.error != null) {
+        Column(Modifier.fillMaxWidth().testTag("expense_save_error")) {
+            EditorError(state.error)
+            if (!enabled && !state.saving && !state.saved) {
+                SfTextButton(text = stringResource(R.string.expense_retry), onClick = actions.retry)
+            }
+        }
+    }
+    SfPrimaryButton(
+        // While saving the label is hidden behind the ring but stays in the button's semantics.
+        text =
+        stringResource(
+            when {
+                state.saving -> R.string.expense_saving
+                state.editing -> R.string.expense_save_changes
+                else -> R.string.expense_save
+            }
+        ),
+        onClick = actions.save,
+        enabled = enabled,
+        loading = state.saving,
+        modifier = Modifier.testTag("expense_save")
+    )
+    Text(
+        stringResource(R.string.expense_local_note),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.splitFree.faint,
+        textAlign = TextAlign.Center
+    )
+}
+
+@Composable
+private fun ExpenseLoading() {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(20.dp))
+        Text(
+            stringResource(R.string.expense_loading),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = adaptiveSizeTokens().screenPaddingHorizontal)
+        )
+    }
+}
+
+@Composable
+private fun ExpenseLoadingError(error: UiMessage, onRetry: () -> Unit) {
+    EmptyState(
+        icon = Icons.Outlined.CloudOff,
+        title = error.asString(),
+        body = stringResource(R.string.expense_load_error_hint),
+        modifier = Modifier.widthIn(max = ExpenseFormMaxWidth)
+    ) {
+        SfSecondaryButton(text = stringResource(R.string.expense_retry), onClick = onRetry)
+    }
+}
+
+@Composable
+private fun ExpenseForm(
+    state: AddExpenseUiState,
+    enabled: Boolean,
+    actions: ExpenseEditorActions,
+    horizontal: Dp,
+    onOpenSheet: (String) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.widthIn(max = ExpenseFormMaxWidth).fillMaxSize().testTag("expense_form"),
+        contentPadding = PaddingValues(start = horizontal, end = horizontal, top = 2.dp, bottom = 24.dp)
+    ) {
+        item {
+            ExpenseEditorContext(state)
+            Spacer(Modifier.height(22.dp))
+        }
+        item {
+            ExpenseAmountField(state, enabled, actions.amount) { onOpenSheet("currency") }
+            Spacer(Modifier.height(20.dp))
+        }
+        item {
+            ExpenseDescriptionField(state, enabled, actions.description)
+            Spacer(Modifier.height(18.dp))
+        }
+        item {
+            ExpenseSummaryRows(
+                state,
+                enabled,
+                onPayer = { onOpenSheet("payer") },
+                onSplit = { onOpenSheet("split") },
+                onCategory = { onOpenSheet("category") }
+            )
+            Spacer(Modifier.height(15.dp))
+        }
+        item { ExpenseSplitPreviewCard(state, enabled) { onOpenSheet("split") } }
+    }
+}
+
+/** The discard question, one line of consequence copy, Keep editing / Discard. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExpenseDiscardSheet(editing: Boolean, onKeepEditing: () -> Unit, onDiscard: () -> Unit) {
+    SfSheet(
+        onDismiss = onKeepEditing,
+        title = stringResource(if (editing) R.string.expense_discard_changes_title else R.string.expense_discard_title)
+    ) {
+        Text(
+            stringResource(R.string.expense_discard_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        SfSheetFooter(
+            secondary = {
+                SfSecondaryButton(
+                    text = stringResource(R.string.expense_keep_editing),
+                    onClick = onKeepEditing,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            primary = { SfPrimaryButton(text = stringResource(R.string.expense_discard), onClick = onDiscard) }
         )
     }
 }

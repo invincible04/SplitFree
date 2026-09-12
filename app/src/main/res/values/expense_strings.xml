@@ -1,32 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="expense_add_title">Add expense</string>
     <string name="expense_save">Save expense</string>
+    <string name="expense_edit_title">Edit expense</string>
+    <string name="expense_save_changes">Save changes</string>
     <string name="expense_saving">Saving on this phone…</string>
     <string name="expense_local_note">Saves on this phone first. No connection needed.</string>
+    <string name="expense_editor_context">%1$s · %2$s</string>
     <string name="expense_amount_label">Amount</string>
+    <string name="expense_amount_placeholder">0</string>
     <string name="expense_what_for">Description</string>
-    <string name="expense_description_hint">Lunch, groceries, tickets…</string>
+    <string name="expense_description_hint">Lunch, a cab, weekend tickets</string>
     <string name="expense_paid_by">Paid by</string>
     <string name="expense_you">You</string>
-    <string name="expense_split_with">Split with</string>
+    <string name="expense_split_with">Split</string>
     <plurals name="expense_people_count">
         <item quantity="one">%1$d person</item>
         <item quantity="other">%1$d people</item>
     </plurals>
     <string name="expense_each">%1$s each</string>
-    <string name="expense_split_preview">Split preview</string>
-    <string name="expense_split_edit">Edit split</string>
+    <string name="expense_split_summary_exact">Shares add up exactly</string>
+    <string name="expense_enter_amount_preview">Enter an amount to preview</string>
+    <string name="expense_split_preview_note">Exact totals, including rounding</string>
+    <string name="expense_share_unavailable">-</string>
+    <string name="expense_edit_split">Edit</string>
+    <string name="expense_edit_split_description">Edit split</string>
+    <string name="expense_split_title">How to split</string>
     <string name="expense_split_done">Done</string>
     <string name="expense_split_equal">Equally</string>
     <string name="expense_split_exact">Exact amounts</string>
     <string name="expense_split_percent">Percentages</string>
     <string name="expense_split_shares">Shares</string>
+    <string name="expense_split_mode_equal">Equal</string>
+    <string name="expense_split_mode_exact">Exact</string>
+    <string name="expense_split_mode_percent">Percent</string>
+    <string name="expense_split_mode_shares">Shares</string>
+    <string name="expense_split_hint_equal">Choose who is included. Odd cents are spread across people.</string>
+    <string name="expense_split_hint_exact">Enter each person’s amount in %1$s.</string>
+    <string name="expense_split_hint_percent" formatted="false">Percentages must total 100%.</string>
+    <string name="expense_split_hint_shares">Enter relative weights, for example 2, 1, 1.</string>
     <string name="expense_choose_payer">Who paid?</string>
     <string name="expense_search_people">Search people</string>
     <string name="expense_currency_title">Currency</string>
     <string name="expense_currency_search">Search currencies</string>
     <string name="expense_category_title">Category</string>
-    <string name="expense_category_optional">Category · optional</string>
     <string name="expense_category_none">None</string>
     <string name="expense_category_food">Food</string>
     <string name="expense_category_transport">Transport</string>
@@ -37,8 +54,10 @@
     <string name="expense_category_health">Health</string>
     <string name="expense_category_other">Other</string>
     <string name="expense_loading">Loading group…</string>
+    <string name="expense_load_error_hint">Nothing has been saved yet. Try again or go back.</string>
     <string name="expense_retry">Try again</string>
     <string name="expense_discard_title">Discard this expense?</string>
+    <string name="expense_discard_changes_title">Discard changes?</string>
     <string name="expense_discard_body">Your unsaved entries will be lost.</string>
     <string name="expense_keep_editing">Keep editing</string>
     <string name="expense_discard">Discard</string>
@@ -49,7 +68,6 @@
     <string name="expense_remaining">%1$s left to allocate</string>
     <string name="expense_overallocated">%1$s over the total</string>
     <string name="expense_allocated">Split matches the total</string>
-    <string name="expense_preview_after_amount">Enter an amount to preview the split</string>
     <string name="expense_saved_message">Expense saved on this phone</string>
     <string name="expense_member_left">No longer in the group</string>
     <string name="expense_no_currencies_found">No matching currencies</string>
@@ -66,6 +84,9 @@
     <string name="expense_save_check_interrupted">Save check was interrupted. Retry before editing.</string>
     <string name="expense_save_check_failed">Could not confirm whether this expense was saved. Retry before editing.</string>
     <string name="expense_identity_changed">Your identity changed. Close this draft and start a new expense.</string>
+    <string name="expense_edit_missing">This expense is no longer available</string>
+    <string name="expense_edit_not_author">Only the person who added this expense can change it</string>
+    <string name="expense_edit_load_failed">Could not load this expense</string>
     <string name="expense_amount_positive">Enter an amount greater than zero</string>
     <string name="expense_amount_too_large">Amount exceeds the maximum allowed</string>
     <string name="expense_amount_invalid">Enter a valid amount</string>

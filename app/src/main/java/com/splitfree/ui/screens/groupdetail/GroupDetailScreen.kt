@@ -96,7 +96,7 @@ sealed interface GroupSheet {
     /** Confirm recording [debt] as paid. */
     data class Settle(val debt: DebtTransaction) : GroupSheet
 
-    /** Breakdown of one expense; its author can delete it from here. */
+    /** Breakdown of one expense; its author can edit or delete it from here. */
     data class ExpenseDetail(val expenseId: String) : GroupSheet
 
     /** Confirm removing [pubkey] (creator only). */
@@ -161,6 +161,7 @@ data class GroupDetailActions(
     val share: () -> Unit = {},
     val copyInvite: () -> Unit = {},
     val confirmSettle: (DebtTransaction) -> Unit = {},
+    val editExpense: (String) -> Unit = {},
     val deleteExpense: (String) -> Unit = {},
     val removeMember: (String) -> Unit = {},
     val beginRelayEdit: () -> Unit = {},
@@ -176,6 +177,7 @@ data class GroupDetailActions(
 @Composable
 fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
+    onEditExpense: (String) -> Unit = {},
     onNearbySync: (String) -> Unit = {},
     onBack: () -> Unit,
     expenseSaved: Boolean = false,
@@ -239,6 +241,7 @@ fun GroupDetailScreen(
                 }
             },
             confirmSettle = viewModel::recordSettlement,
+            editExpense = onEditExpense,
             deleteExpense = viewModel::deleteExpense,
             removeMember = viewModel::removeMember,
             beginRelayEdit = viewModel::beginRelayEdit,

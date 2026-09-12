@@ -36,7 +36,9 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -452,6 +454,45 @@ class AddExpenseContentTest {
     }
 
     @Test
+    fun `edit mode titles the editor and its save button for changes and dispatches submission`() {
+        state = state.copy(editing = true)
+        var saves = 0
+        render(ExpenseEditorActions(save = { saves++ }))
+
+        compose.onNodeWithText(text(R.string.expense_edit_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.add_expense)).assertDoesNotExist()
+        compose.onNodeWithTag("expense_save").assertIsEnabled().assertTextContains(text(R.string.expense_save_changes))
+        compose.onNodeWithText(text(R.string.expense_local_note)).assertIsDisplayed()
+        formNode("expense_description").assertTextContains("Lunch")
+
+        compose.onNodeWithTag("expense_save").performClick()
+
+        compose.runOnIdle { assertEquals(1, saves) }
+    }
+
+    @Test
+    fun `dirty edit asks to discard changes rather than the expense`() {
+        state = state.copy(editing = true, dirty = true)
+        var backs = 0
+        render(ExpenseEditorActions(back = { backs++ }))
+
+        compose.onNodeWithTag("expense_back").performClick()
+
+        compose.onNodeWithText(text(R.string.expense_discard_changes_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.expense_discard_title)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.expense_discard)).performClick()
+        compose.runOnIdle { assertEquals(1, backs) }
+    }
+
+    @Test
+    fun `saving an edit shows the saving label like a new expense`() {
+        state = state.copy(editing = true, saving = true, editable = false)
+        render()
+
+        compose.onNodeWithTag("expense_save").assertIsNotEnabled().assertTextContains(text(R.string.expense_saving))
+    }
+
+    @Test
     fun `loading shows progress copy without exposing form or save`() {
         state = AddExpenseUiState()
         render()
@@ -548,6 +589,35 @@ class AddExpenseContentTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `split sheet fixture shows segmented modes check tiles and Done over the dimmed editor`() {
+        state = state.copy(splitError = UiMessage.Raw("Enter a positive amount in INR."))
+        render()
+        formNode("expense_split").performClick()
+
+        sheetNode("split_EQUAL").assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab))
+            .assertIsSelected()
+        listOf("you", "member-1", "member-2", "member-3").forEach { sheetNode("participant_$it").assertIsOn() }
+        // The reason also heads the preview card under the sheet; assert the copy inside the sheet list itself.
+        compose.onNode(
+            hasText("Enter a positive amount in INR.") and hasAnyAncestor(hasTestTag("expense_sheet_list"))
+        ).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.expense_split_done)).assertIsDisplayed()
+        captureFixture("sheet-split", overlay = sheetWindowView("expense_sheet_list"))
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `payer sheet fixture lists radio choices with the current payer selected`() {
+        render()
+        formNode("expense_payer").performClick()
+
+        sheetNode("payer_you").assertIsSelected()
+        sheetNode("payer_member-3").assertIsNotSelected()
+        captureFixture("sheet-payer", overlay = sheetWindowView("expense_sheet_list"))
+    }
+
+    @Test
     @Config(qualifiers = "en-rUS-w360dp-h800dp-mdpi")
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun `360dp at 200 percent text keeps Save visible and every form control reachable`() {
@@ -622,11 +692,13 @@ class AddExpenseContentTest {
         var saves = 0
         render(ExpenseEditorActions(save = { saves++ }))
 
+        // 600dp form minus the 24dp expanded-width screen padding token on each side.
+        val fieldWidth = 552.dp
         val formBounds = compose.onNodeWithTag("expense_form").assertIsDisplayed()
             .assertWidthIsEqualTo(600.dp).fetchSemanticsNode().boundsInRoot
-        val amountBounds = formNode("expense_amount").assertWidthIsEqualTo(560.dp).fetchSemanticsNode().boundsInRoot
+        val amountBounds = formNode("expense_amount").assertWidthIsEqualTo(fieldWidth).fetchSemanticsNode().boundsInRoot
         val saveBounds = compose.onNodeWithTag("expense_save").assertIsDisplayed().assertIsEnabled()
-            .assertWidthIsEqualTo(560.dp).fetchSemanticsNode().boundsInRoot
+            .assertWidthIsEqualTo(fieldWidth).fetchSemanticsNode().boundsInRoot
         assertEquals("Form must be centered on the tablet", 400f, formBounds.center.x, 0.5f)
         assertEquals("Save must align with the amount field's left edge", amountBounds.left, saveBounds.left, 0.5f)
         assertEquals("Save must align with the amount field's right edge", amountBounds.right, saveBounds.right, 0.5f)
@@ -683,6 +755,12 @@ class AddExpenseContentTest {
     private fun sheetNode(tag: String) = compose.onNodeWithTag("expense_sheet_list")
         .performScrollToNode(hasTestTag(tag)).let { compose.onNodeWithTag(tag).assertIsDisplayed() }
 
+    /** Decor view of the separate window that hosts the modal sheet containing [tag]. */
+    private fun sheetWindowView(tag: String): View {
+        val root = requireNotNull(compose.onNodeWithTag(tag).fetchSemanticsNode().root) as ViewRootForTest
+        return root.view.rootView
+    }
+
     private fun SemanticsNodeInteraction.performAccessibleClick(): SemanticsNodeInteraction =
         assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick) { action ->
             assertTrue("Accessibility click must be handled", action())
@@ -690,14 +768,20 @@ class AddExpenseContentTest {
 
     private fun text(resource: Int): String = RuntimeEnvironment.getApplication().getString(resource)
 
-    private fun captureFixture(mode: String, expectedWidth: Int = 390) {
+    private fun captureFixture(mode: String, expectedWidth: Int = 390, overlay: View? = null) {
         compose.onNodeWithTag("expense_save").assertIsDisplayed()
         // Compose captureToImage waits for a window redraw that Robolectric does not schedule.
         val bitmap = compose.runOnIdle {
             val decor = contentView.rootView
             assertTrue("Screenshot view must be attached and laid out", decor.isAttachedToWindow && decor.isLaidOut)
             Bitmap.createBitmap(decor.width, decor.height, Bitmap.Config.ARGB_8888).also {
-                decor.draw(Canvas(it))
+                val canvas = Canvas(it)
+                decor.draw(canvas)
+                if (overlay != null) {
+                    // Modal sheets render in their own full-screen window; composite it over the screen.
+                    assertTrue("Sheet window must be laid out", overlay.isAttachedToWindow && overlay.isLaidOut)
+                    overlay.draw(canvas)
+                }
             }
         }
         assertEquals("Capture must use the configured screen width", expectedWidth, bitmap.width)

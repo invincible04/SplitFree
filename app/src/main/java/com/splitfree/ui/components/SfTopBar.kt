@@ -28,6 +28,7 @@ import com.splitfree.R
 /**
  * Transparent top bar for Scaffold: `titleLarge` title, optional back arrow via [SfIconButton], trailing
  * [actions]. Sits on the screen's `surface`, so no elevation or divider is drawn.
+ * [backModifier] is applied to the back button so screens can attach a test tag to it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +37,7 @@ fun SfTopBar(
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     backEnabled: Boolean = true,
+    backModifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     TopAppBar(
@@ -55,6 +57,7 @@ fun SfTopBar(
                     icon = Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = stringResource(R.string.back),
                     onClick = onBack,
+                    modifier = backModifier,
                     enabled = backEnabled
                 )
             }
