@@ -225,6 +225,14 @@ constructor(
         }
     }
 
+    /**
+     * Returns a finished revocation ([RevokeState.Done] / [RevokeState.Error]) to idle once the screen has shown
+     * it. A revocation still [RevokeState.InProgress] is left alone: it completes on its own and must stay visible.
+     */
+    fun clearRevokeState() {
+        if (_revokeState.value !is RevokeState.InProgress) _revokeState.value = RevokeState.Idle
+    }
+
     private companion object {
         const val TAG = "SettingsViewModel"
         const val DISPLAY_NAME_DEBOUNCE_MS = 800L

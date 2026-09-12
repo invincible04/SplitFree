@@ -200,71 +200,89 @@
 
     <!-- SettingsScreen -->
     <string name="appearance">Appearance</string>
-    <string name="about">About</string>
-    <string name="app_version">SplitFree v1.1.0</string>
-    <string name="app_description">Decentralized expense splitting over Nostr.</string>
-    <string name="diagnostics_report">Diagnostics Report</string>
-    <string name="diagnostics_supporting">Copy crash/ANR and background sync health report</string>
+    <string name="settings_your_profile">Your profile</string>
+    <string name="settings_edit">Edit</string>
+    <string name="settings_no_identity">No identity on this device yet</string>
+    <string name="settings_section_make_it_yours">Make it yours</string>
+    <string name="settings_section_keep_it_yours">Keep it yours</string>
+    <string name="settings_section_tools_support">Tools &amp; support</string>
+    <string name="settings_theme_system">System default</string>
+    <string name="settings_theme_system_subtitle">Follows your phone\'s light or dark setting</string>
+    <string name="settings_theme_light">Light theme</string>
+    <string name="settings_theme_dark">Dark theme</string>
+    <string name="settings_diagnostics">Diagnostics</string>
+    <string name="settings_diagnostics_subtitle">Sync health and crash report</string>
     <plurals name="outbox_pending_status">
         <item quantity="one">%1$d event waiting to sync (%2$d stuck)</item>
         <item quantity="other">%1$d events waiting to sync (%2$d stuck)</item>
     </plurals>
-    <string name="debug_logs">Debug Logs</string>
-    <string name="debug_logs_supporting">View live app logs for troubleshooting</string>
-    <string name="open">Open</string>
+    <string name="settings_pending_events">Pending events</string>
+    <string name="settings_stuck_events">Stuck events</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_copy_report">Copy report</string>
+    <string name="debug_logs">Debug logs</string>
+    <string name="debug_logs_supporting">Live app logs for troubleshooting</string>
+    <string name="settings_about_version">SplitFree v%1$s</string>
+    <string name="settings_source_code">Source code</string>
+    <string name="settings_privacy_policy">Privacy policy</string>
+    <string name="open_link_failed">No app can open this link</string>
     <string name="clipboard_copied">Copied</string>
     <string name="clipboard_copied_30s">Copied — clipboard will auto-clear in 30s</string>
 
     <!-- SettingsScreen - Security Dialogs -->
-    <string name="security_warning">Security Warning</string>
+    <string name="security_warning">Security warning</string>
     <string name="copy_key_warning">Your private key will be copied to the clipboard. Other apps may be able to read it. Only do this to back up your key, then clear your clipboard.</string>
-    <string name="copy_seed_warning">Your seed phrase will be copied to the clipboard. Anyone with these 24 words can access your identity. Write them down on paper instead if possible.</string>
-    <string name="copy_anyway">Copy Anyway</string>
-    <string name="revoke_key_title">Revoke Key?</string>
-    <string name="revoke_key_warning">This will generate a new identity and notify all your groups. Your old key will be invalidated. This cannot be undone.</string>
+    <string name="copy_seed_warning">Your recovery phrase will be copied to the clipboard. Anyone with these 24 words can access your identity. Write them down on paper instead if possible.</string>
+    <string name="copy_anyway">Copy anyway</string>
+    <string name="revoke_key_title">Replace your identity?</string>
+    <string name="revoke_key_warning">This generates a new identity and notifies all your groups. Your old key is invalidated. This cannot be undone.</string>
+    <string name="settings_revoke_consequences">Every group you belong to is told about the new key the next time it syncs. Anyone still holding your old key can no longer read what you post. Afterwards, back up your new recovery phrase — the old one no longer restores this identity.</string>
+    <string name="settings_replace_identity">Replace identity</string>
+    <string name="settings_replace_identity_subtitle">Advanced security action</string>
 
     <!-- IdentitySection -->
-    <string name="identity">Identity</string>
-    <string name="public_key">Public Key</string>
+    <string name="settings_backup_recovery">Backup &amp; recovery</string>
+    <string name="settings_backup_recovery_subtitle">Recovery phrase + encrypted group export</string>
+    <string name="settings_recovery_intro">Two parts protect two different things. Your recovery phrase restores your identity; a group backup preserves group keys and history.</string>
 
     <!-- KeyBackupSection -->
-    <string name="key_backup">Key Backup</string>
-    <string name="key_backup_warning">Your private key is your identity. If you lose it, you lose access to all your groups forever. Back it up now.</string>
-    <string name="private_key">Private Key</string>
-    <string name="show_private_key">Show Private Key</string>
-    <string name="tap_to_reveal_key">Tap to reveal your secret key</string>
+    <string name="key_backup_warning">This is your identity. Anyone who sees it can act as you, and if you lose it you lose access to all your groups forever. Keep it offline.</string>
+    <string name="settings_recovery_phrase">Recovery phrase</string>
+    <string name="settings_recovery_phrase_subtitle">24 words. Keep them offline and never share them.</string>
+    <string name="settings_phrase_title">Your recovery phrase</string>
+    <string name="settings_phrase_hidden">Recovery phrase hidden</string>
+    <string name="settings_phrase_masked_cell">%1$d · ••••••</string>
+    <string name="settings_phrase_word">%1$d · %2$s</string>
+    <string name="private_key">Private key</string>
+    <string name="settings_private_key_subtitle">Raw secret key for advanced use</string>
+    <string name="settings_private_key_title">Your private key</string>
+    <string name="settings_private_key_hidden">Private key hidden</string>
+    <string name="settings_private_key_masked">••••••••••••••••••••••••••••••••</string>
     <string name="reveal">Reveal</string>
-    <string name="hide_key">Hide Key</string>
-    <string name="seed_phrase">Seed Phrase</string>
-    <string name="show_seed_phrase">Show Seed Phrase</string>
-    <string name="seed_phrase_hint">24 words to recover your identity on any device</string>
     <string name="hide">Hide</string>
 
     <!-- PrivacySection -->
-    <string name="privacy">Privacy</string>
-    <string name="nip59_gift_wrap">NIP-59 Gift Wrap</string>
-    <string name="gift_wrap_hint">Hide your identity from relay operators. Increases event size.</string>
+    <string name="settings_hide_sender_metadata">Hide sender metadata</string>
+    <string name="gift_wrap_hint">NIP-59 gift wrap hides the sender from relays. Larger events.</string>
 
     <!-- BackupSection -->
-    <string name="backup">Backup</string>
-    <string name="export_all_groups">Export All Groups</string>
-    <string name="export_hint">Save all groups to a .splitfree backup file.</string>
+    <string name="settings_export_group_backup">Export group backup</string>
+    <string name="settings_export_group_backup_subtitle">Group keys and history in one encrypted file</string>
+    <string name="settings_export_title">Export a group backup</string>
+    <string name="export_hint">Saves every group to one .splitfree file. Group keys are encrypted to your identity, so keep your recovery phrase separately — it is the only way to unlock this file.</string>
     <string name="export">Export</string>
-    <string name="backup_exported">Backup exported successfully</string>
+    <string name="backup_exported">Backup exported. Keep the file somewhere safe.</string>
     <string name="export_failed">Export failed — the backup file may be incomplete</string>
 
     <!-- DangerZoneSection -->
-    <string name="danger_zone">Danger Zone</string>
-    <string name="revoke_key">Revoke Key</string>
-    <string name="revoke_key_hint">If your key is compromised, revoke it and generate a new identity. All groups will be updated.</string>
-    <string name="revoking">Revoking…</string>
-    <string name="revoke">Revoke</string>
-    <string name="key_revoked">Key revoked successfully</string>
+    <string name="key_revoked">Identity replaced. Your groups will receive the new key as they sync.</string>
     <string name="new_pubkey">New pubkey: %1$s…</string>
 
     <!-- ProfileSection -->
     <string name="display_name">Display name</string>
     <string name="display_name_placeholder">How friends see you</string>
+    <string name="settings_profile_title">Your display name</string>
+    <string name="settings_display_name_note">Shared with the groups you belong to. Optional.</string>
 
     <!-- NearbySyncScreen -->
     <string name="nearby_sync_title">Nearby Sync</string>
@@ -316,7 +334,7 @@
     <string name="cd_collapsed">Collapsed</string>
 
     <!-- DebugLogScreen -->
-    <string name="debug_logs_title">Debug Logs (%1$d)</string>
+    <string name="debug_logs_title">Debug logs (%1$d)</string>
     <string name="filter">Filter</string>
     <string name="copy_all">Copy all logs</string>
     <string name="clear">Clear logs</string>
@@ -325,6 +343,8 @@
         <item quantity="one">Copied %1$d log line</item>
         <item quantity="other">Copied %1$d log lines</item>
     </plurals>
+    <string name="debug_empty_title">No log entries</string>
+    <string name="debug_empty_body">Lines appear here as the app runs. Clear the filter if you expected some.</string>
 
     <!-- RelayEditor -->
     <string name="relay_placeholder">wss://relay.example.com</string>
@@ -344,11 +364,6 @@
 
     <!-- Accessibility -->
     <string name="cd_warning_icon">Warning</string>
-    <string name="cd_diagnostics_icon">Diagnostics</string>
-    <string name="cd_info_icon">Information</string>
-    <string name="cd_export_icon">Export</string>
-    <string name="cd_show_key_icon">Show key</string>
-    <string name="cd_show_seed_icon">Show seed phrase</string>
     <string name="cd_hide_secret">Hide secret</string>
     <string name="cd_show_secret">Show secret</string>
     <string name="cd_bluetooth_icon">Bluetooth</string>

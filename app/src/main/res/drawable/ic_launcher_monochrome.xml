@@ -1,20 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Themed-icon (monochrome) layer for the adaptive launcher icon.
-    Single-colour rendition of the SplitFree "split arrow" mark from assets/splitfree-logo.svg,
-    scaled to ~52dp and centred inside the 66dp adaptive-icon safe zone. The launcher tints it.
+    Single-colour silhouette of the SplitFree "S" mark from assets/splitfree-logo.svg,
+    centred inside the 66dp adaptive-icon safe zone. The launcher tints it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Vertical bar + left arrow arm -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M50.67,80 L58.35,80 L58.35,50.8 L40.42,32.87 L45.29,28 L30.43,28 L30.43,42.6 L35.3,37.73 L50.67,53.1 Z" />
-    <!-- Right arrow arm -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M77.57,28 L77.57,42.6 L72.7,37.73 L63.22,47.21 L57.59,41.58 L67.58,32.87 L62.71,28 Z" />
+        android:pathData="M53.94 22.1C57.94 21.78 61.97 23.1 65.22 25.4C66.86 26.56 68.34 27.94 69.84 29.27C71.04 30.33 72.27 31.35 73.47 32.41C74.69 33.48 76.03 34.48 77.02 35.78C78.44 37.66 78.85 40.35 77.97 42.53C76.75 45.55 73.6 47.05 70.48 46.27C69.03 45.9 67.74 45.03 66.44 44.33C64.41 43.25 62.31 42.23 60.06 41.72C57.79 41.2 52.43 40.34 52.32 43.96C52.24 46.48 54.99 48.16 57.02 49.01C58.61 49.67 61.12 50.15 62.87 50.59C66.53 51.52 70.41 52.77 73.35 55.23C78.56 59.58 79.45 66.95 75.92 72.65C73.82 76.03 70.7 78.51 67.46 80.71C63.12 83.66 59.96 85.62 54.56 85.98C50.36 86.26 46 84.86 42.58 82.45C40.96 81.31 39.52 79.94 38.05 78.61C36.82 77.5 35.58 76.4 34.37 75.26C31.95 73 29.28 71.39 29.64 67.61C29.69 67.02 29.85 66.44 30.09 65.91C31.29 63.25 34.26 62 37.03 62.8C38.51 63.23 39.85 64.21 41.16 64.99C43.6 66.43 46.02 67.9 48.75 68.73C49.22 68.87 49.69 68.99 50.16 69.09C51.91 69.47 54.6 69.91 55.99 68.47C56.32 68.11 56.55 67.67 56.61 67.18C56.87 64.92 53.71 63.03 51.99 62.16C48.59 60.45 45.07 59.19 41.63 57.62C39.6 56.69 37.33 55.59 35.64 54.13C34.57 53.2 33.71 52.06 33 50.84C32.34 49.7 31.92 48.42 31.71 47.13C30.21 38.13 38.08 31.18 44.54 26.34C45.25 25.81 45.91 25.22 46.64 24.71C48.79 23.19 51.32 22.31 53.94 22.1Z" />
 </vector>

@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,53 +18,62 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FilterList
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.splitfree.R
-import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.components.EmptyState
+import com.splitfree.ui.components.SfCard
+import com.splitfree.ui.components.SfIconButton
+import com.splitfree.ui.components.SfTopBar
+import com.splitfree.ui.theme.splitFree
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.util.DebugLog
 import kotlinx.coroutines.delay
 
-@OptIn(ExperimentalMaterial3Api::class)
+private const val POLL_INTERVAL_MS = 500L
+private val LogPadding = 14.dp
+private val ChipGap = 8.dp
+
+/**
+ * Live view of the in-app [DebugLog] buffer (debug builds only). No ViewModel: the ring buffer is polled every
+ * [POLL_INTERVAL_MS] through [DebugLog.revision]. Filter, copy and clear live in the top bar; the filter chips
+ * unfold beneath it; the lines sit monospace on a card frame and scroll under the navigation bar.
+ */
 @Composable
 fun DebugLogScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val adaptive = adaptiveLayoutInfo()
     val tokens = adaptiveSizeTokens()
-    var filterTag by remember { mutableStateOf("") }
-    var showFilter by remember { mutableStateOf(false) }
+    var filterTag by rememberSaveable { mutableStateOf("") }
+    var showFilter by rememberSaveable { mutableStateOf(false) }
 
-    // Poll for new entries every 500ms
-    var tick by remember { mutableLongStateOf(0L) }
+    // Poll for new entries; the buffer has no flow of its own.
+    var tick by remember { mutableLongStateOf(DebugLog.revision) }
     LaunchedEffect(Unit) {
         while (true) {
-            delay(500)
+            delay(POLL_INTERVAL_MS)
             tick = DebugLog.revision
         }
     }
@@ -82,109 +90,159 @@ fun DebugLogScreen(onBack: () -> Unit) {
     val tags = remember(allEntries) { allEntries.map { it.tag }.distinct().sorted() }
 
     val listState = rememberLazyListState()
-    // Auto-scroll to bottom on new entries
+    // Follow the newest line as entries arrive.
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) listState.animateScrollToItem(entries.size - 1)
     }
 
+    val filterActive = showFilter || filterTag.isNotBlank()
+    val copiedMsg = pluralStringResource(R.plurals.copied_log_lines, entries.size, entries.size)
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.debug_logs_title, entries.size)) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
-                    }
-                },
+            SfTopBar(
+                title = stringResource(R.string.debug_logs_title, entries.size),
+                onBack = onBack,
                 actions = {
-                    IconButton(onClick = { showFilter = !showFilter }) {
-                        Icon(Icons.Outlined.FilterList, stringResource(R.string.filter))
-                    }
-                    val copiedMsg = pluralStringResource(R.plurals.copied_log_lines, entries.size, entries.size)
-                    IconButton(onClick = {
-                        val text = entries.joinToString("\n") { it.format() }
-                        val clip = ClipData.newPlainText("debug_logs", text)
-                        (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                            .setPrimaryClip(clip)
-                        Toast.makeText(context, copiedMsg, Toast.LENGTH_SHORT).show()
-                    }) {
-                        Icon(Icons.Outlined.ContentCopy, stringResource(R.string.copy_all))
-                    }
-                    IconButton(onClick = { DebugLog.clear() }) {
-                        Icon(Icons.Outlined.Delete, stringResource(R.string.clear))
-                    }
+                    SfIconButton(
+                        icon = Icons.Outlined.FilterList,
+                        contentDescription = stringResource(R.string.filter),
+                        onClick = { showFilter = !showFilter },
+                        modifier = Modifier.testTag("debug_filter"),
+                        tint =
+                        if (filterActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    )
+                    SfIconButton(
+                        icon = Icons.Outlined.ContentCopy,
+                        contentDescription = stringResource(R.string.copy_all),
+                        onClick = {
+                            copyLines(context, entries)
+                            Toast.makeText(context, copiedMsg, Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("debug_copy")
+                    )
+                    SfIconButton(
+                        icon = Icons.Outlined.Delete,
+                        contentDescription = stringResource(R.string.clear),
+                        onClick = { DebugLog.clear() },
+                        modifier = Modifier.testTag("debug_clear")
+                    )
                 }
             )
-        }
+        },
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
-        Column(modifier = Modifier.padding(padding)) {
+        Column(
+            modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(top = padding.calculateTopPadding())
+                .padding(horizontal = tokens.screenPaddingHorizontal)
+        ) {
             if (showFilter) {
-                FilterBar(tags, filterTag) { filterTag = it }
+                FilterBar(tags = tags, selected = filterTag, onSelect = { filterTag = it })
             }
-            LazyColumn(
-                state = listState,
-                modifier =
-                Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF1E1E1E))
-                    .padding(horizontal = tokens.itemSpacing),
-                contentPadding = PaddingValues(vertical = tokens.denseSpacing)
-            ) {
-                items(entries, key = { it.seq }) { entry ->
-                    LogLine(entry = entry, compact = adaptive.isCompact)
+            SfCard(modifier = Modifier.fillMaxWidth().weight(1f).testTag("debug_log_frame")) {
+                if (entries.isEmpty()) {
+                    EmptyState(
+                        icon = Icons.Outlined.Terminal,
+                        title = stringResource(R.string.debug_empty_title),
+                        body = stringResource(R.string.debug_empty_body),
+                        modifier = Modifier.testTag("debug_empty")
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().testTag("debug_log_list"),
+                        contentPadding =
+                        PaddingValues(
+                            start = LogPadding,
+                            end = LogPadding,
+                            top = LogPadding,
+                            bottom = LogPadding + padding.calculateBottomPadding()
+                        )
+                    ) {
+                        items(entries, key = { it.seq }) { entry -> LogLine(entry) }
+                    }
                 }
             }
         }
     }
 }
 
+/** Tag chips in theme colours (`FilterChip` on the card fill; the selected one takes the brand wash). */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FilterBar(tags: List<String>, selected: String, onSelect: (String) -> Unit) {
-    val tokens = adaptiveSizeTokens()
-
     FlowRow(
-        modifier = Modifier.padding(horizontal = tokens.itemSpacing, vertical = tokens.denseSpacing),
-        horizontalArrangement = Arrangement.spacedBy(tokens.denseSpacing)
+        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("debug_filter_bar"),
+        horizontalArrangement = Arrangement.spacedBy(ChipGap),
+        verticalArrangement = Arrangement.spacedBy(ChipGap)
     ) {
-        FilterChip(
-            selected = selected.isBlank(),
-            onClick = { onSelect("") },
-            label = { Text(stringResource(R.string.all), style = MaterialTheme.typography.labelSmall) }
-        )
+        TagChip(label = stringResource(R.string.all), selected = selected.isBlank(), onClick = { onSelect("") })
         tags.forEach { tag ->
-            FilterChip(
+            TagChip(
+                label = tag,
                 selected = selected == tag,
                 onClick = { onSelect(if (selected == tag) "" else tag) },
-                label = { Text(tag, style = MaterialTheme.typography.labelSmall) }
+                modifier = Modifier.testTag("debug_tag_$tag")
             )
         }
     }
 }
 
 @Composable
-private fun LogLine(entry: DebugLog.Entry, compact: Boolean) {
+private fun TagChip(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        colors =
+        FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+        ),
+        border =
+        FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = MaterialTheme.colorScheme.outlineVariant,
+            selectedBorderColor = Color.Transparent
+        )
+    )
+}
+
+/** One monospace line coloured by level; long lines scroll sideways instead of wrapping the timestamp. */
+@Composable
+private fun LogLine(entry: DebugLog.Entry) {
+    val palette = MaterialTheme.splitFree
     val color =
         when (entry.level) {
-            'E' -> Color(0xFFFF6B6B)
-            'W' -> Color(0xFFFFD93D)
-            'I' -> Color(0xFF6BCB77)
-            'D' -> Color(0xFF8B8B8B)
-            else -> Color(0xFFCCCCCC)
+            'E' -> MaterialTheme.colorScheme.error
+            'W' -> palette.warning
+            'I' -> palette.positive
+            'D' -> MaterialTheme.colorScheme.onSurfaceVariant
+            else -> MaterialTheme.colorScheme.onSurface
         }
-    val fontSize = if (compact) 10.sp else 11.sp
-    val lineHeight = if (compact) 14.sp else 15.sp
-
     Text(
         text = entry.format(),
-        fontFamily = FontFamily.Monospace,
-        fontSize = fontSize,
-        lineHeight = lineHeight,
+        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
         color = color,
+        maxLines = 1,
         modifier =
         Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(vertical = 1.dp)
+            .padding(vertical = 2.dp)
+            .testTag("debug_line_${entry.seq}")
     )
+}
+
+private fun copyLines(context: Context, entries: List<DebugLog.Entry>) {
+    val text = entries.joinToString("\n") { it.format() }
+    val clip = ClipData.newPlainText("debug_logs", text)
+    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
 }

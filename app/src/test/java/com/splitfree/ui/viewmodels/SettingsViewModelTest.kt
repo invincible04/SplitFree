@@ -228,4 +228,30 @@ class SettingsViewModelTest {
 
         assertEquals(ExportState.Idle, vm.exportState.value)
     }
+
+    @Test
+    fun `clearRevokeState drops a finished outcome but never an in-flight rotation`() = runTest {
+        coEvery { revokeKeyUseCase() } throws IllegalStateException("relay refused")
+        vm.revokeKey()
+        assertEquals(RevokeState.Error("relay refused"), vm.revokeState.value)
+
+        vm.clearRevokeState()
+        assertEquals(RevokeState.Idle, vm.revokeState.value)
+
+        coEvery { revokeKeyUseCase() } returns "newpub"
+        vm.revokeKey()
+        assertEquals(RevokeState.Done("newpub"), vm.revokeState.value)
+        assertEquals("newpub", vm.npub.value)
+        vm.clearRevokeState()
+        assertEquals(RevokeState.Idle, vm.revokeState.value)
+
+        val gate = kotlinx.coroutines.CompletableDeferred<String>()
+        coEvery { revokeKeyUseCase() } coAnswers { gate.await() }
+        vm.revokeKey()
+        assertEquals(RevokeState.InProgress, vm.revokeState.value)
+        vm.clearRevokeState()
+        assertEquals("An in-flight rotation must stay visible", RevokeState.InProgress, vm.revokeState.value)
+        gate.complete("later")
+        assertEquals(RevokeState.Done("later"), vm.revokeState.value)
+    }
 }
