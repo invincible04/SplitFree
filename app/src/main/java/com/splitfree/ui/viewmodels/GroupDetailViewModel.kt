@@ -15,6 +15,7 @@ import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
+import com.splitfree.domain.usecase.expense.DeleteExpenseUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
@@ -45,6 +46,8 @@ import kotlinx.coroutines.launch
  * @property draftRelays the relay list being edited in the relay dialog, or null when no edit is open.
  *   The dialog renders `draftRelays ?: relays`; [GroupDetailViewModel.saveRelays] persists the draft
  *   and [GroupDetailViewModel.cancelRelayEdit] discards it, leaving [relays] untouched.
+ * @property expenseAuthors expense id to the pubkey that signed its original event; only that key can
+ *   edit or delete the expense.
  */
 data class GroupDetailUiState(
     val groupId: String = "",
@@ -57,10 +60,14 @@ data class GroupDetailUiState(
     val relays: List<String> = emptyList(),
     val draftRelays: List<String>? = null,
     val debts: List<DebtTransaction> = emptyList(),
-    val expenses: List<Expense> = emptyList()
+    val expenses: List<Expense> = emptyList(),
+    val expenseAuthors: Map<String, String> = emptyMap()
 ) {
     /** True once both keys are known and match; `"" == ""` during the initial empty frame is not creator. */
     val isCreator: Boolean get() = myPubkey.isNotEmpty() && myPubkey == createdBy
+
+    /** True when I signed the original event of [expenseId], so the protocol lets me change it. */
+    fun authoredByMe(expenseId: String): Boolean = myPubkey.isNotEmpty() && expenseAuthors[expenseId] == myPubkey
 }
 
 /**
@@ -79,6 +86,7 @@ constructor(
     private val rotateGroupKey: RotateGroupKeyUseCase,
     private val identity: IdentityContract,
     private val getExpenses: GetExpensesUseCase,
+    private val deleteExpenseUseCase: DeleteExpenseUseCase,
     private val createInviteLink: CreateInviteLinkUseCase,
     private val updateGroupRelays: UpdateGroupRelaysUseCase,
     private val relayHealthMonitor: RelayHealthMonitor,
@@ -101,6 +109,10 @@ constructor(
     private val _error = MutableStateFlow<UiMessage?>(null)
     val error: StateFlow<UiMessage?> = _error.asStateFlow()
 
+    /** Non-error confirmations for the snackbar, such as a completed deletion. */
+    private val _message = MutableStateFlow<UiMessage?>(null)
+    val message: StateFlow<UiMessage?> = _message.asStateFlow()
+
     private val inviteLinkLoaded = AtomicBoolean(false)
 
     init {
@@ -118,15 +130,24 @@ constructor(
                 }
         }
         viewModelScope.launch {
-            getExpenses.observe(groupId)
+            getExpenses.observeWithAuthors(groupId)
                 .catch { e -> reportObservationFailure(R.string.expense_observation_failed, "Expense observation", e) }
                 .collectLatest { allExpenses ->
                     try {
                         val result = computeBalances.computeWithExclusions(groupId)
                         val excluded = result.excludedExpenseUuids
                         val debts = simplifyDebts(result.balances)
-                        val expenses = allExpenses.filter { e -> e.id !in excluded }
-                        _uiState.update { it.copy(debts = debts, expenses = expenses) }
+                        val visible = allExpenses.filter { it.expense.id !in excluded }
+                        _uiState.update {
+                            it.copy(
+                                debts = debts,
+                                expenses = visible.map { authored -> authored.expense },
+                                expenseAuthors = visible.associate { authored ->
+                                    authored.expense.id to
+                                        authored.authorPubkey
+                                }
+                            )
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -234,6 +255,30 @@ constructor(
                 removalInProgress.set(false)
             }
         }
+    }
+
+    private val deletionInProgress = AtomicBoolean(false)
+
+    /** Publish a deletion for [expenseId]; the ledger and balances update through the expense observer. */
+    fun deleteExpense(expenseId: String) {
+        if (!deletionInProgress.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            try {
+                deleteExpenseUseCase(groupId, expenseId)
+                _message.value = UiMessage.Res(R.string.expense_deleted)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Delete expense failed: ${e.message}")
+                _error.value = e.toUiMessage(R.string.delete_expense_failed)
+            } finally {
+                deletionInProgress.set(false)
+            }
+        }
+    }
+
+    fun clearMessage() {
+        _message.value = null
     }
 
     // --- Relay editing: the dialog works on a draft so Cancel leaves the saved relays untouched ---

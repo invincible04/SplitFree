@@ -1,56 +1,178 @@
 package com.splitfree.ui.screens.groupdetail
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.os.PersistableBundle
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.CellTower
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.outlined.PersonAdd
-import androidx.compose.material.icons.outlined.QrCode2
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Tab
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
-import com.splitfree.ui.util.adaptiveLayoutInfo
+import com.splitfree.ui.components.MemberStack
+import com.splitfree.ui.components.MiniLabel
+import com.splitfree.ui.components.RelayCheckStatus
+import com.splitfree.ui.components.RelayInfo
+import com.splitfree.ui.components.SegmentedTabs
+import com.splitfree.ui.components.SfAccentButton
+import com.splitfree.ui.components.SfIconButton
+import com.splitfree.ui.components.SfSecondaryButton
+import com.splitfree.ui.components.SfTextButton
+import com.splitfree.ui.components.SfTopBar
+import com.splitfree.ui.components.SignedMoneyText
+import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
+import com.splitfree.ui.viewmodels.GroupDetailUiState
 import com.splitfree.ui.viewmodels.GroupDetailViewModel
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Which bottom sheet is open over the group screen. Held in `rememberSaveable` via [GroupSheetSaver]. */
+sealed interface GroupSheet {
+    /** QR + copy + share in one surface, with the bearer-key warning. */
+    data object Invite : GroupSheet
+
+    /** Secondary tools: nearby sync and relays. */
+    data object Tools : GroupSheet
+
+    /** Relay list bound to the ViewModel's draft; editable for the creator. */
+    data object SyncStatus : GroupSheet
+
+    /** Confirm recording [debt] as paid. */
+    data class Settle(val debt: DebtTransaction) : GroupSheet
+
+    /** Breakdown of one expense; its author can delete it from here. */
+    data class ExpenseDetail(val expenseId: String) : GroupSheet
+
+    /** Confirm removing [pubkey] (creator only). */
+    data class RemoveMember(val pubkey: String) : GroupSheet
+}
+
+/** Flattens a [GroupSheet] to primitives so the open sheet survives process death. */
+internal val GroupSheetSaver: Saver<GroupSheet?, Any> =
+    listSaver(
+        save = { sheet ->
+            when (sheet) {
+                null -> emptyList()
+                GroupSheet.Invite -> listOf(SHEET_INVITE)
+                GroupSheet.Tools -> listOf(SHEET_TOOLS)
+                GroupSheet.SyncStatus -> listOf(SHEET_SYNC)
+                is GroupSheet.Settle ->
+                    listOf(
+                        SHEET_SETTLE,
+                        sheet.debt.from,
+                        sheet.debt.to,
+                        sheet.debt.amount.toString(),
+                        sheet.debt.currency
+                    )
+                is GroupSheet.ExpenseDetail -> listOf(SHEET_EXPENSE, sheet.expenseId)
+                is GroupSheet.RemoveMember -> listOf(SHEET_REMOVE, sheet.pubkey)
+            }
+        },
+        restore = { parts ->
+            when (parts.firstOrNull()) {
+                SHEET_INVITE -> GroupSheet.Invite
+                SHEET_TOOLS -> GroupSheet.Tools
+                SHEET_SYNC -> GroupSheet.SyncStatus
+                SHEET_SETTLE ->
+                    parts.getOrNull(SETTLE_PART_COUNT - 1)?.let {
+                        GroupSheet.Settle(DebtTransaction(parts[1], parts[2], parts[3].toLong(), parts[4]))
+                    }
+                SHEET_EXPENSE -> parts.getOrNull(1)?.let { GroupSheet.ExpenseDetail(it) }
+                SHEET_REMOVE -> parts.getOrNull(1)?.let { GroupSheet.RemoveMember(it) }
+                else -> null
+            }
+        }
+    )
+
+private const val SHEET_INVITE = "invite"
+private const val SHEET_TOOLS = "tools"
+private const val SHEET_SYNC = "sync"
+private const val SHEET_SETTLE = "settle"
+private const val SHEET_EXPENSE = "expense"
+private const val SHEET_REMOVE = "remove"
+private const val SETTLE_PART_COUNT = 5
+
+/**
+ * Everything the group screen can ask the outside world to do. Sheet and tab changes are handled inside
+ * [GroupDetailContent] through `onSheet` / `onSelectTab`; these lambdas are the effects that leave the
+ * screen (navigation, clipboard, share sheet) or hit the ViewModel. Defaults are no-ops so previews and
+ * tests can pass only what they observe.
+ */
+data class GroupDetailActions(
+    val addExpense: () -> Unit = {},
+    val nearbySync: () -> Unit = {},
+    val back: () -> Unit = {},
+    val share: () -> Unit = {},
+    val copyInvite: () -> Unit = {},
+    val confirmSettle: (DebtTransaction) -> Unit = {},
+    val deleteExpense: (String) -> Unit = {},
+    val removeMember: (String) -> Unit = {},
+    val beginRelayEdit: () -> Unit = {},
+    val cancelRelayEdit: () -> Unit = {},
+    val addRelay: (String) -> Unit = {},
+    val removeRelay: (String) -> Unit = {},
+    val checkRelay: (String) -> Unit = {},
+    val checkAllRelays: () -> Unit = {},
+    val saveRelays: (onDone: () -> Unit) -> Unit = { it() },
+    val selectCurrency: (String) -> Unit = {}
+)
+
 @Composable
 fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
@@ -61,200 +183,385 @@ fun GroupDetailScreen(
     viewModel: GroupDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val adaptive = adaptiveLayoutInfo()
-    val tokens = adaptiveSizeTokens()
-    val context = LocalContext.current
-    var showSettleDialog by remember { mutableStateOf<DebtTransaction?>(null) }
-    val pagerState = rememberPagerState(pageCount = { 3 })
-    var showQrDialog by remember { mutableStateOf(false) }
     val inviteLink by viewModel.inviteLink.collectAsStateWithLifecycle()
-    var showShareWarning by remember { mutableStateOf(false) }
-    var showRemoveDialog by remember { mutableStateOf<String?>(null) }
-    var showRelayDialog by remember { mutableStateOf(false) }
     val relayStatuses by viewModel.relayStatuses.collectAsStateWithLifecycle()
     val relayInfo by viewModel.relayInfo.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
-    val snackScope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
+    var sheet by rememberSaveable(stateSaver = GroupSheetSaver) { mutableStateOf<GroupSheet?>(null) }
+    var selectedCurrency by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(TAB_SUMMARY) }
 
     ExpenseSavedEffect(
         expenseSaved = expenseSaved,
         onConsumed = onExpenseSavedConsumed,
-        pagerState = pagerState,
+        onShowExpenses = { selectedTab = TAB_EXPENSES },
         snackbarHostState = snackbarHostState
     )
 
     val errorText = error?.asString()
     LaunchedEffect(error) {
         errorText?.let {
-            snackScope.launch { snackbarHostState.showSnackbar(it) }
+            scope.launch { snackbarHostState.showSnackbar(it) }
             viewModel.clearError()
+        }
+    }
+    val messageText = message?.asString()
+    LaunchedEffect(message) {
+        messageText?.let {
+            scope.launch { snackbarHostState.showSnackbar(it) }
+            viewModel.clearMessage()
+        }
+    }
+
+    val linkCopied = stringResource(R.string.group_link_copied)
+    GroupDetailContent(
+        state = uiState,
+        inviteLink = inviteLink,
+        relayStatuses = relayStatuses,
+        relayInfo = relayInfo,
+        selectedCurrency = selectedCurrency,
+        selectedTab = selectedTab,
+        onSelectTab = { selectedTab = it },
+        actions =
+        GroupDetailActions(
+            addExpense = { onAddExpense(uiState.groupId) },
+            nearbySync = { onNearbySync(uiState.groupId) },
+            back = onBack,
+            share = { inviteLink?.let { shareInvite(context, it) } },
+            copyInvite = {
+                inviteLink?.let {
+                    copyInvite(context, it)
+                    scope.launch { snackbarHostState.showSnackbar(linkCopied) }
+                }
+            },
+            confirmSettle = viewModel::recordSettlement,
+            deleteExpense = viewModel::deleteExpense,
+            removeMember = viewModel::removeMember,
+            beginRelayEdit = viewModel::beginRelayEdit,
+            cancelRelayEdit = viewModel::cancelRelayEdit,
+            addRelay = viewModel::addRelay,
+            removeRelay = viewModel::removeRelay,
+            checkRelay = viewModel::checkRelay,
+            checkAllRelays = viewModel::checkAllRelays,
+            saveRelays = viewModel::saveRelays,
+            selectCurrency = { selectedCurrency = it }
+        ),
+        sheet = sheet,
+        onSheet = { sheet = it },
+        snackbarHostState = snackbarHostState
+    )
+}
+
+internal const val TAB_SUMMARY = 0
+internal const val TAB_EXPENSES = 1
+internal const val TAB_PEOPLE = 2
+
+private val SummaryCardShape = RoundedCornerShape(25.dp)
+private val FabHeight = 58.dp
+private val FabElevation = 6.dp
+
+/**
+ * Stateless body of the group screen: top bar, member header, per-currency summary card, segmented tabs over
+ * one of three panes (summary / expenses / people) that swap in place, the Add expense button and
+ * whichever [sheet] is open. [selectedCurrency] `null` means "not chosen yet" and falls back to
+ * [defaultBalanceCurrency]; [selectedTab] is one of [TAB_SUMMARY], [TAB_EXPENSES], [TAB_PEOPLE].
+ */
+@Composable
+internal fun GroupDetailContent(
+    state: GroupDetailUiState,
+    inviteLink: String?,
+    relayStatuses: Map<String, RelayCheckStatus>,
+    relayInfo: Map<String, RelayInfo>,
+    selectedCurrency: String?,
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+    actions: GroupDetailActions,
+    sheet: GroupSheet?,
+    onSheet: (GroupSheet?) -> Unit,
+    snackbarHostState: SnackbarHostState
+) {
+    val tokens = adaptiveSizeTokens()
+    val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    val currencies = remember(state.debts, state.expenses) { groupCurrencies(state.debts, state.expenses) }
+    val defaultCurrency = remember(currencies, state.debts, state.myPubkey) {
+        defaultBalanceCurrency(currencies, state.debts, state.myPubkey)
+    }
+    val currency = selectedCurrency?.takeIf { it in currencies } ?: defaultCurrency
+    // Where the tabs sit in the scrolled content, so a switch can pin them to the top instead of landing mid-pane.
+    var tabsTop by remember { mutableIntStateOf(0) }
+    val showTab: (Int) -> Unit = { tab ->
+        if (tab != selectedTab) {
+            onSelectTab(tab)
+            if (scrollState.value > tabsTop) scope.launch { scrollState.animateScrollTo(tabsTop) }
         }
     }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { Text(uiState.groupName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
-                    }
-                },
+            SfTopBar(
+                title = state.groupName,
+                onBack = actions.back,
                 actions = {
-                    val scope = rememberCoroutineScope()
-                    IconButton(onClick = {
-                        viewModel.beginRelayEdit()
-                        showRelayDialog = true
-                        viewModel.checkAllRelays()
-                    }) {
-                        Icon(Icons.Default.CellTower, stringResource(R.string.relays))
-                    }
-                    IconButton(onClick = { onNearbySync(uiState.groupId) }) {
-                        Icon(Icons.Default.Bluetooth, stringResource(R.string.nearby_sync))
-                    }
-                    IconButton(onClick = { showQrDialog = true }) {
-                        Icon(Icons.Outlined.QrCode2, stringResource(R.string.show_qr))
-                    }
-                    IconButton(onClick = { showShareWarning = true }) {
-                        Icon(Icons.Default.Share, stringResource(R.string.share_invite))
-                    }
+                    SfTextButton(
+                        text = stringResource(R.string.group_invite),
+                        onClick = { onSheet(GroupSheet.Invite) },
+                        modifier = Modifier.testTag("group_invite")
+                    )
+                    SfIconButton(
+                        icon = Icons.Outlined.MoreHoriz,
+                        contentDescription = stringResource(R.string.group_tools),
+                        onClick = { onSheet(GroupSheet.Tools) },
+                        modifier = Modifier.testTag("group_tools")
+                    )
                 }
             )
         },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { onAddExpense(uiState.groupId) },
-                icon = { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_expense)) },
-                text = { Text(stringResource(R.string.add_expense)) }
+        containerColor = MaterialTheme.colorScheme.background
+    ) { padding ->
+        val bottomInset = padding.calculateBottomPadding()
+        Box(modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
+            Column(
+                modifier =
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .testTag("group_scroll")
+            ) {
+                Column(Modifier.padding(horizontal = tokens.screenPaddingHorizontal)) {
+                    GroupHeader(state)
+                    CurrencyLine(currencies = currencies, currency = currency, onSelect = actions.selectCurrency)
+                    SummaryCard(state = state, currency = currency)
+                    SegmentedTabs(
+                        options =
+                        listOf(
+                            stringResource(R.string.tab_balances),
+                            stringResource(R.string.tab_expenses),
+                            stringResource(R.string.tab_members)
+                        ),
+                        selectedIndex = selectedTab,
+                        onSelect = showTab,
+                        modifier =
+                        Modifier
+                            .onGloballyPositioned { tabsTop = it.positionInParent().y.roundToInt() }
+                            .padding(top = 18.dp, bottom = 10.dp)
+                            .testTag("group_tabs")
+                    )
+                }
+                Column(Modifier.fillMaxWidth().animateContentSize(tween(SfMotion.Base, easing = SfMotion.Ease))) {
+                    key(selectedTab) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .riseIn()
+                                .padding(horizontal = tokens.screenPaddingHorizontal)
+                        ) {
+                            when (selectedTab) {
+                                TAB_SUMMARY ->
+                                    SummaryPane(
+                                        state = state,
+                                        currency = currency,
+                                        onSettle = { onSheet(GroupSheet.Settle(it)) },
+                                        onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) },
+                                        onSeeAll = { showTab(TAB_EXPENSES) }
+                                    )
+                                TAB_EXPENSES ->
+                                    ExpensesPane(
+                                        state = state,
+                                        currency = currency,
+                                        onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) }
+                                    )
+                                TAB_PEOPLE ->
+                                    PeoplePane(
+                                        state = state,
+                                        onInvite = { onSheet(GroupSheet.Invite) },
+                                        onRemove = { onSheet(GroupSheet.RemoveMember(it)) }
+                                    )
+                            }
+                        }
+                    }
+                }
+                // Clears the floating button plus the navigation bar so the last row is never hidden under it.
+                Spacer(Modifier.height(bottomInset + FabHeight + tokens.screenPaddingHorizontal * 2))
+            }
+            SfAccentButton(
+                text = stringResource(R.string.add_expense),
+                onClick = actions.addExpense,
+                leadingIcon = Icons.Outlined.Add,
+                modifier =
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = bottomInset)
+                    .padding(end = tokens.screenPaddingHorizontal, bottom = tokens.screenPaddingHorizontal)
+                    .shadow(FabElevation, MaterialTheme.shapes.large)
+                    .width(IntrinsicSize.Max)
+                    .heightIn(min = FabHeight)
+                    .testTag("group_add_expense")
             )
         }
-    ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                val scope = rememberCoroutineScope()
-                PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
-                    listOf(
-                        stringResource(R.string.tab_balances),
-                        stringResource(R.string.tab_expenses),
-                        stringResource(R.string.tab_members)
-                    ).forEachIndexed { i, title ->
-                        Tab(
-                            selected = pagerState.currentPage == i,
-                            onClick = { scope.launch { pagerState.animateScrollToPage(i) } },
-                            text = {
-                                Text(
-                                    text = title,
-                                    style = if (adaptive.isCompact) {
-                                        MaterialTheme.typography.labelLarge
-                                    } else {
-                                        MaterialTheme.typography.titleSmall
-                                    }
-                                )
-                            }
-                        )
-                    }
-                }
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                    when (page) {
-                        0 -> {
-                            BalancesTab(
-                                uiState.debts,
-                                hasExpenses = uiState.expenses.isNotEmpty(),
-                                myPubkey = uiState.myPubkey,
-                                memberNames = uiState.memberNames,
-                                members = uiState.members,
-                                onSettle = { showSettleDialog = it }
-                            )
-                        }
-
-                        1 -> {
-                            ExpensesTab(uiState.expenses, memberNames = uiState.memberNames, members = uiState.members)
-                        }
-
-                        2 -> {
-                            MembersTab(
-                                members = uiState.members,
-                                createdBy = uiState.createdBy,
-                                isCreator = uiState.isCreator,
-                                myPubkey = uiState.myPubkey,
-                                memberNames = uiState.memberNames,
-                                onRemove = { showRemoveDialog = it }
-                            )
-                        }
-                    }
-                }
-            }
-            SmallFloatingActionButton(
-                onClick = { showShareWarning = true },
-                modifier = Modifier.align(Alignment.BottomStart).padding(tokens.screenPaddingHorizontal),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer
-            ) { Icon(Icons.Outlined.PersonAdd, contentDescription = stringResource(R.string.invite_members)) }
-        }
     }
 
-    // Dialogs
-    if (showShareWarning) {
-        ShareWarningDialog(
+    if (sheet != null) {
+        GroupDetailSheetHost(
+            sheet = sheet,
+            state = state,
             inviteLink = inviteLink,
-            onShare = { link ->
-                val shareText = "Join my SplitFree group!\n\n" +
-                    "1. Install SplitFree (if you haven't already)\n" +
-                    "2. Copy the link below\n" +
-                    "3. Open SplitFree → tap the 📋 clipboard icon (top right)\n\n" +
-                    link
-                val intent =
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, shareText)
-                    }
-                context.startActivity(Intent.createChooser(intent, "Share invite"))
-            },
-            onDismiss = { showShareWarning = false }
-        )
-    }
-    if (showQrDialog) {
-        QrDialog(inviteLink = inviteLink, groupName = uiState.groupName, onDismiss = { showQrDialog = false })
-    }
-    showSettleDialog?.let { debt ->
-        SettleDialog(
-            debt = debt,
-            memberNames = uiState.memberNames,
-            members = uiState.members,
-            onConfirm = {
-                viewModel.recordSettlement(debt)
-                showSettleDialog = null
-            },
-            onDismiss = { showSettleDialog = null }
-        )
-    }
-    showRemoveDialog?.let { pubkey ->
-        RemoveMemberDialog(
-            pubkey = pubkey,
-            memberNames = uiState.memberNames,
-            onConfirm = {
-                showRemoveDialog = null
-                viewModel.removeMember(pubkey)
-            },
-            onDismiss = { showRemoveDialog = null }
-        )
-    }
-    if (showRelayDialog) {
-        val dismissRelayDialog = {
-            showRelayDialog = false
-            viewModel.cancelRelayEdit()
-        }
-        RelayDialog(
-            relays = uiState.draftRelays ?: uiState.relays,
             relayStatuses = relayStatuses,
             relayInfo = relayInfo,
-            isCreator = uiState.isCreator,
-            onAdd = viewModel::addRelay,
-            onRemove = viewModel::removeRelay,
-            onCheck = viewModel::checkRelay,
-            onSave = viewModel::saveRelays,
-            onDismiss = dismissRelayDialog
+            actions = actions,
+            onSheet = onSheet
         )
     }
+}
+
+/** Slides the content up from [PaneRise] to rest when it first appears. */
+private fun Modifier.riseIn(): Modifier = composed {
+    val rise = remember { Animatable(1f) }
+    LaunchedEffect(Unit) { rise.animateTo(0f, tween(SfMotion.Base, easing = SfMotion.Ease)) }
+    graphicsLayer { translationY = PaneRise.toPx() * rise.value }
+}
+
+private val PaneRise = 8.dp
+
+/** Member stack + "N people · private group". */
+@Composable
+private fun GroupHeader(state: GroupDetailUiState) {
+    val peopleCount = state.members.size.takeIf { it > 0 } ?: state.memberCount
+    Row(modifier = Modifier.fillMaxWidth().padding(top = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+        MemberStack(pubkeys = state.members, names = state.memberNames, max = 4, size = 28.dp)
+        if (state.members.isNotEmpty()) Spacer(Modifier.width(7.dp))
+        Text(
+            pluralStringResource(R.plurals.group_people_private, peopleCount, peopleCount),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * "Balances in" eyebrow with a currency chip when the group uses more than one currency, a single eyebrow when
+ * it uses exactly one, and nothing at all before any expense exists (mock `.currency-line`).
+ */
+@Composable
+private fun CurrencyLine(currencies: List<String>, currency: String?, onSelect: (String) -> Unit) {
+    if (currency == null) return
+    if (currencies.size > 1) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MiniLabel(text = stringResource(R.string.group_balances_in), modifier = Modifier.weight(1f))
+            CurrencyChip(currency = currency, currencies = currencies, onSelect = onSelect)
+        }
+    } else {
+        MiniLabel(
+            text = stringResource(R.string.group_balances_in_currency, currency),
+            modifier = Modifier.padding(top = 18.dp, bottom = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun CurrencyChip(currency: String, currencies: List<String>, onSelect: (String) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Box {
+        SfSecondaryButton(
+            text = currency,
+            onClick = { expanded = true },
+            leadingIcon = Icons.Outlined.ArrowDropDown,
+            modifier = Modifier.testTag("group_currency")
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            currencies.forEach { code ->
+                DropdownMenuItem(
+                    text = { Text(code, style = MaterialTheme.typography.titleSmall) },
+                    onClick = {
+                        expanded = false
+                        onSelect(code)
+                    },
+                    modifier = Modifier.testTag("group_currency_$code")
+                )
+            }
+        }
+    }
+}
+
+/** `primaryContainer` wash with eyebrow, signed net balance and an honest footnote. */
+@Composable
+private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
+    val net = currency?.let { myNetBalance(state.debts, it, state.myPubkey) } ?: 0L
+    val direction =
+        stringResource(
+            when {
+                net > 0 -> R.string.group_you_are_owed
+                net < 0 -> R.string.group_you_owe
+                else -> R.string.group_your_balance
+            }
+        )
+    val note = summaryNote(state.debts, state.expenses, currency, state.myPubkey)
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_summary"),
+        shape = SummaryCardShape,
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Column(Modifier.padding(22.dp)) {
+            MiniLabel(
+                text =
+                if (currency != null) stringResource(R.string.group_summary_label, direction, currency) else direction,
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (currency != null) {
+                Spacer(Modifier.height(9.dp))
+                SignedMoneyText(
+                    amountMinor = net,
+                    currency = currency,
+                    style = MaterialTheme.typography.displayMedium,
+                    modifier = Modifier.testTag("group_summary_amount")
+                )
+                Spacer(Modifier.height(3.dp))
+            } else {
+                Spacer(Modifier.height(9.dp))
+            }
+            Text(
+                summaryNoteText(note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun summaryNoteText(note: SummaryNote): String = when (note) {
+    SummaryNote.NoExpenses -> stringResource(R.string.no_expenses_yet)
+    is SummaryNote.SettledIn -> stringResource(R.string.group_summary_settled_in, note.currency)
+    is SummaryNote.NoCurrencyExpenses -> stringResource(R.string.group_summary_no_currency_expenses, note.currency)
+    SummaryNote.OthersOpen -> stringResource(R.string.group_summary_others_open)
+    is SummaryNote.Across ->
+        pluralStringResource(R.plurals.group_summary_across, note.expenseCount, note.expenseCount)
+}
+
+/** Puts the invite link on the clipboard flagged sensitive, the same way Settings copies secrets. */
+private fun copyInvite(context: Context, link: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val clip = ClipData.newPlainText(context.getString(R.string.group_invite), link)
+    clip.description.extras = PersistableBundle().apply { putBoolean(CLIP_EXTRA_IS_SENSITIVE, true) }
+    clipboard.setPrimaryClip(clip)
+}
+
+private const val CLIP_EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
+
+private fun shareInvite(context: Context, link: String) {
+    val intent =
+        Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, context.getString(R.string.group_share_text, link))
+        }
+    context.startActivity(Intent.createChooser(intent, context.getString(R.string.group_share_chooser)))
 }

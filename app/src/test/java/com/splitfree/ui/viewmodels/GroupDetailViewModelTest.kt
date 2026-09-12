@@ -9,12 +9,17 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.expense.SplitEntry
+import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
+import com.splitfree.domain.usecase.expense.DeleteExpenseUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.domain.usecase.expense.SimplifyDebtsUseCase
 import com.splitfree.domain.usecase.group.CreateInviteLinkUseCase
@@ -59,6 +64,7 @@ class GroupDetailViewModelTest {
     private val rotateGroupKey = mockk<RotateGroupKeyUseCase>(relaxed = true)
     private val identity = mockk<IdentityContract>()
     private val getExpenses = mockk<GetExpensesUseCase>(relaxed = true)
+    private val deleteExpense = mockk<DeleteExpenseUseCase>(relaxed = true)
     private val createInviteLink = mockk<CreateInviteLinkUseCase>(relaxed = true)
     private val updateGroupRelays = mockk<UpdateGroupRelaysUseCase>(relaxed = true)
     private val relayHealthMonitor = mockk<RelayHealthMonitor>(relaxed = true)
@@ -87,7 +93,7 @@ class GroupDetailViewModelTest {
 
         every { identity.getPublicKeyHex() } returns pubkey
         every { groupRepo.observeById("g1") } returns flowOf(group)
-        every { getExpenses.observe("g1") } returns flowOf(emptyList())
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(emptyList())
         coEvery { computeBalances.computeWithExclusions("g1") } returns
             BalanceResult(emptyList(), emptySet())
         every { simplifyDebts(any()) } returns emptyList()
@@ -95,7 +101,7 @@ class GroupDetailViewModelTest {
         vm = GroupDetailViewModel(
             SavedStateHandle(mapOf("groupId" to "g1")),
             groupRepo, expenseRepo, computeBalances, simplifyDebts,
-            rotateGroupKey, identity, getExpenses,
+            rotateGroupKey, identity, getExpenses, deleteExpense,
             createInviteLink, updateGroupRelays, relayHealthMonitor, eventSigner
         )
     }
@@ -330,12 +336,99 @@ class GroupDetailViewModelTest {
         coVerify(exactly = 2) { rotateGroupKey("g1", "bb".repeat(32)) }
     }
 
+    // --- deleting an expense ---
+
+    private fun expense(id: String, paidBy: String = pubkey) = Expense(
+        id = id,
+        amount = 1000,
+        currency = "INR",
+        description = id,
+        paidBy = paidBy,
+        splitType = SplitType.EQUAL,
+        splitAmong = listOf(SplitEntry(pubkey, 500), SplitEntry(other, 500)),
+        timestamp = 1000
+    )
+
+    @Test
+    fun `visible expenses carry the author of their original event`() = runTest {
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(
+            listOf(AuthoredExpense(expense("mine"), pubkey), AuthoredExpense(expense("theirs", paidBy = other), other))
+        )
+        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(emptyList(), setOf("excluded"))
+
+        val fresh = newViewModel()
+
+        assertEquals(listOf("mine", "theirs"), fresh.uiState.value.expenses.map { it.id })
+        assertEquals(mapOf("mine" to pubkey, "theirs" to other), fresh.uiState.value.expenseAuthors)
+        assertTrue(fresh.uiState.value.authoredByMe("mine"))
+        assertFalse(fresh.uiState.value.authoredByMe("theirs"))
+        assertFalse(fresh.uiState.value.authoredByMe("unknown"))
+        fresh.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `excluded expenses are dropped from the ledger and the author map alike`() = runTest {
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(
+            listOf(AuthoredExpense(expense("kept"), pubkey), AuthoredExpense(expense("excluded"), pubkey))
+        )
+        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(emptyList(), setOf("excluded"))
+
+        val fresh = newViewModel()
+
+        assertEquals(listOf("kept"), fresh.uiState.value.expenses.map { it.id })
+        assertEquals(setOf("kept"), fresh.uiState.value.expenseAuthors.keys)
+        fresh.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `authoredByMe is false while my key is unknown`() {
+        assertFalse(GroupDetailUiState(expenseAuthors = mapOf("e" to "")).authoredByMe("e"))
+    }
+
+    @Test
+    fun `deleteExpense publishes the deletion and confirms with a message`() = runTest {
+        vm.deleteExpense("exp1")
+
+        coVerify(exactly = 1) { deleteExpense("g1", "exp1") }
+        assertEquals(UiMessage.Res(R.string.expense_deleted), vm.message.value)
+        assertNull(vm.error.value)
+
+        vm.clearMessage()
+        assertNull(vm.message.value)
+    }
+
+    @Test
+    fun `deleteExpense surfaces the use case error and releases the guard`() = runTest {
+        coEvery { deleteExpense("g1", "exp1") } throws IllegalStateException("Only the creator can delete this expense")
+
+        vm.deleteExpense("exp1")
+
+        assertEquals(UiMessage.Raw("Only the creator can delete this expense"), vm.error.value)
+        assertNull(vm.message.value)
+        vm.deleteExpense("exp1")
+        coVerify(exactly = 2) { deleteExpense("g1", "exp1") }
+    }
+
+    @Test
+    fun `deleteExpense ignores a second tap while the first is in flight`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        coEvery { deleteExpense("g1", "exp1") } coAnswers { gate.await() }
+
+        vm.deleteExpense("exp1")
+        vm.deleteExpense("exp1")
+        coVerify(exactly = 1) { deleteExpense("g1", any()) }
+
+        gate.complete(Unit)
+        vm.deleteExpense("exp2")
+        coVerify(exactly = 1) { deleteExpense("g1", "exp2") }
+    }
+
     // --- observation failure boundaries ---
 
     private fun newViewModel() = GroupDetailViewModel(
         SavedStateHandle(mapOf("groupId" to "g1")),
         groupRepo, expenseRepo, computeBalances, simplifyDebts,
-        rotateGroupKey, identity, getExpenses,
+        rotateGroupKey, identity, getExpenses, deleteExpense,
         createInviteLink, updateGroupRelays, relayHealthMonitor, eventSigner
     )
 
@@ -361,7 +454,7 @@ class GroupDetailViewModelTest {
 
     @Test
     fun `failing expense query surfaces an error instead of killing the scope`() = runTest {
-        every { getExpenses.observe("g1") } returns flow { throw IllegalStateException("disk io error") }
+        every { getExpenses.observeWithAuthors("g1") } returns flow { throw IllegalStateException("disk io error") }
 
         val failing = newViewModel()
 

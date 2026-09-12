@@ -1,6 +1,5 @@
 package com.splitfree.ui.screens.groupdetail
 
-import androidx.compose.foundation.pager.PagerState
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -14,15 +13,15 @@ import kotlinx.coroutines.launch
  * confirmation snackbar.
  *
  * [onConsumed] is called FIRST and synchronously. Consuming flips [expenseSaved] (the effect's
- * key), which cancels this effect's coroutine on the next recomposition — so the scroll and the
- * snackbar run on the composable's own scope, where that cancellation cannot leave the pager on
- * the wrong tab or the flag stuck at `true` if the effect is disposed mid-scroll.
+ * key), which cancels this effect's coroutine on the next recomposition, so the tab switch happens
+ * synchronously and the snackbar runs on the composable's own scope, where that cancellation cannot
+ * leave the flag stuck at `true` or the confirmation unshown.
  */
 @Composable
 internal fun ExpenseSavedEffect(
     expenseSaved: Boolean,
     onConsumed: () -> Unit,
-    pagerState: PagerState,
+    onShowExpenses: () -> Unit,
     snackbarHostState: SnackbarHostState
 ) {
     val savedMessage = stringResource(R.string.expense_saved_message)
@@ -30,7 +29,7 @@ internal fun ExpenseSavedEffect(
     LaunchedEffect(expenseSaved) {
         if (expenseSaved) {
             onConsumed()
-            scope.launch { pagerState.scrollToPage(1) }
+            onShowExpenses()
             scope.launch { snackbarHostState.showSnackbar(savedMessage) }
         }
     }

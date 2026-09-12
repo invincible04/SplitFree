@@ -1,29 +1,26 @@
 package com.splitfree.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,10 +30,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
-import com.splitfree.ui.util.adaptiveLayoutInfo
-import com.splitfree.ui.util.adaptiveSizeTokens
 
 /** Live health check status for a relay, driven by [RelayHealthMonitor][com.splitfree.data.nostr.relay.RelayHealthMonitor]. */
 enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE, VERIFYING, REJECTED }
@@ -50,16 +48,16 @@ enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE, VERIFYING, REJECT
  */
 data class RelayInfo(val paid: Boolean = false, val supportsGiftWrap: Boolean = false, val latencyMs: Long = 0)
 
+private val RelayRowMinHeight = 56.dp
+private val RelaySpinnerSize = 12.dp
+private const val RELAY_MIN_URL_LENGTH = 10
+
 /**
- * Reusable relay list editor with add/remove and per-relay live status indicators.
- *
- * Each relay row shows:
- * - A colored dot: ✅ green (online), ❌ red (offline), ⏳ spinner (checking), ⚪ grey (idle)
- * - The relay hostname (stripped of `wss://` prefix)
- * - NIP-11 tags when online: `💰 Paid` (red) and/or `🎁 NIP-59` if advertised
- * - A remove button (when [editable] and more than one relay remains)
- *
- * The add field validates `wss://` prefix, minimum length, and deduplication.
+ * Relay list editor: one [SfListCard] of rows, each with the shared [StatusDot] (or a small ring while
+ * checking), the hostname in `titleSmall`, and a `bodySmall` status line that says the state in words
+ * (connected, offline, not checked, verifying, rejected) plus the NIP-11 tags (paid relay, NIP-59, latency)
+ * once a relay is online. The remove control is a full 48dp [SfIconButton]. When [editable], an add field
+ * validates the `wss://` prefix, a minimum length and duplicates.
  *
  * @param relays current relay URLs (full `wss://` format)
  * @param relayStatuses map of relay URL → live check status
@@ -79,26 +77,40 @@ fun RelayEditor(
     onCheck: (String) -> Unit = {},
     editable: Boolean = true
 ) {
-    var input by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    val adaptive = adaptiveLayoutInfo()
-    val tokens = adaptiveSizeTokens()
+    var input by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf<Int?>(null) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(tokens.denseSpacing)) {
-        relays.forEach { url ->
-            RelayRow(
-                url = url,
-                status = relayStatuses[url] ?: RelayCheckStatus.IDLE,
-                info = relayInfo[url],
-                onRemove = if (editable && relays.size > 1) ({ onRemove(url) }) else null
-            )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (relays.isNotEmpty()) {
+            SfListCard {
+                relays.forEachIndexed { index, url ->
+                    if (index > 0) SfDivider()
+                    RelayRow(
+                        url = url,
+                        status = relayStatuses[url] ?: RelayCheckStatus.IDLE,
+                        info = relayInfo[url],
+                        onRemove = if (editable && relays.size > 1) ({ onRemove(url) }) else null
+                    )
+                }
+            }
         }
 
         if (editable) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = tokens.denseSpacing),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            val submit = {
+                val url = input.trim().lowercase()
+                when {
+                    !url.startsWith("wss://") -> error = R.string.relay_must_start_wss
+                    url.length < RELAY_MIN_URL_LENGTH -> error = R.string.relay_url_too_short
+                    url in relays -> error = R.string.relay_already_added
+                    else -> {
+                        onAdd(url)
+                        onCheck(url)
+                        input = ""
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 OutlinedTextField(
                     value = input,
                     onValueChange = {
@@ -107,118 +119,94 @@ fun RelayEditor(
                     },
                     modifier = Modifier.weight(1f),
                     placeholder = {
-                        Text(stringResource(R.string.relay_placeholder), style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            stringResource(R.string.relay_placeholder),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     },
                     singleLine = true,
                     isError = error != null,
-                    supportingText = error?.let { { Text(it) } },
+                    supportingText = error?.let { { Text(stringResource(it)) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
                     shape = MaterialTheme.shapes.medium
                 )
-                Spacer(Modifier.width(tokens.itemSpacing))
-                val errMustWss = stringResource(R.string.relay_must_start_wss)
-                val errTooShort = stringResource(R.string.relay_url_too_short)
-                val errDuplicate = stringResource(R.string.relay_already_added)
-                TextButton(onClick = {
-                    val url = input.trim().lowercase()
-                    when {
-                        !url.startsWith("wss://") -> error = errMustWss
-                        url.length < 10 -> error = errTooShort
-                        url in relays -> error = errDuplicate
-                        else -> {
-                            onAdd(url)
-                            onCheck(url)
-                            input = ""
-                        }
-                    }
-                }) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = stringResource(R.string.add_relay),
-                        modifier = Modifier.size(tokens.iconSmall)
-                    )
-                    Spacer(Modifier.width(tokens.chipContentSpacing))
-                    Text(
-                        text = stringResource(R.string.add),
-                        style =
-                        if (adaptive.isCompact) {
-                            MaterialTheme.typography.labelLarge
-                        } else {
-                            MaterialTheme.typography.bodyMedium
-                        }
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                // Top-aligned with the field so a supporting error line does not push the button down.
+                SfTextButton(
+                    text = stringResource(R.string.add),
+                    onClick = submit,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
 }
 
-/** Single relay row with status dot, hostname, NIP-11 tags, and optional remove button. */
+/** One relay: status indicator, hostname, a status line in words, and an optional 48dp remove button. */
 @Composable
 private fun RelayRow(url: String, status: RelayCheckStatus, info: RelayInfo?, onRemove: (() -> Unit)?) {
-    val tokens = adaptiveSizeTokens()
-
-    Surface(
-        shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier =
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = RelayRowMinHeight)
+            .padding(start = 14.dp, end = if (onRemove != null) 6.dp else 14.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = tokens.cardPadding, vertical = tokens.itemSpacing),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            StatusDot(status)
-            Spacer(Modifier.width(tokens.itemSpacing))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(url.removePrefix("wss://"), style = MaterialTheme.typography.bodyMedium)
-                if (status == RelayCheckStatus.VERIFYING) {
-                    Text(
-                        stringResource(R.string.relay_verifying),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else if (status == RelayCheckStatus.REJECTED) {
-                    Text(
-                        stringResource(R.string.relay_rejected),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                } else if (info != null && status == RelayCheckStatus.ONLINE) {
-                    val tags = buildList {
-                        if (info.paid) add("💰 Paid")
-                        if (info.supportsGiftWrap) add("🎁 NIP-59")
-                        if (info.latencyMs > 0) add("${info.latencyMs}ms")
-                    }
-                    if (tags.isNotEmpty()) {
-                        Text(
-                            tags.joinToString(" · "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (info.paid) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-            }
-            if (onRemove != null) {
-                IconButton(onClick = onRemove, modifier = Modifier.size(tokens.relayRemoveButtonSize)) {
-                    Icon(
-                        Icons.Default.Close,
-                        stringResource(R.string.relay_remove),
-                        modifier = Modifier.size(tokens.iconSmall)
-                    )
-                }
-            }
+        RelayStatusIndicator(status)
+        Spacer(Modifier.width(11.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                url.removePrefix("wss://"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            val (line, tone) = relayStatusLine(status, info)
+            Text(line, style = MaterialTheme.typography.bodySmall, color = tone)
+        }
+        if (onRemove != null) {
+            SfIconButton(
+                icon = Icons.Outlined.Close,
+                contentDescription = stringResource(R.string.relay_remove),
+                onClick = onRemove
+            )
         }
     }
 }
 
-/** Animated status dot: green (online), red (offline/rejected), grey (idle), or a small spinner (checking/verifying). */
+/** Status in words: the dot only reinforces it. Online relays list their NIP-11 tags instead. */
 @Composable
-private fun StatusDot(status: RelayCheckStatus) {
-    val tokens = adaptiveSizeTokens()
-    val statusText = stringResource(
+private fun relayStatusLine(status: RelayCheckStatus, info: RelayInfo?): Pair<String, Color> {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val error = MaterialTheme.colorScheme.error
+    return when (status) {
+        RelayCheckStatus.ONLINE -> {
+            val tags = buildList {
+                if (info?.paid == true) add(stringResource(R.string.relay_tag_paid))
+                if (info?.supportsGiftWrap == true) add(stringResource(R.string.relay_tag_gift_wrap))
+                if (info != null && info.latencyMs > 0) add(stringResource(R.string.relay_tag_latency, info.latencyMs))
+            }
+            (tags.takeIf { it.isNotEmpty() }?.joinToString(" · ") ?: stringResource(R.string.relay_status_online)) to
+                muted
+        }
+        RelayCheckStatus.OFFLINE -> stringResource(R.string.relay_status_offline) to error
+        RelayCheckStatus.REJECTED -> stringResource(R.string.relay_rejected) to error
+        RelayCheckStatus.VERIFYING -> stringResource(R.string.relay_verifying) to muted
+        RelayCheckStatus.CHECKING -> stringResource(R.string.relay_status_checking) to muted
+        RelayCheckStatus.IDLE -> stringResource(R.string.relay_status_idle) to muted
+    }
+}
+
+/** Shared [StatusDot] for settled states; a 12dp ring while a check or verification is in flight. */
+@Composable
+private fun RelayStatusIndicator(status: RelayCheckStatus) {
+    val description = stringResource(
         when (status) {
             RelayCheckStatus.ONLINE -> R.string.cd_status_connected
             RelayCheckStatus.OFFLINE, RelayCheckStatus.REJECTED -> R.string.cd_status_disconnected
@@ -226,31 +214,16 @@ private fun StatusDot(status: RelayCheckStatus) {
             RelayCheckStatus.IDLE -> R.string.cd_status_unchecked
         }
     )
-    val statusSemantics = Modifier.semantics {
-        contentDescription = statusText
-        role = Role.Image
-    }
-
     when (status) {
-        RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING -> CircularProgressIndicator(
-            modifier = Modifier.size(tokens.relayStatusDotSize).then(statusSemantics),
-            strokeWidth = 1.5.dp
-        )
-        else -> {
-            val color by animateColorAsState(
-                when (status) {
-                    RelayCheckStatus.ONLINE -> Color(0xFF4CAF50)
-                    RelayCheckStatus.OFFLINE, RelayCheckStatus.REJECTED -> MaterialTheme.colorScheme.error
-                    else -> MaterialTheme.colorScheme.outlineVariant
+        RelayCheckStatus.CHECKING, RelayCheckStatus.VERIFYING ->
+            CircularProgressIndicator(
+                modifier =
+                Modifier.size(RelaySpinnerSize).semantics {
+                    contentDescription = description
+                    role = Role.Image
                 },
-                label = "statusColor"
+                strokeWidth = 1.5.dp
             )
-            Surface(
-                shape = MaterialTheme.shapes.extraSmall,
-                color = color,
-                modifier = Modifier.size(tokens.relayStatusDotSize).then(statusSemantics),
-                content = {}
-            )
-        }
+        else -> StatusDot(connected = status == RelayCheckStatus.ONLINE, contentDescription = description)
     }
 }

@@ -59,47 +59,97 @@
     <string name="clipboard_no_invite">No invite link on the clipboard</string>
 
     <!-- GroupDetailScreen -->
-    <string name="relays">Relays</string>
     <string name="nearby_sync">Nearby sync</string>
-    <string name="show_qr">Show QR code</string>
-    <string name="share_invite">Share invite</string>
-    <string name="add_expense">Add Expense</string>
-    <string name="invite_members">Invite members</string>
-    <string name="tab_balances">Balances</string>
+    <string name="group_nearby_sync_subtitle">Exchange updates in person over Bluetooth</string>
+    <string name="group_invite">Invite</string>
+    <string name="group_tools">Group tools</string>
+    <string name="group_sync_status_relays">Sync status &amp; relays</string>
+    <string name="group_sync_status_subtitle">Connection details, separate from delivery</string>
+    <string name="add_expense">Add expense</string>
+    <plurals name="group_people_private">
+        <item quantity="one">%1$d person · private group</item>
+        <item quantity="other">%1$d people · private group</item>
+    </plurals>
+    <string name="group_balances_in">Balances in</string>
+    <string name="group_balances_in_currency">Balances in %1$s</string>
+    <string name="group_you_are_owed">You are owed</string>
+    <string name="group_you_owe">You owe</string>
+    <string name="group_your_balance">Your balance</string>
+    <string name="group_summary_label">%1$s · %2$s</string>
+    <string name="group_summary_others_open">Other members still have open balances</string>
+    <string name="group_summary_settled_in">Everyone is settled in %1$s</string>
+    <string name="group_summary_no_currency_expenses">No %1$s expenses yet</string>
+    <plurals name="group_summary_across">
+        <item quantity="one">Across %1$d expense</item>
+        <item quantity="other">Across %1$d expenses</item>
+    </plurals>
+    <string name="tab_balances">Summary</string>
     <string name="tab_expenses">Expenses</string>
-    <string name="tab_members">Members</string>
+    <string name="tab_members">People</string>
 
     <!-- BalancesTab -->
-    <string name="all_settled">All settled up! 🎉</string>
-    <string name="no_balances_yet">No balances yet</string>
-    <string name="add_expense_to_see_balances">Add an expense to see balances</string>
-    <string name="settle">Settle</string>
-    <string name="owes">owes</string>
+    <string name="group_who_pays_whom">Who pays whom</string>
+    <plurals name="group_open_debts">
+        <item quantity="one">%1$d open</item>
+        <item quantity="other">%1$d open</item>
+    </plurals>
+    <string name="group_debt_owes_you">%1$s owes you</string>
+    <string name="group_debt_you_owe">You owe %1$s</string>
+    <string name="group_debt_owes">%1$s owes %2$s</string>
+    <string name="group_no_balances_in_currency">No balances in %1$s yet</string>
+    <string name="group_no_balances_hint">Add the first expense to see who pays whom.</string>
+    <string name="group_recent_activity">Recent activity</string>
+    <string name="group_see_all">See all</string>
 
     <!-- ExpensesTab -->
+    <string name="group_expense_history">Expense history</string>
+    <plurals name="group_expense_entries">
+        <item quantity="one">%1$d entry</item>
+        <item quantity="other">%1$d entries</item>
+    </plurals>
     <string name="no_expenses_yet">No expenses yet</string>
-    <string name="tap_add_first_expense">Tap + to add the first expense</string>
-    <string name="paid_by">Paid by %1$s</string>
+    <string name="tap_add_first_expense">Tap Add expense to record the first one</string>
+    <string name="group_expense_payer_meta">%1$s paid · %2$s</string>
+    <string name="group_delta_lent">you lent %1$s</string>
+    <string name="group_delta_share">your share %1$s</string>
+    <string name="group_delta_no_change">no balance change</string>
+    <string name="group_delta_not_involved">not involved</string>
 
     <!-- MembersTab -->
-    <string name="creator_badge">Creator</string>
-    <string name="you_badge">You</string>
+    <plurals name="group_people_heading">
+        <item quantity="one">%1$d person</item>
+        <item quantity="other">%1$d people</item>
+    </plurals>
+    <string name="group_you">You</string>
+    <string name="group_you_object">you</string>
+    <string name="group_you_creator">You · group creator</string>
+    <string name="group_creator">Group creator</string>
     <string name="remove_member">Remove member</string>
 
     <!-- GroupDetailDialogs -->
-    <string name="share_invite_title">Share invite link?</string>
-    <string name="share_invite_warning">This link contains the group encryption key. Anyone with this link can join and read all expenses. Share only via private messages — avoid public channels or group chats where bots may preview the URL.</string>
+    <string name="group_invite_title">Invite to %1$s</string>
+    <string name="group_invite_copy">Scan in person, or send the private invite directly.</string>
+    <string name="group_copy_link">Copy link</string>
+    <string name="group_link_copied">Invite link copied</string>
     <string name="share">Share</string>
-    <string name="invite_qr_code">Invite QR Code</string>
+    <string name="share_invite_warning">This invite carries the group key: anyone who has it can join and read the whole history. Share it only with people you trust, in a private message, never in a public channel or group chat where bots preview links.</string>
     <string name="invite_qr_content_desc">Invite QR code</string>
-    <string name="scan_to_join">Scan to join %1$s</string>
     <string name="generating_invite_link">Generating invite link…</string>
-    <string name="settle_up">Settle Up</string>
-    <string name="record_payment">Record payment:</string>
-    <string name="confirm_payment">Confirm Payment</string>
-    <string name="remove_member_title">Remove Member</string>
+    <string name="group_share_text">Join my SplitFree group!\n\n1. Install SplitFree\n2. Copy this link\n3. Open SplitFree and choose Paste invite\n\n%1$s</string>
+    <string name="group_share_chooser">Share invite</string>
+    <string name="record_payment">Record payment</string>
+    <string name="group_settle_path">%1$s paid %2$s</string>
+    <string name="group_settle_warning">Only record this after the money has actually changed hands. SplitFree does not make a payment.</string>
+    <string name="confirm_payment">Confirm payment</string>
+    <string name="group_expense_details">Expense details</string>
+    <string name="group_expense_detail_meta">%1$s paid · %2$s · %3$s</string>
+    <string name="remove_member_title">Remove member</string>
+    <string name="group_expense_delete">Delete</string>
+    <string name="group_expense_delete_title">Delete this expense?</string>
+    <string name="group_expense_delete_body">Balances update for everyone in the group.</string>
+    <string name="group_expense_only_author">Only %1$s can change this.</string>
     <string name="remove_member_body">Remove %1$s? This creates a new group without them. All remaining members will be migrated automatically.</string>
-    <string name="group_relays_title">Group Relays (%1$d)</string>
+    <string name="group_relays_title">Group relays (%1$d)</string>
     <string name="relay_editor_hint_creator">Manage relays for this group. Changes are broadcast to all members.</string>
     <string name="relay_editor_hint_member">Relays this group syncs through. Only the group creator can edit.</string>
 
@@ -111,6 +161,8 @@
     <string name="settlement_failed">Settlement failed</string>
     <string name="settlement_stale">Balances changed. Review and try again.</string>
     <string name="remove_member_failed">Could not remove member</string>
+    <string name="expense_deleted">Expense deleted</string>
+    <string name="delete_expense_failed">Could not delete expense</string>
     <string name="update_relays_failed">Could not update relays</string>
 
     <!-- Relay checks (CreateGroupViewModel, GroupDetailViewModel) -->
@@ -279,9 +331,15 @@
     <string name="relay_url_too_short">URL too short</string>
     <string name="relay_already_added">Already added</string>
     <string name="relay_verifying">Verifying write+read…</string>
-    <string name="relay_rejected">⚠️ Relay can\'t store events</string>
+    <string name="relay_rejected">Relay can\'t store events</string>
+    <string name="relay_status_online">Connected</string>
+    <string name="relay_status_offline">Offline or unreachable</string>
+    <string name="relay_status_checking">Checking…</string>
+    <string name="relay_status_idle">Not checked yet</string>
+    <string name="relay_tag_paid">Paid relay</string>
+    <string name="relay_tag_gift_wrap">NIP-59</string>
+    <string name="relay_tag_latency">%1$d ms</string>
     <string name="relay_remove">Remove relay</string>
-    <string name="add_relay">Add relay</string>
 
     <!-- Accessibility -->
     <string name="cd_warning_icon">Warning</string>

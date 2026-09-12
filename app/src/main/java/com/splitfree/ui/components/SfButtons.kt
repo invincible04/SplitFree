@@ -42,6 +42,8 @@ private const val DISABLED_CONTAINER_ALPHA = 0.35f
  * The single main action of a screen: "ink" fill (`inverseSurface` / `inverseOnSurface`), 56dp, full width,
  * `large` corners (mock `.primary`). While [loading] the label is hidden behind an 18dp ring and the button
  * is not clickable, but it keeps its full colour so the screen does not appear to have lost its action.
+ * [containerColor] / [contentColor] exist for the destructive confirm in a sheet (`error` / `onError`);
+ * every other caller keeps the ink default.
  */
 @Composable
 fun SfPrimaryButton(
@@ -50,7 +52,9 @@ fun SfPrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     loading: Boolean = false,
-    leadingIcon: ImageVector? = null
+    leadingIcon: ImageVector? = null,
+    containerColor: Color = MaterialTheme.colorScheme.inverseSurface,
+    contentColor: Color = MaterialTheme.colorScheme.inverseOnSurface
 ) {
     SfFilledButton(
         text = text,
@@ -59,8 +63,8 @@ fun SfPrimaryButton(
         enabled = enabled,
         loading = loading,
         leadingIcon = leadingIcon,
-        container = MaterialTheme.colorScheme.inverseSurface,
-        content = MaterialTheme.colorScheme.inverseOnSurface
+        container = containerColor,
+        content = contentColor
     )
 }
 
@@ -179,15 +183,28 @@ fun SfSecondaryButton(
     }
 }
 
-/** Inline text action in `primary` (mock `.text-btn`: Invite, See all, Edit, Record payment). 48dp tall. */
+/**
+ * Inline text action (Invite, See all, Edit, Record payment). 48dp tall, `labelMedium`, `primary` by
+ * default; pass another [color] for a destructive or quiet variant.
+ */
 @Composable
-fun SfTextButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+fun SfTextButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    color: Color = MaterialTheme.colorScheme.primary
+) {
     TextButton(
         onClick = onClick,
         modifier = modifier.heightIn(min = TextButtonHeight),
         enabled = enabled,
         shape = MaterialTheme.shapes.small,
-        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+        colors =
+        ButtonDefaults.textButtonColors(
+            contentColor = color,
+            disabledContentColor = color.copy(alpha = DISABLED_CONTAINER_ALPHA)
+        ),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
     ) {
         Text(

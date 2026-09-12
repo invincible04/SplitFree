@@ -3,17 +3,14 @@ package com.splitfree.ui.screens.groupdetail
 import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.PagerState
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,8 +19,6 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.splitfree.R
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -45,11 +40,10 @@ class ExpenseSavedEffectTest {
 
     private var expenseSaved by mutableStateOf(false)
     private var revision by mutableStateOf(0)
+    private var selectedTab by mutableIntStateOf(TAB_SUMMARY)
     private val consumedAtRevision = mutableListOf<Int>()
-    private val pageAtConsume = mutableListOf<Int>()
-    private lateinit var pagerState: PagerState
+    private val tabAtConsume = mutableListOf<Int>()
     private lateinit var snackbarHostState: SnackbarHostState
-    private lateinit var scope: CoroutineScope
 
     @Test
     fun `no save leaves balances selected without consuming or showing confirmation`() {
@@ -58,7 +52,7 @@ class ExpenseSavedEffectTest {
         compose.onNodeWithText(text(R.string.tab_balances)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.expense_saved_message)).assertDoesNotExist()
         compose.runOnIdle {
-            assertEquals(0, pagerState.currentPage)
+            assertEquals(TAB_SUMMARY, selectedTab)
             assertTrue(consumedAtRevision.isEmpty())
             assertNull(snackbarHostState.currentSnackbarData)
         }
@@ -70,7 +64,7 @@ class ExpenseSavedEffectTest {
 
         val confirmation = compose.runOnIdle {
             assertFalse(expenseSaved)
-            assertEquals(1, pagerState.currentPage)
+            assertEquals(TAB_EXPENSES, selectedTab)
             assertEquals(listOf(0), consumedAtRevision)
             requireNotNull(snackbarHostState.currentSnackbarData)
         }
@@ -83,22 +77,21 @@ class ExpenseSavedEffectTest {
         compose.onNodeWithText(text(R.string.expense_saved_message)).assertIsDisplayed()
         compose.runOnIdle {
             assertFalse(expenseSaved)
-            assertEquals(1, pagerState.currentPage)
+            assertEquals(TAB_EXPENSES, selectedTab)
             assertEquals(listOf(0), consumedAtRevision)
             assertSame(confirmation, snackbarHostState.currentSnackbarData)
         }
     }
 
     @Test
-    fun `flag is consumed before the pager moves so disposal mid-scroll cannot leave it set`() {
+    fun `flag is consumed before the tab moves so disposal cannot leave it set`() {
         render(initialSaved = true)
 
         compose.runOnIdle {
-            // Consumption happened while the pager still showed Balances (page 0)…
-            assertEquals(listOf(0), pageAtConsume)
+            // Consumption happened while Balances was still selected, and the switch still followed.
+            assertEquals(listOf(TAB_SUMMARY), tabAtConsume)
             assertFalse(expenseSaved)
-            // …and the scroll and confirmation still completed afterwards.
-            assertEquals(1, pagerState.currentPage)
+            assertEquals(TAB_EXPENSES, selectedTab)
             requireNotNull(snackbarHostState.currentSnackbarData)
         }
         compose.onNodeWithText(text(R.string.tab_expenses)).assertIsDisplayed()
@@ -119,7 +112,7 @@ class ExpenseSavedEffectTest {
         compose.onNodeWithText(text(R.string.expense_saved_message)).assertIsDisplayed()
         compose.runOnIdle {
             assertTrue(expenseSaved)
-            assertEquals(1, pagerState.currentPage)
+            assertEquals(TAB_EXPENSES, selectedTab)
             assertEquals(listOf(0), consumedAtRevision)
             assertSame(confirmation, snackbarHostState.currentSnackbarData)
         }
@@ -136,12 +129,12 @@ class ExpenseSavedEffectTest {
         }
         compose.runOnIdle {
             revision++
-            scope.launch { pagerState.scrollToPage(2) }
+            selectedTab = TAB_PEOPLE
         }
         compose.onNodeWithText(text(R.string.tab_members)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.expense_saved_message)).assertDoesNotExist()
         compose.runOnIdle {
-            assertEquals(2, pagerState.currentPage)
+            assertEquals(TAB_PEOPLE, selectedTab)
             assertNull(snackbarHostState.currentSnackbarData)
             expenseSaved = true
         }
@@ -150,7 +143,7 @@ class ExpenseSavedEffectTest {
         compose.onNodeWithText(text(R.string.expense_saved_message)).assertIsDisplayed()
         compose.runOnIdle {
             assertFalse(expenseSaved)
-            assertEquals(1, pagerState.currentPage)
+            assertEquals(TAB_EXPENSES, selectedTab)
             assertEquals(listOf(0, 1), consumedAtRevision)
             val secondConfirmation = requireNotNull(snackbarHostState.currentSnackbarData)
             assertNotSame(firstConfirmation, secondConfirmation)
@@ -162,30 +155,26 @@ class ExpenseSavedEffectTest {
         expenseSaved = initialSaved
         compose.setContent {
             val renderedRevision = revision
-            pagerState = rememberPagerState(pageCount = { 3 })
             snackbarHostState = remember { SnackbarHostState() }
-            scope = rememberCoroutineScope()
             MaterialTheme {
                 ExpenseSavedEffect(
                     expenseSaved = expenseSaved,
                     onConsumed = {
                         consumedAtRevision += renderedRevision
-                        pageAtConsume += pagerState.currentPage
+                        tabAtConsume += selectedTab
                         if (resetOnConsume) expenseSaved = false
                     },
-                    pagerState = pagerState,
+                    onShowExpenses = { selectedTab = TAB_EXPENSES },
                     snackbarHostState = snackbarHostState
                 )
                 Box(Modifier.fillMaxSize()) {
-                    HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            val title = when (page) {
-                                0 -> R.string.tab_balances
-                                1 -> R.string.tab_expenses
-                                else -> R.string.tab_members
-                            }
-                            Text(stringResource(title))
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        val title = when (selectedTab) {
+                            TAB_SUMMARY -> R.string.tab_balances
+                            TAB_EXPENSES -> R.string.tab_expenses
+                            else -> R.string.tab_members
                         }
+                        Text(stringResource(title))
                     }
                     Text("Revision $renderedRevision", modifier = Modifier.align(Alignment.TopEnd))
                     SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))

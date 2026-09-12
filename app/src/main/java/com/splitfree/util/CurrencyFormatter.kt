@@ -3,6 +3,7 @@ package com.splitfree.util
 import java.math.BigDecimal
 import java.util.Currency
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Formats smallest-unit amounts (paisa, cents) into display strings with currency symbols.
@@ -11,11 +12,21 @@ import java.util.Locale
  * to avoid floating-point rounding errors.
  */
 object CurrencyFormatter {
+    private const val DEFAULT_MINOR_DIGITS = 2
+
+    /** Minor digits per normalised code; list rows format the same few currencies over and over. */
+    private val minorDigitsCache = ConcurrentHashMap<String, Int>()
+
     /** Number of decimal (minor unit) digits for a currency. */
-    fun minorDigits(currency: String): Int = try {
-        Currency.getInstance(currency.trim().uppercase(Locale.ROOT)).defaultFractionDigits.takeIf { it >= 0 } ?: 2
-    } catch (_: IllegalArgumentException) {
-        2
+    fun minorDigits(currency: String): Int {
+        val code = currency.trim().uppercase(Locale.ROOT)
+        return minorDigitsCache.getOrPut(code) {
+            try {
+                Currency.getInstance(code).defaultFractionDigits.takeIf { it >= 0 } ?: DEFAULT_MINOR_DIGITS
+            } catch (_: IllegalArgumentException) {
+                DEFAULT_MINOR_DIGITS
+            }
+        }
     }
 
     /** Multiplier to convert major units to smallest units. */

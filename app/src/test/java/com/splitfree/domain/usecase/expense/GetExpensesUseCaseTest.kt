@@ -265,6 +265,74 @@ class GetExpensesUseCaseTest {
         assertEquals(7000L, result[0].amount)
     }
 
+    // --- Authors ---
+
+    @Test
+    fun `observeWithAuthors pairs each expense with the pubkey of its original event`() = runBlocking {
+        val mine = makeExpense("exp1")
+        val theirs = makeExpense("exp2", timestamp = 500)
+        every { encryption.decrypt("enc1", groupKey) } returns json.encodeToString(Expense.serializer(), mine)
+        every { encryption.decrypt("enc2", groupKey) } returns json.encodeToString(Expense.serializer(), theirs)
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
+            listOf(
+                makeEntity("e1", eventType = "expense", uuid = "exp1", content = "enc1", pubkey = "pub1"),
+                makeEntity("e2", eventType = "expense", uuid = "exp2", content = "enc2", pubkey = "pub2")
+            )
+        )
+
+        val result = useCase.observeWithAuthors(groupId).first()
+
+        assertEquals(listOf("exp1" to "pub1", "exp2" to "pub2"), result.map { it.expense.id to it.authorPubkey })
+    }
+
+    @Test
+    fun `author stays the original signer even when someone else's correction is shown`() = runBlocking {
+        val original = makeExpense("exp1", amount = 5000)
+        val corrected = makeExpense("exp1", amount = 7000)
+        every { encryption.decrypt("enc-orig", groupKey) } returns json.encodeToString(Expense.serializer(), original)
+        every { encryption.decrypt("enc-corr", groupKey) } returns json.encodeToString(Expense.serializer(), corrected)
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
+            listOf(
+                makeEntity("e1", eventType = "expense", uuid = "exp1", content = "enc-orig", pubkey = "pub1"),
+                makeEntity(
+                    "e2",
+                    eventType = "expense_correction",
+                    uuid = "exp1",
+                    content = "enc-corr",
+                    createdAt = 2000,
+                    pubkey = "pub2"
+                )
+            )
+        )
+
+        val result = useCase.observeWithAuthors(groupId).first()
+
+        assertEquals(7000L, result.single().expense.amount)
+        assertEquals("pub1", result.single().authorPubkey)
+    }
+
+    @Test
+    fun `correction without a local original is attributed to the correction's signer`() = runBlocking {
+        val corrected = makeExpense("exp1", amount = 7000)
+        every { encryption.decrypt("enc-corr", groupKey) } returns json.encodeToString(Expense.serializer(), corrected)
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(
+            listOf(
+                makeEntity(
+                    "e2",
+                    eventType = "expense_correction",
+                    uuid = "exp1",
+                    content = "enc-corr",
+                    createdAt = 2000,
+                    pubkey = "pub2"
+                )
+            )
+        )
+
+        val result = useCase.observeWithAuthors(groupId).first()
+
+        assertEquals("pub2", result.single().authorPubkey)
+    }
+
     private fun makeExpense(id: String, timestamp: Long = 1000, amount: Long = 5000, description: String = "test") =
         Expense(
             id = id,
@@ -282,9 +350,10 @@ class GetExpensesUseCaseTest {
         eventType: String = "expense",
         uuid: String? = "uuid",
         content: String = "enc",
-        createdAt: Long = 1000
+        createdAt: Long = 1000,
+        pubkey: String = "pub1"
     ) = EventSnapshot(
-        eventId = id, groupId = groupId, pubkey = "pub1", createdAt = createdAt,
+        eventId = id, groupId = groupId, pubkey = pubkey, createdAt = createdAt,
         kind = 30078, contentEncrypted = content, eventType = eventType,
         expenseUuid = uuid, sig = "sig", receivedAt = 1000
     )
