@@ -99,7 +99,7 @@ private fun GalleryBody(
                 StatusPill(text = "Demo data", tone = PillTone.Online)
             }
 
-            // .balance-hero
+            // Balance hero
             HeroCardSample()
 
             SectionHead(title = "Your shared spaces") { Meta("3 groups") }
@@ -164,6 +164,13 @@ private fun GalleryBody(
                 StatusPill(text = "Offline", tone = PillTone.Offline)
                 StatusDot(connected = true, contentDescription = "Connected")
                 StatusDot(connected = false, contentDescription = "Disconnected")
+            }
+
+            SectionHead(title = "Brand") { Meta("launcher mark · 96 / 48") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                BrandMark(modifier = Modifier.testTag("ui_kit_brand_mark"))
+                BrandMark(size = 48.dp)
+                Meta("home-screen icon tile")
             }
 
             SectionHead(title = "Notices")
@@ -308,7 +315,7 @@ private fun Meta(text: String) {
     )
 }
 
-/** The inverted hero balance card (mock `.balance-hero`) built from theme roles only. */
+/** The inverted hero balance card built from theme roles only. */
 @Composable
 private fun HeroCardSample() {
     val palette = MaterialTheme.splitFree
