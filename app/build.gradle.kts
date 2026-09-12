@@ -66,6 +66,8 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
+            // Robolectric fixtures and the 32 MiB import-cap test share one worker; the 512 MB default OOMs.
+            it.maxHeapSize = "2g"
             it.systemProperty("REAL_RELAY_TEST", System.getProperty("REAL_RELAY_TEST") ?: "false")
             if (System.getProperty("REAL_RELAY_TEST") != "true") {
                 it.exclude("**/*IntegrationTest*")

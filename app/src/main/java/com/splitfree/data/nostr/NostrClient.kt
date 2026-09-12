@@ -6,6 +6,7 @@ import com.splitfree.data.nostr.relay.Relay
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
+import com.splitfree.domain.model.sync.ConnectionStatus
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.io.IOException
@@ -35,7 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Nostr relay pool — manages multiple WebSocket connections, subscriptions,
+ * Nostr relay pool: manages multiple WebSocket connections, subscriptions,
  * event publishing, signature verification, and cross-relay deduplication.
  *
  * Only `wss://` URLs are accepted to prevent unencrypted relay connections.
@@ -47,12 +48,12 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     private val relays = ConcurrentHashMap<String, Relay>()
     private val connectionMutex = Mutex()
 
-    /** Child job for relay collectors — cancelled on [disconnect] to stop stale coroutines. */
+    /** Child job for relay collectors, cancelled on [disconnect] to stop stale coroutines. */
     private var sessionJob = SupervisorJob(appScope.coroutineContext[Job])
     private val scope get() = CoroutineScope(appScope.coroutineContext + sessionJob)
     private val subIdCounter = AtomicLong(0)
 
-    // Bounded dedup set — evicts oldest entries beyond 10K to prevent memory leak.
+    // Bounded dedup set; evicts oldest entries beyond 10K to prevent memory leak.
     // All access MUST go through seenLock.
     private val seenEventIds = LinkedHashSet<String>()
     private val seenLock = Any()
@@ -89,12 +90,29 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
 
     override fun currentRelayUrls(): List<String> = currentRelays.toList()
 
-    /** Reactive connection state — emits whenever any relay connects/disconnects. */
+    /** Latched once [connect] or [addRelay] has asked any relay to open; never reset while the process lives. */
+    @Volatile
+    private var connectRequested = false
+
+    /** Reactive connection status; refreshed whenever any relay changes state. */
+    private val _connectionStatus = MutableStateFlow(ConnectionStatus.Connecting)
+    override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
+
+    /** Boolean view of [connectionStatus]: true only while at least one relay is connected. */
     private val _connectionState = MutableStateFlow(false)
     override val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
 
     private fun refreshConnectionState() {
-        _connectionState.value = relays.values.any { it.state.value == Relay.State.CONNECTED }
+        val states = relays.values.map { it.state.value }
+        val status =
+            when {
+                states.any { it == Relay.State.CONNECTED } -> ConnectionStatus.Connected
+                states.any { it == Relay.State.CONNECTING } -> ConnectionStatus.Connecting
+                states.isEmpty() && !connectRequested -> ConnectionStatus.Connecting
+                else -> ConnectionStatus.Offline
+            }
+        _connectionStatus.value = status
+        _connectionState.value = status == ConnectionStatus.Connected
     }
 
     override fun acquireConnection() {
@@ -115,14 +133,14 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      */
     override suspend fun connect(relayUrls: List<String>) {
         connectionMutex.withLock {
+            connectRequested = true
             val safeUrls = relayUrls.filter { it.startsWith("wss://") }
             if (safeUrls.isEmpty() && relayUrls.isNotEmpty()) {
-                Log.w(TAG, "All relay URLs rejected — only wss:// is allowed")
+                Log.w(TAG, "All relay URLs rejected; only wss:// is allowed")
             }
             // Remove stale relays no longer in the new list
             val stale = relays.keys - safeUrls.toSet()
             stale.forEach { url -> relays.remove(url)?.disconnect() }
-            if (stale.isNotEmpty()) refreshConnectionState()
             currentRelays = safeUrls
             safeUrls.forEach { url ->
                 val existing = relays[url]
@@ -151,7 +169,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                     ) {
                                         _incomingEvents.emit(msg.event)
                                     } else {
-                                        // Duplicate from another relay — skip silently
+                                        // Duplicate from another relay, skip silently
                                     }
                                 }
 
@@ -178,6 +196,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     scope.launch { relay.state.collect { refreshConnectionState() } }
                 }
             }
+            // Relays are now connecting (or none survived the filter); either way the status must say so.
+            refreshConnectionState()
             Log.i(TAG, "Connected to ${safeUrls.size} relays")
         }
     }
@@ -198,7 +218,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                 since = sinceVal
             )
         val filters = mutableListOf(filterByGroup)
-        // Filter 2: kind 1059 by #p tag — NIP-59 relays route gift wraps by recipient.
+        // Filter 2: kind 1059 by #p tag; NIP-59 relays route gift wraps by recipient.
         // NIP-59 randomizes timestamps up to 48h in the past, so widen the window.
         if (myPubkey != null) {
             val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
@@ -226,7 +246,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         activeSubscriptions.clear()
     }
 
-    /** Start listening is now a no-op — messages flow automatically via SharedFlow. */
+    /** Start listening is now a no-op; messages flow automatically via SharedFlow. */
     override fun startListening() { /* messages already flowing via relay.messages collectors */ }
 
     override suspend fun publish(event: NostrEvent): Boolean {
@@ -268,7 +288,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      * append to. Subscriptions are always closed, including on cancellation.
      *
      * @throws IOException if the collectors do not attach
-     *   within [READY_TIMEOUT_MS] — the fetch is failed rather than returning partial history
+     *   within [READY_TIMEOUT_MS]; the fetch is failed rather than returning partial history
      */
     private suspend fun fetchWithFilters(
         subId: String,
@@ -340,7 +360,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     withTimeoutOrNull(READY_TIMEOUT_MS) { collectorsReady.await() }
                         ?: throw IOException("Relay collectors did not become ready")
                     targets.forEach { it.subscribe(subId, filters) }
-                    // Timeout waiting for EOSE — proceed with whatever events we collected
+                    // Timeout waiting for EOSE; proceed with whatever events we collected
                     withTimeoutOrNull(timeoutMs) { allEose.await() }
                 } finally {
                     // NonCancellable so the join still happens when the caller is cancelled;
@@ -429,6 +449,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             return
         }
         if (relays.containsKey(url)) return
+        connectRequested = true
         val relay = Relay(url, scope, authSigner = authSigner)
         relays[url] = relay
         scope.launch {
@@ -443,6 +464,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             }
         }
         relay.connect()
+        scope.launch { relay.state.collect { refreshConnectionState() } }
     }
 
     override fun disconnect() {

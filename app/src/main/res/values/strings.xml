@@ -13,15 +13,50 @@
     <string name="remove">Remove</string>
 
     <!-- GroupsListScreen -->
-    <string name="new_group">New Group</string>
+    <string name="new_group">New group</string>
     <string name="no_groups_yet">No groups yet</string>
-    <string name="no_groups_body">Create a group to start splitting expenses\nwith friends, family, or roommates.</string>
+    <string name="no_groups_body">Create a group for a trip, a flat or a night out, then invite people.</string>
     <string name="paste_invite_link">Paste invite link</string>
     <string name="scan_qr">Scan QR code</string>
     <plurals name="member_count">
-        <item quantity="one">%1$d member</item>
-        <item quantity="other">%1$d members</item>
+        <item quantity="one">%1$d person</item>
+        <item quantity="other">%1$d people</item>
     </plurals>
+    <string name="home_eyebrow">A little less keeping score</string>
+    <string name="home_title">Your groups.</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_online">Online</string>
+    <string name="status_offline">Offline</string>
+    <string name="cd_connection_status">Relay connection: %1$s</string>
+    <string name="offline_banner">Offline. Changes are saved on this phone and sync when you reconnect.</string>
+    <string name="balances_in">Balances in</string>
+    <string name="balances_in_currency">Balances in %1$s</string>
+    <string name="cd_change_balance_currency">Change balance currency, %1$s selected</string>
+    <string name="net_to_receive">Net to receive</string>
+    <string name="net_to_pay">Net to pay</string>
+    <string name="hero_label_currency">%1$s · %2$s</string>
+    <string name="you_are_owed">You are owed</string>
+    <string name="you_owe">You owe</string>
+    <string name="nothing_to_settle_yet">Nothing to settle yet</string>
+    <string name="nothing_to_settle_body">Add an expense in any group and your balances will show up here.</string>
+    <string name="your_shared_spaces">Your shared spaces</string>
+    <plurals name="group_count">
+        <item quantity="one">%1$d group</item>
+        <item quantity="other">%1$d groups</item>
+    </plurals>
+    <string name="group_card_meta">%1$s · %2$s</string>
+    <string name="cd_group_card">%1$s, %2$s, %3$s %4$s</string>
+    <string name="cd_group_card_no_amount">%1$s, %2$s, %3$s</string>
+    <string name="direction_owed_to_you">owed to you</string>
+    <string name="direction_you_owe">you owe</string>
+    <string name="direction_settled">settled</string>
+    <string name="direction_no_expenses">no %1$s expenses</string>
+    <string name="direction_no_expenses_yet">no expenses yet</string>
+    <string name="have_an_invite">Have an invite?</string>
+    <string name="quick_scan_qr">Scan QR</string>
+    <string name="quick_paste_link">Paste link</string>
+    <string name="currencies_stay_separate">Balances stay separate per currency</string>
+    <string name="clipboard_no_invite">No invite link on the clipboard</string>
 
     <!-- GroupDetailScreen -->
     <string name="relays">Relays</string>
@@ -210,12 +245,22 @@
     <string name="nearby_scan_failed">Scan failed: %1$s</string>
 
     <!-- CreateGroupScreen -->
-    <string name="create_group">Create Group</string>
-    <string name="create_group_hint">Create a group to start splitting expenses with friends.</string>
+    <string name="create_group">Create group</string>
+    <string name="create_group_hint">Name it now. Invite people when you are ready.</string>
+    <string name="create_group_eyebrow">Start something shared</string>
+    <string name="create_group_headline">A group for\nevery plan.</string>
     <string name="group_name">Group name</string>
-    <string name="group_name_placeholder">e.g., Goa Trip 2026</string>
-    <string name="relays_count">Relays (%1$d)</string>
+    <string name="group_name_placeholder">Weekend away</string>
+    <plurals name="relays_count">
+        <item quantity="one">%1$d relay selected</item>
+        <item quantity="other">%1$d relays selected</item>
+    </plurals>
     <string name="relay_section_hint">Choose which Nostr relays this group syncs through. Default relays work for most users.</string>
+    <string name="sync_relays">Sync relays</string>
+    <string name="relay_default_configuration">Default configuration</string>
+    <string name="encrypted_on_device_hint">Expenses are encrypted on the device before sharing. No account needed.</string>
+    <string name="cd_expanded">Expanded</string>
+    <string name="cd_collapsed">Collapsed</string>
 
     <!-- DebugLogScreen -->
     <string name="debug_logs_title">Debug Logs (%1$d)</string>
@@ -270,8 +315,10 @@
     <string name="notif_public_new_settlement">New settlement</string>
 
     <!-- MainActivity: invite deep links -->
-    <string name="join_group_title">Join Group?</string>
-    <string name="join_group_body">Join \"%1$s\"?\nRelays: %2$s\n\nOnly join if you trust the sender.</string>
+    <string name="join_group_title">Join %1$s?</string>
+    <string name="join_group_body">Only join if you trust the person who sent this invite. Anyone with the link can read this group\'s history.</string>
+    <string name="join_group_relays">Relays</string>
+    <string name="cd_joining_group">Joining group</string>
     <string name="join">Join</string>
     <string name="invalid_invite_link">Invalid invite link</string>
     <string name="join_failed">Join failed: %1$s</string>

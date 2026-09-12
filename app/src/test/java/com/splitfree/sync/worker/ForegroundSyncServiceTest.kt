@@ -8,6 +8,7 @@ import com.splitfree.data.nostr.relay.RelayConnectionManager
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.ProcessHealthTracker
 import io.mockk.clearMocks
 import io.mockk.coEvery
@@ -137,18 +138,41 @@ class ForegroundSyncServiceTest {
     }
 
     @Test
-    fun `destroying a service waiting for groups cancels its collector`() = testScope.runTest {
+    fun `fresh install with no groups still connects and subscribes the first group when it appears`() =
+        testScope.runTest {
+            coEvery { groupRepo.getAll() } returns emptyList()
+            coEvery { connectionManager.resolvePrimaryRelays() } returns RelayDefaults.DEFAULT_RELAYS
+            val groups = MutableStateFlow<List<Group>>(emptyList())
+            every { groupRepo.observeAll() } returns groups
+            val syncEngine = service.syncEngine
+            service.onCreate()
+            runCurrent()
+            coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
+            coVerify(exactly = 0) { nostrClient.subscribe(any(), any(), any()) }
+            coVerify(exactly = 1) { syncEngine.flushOutbox() }
+            assertEquals(1, groups.subscriptionCount.value)
+
+            groups.value = listOf(group.copy(relays = RelayDefaults.DEFAULT_RELAYS))
+            runCurrent()
+            coVerify(exactly = 1) { nostrClient.subscribe(group.id, any(), "alice") }
+            coVerify(exactly = 2) { syncEngine.flushOutbox() }
+            coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
+        }
+
+    @Test
+    fun `destroying a service with no groups cancels its observer and releases the connection`() = testScope.runTest {
         coEvery { groupRepo.getAll() } returns emptyList()
+        coEvery { connectionManager.resolvePrimaryRelays() } returns RelayDefaults.DEFAULT_RELAYS
         val groups = MutableStateFlow<List<Group>>(emptyList())
         every { groupRepo.observeAll() } returns groups
         service.onCreate()
         runCurrent()
         assertEquals(1, groups.subscriptionCount.value)
+        verify(exactly = 0) { nostrClient.releaseConnection() }
         service.onDestroy()
         runCurrent()
         assertEquals(0, groups.subscriptionCount.value)
-        coVerify(exactly = 0) { connectionManager.ensureConnected(any()) }
-        verify(exactly = 0) { nostrClient.releaseConnection() }
+        verify(exactly = 1) { nostrClient.releaseConnection() }
     }
 
     @Test

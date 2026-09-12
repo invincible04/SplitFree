@@ -1,56 +1,61 @@
 package com.splitfree.ui.screens.group
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.QrCodeScanner
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material.icons.outlined.WifiOff
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -59,32 +64,80 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
-import com.splitfree.domain.model.group.Group
-import com.splitfree.ui.components.avatarInitial
-import com.splitfree.ui.util.AdaptiveLayoutInfo
+import com.splitfree.domain.model.sync.ConnectionStatus
+import com.splitfree.domain.usecase.group.GroupSummary
+import com.splitfree.ui.components.EmptyState
+import com.splitfree.ui.components.MiniLabel
+import com.splitfree.ui.components.MoneyText
+import com.splitfree.ui.components.PillTone
+import com.splitfree.ui.components.SectionHead
+import com.splitfree.ui.components.SfAccentButton
+import com.splitfree.ui.components.SfBottomDock
+import com.splitfree.ui.components.SfCard
+import com.splitfree.ui.components.SfIconButton
+import com.splitfree.ui.components.SfLargeTitleHeader
+import com.splitfree.ui.components.SfSecondaryButton
+import com.splitfree.ui.components.SfTopBar
+import com.splitfree.ui.components.SignedMoneyText
+import com.splitfree.ui.components.StatusPill
+import com.splitfree.ui.theme.splitFree
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
+import com.splitfree.ui.util.asString
+import com.splitfree.ui.viewmodels.GroupsListUiState
 import com.splitfree.ui.viewmodels.GroupsListViewModel
+import com.splitfree.util.CurrencyFormatter
 import com.splitfree.util.DebugLog as Log
+import kotlin.math.abs
 import kotlinx.coroutines.launch
 
 private const val TAG = "GroupsListScreen"
 
+private val CardSpacing = 10.dp
+private val GroupCardMinHeight = 84.dp
+private val GroupSymbolSize = 47.dp
+private val GroupMoneyMaxWidth = 125.dp
+private val QuickTileMinHeight = 74.dp
+private val QuickIconSize = 39.dp
+private val HeroMinHeight = 190.dp
+private val SettingsTileSize = 48.dp
+private val Tile16 = RoundedCornerShape(16.dp)
+private val Tile13 = RoundedCornerShape(13.dp)
+private val BannerShape = RoundedCornerShape(15.dp)
+
+/** Large-text threshold above which invite tiles and card balances stack instead of sitting side by side. */
+private const val STACK_FONT_SCALE = 1.5f
+
 /**
- * Main screen showing all expense groups the user belongs to.
+ * Everything the home screen can ask its host to do. The route wires these to navigation, the QR scanner,
+ * the clipboard and the ViewModel; tests pass recording lambdas.
+ */
+data class GroupsListActions(
+    val openGroup: (String) -> Unit = {},
+    val createGroup: () -> Unit = {},
+    val openSettings: () -> Unit = {},
+    val pasteInvite: () -> Unit = {},
+    val scanQr: () -> Unit = {},
+    val selectCurrency: (String) -> Unit = {}
+)
+
+/**
+ * Home: every group the user belongs to, with their per-currency balance in each.
  *
- * Top bar actions: paste invite link, scan QR code, settings.
- * FAB creates a new group. Empty state shown when no groups exist.
+ * Top bar actions scan an invite QR, paste an invite link from the clipboard and open Settings. The bottom
+ * dock creates a new group. Nothing here decrypts anything: balances arrive pre-computed in
+ * [GroupsListUiState] from [GroupsListViewModel].
  *
  * @param onGroupClick navigates to group detail
  * @param onCreateGroup navigates to group creation
  * @param onSettings navigates to settings
  * @param onScanResult callback for scanned/pasted invite links
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GroupsListScreen(
     onGroupClick: (String) -> Unit,
@@ -93,72 +146,50 @@ fun GroupsListScreen(
     onScanResult: (String) -> Unit = {},
     viewModel: GroupsListViewModel = hiltViewModel()
 ) {
-    val groups by viewModel.groups.collectAsStateWithLifecycle(initialValue = emptyList())
-    val isConnected by viewModel.isConnected.collectAsStateWithLifecycle()
-    val adaptive = adaptiveLayoutInfo()
-    val tokens = adaptiveSizeTokens()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    val listHorizontalPadding = tokens.screenPaddingHorizontal
-    val listVerticalPadding = tokens.itemSpacing
+    val snackbarHostState = remember { SnackbarHostState() }
+    val noInviteMessage = stringResource(R.string.clipboard_no_invite)
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.app_name), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.width(tokens.itemSpacing))
-                        ConnectionDot(isConnected)
-                    }
-                },
-                actions = {
-                    PasteInviteButton { scope.launch { extractInviteLink(clipboard)?.let(onScanResult) } }
-                    ScanQrButton(context, onScanResult)
-                    IconButton(onClick = onSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings))
-                    }
-                }
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onCreateGroup,
-                icon = { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.new_group)) },
-                text = { Text(stringResource(R.string.new_group)) }
-            )
-        }
-    ) { padding ->
-        if (groups.isEmpty()) {
-            EmptyGroupsState(
-                modifier = Modifier.fillMaxSize().padding(padding),
-                adaptive = adaptive
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.padding(padding),
-                contentPadding = PaddingValues(horizontal = listHorizontalPadding, vertical = listVerticalPadding),
-                verticalArrangement = Arrangement.spacedBy(tokens.itemSpacing)
-            ) {
-                items(groups, key = { it.id }) { group ->
-                    GroupCard(group = group, onClick = { onGroupClick(group.id) })
-                }
-                item { Spacer(Modifier.height(tokens.listBottomSpacer)) }
-            }
+    val errorText = state.error?.asString()
+    LaunchedEffect(errorText) {
+        if (errorText != null) {
+            snackbarHostState.showSnackbar(errorText)
+            viewModel.clearError()
         }
     }
+
+    val actions =
+        remember(onGroupClick, onCreateGroup, onSettings, onScanResult, clipboard, context, noInviteMessage) {
+            GroupsListActions(
+                openGroup = onGroupClick,
+                createGroup = onCreateGroup,
+                openSettings = onSettings,
+                pasteInvite = {
+                    scope.launch {
+                        val link = extractInviteLink(clipboard)
+                        if (link != null) onScanResult(link) else snackbarHostState.showSnackbar(noInviteMessage)
+                    }
+                },
+                scanQr = { startQrScan(context, onScanResult) },
+                selectCurrency = viewModel::selectCurrency
+            )
+        }
+
+    GroupsListContent(state = state, actions = actions, snackbarHostState = snackbarHostState)
 }
 
-// --- Top bar action helpers ---
+// --- Route helpers: clipboard and QR scanner ---
 
 /**
  * Reads the clipboard and extracts a SplitFree invite link if present.
- * Handles `splitfree://join` scheme even when the link is embedded in a larger message.
+ * Handles the `splitfree://join` scheme even when the link is embedded in a larger message.
  *
- * @return the invite link, or null if clipboard doesn't contain one
+ * @return the invite link, or null if the clipboard doesn't contain one
  */
-private suspend fun extractInviteLink(clipboard: androidx.compose.ui.platform.Clipboard): String? {
+private suspend fun extractInviteLink(clipboard: Clipboard): String? {
     val text = clipboard.getClipEntry()
         ?.clipData
         ?.getItemAt(0)
@@ -167,169 +198,664 @@ private suspend fun extractInviteLink(clipboard: androidx.compose.ui.platform.Cl
         ?.trim()
         ?: return null
     val link = text.lines().firstOrNull { it.trimStart().startsWith("splitfree://join") }?.trim()
-    // The link is a bearer credential (it carries the group key) — never log its payload.
+    // The link is a bearer credential (it carries the group key); never log its payload.
     if (link != null) Log.i(TAG, "Pasted invite link from clipboard")
     return link
 }
 
-/** Clipboard paste button — reads invite link from clipboard and triggers join flow. */
-@Composable
-private fun PasteInviteButton(onClick: () -> Unit) {
-    IconButton(onClick = onClick) {
-        Icon(Icons.Outlined.ContentPaste, contentDescription = stringResource(R.string.paste_invite_link))
-    }
+/** Launches the ML Kit barcode scanner for invite QR codes and forwards the raw value. */
+private fun startQrScan(context: Context, onScanResult: (String) -> Unit) {
+    val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+        .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+        .build()
+    com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options)
+        .startScan()
+        .addOnSuccessListener { barcode ->
+            barcode.rawValue?.let {
+                Log.i(TAG, "QR scanned (${it.length} chars)")
+                onScanResult(it)
+            }
+        }
+        .addOnFailureListener { e ->
+            Log.w(TAG, "QR scan failed: ${e.message}")
+        }
 }
 
-/** QR scanner button — launches ML Kit barcode scanner for invite QR codes. */
+// --- Stateless content ---
+
+/**
+ * Stateless home layout (mock `screens.home()`): top bar, optional offline banner, greeting with a
+ * connection pill, currency line, balance hero, group cards, invite tiles and the "New group" dock.
+ * Three states: `loading` shows a skeleton, an empty list shows [EmptyState], otherwise the ledger.
+ */
 @Composable
-private fun ScanQrButton(context: android.content.Context, onScanResult: (String) -> Unit) {
-    IconButton(onClick = {
-        val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
-            .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
-            .build()
-        com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options)
-            .startScan()
-            .addOnSuccessListener { barcode ->
-                barcode.rawValue?.let {
-                    Log.i(TAG, "QR scanned (${it.length} chars)")
-                    onScanResult(it)
+internal fun GroupsListContent(
+    state: GroupsListUiState,
+    actions: GroupsListActions,
+    modifier: Modifier = Modifier,
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
+) {
+    val tokens = adaptiveSizeTokens()
+    val adaptive = adaptiveLayoutInfo()
+    val horizontal = tokens.screenPaddingHorizontal
+    // Compact width at large text: reflow rows into columns rather than shrink or clip anything.
+    val stackForLargeText = adaptive.isCompact && adaptive.fontScale >= STACK_FONT_SCALE
+
+    Scaffold(
+        modifier = modifier,
+        topBar = { HomeTopBar(actions, endInset = horizontal) },
+        bottomBar = {
+            SfBottomDock {
+                SfAccentButton(
+                    text = stringResource(R.string.new_group),
+                    onClick = actions.createGroup,
+                    leadingIcon = Icons.Filled.Add,
+                    modifier = Modifier.testTag("home_new_group")
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.currencies_stay_separate),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.splitFree.faint,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
+        LazyColumn(
+            // Only the top inset is consumed here: content scrolls beneath the dock's gradient instead.
+            modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()).testTag("home_list"),
+            contentPadding =
+            PaddingValues(start = horizontal, end = horizontal, bottom = padding.calculateBottomPadding() + 12.dp)
+        ) {
+            item(key = "greeting") {
+                // The banner shares the first item with the greeting: the list anchors on its first item, so a
+                // banner that appears later grows this item in place instead of landing above the viewport.
+                Column {
+                    if (state.connection == ConnectionStatus.Offline) {
+                        OfflineBanner()
+                    }
+                    SfLargeTitleHeader(
+                        eyebrow = stringResource(R.string.home_eyebrow),
+                        title = stringResource(R.string.home_title)
+                    ) {
+                        ConnectionPill(status = state.connection)
+                    }
                 }
             }
-            .addOnFailureListener { e ->
-                Log.w(TAG, "QR scan failed: ${e.message}")
+            when {
+                state.loading -> item(key = "skeleton") { HomeSkeleton() }
+                state.groups.isEmpty() -> item(key = "empty") { HomeEmpty(onCreate = actions.createGroup) }
+                else -> readyItems(state, actions, stacked = stackForLargeText)
             }
-    }) {
-        Icon(Icons.Outlined.QrCodeScanner, contentDescription = stringResource(R.string.scan_qr))
+            item(key = "invite-head") { SectionHead(title = stringResource(R.string.have_an_invite)) }
+            item(key = "invite-grid") {
+                InviteQuickGrid(stacked = stackForLargeText, onScan = actions.scanQr, onPaste = actions.pasteInvite)
+            }
+        }
     }
 }
 
-// --- List content ---
-
-/** Placeholder shown when the user has no groups yet. */
-@Composable
-private fun EmptyGroupsState(modifier: Modifier = Modifier, adaptive: AdaptiveLayoutInfo) {
-    val tokens = adaptiveSizeTokens()
-    val contentPadding = tokens.emptyStatePadding
-    val iconSize = tokens.emptyStateIcon
-    val titleStyle = if (adaptive.isCompact) {
-        MaterialTheme.typography.titleSmall
-    } else {
-        MaterialTheme.typography.titleMedium
-    }
-    val bodyStyle = if (adaptive.isCompact) {
-        MaterialTheme.typography.bodySmall
-    } else {
-        MaterialTheme.typography.bodyMedium
-    }
-
-    Column(
-        modifier = modifier.padding(contentPadding),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.Group,
-            contentDescription = null,
-            modifier = Modifier.size(iconSize),
-            tint = MaterialTheme.colorScheme.outlineVariant
+private fun LazyListScope.readyItems(state: GroupsListUiState, actions: GroupsListActions, stacked: Boolean) {
+    item(key = "currency") {
+        CurrencyLine(
+            currencies = state.currencies,
+            selected = state.selectedCurrency,
+            onSelect = actions.selectCurrency
         )
-        Spacer(Modifier.height(tokens.fieldSpacing))
-        Text(
-            stringResource(R.string.no_groups_yet),
-            style = titleStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(tokens.denseSpacing))
-        Text(
-            stringResource(R.string.no_groups_body),
-            style = bodyStyle,
-            color = MaterialTheme.colorScheme.outline,
-            textAlign = TextAlign.Center
+    }
+    item(key = "hero") { BalanceHero(state) }
+    item(key = "spaces-head") {
+        val count = state.groups.size
+        SectionHead(title = stringResource(R.string.your_shared_spaces)) {
+            Meta(pluralStringResource(R.plurals.group_count, count, count))
+        }
+    }
+    items(state.groups, key = { "group:${it.group.id}" }) { summary ->
+        GroupCard(
+            summary = summary,
+            currency = state.selectedCurrency,
+            net = state.myNet(summary),
+            stacked = stacked,
+            onClick = { actions.openGroup(summary.group.id) },
+            modifier = Modifier.padding(bottom = CardSpacing)
         )
     }
 }
 
-/** Single group row with avatar, name, and member count. */
-@Composable
-private fun GroupCard(group: Group, onClick: () -> Unit) {
-    val tokens = adaptiveSizeTokens()
-    val cardPadding = tokens.cardPadding
-    val avatarSize = tokens.avatarSize
-    val rowSpacing = tokens.fieldSpacing
+// --- Top bar ---
 
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+@Composable
+private fun HomeTopBar(actions: GroupsListActions, endInset: Dp) {
+    SfTopBar(title = stringResource(R.string.app_name), onBack = null) {
+        SfIconButton(
+            icon = Icons.Outlined.QrCodeScanner,
+            contentDescription = stringResource(R.string.scan_qr),
+            onClick = actions.scanQr,
+            modifier = Modifier.testTag("home_scan")
+        )
+        SfIconButton(
+            icon = Icons.Outlined.ContentPaste,
+            contentDescription = stringResource(R.string.paste_invite_link),
+            onClick = actions.pasteInvite,
+            modifier = Modifier.testTag("home_paste")
+        )
+        Spacer(Modifier.width(4.dp))
+        SettingsTile(onClick = actions.openSettings)
+        // TopAppBar keeps 4dp after the last action; pad the rest so the tile lines up with the content edge.
+        Spacer(Modifier.width((endInset - 4.dp).coerceAtLeast(0.dp)))
+    }
+}
+
+/** 48dp ink tile with a person glyph (mock `.avatar-btn`): the Settings entry point. */
+@Composable
+private fun SettingsTile(onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.size(SettingsTileSize).semantics { role = Role.Button }.testTag("home_settings"),
+        shape = Tile16,
+        color = MaterialTheme.colorScheme.inverseSurface,
+        contentColor = MaterialTheme.colorScheme.inverseOnSurface
     ) {
-        Row(
-            modifier = Modifier.padding(cardPadding),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(rowSpacing)
-        ) {
-            Box(
-                modifier = Modifier.size(avatarSize).clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = avatarInitial(group.name),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = group.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(tokens.denseSpacing))
-                Text(
-                    text = pluralStringResource(R.plurals.member_count, group.members.size, group.members.size),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        Box(contentAlignment = Alignment.Center) {
             Icon(
-                imageVector = Icons.AutoMirrored.Outlined.CallSplit,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.outline,
-                modifier = Modifier.size(tokens.iconMedium)
+                Icons.Outlined.Person,
+                contentDescription = stringResource(R.string.settings),
+                modifier = Modifier.size(22.dp)
             )
         }
     }
 }
 
-/** Animated dot indicating relay connection status (green = connected, grey pulsing = disconnected). */
+// --- Banner, pill, currency ---
+
+/** Offline notice (mock `.offline-banner`): honest about what still works — nothing is lost. */
 @Composable
-private fun ConnectionDot(connected: Boolean) {
-    val tokens = adaptiveSizeTokens()
-    val statusText = stringResource(
-        if (connected) R.string.cd_status_connected else R.string.cd_status_disconnected
-    )
-    val color by animateColorAsState(
-        targetValue = if (connected) Color(0xFF4CAF50) else Color(0xFFBDBDBD),
-        animationSpec = tween(600),
-        label = "dot"
-    )
-    val alpha by if (!connected) {
-        val inf = rememberInfiniteTransition(label = "pulse")
-        inf.animateFloat(
-            initialValue = 0.4f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
-            label = "alpha"
-        )
-    } else {
-        remember { mutableFloatStateOf(1f) }
+private fun OfflineBanner() {
+    val palette = MaterialTheme.splitFree
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 13.dp).testTag("home_offline"),
+        shape = BannerShape,
+        color = palette.warningContainer
+    ) {
+        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                Icons.Outlined.WifiOff,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = palette.warning
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                stringResource(R.string.offline_banner),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
-    Box(
-        modifier = Modifier.size(tokens.iconTiny).clip(CircleShape)
-            .background(color.copy(alpha = alpha))
-            .semantics {
-                contentDescription = statusText
-                role = Role.Image
+}
+
+/** Connecting, Online or Offline in words; the dot tone only reinforces the word. */
+@Composable
+private fun ConnectionPill(status: ConnectionStatus) {
+    val label =
+        stringResource(
+            when (status) {
+                ConnectionStatus.Connecting -> R.string.status_connecting
+                ConnectionStatus.Connected -> R.string.status_online
+                ConnectionStatus.Offline -> R.string.status_offline
             }
+        )
+    val tone =
+        when (status) {
+            ConnectionStatus.Connecting -> PillTone.Neutral
+            ConnectionStatus.Connected -> PillTone.Online
+            ConnectionStatus.Offline -> PillTone.Offline
+        }
+    val description = stringResource(R.string.cd_connection_status, label)
+    StatusPill(
+        text = label,
+        tone = tone,
+        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = description }
+    )
+}
+
+/**
+ * "Balances in" line (mock `.currency-line`). Hidden entirely when nothing has a currency yet, a plain label
+ * with one currency, and a dropdown selector once balances exist in more than one.
+ */
+@Composable
+private fun CurrencyLine(currencies: List<String>, selected: String?, onSelect: (String) -> Unit) {
+    when {
+        currencies.isEmpty() || selected == null -> Unit
+        currencies.size == 1 ->
+            MiniLabel(
+                stringResource(R.string.balances_in_currency, selected),
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)
+            )
+
+        else ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MiniLabel(stringResource(R.string.balances_in), modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(12.dp))
+                CurrencySelector(currencies = currencies, selected = selected, onSelect = onSelect)
+            }
+    }
+}
+
+@Composable
+private fun CurrencySelector(currencies: List<String>, selected: String, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val description = stringResource(R.string.cd_change_balance_currency, selected)
+    Box {
+        SfSecondaryButton(
+            text = selected,
+            onClick = { expanded = true },
+            leadingIcon = Icons.Outlined.ArrowDropDown,
+            modifier = Modifier.semantics { contentDescription = description }.testTag("home_currency")
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            currencies.forEach { code ->
+                DropdownMenuItem(
+                    text = { Text(code, style = MaterialTheme.typography.titleSmall) },
+                    onClick = {
+                        expanded = false
+                        onSelect(code)
+                    },
+                    trailingIcon = {
+                        if (code == selected) {
+                            Icon(
+                                Icons.Outlined.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    },
+                    modifier = Modifier.testTag("home_currency_$code")
+                )
+            }
+        }
+    }
+}
+
+// --- Hero ---
+
+/**
+ * Inverted balance card (mock `.balance-hero`). With no currency anywhere it says so plainly instead of
+ * inventing a zero. Read by TalkBack as one node.
+ */
+@Composable
+private fun BalanceHero(state: GroupsListUiState) {
+    val palette = MaterialTheme.splitFree
+    val currency = state.selectedCurrency
+    Surface(
+        modifier =
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = HeroMinHeight)
+            .semantics(mergeDescendants = true) {}
+            .testTag("home_hero"),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = palette.hero,
+        contentColor = palette.onHero
+    ) {
+        Box {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 58.dp, y = (-40).dp)
+                    .size(125.dp)
+                    .clip(CircleShape)
+                    .background(palette.heroAccent.copy(alpha = 0.55f))
+            )
+            Column(Modifier.padding(24.dp)) {
+                if (currency == null) {
+                    MiniLabel(text = stringResource(R.string.nothing_to_settle_yet), color = palette.heroMuted)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        stringResource(R.string.nothing_to_settle_body),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.onHero
+                    )
+                } else {
+                    val net = state.netMinor
+                    val label = stringResource(if (net >= 0) R.string.net_to_receive else R.string.net_to_pay)
+                    MiniLabel(
+                        text = stringResource(R.string.hero_label_currency, label, currency),
+                        color = palette.heroMuted
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    MoneyText(
+                        amountMinor = abs(net),
+                        currency = currency,
+                        style = MaterialTheme.typography.displayLarge,
+                        color = palette.onHero,
+                        maxLines = 2
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    // Stats sit 30dp apart at their natural width (mock `.hero-row`); at large text the second
+                    // one flows onto its own line instead of breaking a number in half.
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(30.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        HeroStat(
+                            label = stringResource(R.string.you_are_owed),
+                            amountMinor = state.owedMinor,
+                            currency = currency
+                        )
+                        HeroStat(
+                            label = stringResource(R.string.you_owe),
+                            amountMinor = state.oweMinor,
+                            currency = currency
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroStat(label: String, amountMinor: Long, currency: String, modifier: Modifier = Modifier) {
+    val palette = MaterialTheme.splitFree
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = palette.heroMuted)
+        Spacer(Modifier.height(4.dp))
+        MoneyText(
+            amountMinor = amountMinor,
+            currency = currency,
+            style = MaterialTheme.typography.titleMedium,
+            color = palette.onHero,
+            maxLines = 2
+        )
+    }
+}
+
+// --- Group cards ---
+
+/**
+ * One group (mock `.group-card`): symbol tile, name and meta, then the user's balance in [currency] with the
+ * direction spelled out. [net] is null when the user has no balance entry in [currency]. [stacked] puts the
+ * balance under the title (large text on compact widths) instead of in a capped trailing column.
+ */
+@Composable
+private fun GroupCard(
+    summary: GroupSummary,
+    currency: String?,
+    net: Long?,
+    stacked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val people = summary.group.members.size
+    val peopleText = pluralStringResource(R.plurals.member_count, people, people)
+    val meta = if (currency == null) peopleText else stringResource(R.string.group_card_meta, peopleText, currency)
+    val showAmount = currency != null && (net != null || currency in summary.currencies)
+    val shownNet = net ?: 0L
+    val direction =
+        when {
+            currency == null -> stringResource(R.string.direction_no_expenses_yet)
+            shownNet > 0 -> stringResource(R.string.direction_owed_to_you)
+            shownNet < 0 -> stringResource(R.string.direction_you_owe)
+            currency in summary.currencies -> stringResource(R.string.direction_settled)
+            else -> stringResource(R.string.direction_no_expenses, currency)
+        }
+    val description =
+        if (showAmount && currency != null) {
+            stringResource(
+                R.string.cd_group_card,
+                summary.group.name,
+                peopleText,
+                CurrencyFormatter.formatMagnitude(shownNet, currency),
+                direction
+            )
+        } else {
+            stringResource(R.string.cd_group_card_no_amount, summary.group.name, peopleText, direction)
+        }
+
+    SfCard(
+        onClick = onClick,
+        modifier =
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = GroupCardMinHeight)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .testTag("home_group_${summary.group.id}")
+    ) {
+        if (stacked) {
+            // Large text on a narrow screen: the balance moves under the name so neither has to be cut short.
+            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    GroupSymbol()
+                    Spacer(Modifier.width(12.dp))
+                    GroupTitle(summary.group.name, meta, maxLines = 2, modifier = Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(CardSpacing))
+                GroupBalance(
+                    currency = currency,
+                    net = shownNet,
+                    showAmount = showAmount,
+                    direction = direction,
+                    alignment = Alignment.Start,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = GroupCardMinHeight).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GroupSymbol()
+                Spacer(Modifier.width(12.dp))
+                GroupTitle(summary.group.name, meta, maxLines = 1, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(12.dp))
+                GroupBalance(
+                    currency = currency,
+                    net = shownNet,
+                    showAmount = showAmount,
+                    direction = direction,
+                    alignment = Alignment.End,
+                    modifier = Modifier.widthIn(max = GroupMoneyMaxWidth)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupTitle(name: String, meta: String, maxLines: Int, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(
+            name,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(5.dp))
+        Meta(meta)
+    }
+}
+
+@Composable
+private fun GroupBalance(
+    currency: String?,
+    net: Long,
+    showAmount: Boolean,
+    direction: String,
+    alignment: Alignment.Horizontal,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier, horizontalAlignment = alignment) {
+        if (showAmount && currency != null) {
+            SignedMoneyText(
+                amountMinor = net,
+                currency = currency,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        Text(
+            direction,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = if (alignment == Alignment.End) TextAlign.End else TextAlign.Start
+        )
+    }
+}
+
+/** 47dp `surfaceContainer` tile with the group glyph (mock `.group-symbol`). Decorative. */
+@Composable
+private fun GroupSymbol() {
+    Box(
+        modifier = Modifier.size(GroupSymbolSize).background(MaterialTheme.colorScheme.surfaceContainer, Tile16),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Outlined.Group,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+// --- Loading, empty, invite ---
+
+/** Three quiet placeholders where the group cards will be. No shimmer, no numbers. */
+@Composable
+private fun HomeSkeleton() {
+    val loading = stringResource(R.string.cd_loading)
+    Column(
+        modifier =
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 27.dp)
+            .semantics(mergeDescendants = true) { contentDescription = loading }
+            .testTag("home_skeleton"),
+        verticalArrangement = Arrangement.spacedBy(CardSpacing)
+    ) {
+        repeat(3) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(GroupCardMinHeight)
+                    .background(MaterialTheme.colorScheme.surfaceContainer, MaterialTheme.shapes.large)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeEmpty(onCreate: () -> Unit) {
+    SfCard(modifier = Modifier.fillMaxWidth().testTag("home_empty")) {
+        EmptyState(
+            icon = Icons.Outlined.Group,
+            title = stringResource(R.string.no_groups_yet),
+            body = stringResource(R.string.no_groups_body)
+        ) {
+            SfAccentButton(
+                text = stringResource(R.string.new_group),
+                onClick = onCreate,
+                leadingIcon = Icons.Filled.Add,
+                modifier = Modifier.testTag("home_empty_new_group")
+            )
+        }
+    }
+}
+
+/** Two invite shortcuts (mock `.quick-grid`); stacked when large text leaves no room side by side. */
+@Composable
+private fun InviteQuickGrid(stacked: Boolean, onScan: () -> Unit, onPaste: () -> Unit) {
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(CardSpacing)) {
+            QuickTile(Icons.Outlined.QrCodeScanner, stringResource(R.string.quick_scan_qr), onScan, "home_quick_scan")
+            QuickTile(
+                Icons.Outlined.ContentPaste,
+                stringResource(R.string.quick_paste_link),
+                onPaste,
+                "home_quick_paste"
+            )
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(CardSpacing)) {
+            QuickTile(
+                Icons.Outlined.QrCodeScanner,
+                stringResource(R.string.quick_scan_qr),
+                onScan,
+                "home_quick_scan",
+                Modifier.weight(1f)
+            )
+            QuickTile(
+                Icons.Outlined.ContentPaste,
+                stringResource(R.string.quick_paste_link),
+                onPaste,
+                "home_quick_paste",
+                Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickTile(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    tag: String,
+    modifier: Modifier = Modifier
+) {
+    SfCard(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = QuickTileMinHeight).semantics { role = Role.Button }.testTag(tag)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(
+                min = QuickTileMinHeight
+            ).padding(horizontal = 14.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(QuickIconSize).background(MaterialTheme.colorScheme.primaryContainer, Tile13),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun Meta(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
     )
 }

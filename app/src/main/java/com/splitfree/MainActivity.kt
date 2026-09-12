@@ -13,13 +13,26 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CellTower
+import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -31,6 +44,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
@@ -44,6 +60,12 @@ import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.usecase.group.JoinGroupUseCase
 import com.splitfree.sync.worker.ForegroundSyncService
+import com.splitfree.ui.components.HintCard
+import com.splitfree.ui.components.SfListCard
+import com.splitfree.ui.components.SfPrimaryButton
+import com.splitfree.ui.components.SfSecondaryButton
+import com.splitfree.ui.components.SfSheet
+import com.splitfree.ui.components.SfSheetFooter
 import com.splitfree.ui.navigation.Screen
 import com.splitfree.ui.navigation.SplitFreeNavGraph
 import com.splitfree.ui.theme.CircularRevealTheme
@@ -148,7 +170,7 @@ class MainActivity : ComponentActivity() {
                         )
 
                         pendingInvite?.let { invite ->
-                            InviteConfirmDialog(
+                            InviteConfirmSheet(
                                 invite = invite,
                                 onJoin = {
                                     pendingInvite = null
@@ -158,24 +180,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        if (isJoining) {
-                            // Swallow every pointer event so the screen underneath cannot be used
-                            // (or a second join started) while this one is in flight.
-                            Box(
-                                modifier =
-                                Modifier
-                                    .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f))
-                                    .pointerInput(Unit) {
-                                        awaitPointerEventScope {
-                                            while (true) awaitPointerEvent()
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                        }
+                        if (isJoining) JoiningScrim()
                     }
                 }
             }
@@ -278,27 +283,103 @@ class MainActivity : ComponentActivity() {
         pendingInvite = PendingInvite(link = link, groupName = invite.name, relayHosts = hosts)
     }
 
+    /**
+     * Bottom sheet asking whether to join [invite]: the group name in the title, a trust reminder, the relay
+     * hosts the invite points at, then Cancel / Join. Dismissing (swipe, scrim, close) is a cancel.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun InviteConfirmDialog(invite: PendingInvite, onJoin: () -> Unit, onDismiss: () -> Unit) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text(stringResource(R.string.join_group_title)) },
-            text = {
-                Text(
-                    stringResource(
-                        R.string.join_group_body,
-                        invite.groupName,
-                        invite.relayHosts.joinToString(", ")
+    private fun InviteConfirmSheet(invite: PendingInvite, onJoin: () -> Unit, onDismiss: () -> Unit) {
+        SfSheet(onDismiss = onDismiss, title = stringResource(R.string.join_group_title, invite.groupName)) {
+            HintCard(text = stringResource(R.string.join_group_body), icon = Icons.Outlined.Group)
+            Spacer(Modifier.height(SHEET_BLOCK_SPACING))
+            SfListCard {
+                Row(
+                    modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = RELAY_ROW_MIN_HEIGHT)
+                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.CellTower,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                )
-            },
-            confirmButton = { TextButton(onClick = onJoin) { Text(stringResource(R.string.join)) } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } }
-        )
+                    Spacer(Modifier.width(11.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.join_group_relays),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            invite.relayHosts.joinToString(", "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                primary = { SfPrimaryButton(text = stringResource(R.string.join), onClick = onJoin) }
+            )
+        }
+    }
+
+    /**
+     * Full-screen 40% scrim with a small card holding the progress ring. Swallows every pointer event so the
+     * screen underneath cannot be used (or a second join started) while the join is in flight.
+     */
+    @Composable
+    private fun JoiningScrim() {
+        val label = stringResource(R.string.cd_joining_group)
+        Box(
+            modifier =
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA))
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) awaitPointerEvent()
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier.size(JOINING_TILE_SIZE),
+                shape = RoundedCornerShape(JOINING_TILE_CORNER),
+                color = MaterialTheme.colorScheme.surfaceContainerLowest
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(JOINING_RING_SIZE).semantics { contentDescription = label },
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 2.dp
+                    )
+                }
+            }
+        }
     }
 
     companion object {
         private const val TAG = "MainActivity"
         private const val STATE_PENDING_INVITE = "pending_invite"
+        private const val SCRIM_ALPHA = 0.4f
+        private val SHEET_BLOCK_SPACING = 12.dp
+        private val JOINING_TILE_SIZE = 40.dp
+        private val JOINING_TILE_CORNER = 16.dp
+        private val JOINING_RING_SIZE = 22.dp
+        private val RELAY_ROW_MIN_HEIGHT = 64.dp
     }
 }

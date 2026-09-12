@@ -26,16 +26,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
  * Foreground service for real-time event sync via persistent WebSocket connections.
  *
- * Started when the user has an active identity. Subscribes to all groups,
- * processes incoming events in real-time, and shows notifications for new
- * expenses and settlements from other members. Automatically reconnects
+ * Started when the user has an active identity. Connects to the relays right away, even before the
+ * first group exists, subscribes to every group, processes incoming events in real-time, and shows
+ * notifications for new expenses and settlements from other members. Automatically reconnects
  * when the relay set changes (e.g. after joining a group with different relays).
  */
 @AndroidEntryPoint
@@ -135,19 +134,13 @@ class ForegroundSyncService : Service() {
             try {
                 coroutineScope {
                     if (!identity.hasIdentity()) {
-                        Log.w(TAG, "No identity — skipping sync")
+                        Log.w(TAG, "No identity, skipping sync")
                         ProcessHealthTracker.heartbeat(this@ForegroundSyncService, "fg_sync_skip_no_identity")
                         withContext(Dispatchers.Main.immediate) { stopSyncService() }
                         return@coroutineScope
                     }
 
-                    // Wait until at least one group exists (handles fresh install)
-                    val groups =
-                        groupRepo.getAll().ifEmpty {
-                            Log.i(TAG, "No groups yet — waiting for first group")
-                            groupRepo.observeAll().first { it.isNotEmpty() }
-                        }
-
+                    // Connect even with no groups yet so the home screen can report a live relay.
                     var connected = false
                     for (attempt in 1..5) {
                         try {
@@ -183,10 +176,11 @@ class ForegroundSyncService : Service() {
                         Log.w(TAG, "Initial outbox flush failed: ${e.message}")
                     }
 
+                    // Subscribe to whatever exists now; the observer below picks up groups created later.
                     val subscribedGroups = mutableSetOf<String>()
                     val now = System.currentTimeMillis() / 1000
                     val myPubkey = identity.getPublicKeyHex()
-                    for (group in groups) {
+                    for (group in groupRepo.getAll()) {
                         nostrClient.subscribe(group.id, now - 3600, myPubkey)
                         subscribedGroups.add(group.id)
                     }
@@ -231,11 +225,11 @@ class ForegroundSyncService : Service() {
                         }
                     }
 
-                    // Monitor connection state — reconnect if all relays drop
+                    // Monitor connection state; reconnect if all relays drop
                     launch {
                         nostrClient.connectionState.collect { isConnected ->
                             if (!isConnected && connectionAcquired) {
-                                Log.w(TAG, "Lost all relay connections — attempting reconnect")
+                                Log.w(TAG, "Lost all relay connections, attempting reconnect")
                                 delay(5_000)
                                 try {
                                     reconnectRetainingSession()

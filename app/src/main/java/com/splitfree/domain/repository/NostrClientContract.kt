@@ -1,6 +1,7 @@
 package com.splitfree.domain.repository
 
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.sync.ConnectionStatus
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -14,13 +15,16 @@ interface NostrClientContract {
     /** True if at least one relay is connected. */
     val isConnected: Boolean
 
-    /** Reactive connection state — emits whenever any relay connects/disconnects. */
+    /** Reactive connection state; true whenever at least one relay is connected. */
     val connectionState: StateFlow<Boolean>
+
+    /** Reactive connection status: connecting, connected, or offline. */
+    val connectionStatus: StateFlow<ConnectionStatus>
 
     /** Stream of verified, deduplicated incoming events from all connected relays. */
     val incomingEvents: SharedFlow<NostrEvent>
 
-    /** NIP-42 AUTH signer — set before [connect] to enable relay authentication. */
+    /** NIP-42 AUTH signer; set before [connect] to enable relay authentication. */
     var authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)?
 
     /** @return current list of relay URLs this client is connected to */
@@ -95,6 +99,6 @@ interface NostrClientContract {
     /** Close all active subscriptions. */
     suspend fun unsubscribeAll()
 
-    /** No-op — messages flow automatically via [incomingEvents]. */
+    /** No-op; messages flow automatically via [incomingEvents]. */
     fun startListening()
 }
