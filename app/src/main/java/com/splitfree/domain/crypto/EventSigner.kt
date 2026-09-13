@@ -13,20 +13,18 @@ class EventSigner
 @Inject
 constructor(private val identityManager: IdentityContract) {
     /**
-     * Build a signed Nostr kind-30078 event for SplitFree.
+     * Build a signed Nostr kind-30078 event for SplitFree under a fresh, random relay address.
      *
-     * @param groupId target group UUID, used in `g` and `d` tags
+     * @param groupId target group UUID, used in the `g` tag and as the `d` tag prefix
      * @param eventType value for the `t` tag (e.g. `expense`, `settlement`, `group_meta`)
      * @param encryptedContent NIP-44 encrypted payload
-     * @param expenseUuid optional UUID for the `x` tag and d-tag uniqueness
+     * @param expenseUuid optional logical expense UUID for the `x` tag; revisions of one expense share it
      * @param recipientPubkey optional pubkey for a `p` tag when the payload is addressed to exactly one
      *   member (per-member `key_rotation` envelopes), so relays and couriers can route it without
      *   decrypting it
-     * @return signed [NostrEvent] with computed ID and BIP-340 signature
-     */
-    /**
      * @param createdAt explicit `created_at`, or null for now. A corrective control event uses it to
      *   sort strictly after the plan event it supersedes, whatever the wall clock says.
+     * @return signed [NostrEvent] with computed ID and BIP-340 signature
      */
     fun createSignedEvent(
         groupId: String,
@@ -35,24 +33,44 @@ constructor(private val identityManager: IdentityContract) {
         expenseUuid: String? = null,
         recipientPubkey: String? = null,
         createdAt: Long? = null
+    ): NostrEvent = createSignedCommandEvent(
+        groupId = groupId,
+        eventType = eventType,
+        encryptedContent = encryptedContent,
+        expenseUuid = expenseUuid,
+        createdAt = createdAt,
+        recipientPubkey = recipientPubkey
+    )
+
+    /**
+     * Build a signed Nostr kind-30078 event whose relay address is bound to one command.
+     *
+     * Kind 30078 is addressable (NIP-01): a relay keeps one event per `(pubkey, kind, d)`. The `d` tag is
+     * therefore `"$groupId:$eventType:$commandId"`, unique per command, so an original expense and each
+     * of its corrections and deletions occupy distinct addresses and none can evict another. The logical
+     * expense identity stays in the `x` tag. Signing the same command twice with the same [createdAt]
+     * yields the same event id, which lets a retried command be recognised by its address.
+     *
+     * @param commandId stable caller-supplied identifier of the command, or a random UUID
+     * @param createdAt explicit `created_at`, or null for now
+     * @param recipientPubkey optional `p` tag recipient, see [createSignedEvent]
+     */
+    fun createSignedCommandEvent(
+        groupId: String,
+        eventType: String,
+        encryptedContent: String,
+        expenseUuid: String? = null,
+        commandId: String = java.util.UUID.randomUUID().toString(),
+        createdAt: Long? = null,
+        recipientPubkey: String? = null
     ): NostrEvent {
+        require(commandId.isNotBlank()) { "Command ID must not be blank" }
         val privKey = identityManager.getPrivateKeyBytes()
         try {
             val pubHex = identityManager.getPublicKeyHex()
-
-            // Kind 30078 is ADDRESSABLE (NIP-01): relays keep only the latest event
-            // per (pubkey, kind, d-tag). We MUST make d unique per event, otherwise
-            // each new expense overwrites the previous one on the relay.
-            val dTagValue = if (expenseUuid !=
-                null
-            ) {
-                "$groupId:$expenseUuid"
-            } else {
-                "$groupId:${java.util.UUID.randomUUID()}"
-            }
             val tags =
                 buildList {
-                    add(listOf("d", dTagValue))
+                    add(listOf("d", relayAddress(groupId, eventType, commandId)))
                     add(listOf("g", groupId)) // group membership tag for filtering
                     add(listOf("t", eventType))
                     expenseUuid?.let { add(listOf("x", it)) }
@@ -117,5 +135,11 @@ constructor(private val identityManager: IdentityContract) {
         } finally {
             privKey.fill(0)
         }
+    }
+
+    companion object {
+        /** The `d` tag value under which a command of [eventType] in [groupId] is published. */
+        fun relayAddress(groupId: String, eventType: String, commandId: String): String =
+            "$groupId:$eventType:$commandId"
     }
 }

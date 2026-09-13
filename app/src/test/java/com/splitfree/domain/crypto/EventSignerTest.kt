@@ -27,7 +27,7 @@ class EventSignerTest {
 
     @Before
     fun setup() {
-        every { identity.getPrivateKeyBytes() } returns privKey.copyOf()
+        every { identity.getPrivateKeyBytes() } answers { privKey.copyOf() }
         every { identity.getPublicKeyHex() } returns pubHex
         signer = EventSigner(identity)
     }
@@ -41,7 +41,7 @@ class EventSignerTest {
     fun `kind 30078 event with unique d-tag per expense`() {
         val groupId = "test-group-123"
         val expenseUuid = "exp-uuid-456"
-        val dTagValue = "$groupId:$expenseUuid"
+        val dTagValue = "$groupId:expense:command-1"
 
         val event =
             NostrEvent(
@@ -59,10 +59,10 @@ class EventSignerTest {
             ).sign(privKey)
 
         assertTrue(event.verify())
-        // d-tag must be unique per event (groupId:uuid)
+        // d-tag is the command's relay address (groupId:type:commandId)
         val dTag = event.tags.find { it[0] == "d" }!!
         assertTrue("d-tag must contain groupId", dTag[1].startsWith(groupId))
-        assertTrue("d-tag must contain expenseUuid", dTag[1].contains(expenseUuid))
+        assertEquals(EventSigner.relayAddress(groupId, "expense", "command-1"), dTag[1])
         // g-tag for group filtering
         assertEquals(groupId, event.tags.find { it[0] == "g" }!![1])
         // t-tag for event type
@@ -72,11 +72,16 @@ class EventSignerTest {
     }
 
     @Test
-    fun `different expenses in same group get different d-tags`() {
+    fun `different commands in same group get different d-tags`() {
         val groupId = "group-1"
-        val d1 = "$groupId:expense-1"
-        val d2 = "$groupId:expense-2"
-        assertNotEquals("d-tags must differ per expense", d1, d2)
+        val d1 = EventSigner.relayAddress(groupId, "expense", "command-1")
+        val d2 = EventSigner.relayAddress(groupId, "expense", "command-2")
+        assertNotEquals("d-tags must differ per command", d1, d2)
+        assertNotEquals(
+            "d-tags must differ per type for one command",
+            d1,
+            EventSigner.relayAddress(groupId, "expense_correction", "command-1")
+        )
     }
 
     // --- NIP-09 Deletion Event ---
@@ -175,15 +180,24 @@ class EventSignerTest {
         assertEquals("group1", gTag!![1])
         assertEquals("expense", tTag!![1])
         assertEquals("uuid1", eTag!![1])
-        assertTrue(dTag!![1].startsWith("group1:uuid1"))
+        // The address never embeds the logical expense id: revisions of one expense need distinct addresses.
+        assertTrue(dTag!![1].startsWith("group1:expense:"))
+        assertFalse(dTag[1].contains("uuid1"))
     }
 
     @Test
     fun `createSignedEvent without expenseUuid has random d-tag`() {
         val event = signer.createSignedEvent("group1", "expense", "enc")
         val dTag = event.tags.find { it[0] == "d" }!!
-        assertTrue(dTag[1].startsWith("group1:"))
+        assertTrue(dTag[1].startsWith("group1:expense:"))
         assertNull(event.tags.find { it[0] == "x" })
+    }
+
+    @Test
+    fun `two createSignedEvent calls for one expense never share an address`() {
+        val first = signer.createSignedEvent("group1", "expense", "enc", "uuid1")
+        val second = signer.createSignedEvent("group1", "expense", "enc", "uuid1")
+        assertNotEquals(first.tags.single { it[0] == "d" }, second.tags.single { it[0] == "d" })
     }
 
     @Test
@@ -242,5 +256,69 @@ class EventSignerTest {
     fun `createDeletionEvent with empty reason`() {
         val event = signer.createDeletionEvent(listOf("evt1"))
         assertEquals("", event.content)
+    }
+
+    // --- Immutable relay address per command ---
+
+    @Test
+    fun `original and correction publish to distinct relay addresses`() {
+        val original = signer.createSignedEvent("group1", "expense", "original", "expense-1")
+        val corrected = signer.createSignedEvent("group1", "expense_correction", "corrected", "expense-1")
+        assertTrue(original.verify())
+        assertTrue(corrected.verify())
+        assertEquals(original.pubkey, corrected.pubkey)
+        assertEquals(30078, original.kind)
+        assertEquals(original.kind, corrected.kind)
+        // Same author, kind and logical expense, yet the addressable slot differs: neither evicts the other.
+        assertNotEquals(original.tags.single { it[0] == "d" }, corrected.tags.single { it[0] == "d" })
+        assertEquals(listOf("x", "expense-1"), original.tags.single { it[0] == "x" })
+        assertEquals(listOf("x", "expense-1"), corrected.tags.single { it[0] == "x" })
+        assertNotEquals(original.id, corrected.id)
+    }
+
+    @Test
+    fun `every revision and the deletion of one expense have unique addresses`() {
+        val events = listOf("expense", "expense_correction", "expense_correction", "expense_delete").map {
+            signer.createSignedEvent("group1", it, "enc", "uuid1")
+        }
+        assertEquals(4, events.map { it.tags.single { tag -> tag.first() == "d" } }.distinct().size)
+        assertTrue(events.all { it.tags.single { tag -> tag.first() == "x" } == listOf("x", "uuid1") })
+        assertTrue(events.all { it.verify() })
+    }
+
+    @Test
+    fun `a command id gives a stable address and a stable event id for the same created_at`() {
+        val first = signer.createSignedCommandEvent("group1", "expense_correction", "enc", "uuid1", "command1", 1000)
+        val retry = signer.createSignedCommandEvent("group1", "expense_correction", "enc", "uuid1", "command1", 1000)
+        assertEquals(first.id, retry.id)
+        assertEquals(listOf("d", "group1:expense_correction:command1"), first.tags.first())
+        assertEquals(1000L, first.createdAt)
+        assertTrue(first.verify() && retry.verify())
+    }
+
+    @Test
+    fun `a command event carries the recipient tag when given one`() {
+        val recipient = "cd".repeat(32)
+        val event = signer.createSignedCommandEvent(
+            "group1",
+            "key_rotation",
+            "enc",
+            commandId = "rotation-1",
+            recipientPubkey = recipient
+        )
+        assertEquals(listOf("p", recipient), event.tags.single { it[0] == "p" })
+        assertEquals(listOf("d", "group1:key_rotation:rotation-1"), event.tags.first())
+    }
+
+    @Test
+    fun `createSignedEvent honours an explicit created_at`() {
+        val event = signer.createSignedEvent("group1", "group_meta", "enc", createdAt = 4242)
+        assertEquals(4242L, event.createdAt)
+        assertTrue(event.verify())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `a blank command id is refused`() {
+        signer.createSignedCommandEvent("group1", "expense", "enc", commandId = " ")
     }
 }

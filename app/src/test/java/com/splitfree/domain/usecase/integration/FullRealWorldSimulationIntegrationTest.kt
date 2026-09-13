@@ -27,6 +27,7 @@ import kotlinx.serialization.json.putJsonArray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -556,12 +557,13 @@ class FullRealWorldSimulationIntegrationTest {
         val expenseEvents = listOf(exp1Event, exp2Event, exp3Event, exp2bEvent)
         val expDTags = expenseEvents.map { e -> e.tags.find { it[0] == "d" }!![1] }
         assertEquals("Expense d-tags must be unique", expDTags.size, expDTags.toSet().size)
-        // Note: deletion event intentionally shares d-tag with the deleted expense
-        // (addressable event replacement: relay replaces expense with deletion)
+        // The deletion is its own command: it must not share the deleted expense's addressable slot, or an
+        // addressable relay could drop the original while the deletion still refers to it.
         val delDTag = delEvent.tags.find { it[0] == "d" }!![1]
         val exp2DTag = exp2Event.tags.find { it[0] == "d" }!![1]
-        assertEquals("Deletion d-tag must match deleted expense", exp2DTag, delDTag)
-        println("   ✅ Expense d-tags unique, deletion correctly targets expense d-tag")
+        assertNotEquals("Deletion d-tag must not evict the deleted expense", exp2DTag, delDTag)
+        assertEquals("Deletion x-tag must reference the deleted expense", exp2.id, delXTag!![1])
+        println("   ✅ Expense d-tags unique, deletion has its own relay address")
 
         // ══════════════════════════════════════════════════
         // SUMMARY
