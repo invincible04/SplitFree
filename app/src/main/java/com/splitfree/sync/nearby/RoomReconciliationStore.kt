@@ -144,7 +144,10 @@ constructor(
                             DeliveryEntity.TYPE_KEY_ROTATION
                         else -> return rejected("not an envelope")
                     }
-                if (type == DeliveryEntity.TYPE_KEY_ROTATION && gTag != groupId) return rejected("out of scope")
+                // The outer group tag is signed (by the creator for a rotation, by the wrap key for a gift
+                // wrap that copies it from the rumor); an envelope for another group is never stored, nor
+                // advertised, under this session's group.
+                if (gTag != groupId) return rejected("out of scope")
                 if (recipient == me) {
                     // The processor checks the unwrapped event's group before accessing group-scoped records.
                     val report =
@@ -223,7 +226,22 @@ constructor(
         if (recipient !in group.members) return rejected("recipient not a member")
         val size = recordJson.toByteArray(Charsets.UTF_8).size
         if (size > MAX_ENVELOPE_BYTES) return rejected("envelope too large")
-        if (deliveryDao.get(event.id) != null) return IngestReport(RecordOutcome.CARRIED)
+        val existing = deliveryDao.get(event.id)
+        if (existing != null) {
+            // A receipt says this group's inventory holds the envelope for this recipient. A row that
+            // says otherwise was filed by an older session under the wrong group; the signed tags are
+            // the proof of scope, so it is refiled rather than vouched for.
+            if (existing.groupId == groupId &&
+                existing.recipient == recipient
+            ) {
+                return IngestReport(RecordOutcome.CARRIED)
+            }
+            Log.w(
+                TAG,
+                "Refiling envelope ${event.id.take(8)} from group ${existing.groupId.take(8)} to ${groupId.take(8)}"
+            )
+            deliveryDao.delete(event.id)
+        }
         var evictions = 0
         while (
             deliveryDao.countCarried(groupId) >= MAX_CARRIED_PER_GROUP ||

@@ -6,6 +6,7 @@ import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SyncEngineContract
@@ -70,6 +71,10 @@ constructor(
         var count = 0
         for (event in events) {
             if (event.id in existingIds && event.id !in pendingIds) continue
+            // The recipient filter returns this member's envelopes for every group. Those tagged for
+            // another group are that group's pull to ingest; the processor would refuse them here anyway,
+            // since the group an event belongs to is its own signed tag, never the pull's.
+            if (event.kind == NostrKind.GIFT_WRAP && event.groupTag()?.let { it != groupId } == true) continue
             val result =
                 eventProcessor.process(
                     rawEvent = event,
@@ -170,6 +175,8 @@ constructor(
         val lastRetry = event.lastRetryAt ?: return true
         return now - lastRetry >= STUCK_RETRY_INTERVAL_SECS
     }
+
+    private fun NostrEvent.groupTag(): String? = tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1)
 
     companion object {
         private const val TAG = "SyncEngine"

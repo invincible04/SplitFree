@@ -932,6 +932,168 @@ class RoomReconciliationStoreTest {
     }
 
     @Test
+    fun `a valid rotation for another group pulled for this one cannot advance this group's epoch`() {
+        // The relay pull for group G also returns this member's per-recipient envelopes for every other
+        // group. A creator-signed rotation for H, handed to the processor under G's scope, must be
+        // refused: the group an event belongs to is its own signed tag, never the pull's.
+        val creator = Device(1)
+        val receiver = Device(2)
+        val removed = TestIdentity(3).pub
+        val roster = listOf(creator.pub, receiver.pub, removed)
+        receiver.join(roster, creator = creator.pub)
+        val otherId = UUID.randomUUID().toString()
+        runBlocking {
+            receiver.groupRepo.save(
+                Group(otherId, "Other", createdBy = creator.pub, createdAt = 2, members = roster, relays = emptyList()),
+                GroupEncryption(CompressionUtil).generateGroupKey()
+            )
+        }
+        val epochOneKey = GroupEncryption(CompressionUtil).generateGroupKey()
+        val conversationKey = Nip44.getConversationKey(creator.identity.priv, receiver.pub.hexToBytes())
+        val payload = KeyRotation(
+            1,
+            mapOf(receiver.pub to Nip44.encrypt(epochOneKey, conversationKey)),
+            listOf(creator.pub, receiver.pub),
+            removed
+        )
+        val forOther = creator.signer.createSignedEvent(
+            otherId,
+            "key_rotation",
+            Nip44.encrypt(json.encodeToString(KeyRotation.serializer(), payload), conversationKey),
+            recipientPubkey = receiver.pub
+        )
+        assertTrue(forOther.verify())
+
+        val result = runBlocking {
+            receiver.processor.process(forOther, knownGroupId = groupId, context = IngestionContext.RECONCILIATION)
+        }
+
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertEquals("out of scope", result.reason)
+        assertEquals(0, receiver.group().keyEpoch)
+        assertEquals(roster, receiver.group().members)
+        assertNull(receiver.keyForEpoch(1))
+        assertNull(receiver.row(forOther.id))
+        assertEquals(0, runBlocking { receiver.groupRepo.getById(otherId) }?.keyEpoch)
+        // Under its own scope the very same event applies.
+        val own = runBlocking {
+            receiver.processor.process(forOther, knownGroupId = otherId, context = IngestionContext.RECONCILIATION)
+        }
+        assertEquals(IngestOutcome.APPLIED, own.outcome)
+        assertEquals(1, runBlocking { receiver.groupRepo.getById(otherId) }?.keyEpoch)
+        assertEquals(0, receiver.group().keyEpoch)
+    }
+
+    @Test
+    fun `a courier refuses another member's gift wrap whose signed group is not the session's`() {
+        val author = Device(1)
+        val courier = Device(2)
+        val recipient = Device(3)
+        val members = listOf(author.pub, courier.pub, recipient.pub)
+        listOf(author, courier, recipient).forEach { it.join(members, creator = author.pub) }
+        val otherId = UUID.randomUUID().toString()
+        val otherKey = GroupEncryption(CompressionUtil).generateGroupKey()
+        val other =
+            Group(otherId, "Other", createdBy = author.pub, createdAt = 1_000, members = members, relays = emptyList())
+        runBlocking { listOf(author, courier, recipient).forEach { it.groupRepo.save(other, otherKey) } }
+        val uuid = UUID.randomUUID().toString()
+        val expense = Expense(
+            id = uuid,
+            amount = 300,
+            currency = "USD",
+            description = "in H",
+            paidBy = author.pub,
+            splitType = SplitType.EQUAL,
+            splitAmong = splitAmong(members, 300),
+            timestamp = nowSecs()
+        )
+        val inner = author.signer.createSignedEvent(
+            otherId,
+            "expense",
+            author.encryption.encrypt(json.encodeToString(Expense.serializer(), expense), otherKey),
+            expenseUuid = uuid
+        )
+        val wrap = author.giftWrap.wrapIfEnabled(inner, recipient.pub)
+        assertTrue(wrap.verify())
+        assertEquals(otherId, wrap.tag("g"))
+        val item = InventoryItem(wrap.id, NearbyWire.KIND_DELIVERY, r = recipient.pub)
+
+        val inG = runBlocking { courier.store.ingest(groupId, item, wrap.toJson(), author.pub) }
+
+        assertEquals(RecordOutcome.REJECTED, inG.outcome)
+        assertNull("a G session must not retain a signed H envelope", courier.delivery(wrap.id))
+        assertTrue(runBlocking { courier.store.inventory(groupId) }.none { it.id == wrap.id })
+        // In H's own session the same envelope is carried and offered onward.
+        val inH = runBlocking { courier.store.ingest(otherId, item, wrap.toJson(), author.pub) }
+        assertEquals(RecordOutcome.CARRIED, inH.outcome)
+        assertEquals(otherId, courier.delivery(wrap.id)?.groupId)
+        assertTrue(runBlocking { courier.store.inventory(otherId) }.any { it.id == wrap.id })
+    }
+
+    @Test
+    fun `an envelope filed under the wrong group by an older build is refiled, not vouched for`() {
+        // Rows written before outer-group checking may carry another group's label. A CARRIED receipt
+        // for H must mean H's inventory holds the envelope, so the mislabelled row is replaced.
+        val author = Device(1)
+        val courier = Device(2)
+        val recipient = Device(3)
+        val members = listOf(author.pub, courier.pub, recipient.pub)
+        listOf(author, courier, recipient).forEach { it.join(members, creator = author.pub) }
+        val otherId = UUID.randomUUID().toString()
+        val otherKey = GroupEncryption(CompressionUtil).generateGroupKey()
+        val other =
+            Group(otherId, "Other", createdBy = author.pub, createdAt = 1_000, members = members, relays = emptyList())
+        runBlocking { listOf(author, courier, recipient).forEach { it.groupRepo.save(other, otherKey) } }
+        val uuid = UUID.randomUUID().toString()
+        val expense = Expense(
+            id = uuid,
+            amount = 300,
+            currency = "USD",
+            description = "in H",
+            paidBy = author.pub,
+            splitType = SplitType.EQUAL,
+            splitAmong = splitAmong(members, 300),
+            timestamp = nowSecs()
+        )
+        val inner = author.signer.createSignedEvent(
+            otherId,
+            "expense",
+            author.encryption.encrypt(json.encodeToString(Expense.serializer(), expense), otherKey),
+            expenseUuid = uuid
+        )
+        val wrap = author.giftWrap.wrapIfEnabled(inner, recipient.pub)
+        val wrapJson = wrap.toJson()
+        runBlocking {
+            courier.deliveryDao.insertIfNew(
+                DeliveryEntity(
+                    envelopeId = wrap.id, groupId = groupId, recipient = recipient.pub, eventId = null,
+                    envelopeJson = wrapJson, eventType = DeliveryEntity.TYPE_GIFT_WRAP,
+                    state = DeliveryEntity.STATE_AVAILABLE, source = DeliveryEntity.SOURCE_CARRIED,
+                    createdAt = wrap.createdAt, receivedAt = nowSecs(), sizeBytes = wrapJson.length
+                )
+            )
+        }
+        val item = InventoryItem(wrap.id, NearbyWire.KIND_DELIVERY, r = recipient.pub)
+        assertEquals(listOf(item), runBlocking { courier.store.selectWanted(otherId, listOf(item), author.pub) })
+
+        val inH = runBlocking { courier.store.ingest(otherId, item, wrapJson, author.pub) }
+
+        assertEquals(RecordOutcome.CARRIED, inH.outcome)
+        assertEquals(otherId, courier.delivery(wrap.id)?.groupId)
+        assertEquals(recipient.pub, courier.delivery(wrap.id)?.recipient)
+        assertTrue(runBlocking { courier.store.inventory(otherId) }.any { it.id == wrap.id })
+        assertTrue(runBlocking { courier.store.inventory(groupId) }.none { it.id == wrap.id })
+        // A correctly filed duplicate is still a plain receipt.
+        assertEquals(
+            RecordOutcome.CARRIED,
+            runBlocking {
+                courier.store.ingest(otherId, item, wrapJson, author.pub)
+            }.outcome
+        )
+        assertEquals(1, runBlocking { courier.deliveryDao.getEnvelopeIds(otherId) }.count { it == wrap.id })
+    }
+
+    @Test
     fun `a full courier cache evicts the oldest carried envelope rather than refusing a new key or gift`() {
         val a = Device(1)
         val b = Device(2)

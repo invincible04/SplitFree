@@ -77,6 +77,50 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `pullEvents leaves another group's gift wraps to that group's pull`() = runBlocking {
+        // The recipient filter returns this member's envelopes for every group; the pull must neither
+        // ingest them under its own group nor count them as failures.
+        val forOther = NostrEvent(
+            id = "w1",
+            pubkey = "0".repeat(64),
+            createdAt = 100,
+            kind = 1059,
+            tags = listOf(listOf("p", myPub), listOf("g", "other-group")),
+            content = "x",
+            sig = "s"
+        )
+        val forThis = NostrEvent(
+            id = "w2",
+            pubkey = "0".repeat(64),
+            createdAt = 100,
+            kind = 1059,
+            tags = listOf(listOf("p", myPub), listOf("g", groupId)),
+            content = "x",
+            sig = "s"
+        )
+        val untagged = NostrEvent(
+            id = "w3",
+            pubkey = "0".repeat(64),
+            createdAt = 100,
+            kind = 1059,
+            tags = listOf(listOf("p", myPub)),
+            content = "x",
+            sig = "s"
+        )
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(forOther, forThis, untagged)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
+
+        engine.pullEvents(groupId, 0, groupKey)
+
+        coVerify(exactly = 0) { eventProcessor.process(forOther, any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { eventProcessor.process(forThis, groupId, any(), any(), any(), any()) }
+        // Without an outer tag the inner, signed tag decides inside the processor.
+        coVerify(exactly = 1) { eventProcessor.process(untagged, groupId, any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `pullEvents does not update lastSync when no new events`() = runBlocking {
         coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns emptyList()
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()

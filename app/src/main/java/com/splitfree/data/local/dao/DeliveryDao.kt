@@ -24,6 +24,10 @@ interface DeliveryDao {
     @Query("SELECT * FROM deliveries WHERE envelopeId = :id")
     suspend fun get(id: String): DeliveryEntity?
 
+    /** Removes one envelope row; used to refile an envelope stored under the wrong group. */
+    @Query("DELETE FROM deliveries WHERE envelopeId = :id")
+    suspend fun delete(id: String)
+
     /** Envelopes still holding their JSON, oldest first. */
     @Query("SELECT * FROM deliveries WHERE groupId = :groupId AND state = 0 ORDER BY createdAt ASC, envelopeId ASC")
     suspend fun getAvailable(groupId: String): List<DeliveryEntity>

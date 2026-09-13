@@ -31,7 +31,8 @@ import kotlinx.serialization.json.Json
  * Event processing pipeline: unwrap → validate → decrypt → store → post-process.
  * Handles both direct kind-30078 events and NIP-59 gift-wrapped events.
  *
- * Gate order: signature → tags → session scope → duplicate check (before any rate limit is charged) →
+ * Gate order: signature → tags (the signed `g` tag is the group; a caller's scope only refuses) →
+ * session scope → duplicate check (before any rate limit is charged) →
  * timestamp (lenient in [IngestionContext.RECONCILIATION]) → rate limits ([IngestionContext.LIVE]
  * only) → group + membership → decrypt → content safety → business rules → payload → insert →
  * post-process. Rows whose side effects could not run yet (missing dependency or a transient failure)
@@ -80,7 +81,10 @@ constructor(
      * Process a raw Nostr event through the full pipeline.
      *
      * @param rawEvent the event to process (may be gift-wrapped)
-     * @param knownGroupId override group ID extraction from tags
+     * @param knownGroupId the group the caller is syncing; a scope constraint, exactly as
+     *   [expectedGroupId]. The group an event belongs to is always its own signed `g` tag: a relay pull
+     *   for one group also returns this member's envelopes for every other group, and a valid rotation
+     *   for one of those must not be able to advance the pulled group's epoch.
      * @param knownGroupKey retained for caller compatibility; only stored, epoch-bound keys are trusted
      * @param nonCancellable if true, post-processing runs inside [NonCancellable]
      * @param lenientTimestamp if true, allows events older than 30 days (for initial/full sync)
@@ -106,19 +110,16 @@ constructor(
         val inner = unwrapResult?.rumor ?: rawEvent
         if (unwrapResult == null && !signer.verify(inner)) return rejected("invalid signature")
 
-        // 2. Extract tags first so the duplicate check below knows the id and group
-        val tags = extractTags(inner, knownGroupId)
+        // 2. Extract tags first so the duplicate check below knows the id and group. The signed `g`
+        //    tag is the only source of the group: the caller's scope can refuse an event, never rebind it.
+        val tags = extractTags(inner)
         val eventType = tags.eventType
         val expenseUuid = tags.expenseUuid
         val authorHex = inner.pubkey
         val groupId = tags.groupId ?: return rejected("missing group tag", inner.id, eventType, authorHex)
-        if (expectedGroupId != null &&
-            (
-                groupId != expectedGroupId ||
-                    inner.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1) != expectedGroupId
-                )
-        ) {
-            Log.w(TAG, "Rejecting $eventType ${inner.id.take(8)} for group $groupId delivered in a session for another")
+        val scope = expectedGroupId ?: knownGroupId
+        if (scope != null && groupId != scope) {
+            Log.w(TAG, "Rejecting $eventType ${inner.id.take(8)} for group $groupId delivered in a session for $scope")
             return rejected("out of scope", inner.id, eventType, authorHex)
         }
 
@@ -441,8 +442,9 @@ constructor(
 
     private data class Tags(val groupId: String?, val eventType: String, val expenseUuid: String?)
 
-    private fun extractTags(inner: NostrEvent, knownGroupId: String?): Tags {
-        var groupId = knownGroupId
+    /** Reads the first `g`, `t` and `x` tags; the group comes from the signed event alone. */
+    private fun extractTags(inner: NostrEvent): Tags {
+        var groupId: String? = null
         var eventType = "unknown"
         var expenseUuid: String? = null
         for (tag in inner.tags) {
