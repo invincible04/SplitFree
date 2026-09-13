@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.expense
 
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -23,9 +24,11 @@ data class AuthoredExpense(val expense: Expense, val authorPubkey: String)
  * Observes and decrypts expenses for a group as a reactive [Flow].
  * Supports epoch-based key rotation: each event is decrypted with its epoch's key.
  *
- * The emitted list reflects the same rules as balance computation: soft-deleted expenses are hidden,
- * a corrected expense is shown with its latest correction's payload (latest by `createdAt`, then
- * `eventId`), and duplicate `expense` events sharing an `x` tag collapse to the earliest one.
+ * The emitted list reflects the same rules as balance computation. Expenses are identified by
+ * [ExpenseIdentity] `(author, uuid)`: a soft-delete or correction only applies to the original signed by
+ * the same pubkey, so two authors sharing a UUID are two separate, both visible, expenses. A corrected
+ * expense is shown with its latest correction's payload (latest by `createdAt`, then `eventId`), and
+ * duplicate `expense` events from one author sharing an `x` tag collapse to the earliest one.
  */
 class GetExpensesUseCase
 @Inject
@@ -52,7 +55,11 @@ constructor(
 
     /**
      * Same list as [observe], each entry paired with the pubkey of its original `expense` event. When
-     * only a correction is known locally, the correction's author stands in.
+     * only a correction is known locally, the correction's author stands in (it is the same key: a
+     * correction is bound to its author's own record).
+     *
+     * Output order is fully deterministic (timestamp desc, then id, then author) so the list does not
+     * depend on the order events arrived in.
      */
     fun observeWithAuthors(groupId: String): Flow<List<AuthoredExpense>> =
         eventRepo.observeEventsByGroup(groupId).map { events ->
@@ -70,24 +77,25 @@ constructor(
                 return content?.let { runCatching { json.decodeFromString<Expense>(it) }.getOrNull() }
             }
 
-            val deleted = mutableSetOf<String>()
-            val latestCorrection = mutableMapOf<String, EventSnapshot>()
-            val earliestOriginal = mutableMapOf<String, EventSnapshot>()
+            val deleted = mutableSetOf<ExpenseIdentity>()
+            val latestCorrection = mutableMapOf<ExpenseIdentity, EventSnapshot>()
+            val earliestOriginal = mutableMapOf<ExpenseIdentity, EventSnapshot>()
             for (e in events) {
                 val uuid = e.expenseUuid ?: continue
+                val identity = ExpenseIdentity(e.pubkey, uuid)
                 when (e.eventType) {
-                    "expense_delete" -> deleted.add(uuid)
+                    "expense_delete" -> deleted.add(identity)
                     "expense_correction" -> {
-                        val current = latestCorrection[uuid]
+                        val current = latestCorrection[identity]
                         if (current == null || EventSnapshot.CANONICAL_ORDER.compare(e, current) > 0) {
-                            latestCorrection[uuid] = e
+                            latestCorrection[identity] = e
                         }
                     }
 
                     "expense" -> {
-                        val current = earliestOriginal[uuid]
+                        val current = earliestOriginal[identity]
                         if (current == null || EventSnapshot.CANONICAL_ORDER.compare(e, current) < 0) {
-                            earliestOriginal[uuid] = e
+                            earliestOriginal[identity] = e
                         }
                     }
                 }
@@ -95,17 +103,20 @@ constructor(
 
             (earliestOriginal.keys + latestCorrection.keys)
                 .filter { it !in deleted }
-                .mapNotNull { uuid ->
-                    val originalEvent = earliestOriginal[uuid]
-                    val correctionEvent = latestCorrection[uuid]
+                .mapNotNull { identity ->
+                    val originalEvent = earliestOriginal[identity]
+                    val correctionEvent = latestCorrection[identity]
                     val original = originalEvent?.let { decryptExpense(it) }
                     val corrected = correctionEvent?.let { decryptExpense(it) }
                     // Prefer the correction; fall back to the original if the correction is unreadable.
-                    val shown = corrected?.copy(id = uuid) ?: original ?: return@mapNotNull null
-                    val author = (originalEvent ?: correctionEvent)?.pubkey ?: return@mapNotNull null
-                    AuthoredExpense(shown, author) to (original ?: shown).timestamp
+                    val shown = corrected?.copy(id = identity.expenseUuid) ?: original ?: return@mapNotNull null
+                    AuthoredExpense(shown, identity.authorPubkey) to (original ?: shown).timestamp
                 }
-                .sortedByDescending { (_, sortTimestamp) -> sortTimestamp }
+                .sortedWith(
+                    compareByDescending<Pair<AuthoredExpense, Long>> { (_, sortTimestamp) -> sortTimestamp }
+                        .thenBy { (authored, _) -> authored.expense.id }
+                        .thenBy { (authored, _) -> authored.authorPubkey }
+                )
                 .map { (authored, _) -> authored }
         }.flowOn(Dispatchers.Default)
 }

@@ -42,20 +42,25 @@ interface GroupDao {
     suspend fun updateLastSync(groupId: String, timestamp: Long)
 
     /**
-     * Last-writer-wins metadata update. The metadata columns and `lastMetaTimestamp`
-     * are written in a single statement so a concurrent writer can never observe the
-     * new members with the old watermark (or vice versa).
+     * Last-writer-wins metadata update. The metadata columns, `lastMetaTimestamp` and
+     * `lastMetaEventId` are written in a single statement so a concurrent writer can never
+     * observe the new members with the old watermark (or vice versa).
+     *
+     * Two metas sharing a `createdAt` are ordered by [eventId] so every device converges on
+     * the same one regardless of arrival order.
      *
      * @param description new description, or null to leave the stored one untouched (local
      *   mutations such as rotation / revocation / join do not carry one)
-     * @return number of rows updated: 1 if applied, 0 if [eventTimestamp] was not newer
+     * @param eventId id of the `group_meta` event being applied; `""` for callers without one
+     * @return number of rows updated: 1 if applied, 0 if ([eventTimestamp], [eventId]) was not newer
      */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
             "description = COALESCE(:description, description), " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
-            "lastMetaTimestamp = :eventTimestamp " +
-            "WHERE groupId = :groupId AND lastMetaTimestamp < :eventTimestamp"
+            "lastMetaTimestamp = :eventTimestamp, lastMetaEventId = :eventId " +
+            "WHERE groupId = :groupId AND (lastMetaTimestamp < :eventTimestamp " +
+            "OR (lastMetaTimestamp = :eventTimestamp AND lastMetaEventId < :eventId))"
     )
     suspend fun updateMetaIfNewer(
         groupId: String,
@@ -65,20 +70,25 @@ interface GroupDao {
         createdBy: String,
         eventTimestamp: Long,
         memberNames: String = "{}",
-        description: String? = null
+        description: String? = null,
+        eventId: String = ""
     ): Int
 
     /**
      * Unconditional metadata update used for local mutations (rotation, revocation, join).
      * Always advances `lastMetaTimestamp` to at least [eventTimestamp] so a stale
-     * `group_meta` replayed from a relay cannot revert the local change.
+     * `group_meta` replayed from a relay cannot revert the local change. `lastMetaEventId`
+     * follows the watermark: it is replaced only when [eventTimestamp] wins (or ties).
      *
      * @param description new description, or null to leave the stored one untouched
+     * @param eventId id to record alongside the watermark; `""` for local mutations
      */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
             "description = COALESCE(:description, description), " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
+            "lastMetaEventId = CASE WHEN :eventTimestamp >= lastMetaTimestamp " +
+            "THEN :eventId ELSE lastMetaEventId END, " +
             "lastMetaTimestamp = MAX(lastMetaTimestamp, :eventTimestamp) " +
             "WHERE groupId = :groupId"
     )
@@ -90,8 +100,20 @@ interface GroupDao {
         createdBy: String,
         eventTimestamp: Long,
         memberNames: String = "{}",
-        description: String? = null
+        description: String? = null,
+        eventId: String = ""
     )
+
+    /**
+     * Apply a member's own change (self-join / own display name) computed by the repository.
+     * Deliberately leaves `lastMetaTimestamp` / `lastMetaEventId` alone: a member editing their
+     * own name must not block or be blocked by the creator's metadata watermark. Per-member
+     * ordering lives in `memberClocks`.
+     */
+    @Query(
+        "UPDATE `groups` SET members = :members, memberNames = :memberNames, memberClocks = :memberClocks WHERE groupId = :groupId"
+    )
+    suspend fun updateMemberSelf(groupId: String, members: String, memberNames: String, memberClocks: String)
 
     @Delete
     suspend fun delete(group: GroupEntity)

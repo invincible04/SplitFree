@@ -138,7 +138,8 @@ constructor(
         eventTimestamp: Long,
         createdBy: String,
         memberNames: Map<String, String>,
-        description: String?
+        description: String?,
+        eventId: String
     ) {
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
@@ -153,7 +154,7 @@ constructor(
         val safeMemberNames = sanitizeMemberNames(memberNames, members)
         val namesJson = json.encodeToString(nameMapSerializer, safeMemberNames)
         if (eventTimestamp > 0) {
-            // Single-statement LWW: metadata and lastMetaTimestamp land together or not at all.
+            // Single-statement LWW: metadata, lastMetaTimestamp and lastMetaEventId land together or not at all.
             groupDao.updateMetaIfNewer(
                 groupId,
                 name,
@@ -162,7 +163,8 @@ constructor(
                 createdBy,
                 eventTimestamp,
                 namesJson,
-                description
+                description,
+                eventId
             )
         } else {
             // Local mutation (rotation, revocation, join): apply unconditionally, but still advance
@@ -176,30 +178,95 @@ constructor(
                 createdBy,
                 localTimestamp,
                 namesJson,
-                description
+                description,
+                eventId
             )
         }
     }
 
+    /**
+     * Per-member self-update, ordered by the member's own `(eventTimestamp, eventId)` clock stored
+     * in `memberClocks` rather than by the creator's `lastMetaTimestamp` watermark, so a member
+     * renaming themselves can neither block nor be blocked by the creator's metas.
+     *
+     * Only the author's own entries are touched: their membership (when [join]) and their own
+     * display name. Every other member's name is carried over untouched.
+     *
+     * Read-modify-write; callers are expected to serialise event ingestion per group.
+     */
+    override suspend fun applyMemberSelfUpdate(
+        groupId: String,
+        author: String,
+        eventTimestamp: Long,
+        eventId: String,
+        join: Boolean,
+        displayName: String?
+    ): Boolean {
+        val entity = groupDao.getById(groupId) ?: return false
+        val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+        val stored = clocks[author]?.let(::parseMemberClock)
+        if (stored != null && !isNewerClock(eventTimestamp, eventId, stored)) return false
+
+        val members = decodeList(entity.members, groupId, "members")
+        val newMembers = when {
+            join && author !in members -> members + author
+            else -> members
+        }
+        if (author !in newMembers) return false // name change for a non-member: nothing to apply
+        if (newMembers.size > RelayDefaults.MAX_GROUP_MEMBERS) {
+            Log.w(
+                TAG,
+                "Rejecting self-join to $groupId: ${newMembers.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
+            )
+            return false
+        }
+
+        val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
+        if (displayName != null) {
+            val safeName = displayName.trim().take(MAX_DISPLAY_NAME_LENGTH)
+            if (safeName.isEmpty()) names.remove(author) else names[author] = safeName
+        }
+        val newClocks = clocks.toMutableMap().apply { put(author, "$eventTimestamp:$eventId") }
+
+        groupDao.updateMemberSelf(
+            groupId,
+            json.encodeToString(stringListSerializer, newMembers),
+            json.encodeToString(nameMapSerializer, names),
+            json.encodeToString(nameMapSerializer, newClocks)
+        )
+        return true
+    }
+
+    /** `"createdAt:eventId"` -> `(createdAt, eventId)`, or null when the stored value is unreadable. */
+    private fun parseMemberClock(raw: String): Pair<Long, String>? {
+        val sep = raw.indexOf(':')
+        if (sep < 0) return null
+        val ts = raw.substring(0, sep).toLongOrNull() ?: return null
+        return ts to raw.substring(sep + 1)
+    }
+
+    /** Strict tuple order on `(timestamp, eventId)`; equal clocks are not newer (idempotent replay). */
+    private fun isNewerClock(timestamp: Long, eventId: String, stored: Pair<Long, String>): Boolean =
+        timestamp > stored.first || (timestamp == stored.first && eventId > stored.second)
+
+    private fun decodeList(raw: String, groupId: String, column: String): List<String> = try {
+        json.decodeFromString(stringListSerializer, raw)
+    } catch (e: Exception) {
+        Log.w(TAG, "Group $groupId has unreadable $column JSON; treating as empty: ${e.javaClass.simpleName}")
+        emptyList()
+    }
+
+    private fun decodeMap(raw: String, groupId: String, column: String): Map<String, String> = try {
+        json.decodeFromString(nameMapSerializer, raw)
+    } catch (e: Exception) {
+        Log.w(TAG, "Group $groupId has unreadable $column JSON; treating as empty: ${e.javaClass.simpleName}")
+        emptyMap()
+    }
+
     private fun GroupEntity.toDomain(): Group {
-        val decodedMembers = try {
-            json.decodeFromString(stringListSerializer, members)
-        } catch (e: Exception) {
-            Log.w(TAG, "Group $groupId has unreadable members JSON; treating as empty: ${e.javaClass.simpleName}")
-            emptyList()
-        }
-        val decodedRelays = try {
-            json.decodeFromString(stringListSerializer, relays)
-        } catch (e: Exception) {
-            Log.w(TAG, "Group $groupId has unreadable relays JSON; treating as empty: ${e.javaClass.simpleName}")
-            emptyList()
-        }
-        val decodedNames = try {
-            json.decodeFromString(nameMapSerializer, memberNames)
-        } catch (e: Exception) {
-            Log.w(TAG, "Group $groupId has unreadable memberNames JSON; treating as empty: ${e.javaClass.simpleName}")
-            emptyMap()
-        }
+        val decodedMembers = decodeList(members, groupId, "members")
+        val decodedRelays = decodeList(relays, groupId, "relays")
+        val decodedNames = decodeMap(memberNames, groupId, "memberNames")
         return Group(
             id = groupId,
             name = name,
@@ -219,13 +286,16 @@ constructor(
         return names.entries
             .asSequence()
             .filter { it.key in memberSet }
-            .map { it.key to it.value.trim().take(50) }
+            .map { it.key to it.value.trim().take(MAX_DISPLAY_NAME_LENGTH) }
             .filter { it.second.isNotEmpty() }
             .toMap()
     }
 
     companion object {
         private const val TAG = "GroupRepository"
+
+        /** Display names are trimmed and truncated to this many characters before persisting. */
+        private const val MAX_DISPLAY_NAME_LENGTH = 50
 
         /**
          * Highest epoch [deleteGroupKey] sweeps when the group row is gone and the real epoch is

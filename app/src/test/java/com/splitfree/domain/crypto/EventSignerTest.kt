@@ -187,6 +187,25 @@ class EventSignerTest {
     }
 
     @Test
+    fun `createSignedEvent omits the p tag by default`() {
+        val event = signer.createSignedEvent("group1", "expense", "enc", "uuid1")
+        assertNull(event.tags.find { it[0] == "p" })
+    }
+
+    @Test
+    fun `createSignedEvent adds a p tag for the recipient and still verifies`() {
+        val recipient = "cd".repeat(32)
+        val event = signer.createSignedEvent("group1", "key_rotation", "enc", recipientPubkey = recipient)
+        assertTrue(event.verify())
+        assertEquals(listOf("p", recipient), event.tags.find { it[0] == "p" })
+        // Only one p tag, and the other tags are unchanged.
+        assertEquals(1, event.tags.count { it[0] == "p" })
+        assertEquals("group1", event.tags.find { it[0] == "g" }!![1])
+        assertEquals("key_rotation", event.tags.find { it[0] == "t" }!![1])
+        assertNull(event.tags.find { it[0] == "x" })
+    }
+
+    @Test
     fun `verify delegates to NostrEvent verify`() {
         val event = signer.createSignedEvent("g", "t", "c")
         assertTrue(signer.verify(event))

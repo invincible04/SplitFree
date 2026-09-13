@@ -16,6 +16,9 @@ import androidx.room.PrimaryKey
  * @property eventType one of: expense, settlement, snapshot, expense_correction, expense_delete, group_meta
  * @property expenseUuid optional UUID linking corrections/deletions to the original expense
  * @property originalEventJson full signed Nostr event JSON for self-healing re-publish
+ * @property applyState [APPLY_STATE_APPLIED] once post-processing side effects ran, or
+ *   [APPLY_STATE_PENDING] when they were deferred (e.g. a key-rotation epoch gap). Projection
+ *   queries only read applied rows; identity/dedup lookups ignore the state.
  */
 @Entity(
     tableName = "events",
@@ -37,7 +40,8 @@ data class EventEntity(
     val sig: String,
     val receivedAt: Long,
     val originalEventJson: String? = null,
-    val keyEpoch: Int = 0
+    val keyEpoch: Int = 0,
+    val applyState: Int = APPLY_STATE_APPLIED
 ) {
     /**
      * Decrypt content on-the-fly. Never persisted; call each time content is needed.
@@ -47,5 +51,13 @@ data class EventEntity(
         decryptor(contentEncrypted, groupId)
     } catch (_: Exception) {
         null
+    }
+
+    companion object {
+        /** Side effects ran; the row feeds projections. */
+        const val APPLY_STATE_APPLIED = 0
+
+        /** Stored for dedup/evidence but side effects were deferred; excluded from projections. */
+        const val APPLY_STATE_PENDING = 1
     }
 }

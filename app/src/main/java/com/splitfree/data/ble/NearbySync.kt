@@ -15,6 +15,7 @@ import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
 import com.splitfree.data.identity.IdentityManager
+import com.splitfree.sync.nearby.NearbyTransport
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.ConcurrentHashMap
@@ -37,7 +38,14 @@ sealed class BleEvent {
 
     data class PeerLost(val endpointId: String) : BleEvent()
 
-    data class Connected(val endpointId: String) : BleEvent()
+    /**
+     * @property isIncoming the Nearby connection role for this endpoint ([ConnectionInfo.isIncomingConnection]);
+     *   the session engine derives the protocol initiator from it
+     * @property authToken Nearby's raw authentication token for this connection, identical on both ends
+     *   and different per connection; bound into the authentication transcript
+     */
+    data class Connected(val endpointId: String, val isIncoming: Boolean = false, val authToken: ByteArray? = null) :
+        BleEvent()
 
     data class Disconnected(val endpointId: String) : BleEvent()
 
@@ -51,7 +59,8 @@ sealed class BleEvent {
  *
  * Advertises and discovers peers using P2P_CLUSTER strategy. Connections are accepted
  * only if the endpoint name is a valid 8-char hex pubkey prefix. Actual authentication
- * happens via Schnorr challenge-response in [BleTransfer] after connection.
+ * happens in [com.splitfree.sync.nearby.PeerSession] after connection, bound to the connection's
+ * raw authentication token which this class captures at [ConnectionLifecycleCallback.onConnectionInitiated].
  */
 @Singleton
 class NearbySync
@@ -59,10 +68,10 @@ class NearbySync
 constructor(
     @ApplicationContext private val context: Context,
     private val identity: IdentityManager
-) {
+) : NearbyTransport {
     private val client: ConnectionsClient by lazy { Nearby.getConnectionsClient(context) }
     private val _events = MutableSharedFlow<BleEvent>(extraBufferCapacity = EVENT_BUFFER_CAPACITY)
-    val events: SharedFlow<BleEvent> = _events
+    override val events: SharedFlow<BleEvent> = _events
 
     /**
      * Events that could not be handed to [events] because the buffer was full: a burst of
@@ -71,6 +80,11 @@ constructor(
     val droppedEvents = AtomicLong(0)
 
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
+
+    /** Role and channel token captured at initiation, consumed on a successful result. */
+    private data class PendingConnection(val isIncoming: Boolean, val authToken: ByteArray?)
+
+    private val pendingConnections = ConcurrentHashMap<String, PendingConnection>()
 
     /**
      * Hand [event] to [events]. Nearby callbacks run on a binder thread and must not block, so a
@@ -121,7 +135,7 @@ constructor(
         }
     }
 
-    fun sendPayload(endpointId: String, data: ByteArray) {
+    override fun sendPayload(endpointId: String, data: ByteArray) {
         try {
             client
                 .sendPayload(endpointId, Payload.fromBytes(data))
@@ -135,9 +149,10 @@ constructor(
         guarded("stop_discovery") { client.stopDiscovery() }
     }
 
-    fun disconnect(endpointId: String) {
+    override fun disconnect(endpointId: String) {
         guarded("disconnect") { client.disconnectFromEndpoint(endpointId) }
         connectedEndpoints.remove(endpointId)
+        pendingConnections.remove(endpointId)
     }
 
     /**
@@ -150,6 +165,7 @@ constructor(
         guarded("stop_discovery") { client.stopDiscovery() }
         guarded("stop_all_endpoints") { client.stopAllEndpoints() }
         connectedEndpoints.clear()
+        pendingConnections.clear()
     }
 
     /** Run one Nearby call, reporting a revoked-permission refusal instead of propagating it. */
@@ -181,24 +197,25 @@ constructor(
              *
              * This is a UX decision, not an authentication step: the prefix is self-reported and
              * an attacker can advertise any prefix. Accepting here only opens a transport so the
-             * Schnorr transcript handshake in [BleTransfer] can run. [BleTransfer.verifyHandshake]
-             * is what authenticates a peer, and [BleTransfer] refuses to sign anything for a peer
-             * whose challenge or pubkey is malformed and withholds all data until mutual
-             * authentication completes.
+             * channel-bound Schnorr handshake in [com.splitfree.sync.nearby.PeerSession] can run;
+             * nothing is disclosed until mutual authentication and group authorization complete.
+             * The connection role and raw authentication token are captured here so the session
+             * can bind its signatures to this specific channel.
              */
             override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-                // Accept connection to allow the handshake; actual authentication happens
-                // via Schnorr challenge-response in BleTransfer after connection.
-                // Validate endpoint name is a plausible hex pubkey prefix.
                 val name = info.endpointName
                 // This runs on a Nearby callback thread; an escaping SecurityException
                 // (permission revoked while connected) would kill the process.
                 try {
                     if (name.length == 8 && name.all { it in "0123456789abcdef" }) {
-                        client.acceptConnection(endpointId, payloadCallback)
+                        pendingConnections[endpointId] =
+                            PendingConnection(info.isIncomingConnection, info.rawAuthenticationToken)
+                        client
+                            .acceptConnection(endpointId, payloadCallback)
+                            .addOnFailureListener { emitError("accept_connection", it) }
                     } else {
                         Log.w(TAG, "Rejecting connection from endpoint with invalid name: $name")
-                        client.rejectConnection(endpointId)
+                        client.rejectConnection(endpointId).addOnFailureListener { emitError("reject_connection", it) }
                     }
                 } catch (e: SecurityException) {
                     emitError("connection_initiated", e)
@@ -206,9 +223,10 @@ constructor(
             }
 
             override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+                val pending = pendingConnections.remove(endpointId)
                 if (result.status.isSuccess) {
                     connectedEndpoints.add(endpointId)
-                    emitOrDrop(BleEvent.Connected(endpointId))
+                    emitOrDrop(BleEvent.Connected(endpointId, pending?.isIncoming ?: false, pending?.authToken))
                 } else {
                     val reason = result.status.statusMessage ?: "status=${result.status.statusCode}"
                     Log.w(TAG, "Connection failed for $endpointId: $reason")
@@ -218,6 +236,7 @@ constructor(
 
             override fun onDisconnected(endpointId: String) {
                 connectedEndpoints.remove(endpointId)
+                pendingConnections.remove(endpointId)
                 emitOrDrop(BleEvent.Disconnected(endpointId))
             }
         }
@@ -242,7 +261,7 @@ constructor(
         private const val DROP_LOG_INTERVAL = 100L
     }
 
-    private fun emitError(operation: String, throwable: Exception) {
+    private fun emitError(operation: String, throwable: Throwable) {
         val reason = throwable.message ?: throwable.javaClass.simpleName
         Log.w(TAG, "$operation failed: $reason")
         emitOrDrop(BleEvent.Error(operation, reason))

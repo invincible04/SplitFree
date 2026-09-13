@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -329,6 +330,228 @@ class GroupRepositoryTest {
 
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500, description = "")
         coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), "") }
+    }
+
+    @Test
+    fun `updateFromMeta threads the eventId into both dao updates`() = runBlocking {
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500, eventId = "e-500")
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "e-500") }
+
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventId = "e-local")
+        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), null, "e-local") }
+    }
+
+    @Test
+    fun `updateFromMeta defaults the eventId to empty so existing callers are unchanged`() = runBlocking {
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "") }
+    }
+
+    // --- applyMemberSelfUpdate ---
+
+    private val selfEntity =
+        groupEntity.copy(
+            members = """["pub1","pub2"]""",
+            memberNames = """{"pub1":"Alice","pub2":"Bob"}""",
+            memberClocks = """{"pub2":"500:e5"}"""
+        )
+
+    private class SelfWrite(val members: String, val memberNames: String, val memberClocks: String)
+
+    private fun captureSelfWrite(): SelfWrite {
+        val members = slot<String>()
+        val names = slot<String>()
+        val clocks = slot<String>()
+        coVerify(exactly = 1) { groupDao.updateMemberSelf("g1", capture(members), capture(names), capture(clocks)) }
+        return SelfWrite(members.captured, names.captured, clocks.captured)
+    }
+
+    private fun assertNoSelfWrite() {
+        coVerify(exactly = 0) { groupDao.updateMemberSelf(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate rejects an older timestamp`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertFalse(repo.applyMemberSelfUpdate("g1", "pub2", 400, "zzz", join = false, displayName = "Bobby"))
+
+        assertNoSelfWrite()
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate rejects the same timestamp with a lower eventId`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertFalse(repo.applyMemberSelfUpdate("g1", "pub2", 500, "e4", join = false, displayName = "Bobby"))
+
+        assertNoSelfWrite()
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate treats an exact replay as a no-op`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertFalse(repo.applyMemberSelfUpdate("g1", "pub2", 500, "e5", join = false, displayName = "Bobby"))
+
+        assertNoSelfWrite()
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate applies the same timestamp with a greater eventId`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 500, "e6", join = false, displayName = "Bobby"))
+
+        val write = captureSelfWrite()
+        assertEquals("""["pub1","pub2"]""", write.members)
+        assertEquals("""{"pub1":"Alice","pub2":"Bobby"}""", write.memberNames)
+        assertEquals("""{"pub2":"500:e6"}""", write.memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate applies a newer timestamp even with a lower eventId`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "a", join = false, displayName = "Bobby"))
+
+        assertEquals("""{"pub2":"600:a"}""", captureSelfWrite().memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate applies when the member has no clock yet and keeps other clocks`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub1", 1, "e1", join = false, displayName = "Al"))
+
+        val write = captureSelfWrite()
+        assertEquals("""{"pub1":"Al","pub2":"Bob"}""", write.memberNames)
+        assertEquals("""{"pub2":"500:e5","pub1":"1:e1"}""", write.memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate with join adds the author to members`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub3", 700, "e7", join = true, displayName = "Carol"))
+
+        val write = captureSelfWrite()
+        assertEquals("""["pub1","pub2","pub3"]""", write.members)
+        assertEquals("""{"pub1":"Alice","pub2":"Bob","pub3":"Carol"}""", write.memberNames)
+        assertEquals("""{"pub2":"500:e5","pub3":"700:e7"}""", write.memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate with join for an existing member does not duplicate them`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "e6", join = true, displayName = null))
+
+        val write = captureSelfWrite()
+        assertEquals("""["pub1","pub2"]""", write.members)
+        assertEquals("""{"pub1":"Alice","pub2":"Bob"}""", write.memberNames)
+        assertEquals("""{"pub2":"600:e6"}""", write.memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate ignores a name change from a non-member without a join`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertFalse(repo.applyMemberSelfUpdate("g1", "stranger", 900, "e9", join = false, displayName = "Mallory"))
+
+        assertNoSelfWrite()
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate with an empty displayName clears only the author's own name`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "e6", join = false, displayName = ""))
+
+        assertEquals("""{"pub1":"Alice"}""", captureSelfWrite().memberNames)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate with a blank displayName clears like an empty one`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "e6", join = false, displayName = "   "))
+
+        assertEquals("""{"pub1":"Alice"}""", captureSelfWrite().memberNames)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate with a null displayName keeps the stored name`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "e6", join = false, displayName = null))
+
+        val write = captureSelfWrite()
+        assertEquals("""{"pub1":"Alice","pub2":"Bob"}""", write.memberNames)
+        assertEquals("""{"pub2":"600:e6"}""", write.memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate trims and truncates the display name to 50 characters`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+        val longName = "  " + "x".repeat(60) + "  "
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 600, "e6", join = false, displayName = longName))
+
+        assertEquals("""{"pub1":"Alice","pub2":"${"x".repeat(50)}"}""", captureSelfWrite().memberNames)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate never touches the creator watermark`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity
+
+        repo.applyMemberSelfUpdate("g1", "pub3", 700, "e7", join = true, displayName = "Carol")
+
+        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) { groupDao.update(any()) }
+        coVerify(exactly = 0) { groupDao.insert(any()) }
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate returns false for an unknown group`() = runBlocking {
+        coEvery { groupDao.getById("missing") } returns null
+
+        assertFalse(repo.applyMemberSelfUpdate("missing", "pub1", 1, "e1", join = true, displayName = "x"))
+
+        assertNoSelfWrite()
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate treats unreadable clocks as empty and repairs them on write`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity.copy(memberClocks = "{oops")
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 1, "e1", join = false, displayName = null))
+
+        assertEquals("""{"pub2":"1:e1"}""", captureSelfWrite().memberClocks)
+        verify(exactly = 1) { android.util.Log.w("GroupRepository", match<String> { "memberClocks" in it }) }
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate treats an unparseable clock entry as absent`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns selfEntity.copy(memberClocks = """{"pub2":"garbage"}""")
+
+        assertTrue(repo.applyMemberSelfUpdate("g1", "pub2", 1, "e1", join = false, displayName = null))
+
+        assertEquals("""{"pub2":"1:e1"}""", captureSelfWrite().memberClocks)
+    }
+
+    @Test
+    fun `applyMemberSelfUpdate rejects a join that would exceed the member cap`() = runBlocking {
+        val full = (1..50).map { "pub$it" }
+        coEvery { groupDao.getById("g1") } returns
+            selfEntity.copy(members = full.joinToString(",", "[", "]") { "\"$it\"" }, memberClocks = "{}")
+
+        assertFalse(repo.applyMemberSelfUpdate("g1", "pub51", 1, "e1", join = true, displayName = null))
+
+        assertNoSelfWrite()
     }
 
     @Test

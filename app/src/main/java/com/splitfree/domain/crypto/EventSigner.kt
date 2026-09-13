@@ -19,13 +19,17 @@ constructor(private val identityManager: IdentityContract) {
      * @param eventType value for the `t` tag (e.g. `expense`, `settlement`, `group_meta`)
      * @param encryptedContent NIP-44 encrypted payload
      * @param expenseUuid optional UUID for the `x` tag and d-tag uniqueness
+     * @param recipientPubkey optional pubkey for a `p` tag when the payload is addressed to exactly one
+     *   member (per-member `key_rotation` envelopes), so relays and couriers can route it without
+     *   decrypting it
      * @return signed [NostrEvent] with computed ID and BIP-340 signature
      */
     fun createSignedEvent(
         groupId: String,
         eventType: String,
         encryptedContent: String,
-        expenseUuid: String? = null
+        expenseUuid: String? = null,
+        recipientPubkey: String? = null
     ): NostrEvent {
         val privKey = identityManager.getPrivateKeyBytes()
         try {
@@ -47,6 +51,7 @@ constructor(private val identityManager: IdentityContract) {
                     add(listOf("g", groupId)) // group membership tag for filtering
                     add(listOf("t", eventType))
                     expenseUuid?.let { add(listOf("x", it)) }
+                    recipientPubkey?.let { add(listOf("p", it)) }
                 }
 
             return NostrEvent(

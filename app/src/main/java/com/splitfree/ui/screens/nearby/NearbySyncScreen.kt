@@ -219,14 +219,15 @@ private const val PULSE_MAX_ALPHA = 0.7f
 private const val PULSE_STROKE_FACTOR = 1.5f
 
 /** Status resources the ViewModel uses for failures; everything else is progress or guidance. */
+/** Plural failure statuses (counts of records that did not apply). */
+private val FailurePluralIds = setOf(R.plurals.nearby_incomplete, R.plurals.nearby_interrupted)
+
 private val FailureStatusIds =
     setOf(
-        R.string.nearby_peer_data_failed,
         R.string.nearby_peer_auth_failed,
         R.string.nearby_handshake_timeout,
-        R.string.nearby_handshake_check_failed,
-        R.string.nearby_group_exchange_failed,
-        R.string.nearby_sync_request_failed,
+        R.string.nearby_unsupported_peer,
+        R.string.nearby_unauthorized,
         R.string.nearby_ble_error,
         R.string.nearby_scan_failed
     )
@@ -347,7 +348,9 @@ private fun visibleStatus(state: NearbySyncUiState): UiMessage? {
 /** The ViewModel's status line: a [WarningCard] when the resource is one of its failure messages. */
 @Composable
 private fun StatusNotice(status: UiMessage) {
-    val isFailure = status is UiMessage.Res && status.id in FailureStatusIds
+    val isFailure =
+        (status is UiMessage.Res && status.id in FailureStatusIds) ||
+            (status is UiMessage.Plural && status.id in FailurePluralIds)
     val text = status.asString()
     val statusModifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
     if (isFailure) {
@@ -533,23 +536,37 @@ private fun NearbyDock(state: NearbySyncUiState, permissions: NearbyPermissionSt
 
 // --- Route helpers: permissions and Bluetooth -----------------------------------------------------------
 
+/**
+ * Runtime permissions Nearby Connections needs on this API level.
+ *
+ * Android 12 ignores a request for fine location that does not include coarse location in the same
+ * request, so both are always requested together below API 33. API 37 (target) adds the local-network
+ * permission for the Wi-Fi LAN path; without it Nearby still falls back to Bluetooth.
+ */
 private fun requiredNearbyPermissions(): List<String> = buildList {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.BLUETOOTH_SCAN)
         add(Manifest.permission.BLUETOOTH_ADVERTISE)
         add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_PERMISSION_API) add(ACCESS_LOCAL_NETWORK)
     } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         add(Manifest.permission.BLUETOOTH_SCAN)
         add(Manifest.permission.BLUETOOTH_ADVERTISE)
         add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
     } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
     } else {
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 }
+
+/** `android.permission.ACCESS_LOCAL_NETWORK`, a runtime permission from API 37 for apps targeting 37. */
+private const val ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+private const val LOCAL_NETWORK_PERMISSION_API = 37
 
 private fun hasAllPermissions(context: Context, permissions: List<String>): Boolean = permissions.all {
     ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED

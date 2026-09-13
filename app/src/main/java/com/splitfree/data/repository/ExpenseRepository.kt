@@ -159,10 +159,10 @@ constructor(
     }
 
     override suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String) {
-        val original = eventDao.getExpenseByUuid(expenseUuid, groupId)
-        checkNotNull(original) { "Expense $expenseUuid not found" }
         val author = identity.getPublicKeyHex()
-        check(original.pubkey == author) { "Only the creator can delete this expense" }
+        // Author-bound identity: only my own record under this UUID can be deleted. Another member's
+        // expense reusing the UUID is a separate record and is neither found here nor affected.
+        eventDao.getExpenseByAuthor(expenseUuid, groupId, author) ?: error("Expense not found or not yours")
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
@@ -186,10 +186,9 @@ constructor(
     }
 
     override suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String) {
-        val original = eventDao.getExpenseByUuid(originalUuid, groupId)
-        checkNotNull(original) { "Expense $originalUuid not found" }
         val author = identity.getPublicKeyHex()
-        check(original.pubkey == author) { "Only the creator can correct this expense" }
+        // Author-bound identity: a correction is bound to my own record under this UUID (see deleteExpense).
+        eventDao.getExpenseByAuthor(originalUuid, groupId, author) ?: error("Expense not found or not yours")
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }

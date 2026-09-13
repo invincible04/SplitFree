@@ -10,6 +10,7 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
+import com.splitfree.sync.event.IngestionContext
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -57,6 +58,9 @@ constructor(
         // group_meta is last-writer-wins on created_at, so process a catch-up batch oldest-first.
         val events = nostrClient.fetchEvents(groupId, since, identity.getPublicKeyHex()).sortedBy { it.createdAt }
         val existingIds = eventDao.getEventIds(groupId).toSet()
+        // A full/initial pull is an explicit history catch-up: historical timestamps are expected and
+        // the in-memory rate counters must not throttle it.
+        val context = if (lenientTimestamp) IngestionContext.RECONCILIATION else IngestionContext.LIVE
         var count = 0
         for (event in events) {
             if (event.id in existingIds) continue
@@ -65,7 +69,8 @@ constructor(
                     rawEvent = event,
                     knownGroupId = groupId,
                     knownGroupKey = groupKey,
-                    lenientTimestamp = lenientTimestamp
+                    lenientTimestamp = lenientTimestamp,
+                    context = context
                 )
             if (result.stored) {
                 if (notifyContext != null) {

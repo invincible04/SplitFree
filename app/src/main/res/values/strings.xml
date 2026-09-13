@@ -305,14 +305,27 @@
     <string name="nearby_scanning">Scanning. Ask the other person to open Nearby sync in this group too.</string>
     <string name="nearby_connecting">Connecting…</string>
     <string name="nearby_authenticating">Authenticating peer…</string>
-    <string name="nearby_syncing">Syncing with peer…</string>
     <string name="nearby_sync_complete">Peer disconnected. Open the group to see any new expenses.</string>
+    <string name="nearby_opening_group">Checking group membership…</string>
+    <string name="nearby_comparing">Comparing history…</string>
+    <string name="nearby_transferring">Receiving %1$d, sending %2$d…</string>
+    <plurals name="nearby_waiting_dependency">
+        <item quantity="one">Waiting for a key or earlier update (%1$d pending)</item>
+        <item quantity="other">Waiting for a key or earlier update (%1$d pending)</item>
+    </plurals>
+    <string name="nearby_up_to_date">Up to date with this peer. Received %1$d, sent %2$d.</string>
+    <plurals name="nearby_incomplete">
+        <item quantity="one">Sync incomplete: %1$d record could not be applied. Reconnect to retry.</item>
+        <item quantity="other">Sync incomplete: %1$d records could not be applied. Reconnect to retry.</item>
+    </plurals>
+    <string name="nearby_unsupported_peer">The other phone runs an incompatible SplitFree version.</string>
+    <string name="nearby_unauthorized">The other phone is not a member of this group.</string>
+    <plurals name="nearby_interrupted">
+        <item quantity="one">Connection interrupted after %1$d record. Reconnect to resume.</item>
+        <item quantity="other">Connection interrupted after %1$d records. Reconnect to resume.</item>
+    </plurals>
     <string name="nearby_handshake_timeout">Handshake timed out</string>
     <string name="nearby_peer_auth_failed">Peer authentication failed</string>
-    <string name="nearby_peer_data_failed">Could not process peer data</string>
-    <string name="nearby_handshake_check_failed">Handshake timeout check failed</string>
-    <string name="nearby_group_exchange_failed">Group ID exchange failed</string>
-    <string name="nearby_sync_request_failed">Sync request failed</string>
     <string name="nearby_ble_error">BLE %1$s failed: %2$s</string>
     <string name="nearby_scan_failed">Scan failed: %1$s</string>
 

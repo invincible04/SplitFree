@@ -286,7 +286,7 @@ class GetExpensesUseCaseTest {
     }
 
     @Test
-    fun `author stays the original signer even when someone else's correction is shown`() = runBlocking {
+    fun `someone else's correction never replaces the original's payload or author`() = runBlocking {
         val original = makeExpense("exp1", amount = 5000)
         val corrected = makeExpense("exp1", amount = 7000)
         every { encryption.decrypt("enc-orig", groupKey) } returns json.encodeToString(Expense.serializer(), original)
@@ -307,8 +307,11 @@ class GetExpensesUseCaseTest {
 
         val result = useCase.observeWithAuthors(groupId).first()
 
-        assertEquals(7000L, result.single().expense.amount)
-        assertEquals("pub1", result.single().authorPubkey)
+        // pub1's record is untouched; pub2's correction is bound to pub2's (missing) record and shown as its own.
+        val pub1 = result.single { it.authorPubkey == "pub1" }
+        assertEquals(5000L, pub1.expense.amount)
+        val pub2 = result.single { it.authorPubkey == "pub2" }
+        assertEquals(7000L, pub2.expense.amount)
     }
 
     @Test
@@ -331,6 +334,124 @@ class GetExpensesUseCaseTest {
         val result = useCase.observeWithAuthors(groupId).first()
 
         assertEquals("pub2", result.single().authorPubkey)
+    }
+
+    // --- Author-bound expense identity (NS-15) ---
+
+    private val alice = "alice"
+    private val mallory = "mallory"
+
+    private fun stubPayload(enc: String, expense: Expense) {
+        every { encryption.decrypt(enc, groupKey) } returns json.encodeToString(Expense.serializer(), expense)
+    }
+
+    /** One `U` event by [pubkey]; [enc] selects the stubbed plaintext. */
+    private fun uEvent(id: String, type: String, enc: String, createdAt: Long, pubkey: String) =
+        makeEntity(id, eventType = type, uuid = "U", content = enc, createdAt = createdAt, pubkey = pubkey)
+
+    private fun aliceExpense() = uEvent("e_alice", "expense", "enc-alice", createdAt = 100, pubkey = alice)
+
+    /** Alice's expense U (t=100) and Mallory's front-run of the same uuid with an earlier created_at. */
+    private fun collisionEvents(): List<EventSnapshot> {
+        stubPayload("enc-alice", makeExpense("U", amount = 100, timestamp = 100, description = "alice's"))
+        stubPayload("enc-mallory", makeExpense("U", amount = 200, timestamp = 10, description = "mallory's"))
+        stubPayload("enc-mallory-fix", makeExpense("U", amount = 400, timestamp = 10, description = "mallory fixed"))
+        every { encryption.decrypt("enc-del", groupKey) } returns "{}"
+        return listOf(aliceExpense(), uEvent("e_mal", "expense", "enc-mallory", createdAt = 10, pubkey = mallory))
+    }
+
+    private fun malloryCorrection() =
+        uEvent("c_mal", "expense_correction", "enc-mallory-fix", createdAt = 20, pubkey = mallory)
+
+    private fun malloryDelete() = uEvent("d_mal", "expense_delete", "enc-del", createdAt = 30, pubkey = mallory)
+
+    private fun aliceDelete() = uEvent("d_alice", "expense_delete", "enc-del", createdAt = 300, pubkey = alice)
+
+    private fun <T> permutations(items: List<T>): List<List<T>> {
+        if (items.size <= 1) return listOf(items)
+        return items.indices.flatMap { i ->
+            permutations(items.take(i) + items.drop(i + 1)).map { rest -> listOf(items[i]) + rest }
+        }
+    }
+
+    /** Observes once per permutation of [events] and asserts the visible list is identical every time. */
+    private suspend fun observeForEveryOrder(events: List<EventSnapshot>): List<AuthoredExpense> {
+        val results = permutations(events).map { order ->
+            every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(order)
+            useCase.observeWithAuthors(groupId).first()
+        }
+        for (r in results) assertEquals("list must not depend on arrival order", results.first(), r)
+        return results.first()
+    }
+
+    @Test
+    fun `hostile collision - Mallory's correction of a shared uuid only changes Mallory's record`() = runBlocking {
+        val shown = observeForEveryOrder(collisionEvents() + malloryCorrection())
+
+        assertEquals(2, shown.size)
+        val aliceRecord = shown.single { it.authorPubkey == alice }
+        assertEquals(100L, aliceRecord.expense.amount)
+        assertEquals("alice's", aliceRecord.expense.description)
+        val malloryRecord = shown.single { it.authorPubkey == mallory }
+        assertEquals(400L, malloryRecord.expense.amount)
+        assertEquals("mallory fixed", malloryRecord.expense.description)
+        // Alice's newer timestamp sorts first; the order is deterministic.
+        assertEquals(listOf(alice, mallory), shown.map { it.authorPubkey })
+    }
+
+    @Test
+    fun `hostile collision - Mallory's delete of a shared uuid hides only Mallory's record`() = runBlocking {
+        val shown = observeForEveryOrder(collisionEvents() + malloryDelete())
+
+        assertEquals(1, shown.size)
+        assertEquals(alice, shown.single().authorPubkey)
+        assertEquals(100L, shown.single().expense.amount)
+    }
+
+    @Test
+    fun `hostile collision - correction then delete by Mallory leaves Alice's record as-is`() = runBlocking {
+        val shown = observeForEveryOrder(collisionEvents() + malloryCorrection() + malloryDelete())
+
+        assertEquals(listOf(alice to 100L), shown.map { it.authorPubkey to it.expense.amount })
+    }
+
+    @Test
+    fun `hostile collision - Alice deleting hers still shows Mallory's separate record`() = runBlocking {
+        val shown = observeForEveryOrder(collisionEvents() + aliceDelete())
+
+        assertEquals(listOf(mallory to 200L), shown.map { it.authorPubkey to it.expense.amount })
+    }
+
+    @Test
+    fun `correction by the original author still replaces the payload`() = runBlocking {
+        collisionEvents()
+        stubPayload("enc-alice-fix", makeExpense("U", amount = 150, timestamp = 100, description = "alice fixed"))
+        val events = listOf(
+            aliceExpense(),
+            uEvent("c_alice", "expense_correction", "enc-alice-fix", createdAt = 200, pubkey = alice)
+        )
+
+        val shown = observeForEveryOrder(events)
+
+        assertEquals(1, shown.size)
+        assertEquals(150L, shown.single().expense.amount)
+        assertEquals(alice, shown.single().authorPubkey)
+    }
+
+    @Test
+    fun `delete by the original author still hides the expense`() = runBlocking {
+        val events = collisionEvents().filter { it.pubkey == alice } + aliceDelete()
+
+        assertTrue(observeForEveryOrder(events).isEmpty())
+    }
+
+    @Test
+    fun `get resolves the caller's expense id among colliding records`() = runBlocking {
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(collisionEvents() + malloryDelete())
+
+        val found = useCase.get(groupId, "U")
+
+        assertEquals(alice, found?.authorPubkey)
     }
 
     private fun makeExpense(id: String, timestamp: Long = 1000, amount: Long = 5000, description: String = "test") =

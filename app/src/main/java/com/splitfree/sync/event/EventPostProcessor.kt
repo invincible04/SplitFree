@@ -1,6 +1,7 @@
 package com.splitfree.sync.event
 
 import com.splitfree.di.ApplicationScope
+import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
@@ -19,7 +20,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 /**
- * Handles post-storage side effects for `group_meta`, `key_rotation`, and `key_revocation` events.
+ * Handles post-storage side effects for `group_meta`, `key_rotation`, and `key_revocation` events and
+ * reports whether they landed as a [PostProcessOutcome], so the caller can keep a row pending
+ * ([PostProcessOutcome.DEFERRED]) and retry it once its dependency arrives.
  */
 @Singleton
 class EventPostProcessor
@@ -38,12 +41,17 @@ constructor(
     /**
      * Process a post-storage side effect.
      *
-     * @param eventType one of `group_meta`, `key_rotation`, `key_revocation`
-     * @param decrypted decrypted event content JSON, or null to skip
+     * @param eventType one of `group_meta`, `key_rotation`, `key_revocation`; any other type has no side
+     *   effects and is reported as [PostProcessOutcome.APPLIED]
+     * @param decrypted decrypted event content JSON; null yields [PostProcessOutcome.FAILED]
      * @param authorHex pubkey of the event author
      * @param groupId target group UUID
      * @param createdAt event timestamp (unix seconds)
      * @param nonCancellable if true, runs inside [NonCancellable] context
+     * @param eventId id of the event being applied; threaded into the metadata watermark and the
+     *   per-member clock so equal timestamps are broken identically on every device
+     * @return whether the side effect landed, must be retried later, or failed; exceptions other than
+     *   [kotlinx.coroutines.CancellationException] are logged and reported as [PostProcessOutcome.FAILED]
      */
     suspend fun handle(
         eventType: String,
@@ -51,18 +59,27 @@ constructor(
         authorHex: String,
         groupId: String,
         createdAt: Long,
-        nonCancellable: Boolean
-    ) {
-        if (decrypted == null) return
+        nonCancellable: Boolean,
+        eventId: String = ""
+    ): PostProcessOutcome {
+        if (decrypted == null) return PostProcessOutcome.FAILED
 
-        when (eventType) {
-            "group_meta" -> handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable)
+        return when (eventType) {
+            "group_meta" -> handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable, eventId)
             "key_rotation" -> runSafe(nonCancellable, "key_rotation", groupId) {
-                rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt)
+                when (rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt)) {
+                    RotationOutcome.APPLIED -> PostProcessOutcome.APPLIED
+                    RotationOutcome.DEFERRED_EPOCH_GAP -> PostProcessOutcome.DEFERRED
+                    // Already at or past this epoch: a harmless replay, nothing left to retry.
+                    RotationOutcome.IGNORED -> PostProcessOutcome.APPLIED
+                    RotationOutcome.REJECTED -> PostProcessOutcome.FAILED
+                }
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
                 revokeKey.handleRevocation(decrypted, authorHex, groupId)
+                PostProcessOutcome.APPLIED
             }
+            else -> PostProcessOutcome.APPLIED
         }
     }
 
@@ -71,128 +88,172 @@ constructor(
         authorHex: String,
         groupId: String,
         createdAt: Long,
-        nonCancellable: Boolean
-    ) {
-        runSafe(nonCancellable, "group_meta", groupId) {
-            val meta = json.decodeFromString<GroupMeta>(decrypted)
-            if (meta.members.isEmpty()) return@runSafe
+        nonCancellable: Boolean,
+        eventId: String
+    ): PostProcessOutcome = runSafe(nonCancellable, "group_meta", groupId) {
+        val meta = json.decodeFromString<GroupMeta>(decrypted)
+        if (meta.members.isEmpty()) return@runSafe PostProcessOutcome.APPLIED
 
-            val currentGroup = groupRepo.getById(groupId)
-            val isKnownCreator =
-                currentGroup != null &&
-                    currentGroup.createdBy.isNotEmpty() &&
-                    authorHex == currentGroup.createdBy
-            // Legacy/imported groups have no creator on record. The only author allowed to fill
-            // that gap is the one the group id was derived from, a claim anyone can verify, so a
-            // non-creator cannot promote themselves by publishing a group_meta.
-            val bootstrapsCreator =
-                currentGroup != null &&
-                    currentGroup.createdBy.isEmpty() &&
-                    meta.createdBy == authorHex &&
-                    GroupIdentity.matches(groupId, authorHex, meta.createdAt)
-            val isCreator = currentGroup == null || isKnownCreator || bootstrapsCreator
+        val currentGroup = groupRepo.getById(groupId)
+        val isKnownCreator =
+            currentGroup != null &&
+                currentGroup.createdBy.isNotEmpty() &&
+                authorHex == currentGroup.createdBy
+        // Legacy/imported groups have no creator on record. The only author allowed to fill
+        // that gap is the one the group id was derived from, a claim anyone can verify, so a
+        // non-creator cannot promote themselves by publishing a group_meta.
+        val bootstrapsCreator =
+            currentGroup != null &&
+                currentGroup.createdBy.isEmpty() &&
+                meta.createdBy == authorHex &&
+                GroupIdentity.matches(groupId, authorHex, meta.createdAt)
+        val isCreator = currentGroup == null || isKnownCreator || bootstrapsCreator
 
-            val finalMembers =
-                if (isCreator) {
-                    meta.members
-                } else {
-                    ((currentGroup?.members ?: emptyList()) + authorHex).distinct()
-                }
-            val finalName = if (isCreator) meta.name else (currentGroup?.name ?: meta.name)
-            val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
-            val finalMemberNames =
-                if (isCreator) {
-                    meta.memberNames
-                } else {
-                    // Non-creator events may only contribute their own display name.
-                    (currentGroup?.memberNames ?: emptyMap()).toMutableMap().apply {
-                        val authorName = meta.memberNames[authorHex]?.trim().orEmpty().take(50)
-                        if (authorName.isNotEmpty()) {
-                            put(authorHex, authorName)
-                        } else {
-                            remove(authorHex)
-                        }
-                    }
-                }
-            val trustedCreatedBy =
-                when {
-                    isKnownCreator -> meta.createdBy.ifEmpty { authorHex }
-                    bootstrapsCreator -> authorHex
-                    else -> ""
-                }
-            val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != finalRelays.toSet()
-
-            if (bootstrapsCreator) {
-                Log.i(TAG, "Adopting verified creator ${authorHex.take(8)} for legacy group $groupId")
-                // Independent of the LWW watermark: the binding is cryptographic, not chronological.
-                groupRepo.updateCreator(groupId, authorHex, meta.createdAt)
-            }
-
-            Log.i(TAG, "Applying group_meta for $groupId: ${finalMembers.size} members, name=$finalName")
-            groupRepo.updateFromMeta(
+        if (isCreator) {
+            applyCreatorMeta(
+                meta,
+                authorHex,
                 groupId,
-                finalName,
-                finalMembers,
-                finalRelays,
                 createdAt,
-                trustedCreatedBy,
-                finalMemberNames,
-                // Only the creator's meta is authoritative for the description; anyone else's leaves it alone.
-                description = if (isCreator) meta.description else null
+                eventId,
+                currentGroup,
+                isKnownCreator,
+                bootstrapsCreator
             )
+        } else {
+            applyMemberSelfMeta(meta, authorHex, groupId, createdAt, eventId, checkNotNull(currentGroup))
+        }
 
-            if (relaysChanged) {
-                Log.i(TAG, "Relays changed for $groupId, triggering eager self-heal")
-                appScope.launch {
-                    try {
-                        selfHeal(groupId)
-                    } catch (
-                        e: Exception
-                    ) {
-                        Log.w(TAG, "Eager self-heal failed for $groupId: ${e.message}")
-                    }
+        // Members that just appeared could not decrypt any gift wrap I published before now,
+        // so re-deliver my history to them. This also covers the creator's solo period: the
+        // expenses added before anyone joined produced zero deliveries, and the first member's
+        // self-join group_meta lands here with newMembers = {them}.
+        //
+        // Diff the PERSISTED member list, not the meta's: both write paths are ordered (LWW
+        // watermark for the creator, per-member clock for self-updates), and a stale meta replayed
+        // from a relay may still list someone removed by a later rotation. Wrapping my history for
+        // them would hand it to a non-member.
+        val persistedMembers = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
+        val newMembers =
+            persistedMembers - (currentGroup?.members?.toSet() ?: emptySet()) - identity.getPublicKeyHex()
+        if (newMembers.isNotEmpty()) {
+            Log.i(TAG, "${newMembers.size} new member(s) in $groupId, re-delivering authored history")
+            appScope.launch {
+                try {
+                    eventPublisher.redeliverAuthoredEvents(groupId, newMembers)
+                } catch (
+                    e: Exception
+                ) {
+                    Log.w(TAG, "Re-delivery to new members failed for $groupId: ${e.message}")
                 }
             }
+        }
+        PostProcessOutcome.APPLIED
+    }
 
-            // Members that just appeared could not decrypt any gift wrap I published before now,
-            // so re-deliver my history to them. This also covers the creator's solo period: the
-            // expenses added before anyone joined produced zero deliveries, and the first member's
-            // self-join group_meta lands here with newMembers = {them}.
-            //
-            // Diff the PERSISTED member list, not `finalMembers`: updateFromMeta is LWW-guarded, and
-            // a stale meta replayed from a relay may still list someone removed by a later rotation.
-            // Wrapping my history for them would hand it to a non-member.
-            val persistedMembers = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
-            val newMembers =
-                persistedMembers - (currentGroup?.members?.toSet() ?: emptySet()) - identity.getPublicKeyHex()
-            if (newMembers.isNotEmpty()) {
-                Log.i(TAG, "${newMembers.size} new member(s) in $groupId, re-delivering authored history")
-                appScope.launch {
-                    try {
-                        eventPublisher.redeliverAuthoredEvents(groupId, newMembers)
-                    } catch (
-                        e: Exception
-                    ) {
-                        Log.w(TAG, "Re-delivery to new members failed for $groupId: ${e.message}")
-                    }
+    /**
+     * The creator's (or a bootstrapping / first-seen) meta is authoritative for the whole group: name,
+     * members, relays, names and description all come from the payload, ordered by the LWW watermark
+     * `(createdAt, eventId)` inside [GroupRepositoryContract.updateFromMeta].
+     */
+    private suspend fun applyCreatorMeta(
+        meta: GroupMeta,
+        authorHex: String,
+        groupId: String,
+        createdAt: Long,
+        eventId: String,
+        currentGroup: Group?,
+        isKnownCreator: Boolean,
+        bootstrapsCreator: Boolean
+    ) {
+        val trustedCreatedBy =
+            when {
+                isKnownCreator -> meta.createdBy.ifEmpty { authorHex }
+                bootstrapsCreator -> authorHex
+                else -> ""
+            }
+        val relaysChanged = currentGroup != null && currentGroup.relays.toSet() != meta.relays.toSet()
+
+        if (bootstrapsCreator) {
+            Log.i(TAG, "Adopting verified creator ${authorHex.take(8)} for legacy group $groupId")
+            // Independent of the LWW watermark: the binding is cryptographic, not chronological.
+            groupRepo.updateCreator(groupId, authorHex, meta.createdAt)
+        }
+
+        Log.i(TAG, "Applying group_meta for $groupId: ${meta.members.size} members, name=${meta.name}")
+        groupRepo.updateFromMeta(
+            groupId,
+            meta.name,
+            meta.members,
+            meta.relays,
+            createdAt,
+            trustedCreatedBy,
+            meta.memberNames,
+            // Only the creator's meta is authoritative for the description.
+            description = meta.description,
+            eventId = eventId
+        )
+
+        if (relaysChanged) {
+            Log.i(TAG, "Relays changed for $groupId, triggering eager self-heal")
+            appScope.launch {
+                try {
+                    selfHeal(groupId)
+                } catch (
+                    e: Exception
+                ) {
+                    Log.w(TAG, "Eager self-heal failed for $groupId: ${e.message}")
                 }
             }
         }
     }
 
+    /**
+     * A non-creator's meta may only speak for its author: joining the group and setting their own
+     * display name. It goes through [GroupRepositoryContract.applyMemberSelfUpdate], which orders it
+     * by the author's own `(createdAt, eventId)` clock and never advances the creator's watermark, so a
+     * member's future-dated rename can no longer block an older-but-authoritative creator meta.
+     *
+     * The author's name is taken from `member_names[author]`: absent leaves the stored name alone,
+     * empty clears it. Name, relays, description and other members' names in the payload are ignored.
+     */
+    private suspend fun applyMemberSelfMeta(
+        meta: GroupMeta,
+        authorHex: String,
+        groupId: String,
+        createdAt: Long,
+        eventId: String,
+        currentGroup: Group
+    ) {
+        val join = authorHex !in currentGroup.members
+        Log.i(TAG, "Applying member self-update from ${authorHex.take(8)} for $groupId (join=$join)")
+        val applied = groupRepo.applyMemberSelfUpdate(
+            groupId,
+            authorHex,
+            createdAt,
+            eventId,
+            join = join,
+            displayName = meta.memberNames[authorHex]
+        )
+        if (!applied) Log.i(TAG, "Member self-update from ${authorHex.take(8)} for $groupId was stale, ignored")
+    }
+
+    /**
+     * Runs [block] (inside [NonCancellable] when requested) and maps any failure to
+     * [PostProcessOutcome.FAILED]. Cancellation is never swallowed.
+     */
     private suspend inline fun runSafe(
         nonCancellable: Boolean,
         eventType: String,
         groupId: String,
-        crossinline block: suspend () -> Unit
-    ) {
-        try {
-            if (nonCancellable) withContext(NonCancellable) { block() } else block()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to process $eventType for $groupId: ${e.message}", e)
-        }
+        crossinline block: suspend () -> PostProcessOutcome
+    ): PostProcessOutcome = try {
+        if (nonCancellable) withContext(NonCancellable) { block() } else block()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to process $eventType for $groupId: ${e.message}", e)
+        PostProcessOutcome.FAILED
     }
 
     companion object {

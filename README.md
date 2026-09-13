@@ -59,7 +59,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
 
 ### 🔄 Sync & Connectivity
 - **Decentralized sync**: expenses propagate through Nostr relays ([NIP-01](https://nips.nostr.com/1)) with no proprietary backend
-- **Offline-first BLE sync**: sync with nearby group members over Bluetooth Low Energy when there's no internet
+- **Offline-first nearby sync**: sync with nearby group members over Bluetooth or Wi-Fi when there's no internet, and carry sealed updates to members you meet later
 - **Adaptive power management**: sync intervals, relay connections, and BLE duty cycles adjust to battery state
 - **Invite links**: one compact, versioned bearer link carries everything a joiner needs (group id, creator, key epoch, group key, relays, expiry, name); the group id is bound to its creator so a forged "created by" cannot pass
 
@@ -96,7 +96,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
 
 5. **Sync**: The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. A foreground service maintains real-time sync; WorkManager handles periodic and midnight sync.
 
-6. **BLE Sync**: When two group members are nearby, they can sync directly over Bluetooth using Google Nearby Connections. The BLE protocol uses binary framing with fragmentation, LZ4 compression, and a Schnorr challenge-response handshake for authentication.
+6. **Nearby sync**: When group members are together, they can sync directly through Google Nearby Connections (Bluetooth, BLE or Wi-Fi, chosen by the SDK). Each connection runs a channel-bound Schnorr handshake, opens exactly one group after checking membership, then reconciles paginated inventories with per-record receipts, so both phones know what was applied. A member can carry sealed envelopes (gift wraps, key rotations) for other members and hand them over later, and data received from one connected peer is forwarded to other connected peers. See `app/src/main/java/com/splitfree/sync/nearby/README.md`.
 
 7. **Balances**: Balances are computed from the full event history (with snapshot optimization). The debt simplification algorithm greedily matches the largest creditor with the largest debtor, which settles everyone in at most n−1 transfers; it does not search for the true minimum.
 
@@ -127,7 +127,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │   Room DB (events, groups, outbox)                          │
 │   Nostr: Relay (OkHttp WebSocket), NostrClient,             │
 │          RelayHealthMonitor, RelayConnectionManager         │
-│   BLE: NearbySync, BleTransfer, BleProtocol (binary framing)│
+│   Nearby: NearbySync, NearbySessionCoordinator, PeerSession │
 │   Sync: SyncEngine, SyncWorker, ForegroundSyncService,      │
 │         MidnightSyncWorker, SyncScheduler, PowerManager     │
 │   Settings: Android Keystore (AES-256-GCM)                  │
@@ -207,7 +207,7 @@ RELEASE_KEY_PASSWORD=<your-key-password>
 ```
 app/src/main/java/com/splitfree/
 ├── data/
-│   ├── ble/              # BLE sync (NearbySync, BleTransfer, BleProtocol)
+│   ├── ble/              # Nearby Connections transport (NearbySync)
 │   ├── identity/         # IdentityManager (keypair management)
 │   ├── local/            # Room database, DAOs, entities
 │   ├── nostr/            # NostrClient, Relay, RelayConfig, EventThrottler
@@ -216,7 +216,7 @@ app/src/main/java/com/splitfree/
 │   ├── repository/       # GroupRepository, ExpenseRepository
 │   ├── settings/         # UserPreferences (plain SharedPreferences)
 │   └── util/             # Compression, Keystore-backed encrypted storage
-├── di/                   # Hilt modules (Database, Repository)
+├── di/                   # Hilt modules (Database, Repository, Nearby)
 ├── domain/
 │   ├── crypto/           # NostrEvent, GroupEncryption, IdentityManager, EventSigner
 │   │   └── nip/          # Nip44, Nip59, Bip39 (from-scratch implementations)
@@ -231,7 +231,8 @@ app/src/main/java/com/splitfree/
 │   ├── util/             # HexUtil, HashUtil, RelayDefaults, CompressionProvider
 │   └── validation/       # EventValidator (timestamps, rate limits, content safety)
 ├── sync/
-│   ├── event/            # EventProcessor, EventPublisher, EventPostProcessor, ExpenseNotifier
+│   ├── event/            # EventProcessor, EventPublisher, EventPostProcessor, MembershipHistory
+│   ├── nearby/           # Nearby session engine: wire protocol, auth, PeerSession, coordinator, store
 │   └── worker/           # SyncWorker, SyncEngine, ForegroundService, PowerManager
 ├── ui/
 │   ├── navigation/       # NavGraph, Screen definitions
@@ -263,7 +264,7 @@ Comprehensive unit tests across every layer of the app.
 | Protocol | Relay message parsing, client message serialization, filter construction, WebSocket lifecycle |
 | Use Cases | Balance computation, debt simplification, group creation/join/migration, key revocation, export/import, snapshots |
 | Sync | SyncEngine pull/flush, power management modes, boot receiver, self-heal republishing |
-| BLE | Binary protocol encode/decode, fragmentation/reassembly, handshake authentication, payload processing |
+| Nearby | Wire framing/pagination, channel-bound authentication, two- and three-engine session tests over an in-memory transport, Room-backed end-to-end forwarding and key-rotation carry |
 | Validation | Timestamp bounds, rate limiting, content safety (nesting depth, size), author authorization, tombstone checks |
 | Integration | Full relay round-trips, end-to-end expense lifecycle, multi-phone simulation (`*IntegrationTest.kt`; excluded by default, run with `-DREAL_RELAY_TEST=true`) |
 
@@ -297,7 +298,7 @@ SplitFree takes security seriously:
 - Private keys stored in Android Keystore (AES-256-GCM, hardware-backed)
 - Event signatures verified on receipt (BIP-340 Schnorr)
 - Content validated for size limits, nesting depth, and rate limiting
-- BLE connections authenticated via Schnorr challenge-response handshake
+- Nearby connections authenticated with Schnorr signatures bound to the connection's Nearby authentication token; group scope disclosed only to members
 - ProGuard/R8 enabled for release builds
 
 If you discover a security vulnerability, please **do not** open a public issue. Instead, [report it privately via GitHub](https://github.com/invincible04/SplitFree/security/advisories/new) and we'll address it promptly. See [SECURITY.md](SECURITY.md) for full details.

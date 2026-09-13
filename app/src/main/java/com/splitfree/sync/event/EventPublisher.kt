@@ -2,8 +2,10 @@ package com.splitfree.sync.event
 
 import androidx.room.withTransaction
 import com.splitfree.data.local.AppDatabase
+import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
@@ -20,13 +22,20 @@ import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Persists signed events and their complete delivery batch before attempting relay publication. */
+/**
+ * Persists signed events and their complete delivery batch before attempting relay publication.
+ *
+ * Gift-wrapped deliveries are additionally retained in the delivery store so a member met over a
+ * nearby session can carry another member's envelope when the author is offline. The stored envelope
+ * is the exact ciphertext handed to relays; couriers cannot open it.
+ */
 @Singleton
 class EventPublisher
 @Inject
 constructor(
     private val eventDao: EventDao,
     private val outboxDao: OutboxDao,
+    private val deliveryDao: DeliveryDao,
     private val throttler: EventThrottler,
     private val giftWrap: GiftWrapService,
     private val groupRepo: GroupRepositoryContract,
@@ -125,7 +134,26 @@ constructor(
             }
             check(eventDao.insert(entity) != -1L) { "Event insertion failed" }
             rows.forEach { outboxDao.insert(it) }
+            retainEnvelopes(entity.groupId, entity.eventId, deliveries)
             true
+        }
+    }
+
+    /** Keep each gift wrap so a nearby courier can hand it to its recipient later. */
+    private suspend fun retainEnvelopes(groupId: String, innerEventId: String, deliveries: List<NostrEvent>) {
+        val now = System.currentTimeMillis() / 1000
+        for (wrap in deliveries) {
+            if (wrap.kind != NostrKind.GIFT_WRAP) continue
+            val recipient = wrap.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1) ?: continue
+            val json = wrap.toJson()
+            deliveryDao.insert(
+                DeliveryEntity(
+                    envelopeId = wrap.id, groupId = groupId, recipient = recipient, eventId = innerEventId,
+                    envelopeJson = json, eventType = DeliveryEntity.TYPE_GIFT_WRAP,
+                    state = DeliveryEntity.STATE_AVAILABLE, source = DeliveryEntity.SOURCE_AUTHORED,
+                    createdAt = wrap.createdAt, receivedAt = now, sizeBytes = json.toByteArray(Charsets.UTF_8).size
+                )
+            )
         }
     }
 
@@ -192,8 +220,11 @@ constructor(
                 targets.map { recipient ->
                     val wrapped = giftWrap.wrapIfEnabled(event, recipient)
                     check(wrapped.kind == NostrKind.GIFT_WRAP) { "Gift wrapping changed while preparing redelivery" }
-                    wrapped to
-                        OutboxEntity(wrapped.id, wrapped.toJson(), wrapped.createdAt, eventType = entity.eventType)
+                    Redelivery(
+                        wrapped,
+                        OutboxEntity(wrapped.id, wrapped.toJson(), wrapped.createdAt, eventType = entity.eventType),
+                        entity.eventId
+                    )
                 }
             }.shuffled()
 
@@ -204,7 +235,8 @@ constructor(
             db.withTransaction {
                 val room = (MAX_EXPENSE_OUTBOX_SIZE - outboxDao.count()).coerceAtLeast(0)
                 val admitted = if (deliveries.size <= room) deliveries else deliveries.take(room)
-                admitted.forEach { (_, row) -> outboxDao.insert(row) }
+                admitted.forEach { outboxDao.insert(it.row) }
+                admitted.forEach { retainEnvelopes(groupId, it.innerEventId, listOf(it.wrapped)) }
                 admitted
             }
         if (queued.size < deliveries.size) {
@@ -216,9 +248,11 @@ constructor(
         } else {
             Log.i(TAG, "Queued ${queued.size} redelivery wraps for $groupId to ${targets.size} new member(s)")
         }
-        dispatch(queued.map { (wrapped, _) -> wrapped })
+        dispatch(queued.map { it.wrapped })
         return queued.size
     }
+
+    private data class Redelivery(val wrapped: NostrEvent, val row: OutboxEntity, val innerEventId: String)
 
     companion object {
         private const val TAG = "EventPublisher"

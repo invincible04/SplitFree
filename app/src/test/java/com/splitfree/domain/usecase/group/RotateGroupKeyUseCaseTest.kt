@@ -12,6 +12,7 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SecureStorageException
 import com.splitfree.domain.util.hexToBytes
+import com.splitfree.sync.event.RotationOutcome
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -72,8 +73,10 @@ class RotateGroupKeyUseCaseTest {
         every { identity.getPrivateKeyBytes() } answers { creatorPriv.copyOf() }
         every { encryption.generateGroupKey() } returns newKey
         every { encryption.encrypt(any(), any()) } returns "meta-enc"
-        every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
+        every { signer.createSignedEvent(any(), any(), any(), any(), any()) } returns fakeEvent
         coEvery { groupRepo.getById(groupId) } returns group
+        // A relaxed mock would answer "" here, which reads as conflicting key material.
+        coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
 
         useCase = RotateGroupKeyUseCase(groupRepo, encryption, identity, signer, eventPublisher)
     }
@@ -138,6 +141,23 @@ class RotateGroupKeyUseCaseTest {
                 match { removedPub !in it && it[creatorPub] == "Alice" && it[peerPub] == "Bob" }
             )
         }
+    }
+
+    @Test
+    fun `each per-member rotation event is addressed to that member with a p tag`() = runBlocking {
+        useCase(groupId, removedPub)
+
+        verify(exactly = 1) {
+            signer.createSignedEvent(groupId, "key_rotation", any(), null, recipientPubkey = creatorPub)
+        }
+        verify(exactly = 1) {
+            signer.createSignedEvent(groupId, "key_rotation", any(), null, recipientPubkey = peerPub)
+        }
+        // The removed member never gets an envelope, and the group_meta is not addressed to anyone.
+        verify(exactly = 0) {
+            signer.createSignedEvent(any(), "key_rotation", any(), any(), recipientPubkey = removedPub)
+        }
+        verify(exactly = 1) { signer.createSignedEvent(groupId, "group_meta", any(), null, null) }
     }
 
     @Test
@@ -221,17 +241,20 @@ class RotateGroupKeyUseCaseTest {
     fun `handleKeyRotation applies the next epoch and stamps the member update with the event time`() = runBlocking {
         actAsPeer()
 
-        useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 5000)
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 5000)
 
+        assertEquals(RotationOutcome.APPLIED, outcome)
         coVerify { groupRepo.saveGroupKeyForEpoch(groupId, 1, newKey) }
         coVerify { groupRepo.updateKeyEpoch(groupId, 1) }
         coVerify {
+            // Unconditional path (eventTimestamp 0): epoch order is enforced by the rotation itself,
+            // so a same-second group_meta cannot keep the removed member in the roster.
             groupRepo.updateFromMeta(
                 groupId,
                 "Trip",
                 listOf(creatorPub, peerPub),
                 listOf("wss://r"),
-                5000,
+                0,
                 "",
                 match { removedPub !in it && it[peerPub] == "Bob" }
             )
@@ -244,27 +267,61 @@ class RotateGroupKeyUseCaseTest {
         // I was removed at epoch 1 and later re-invited; the group is at epoch 1 with me back in.
         coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
 
-        useCase.handleKeyRotation(
+        val outcome = useCase.handleKeyRotation(
             rotationFor(epoch = 1, members = listOf(creatorPub, removedPub), removedMember = peerPub),
             creatorPub,
             groupId,
             createdAt = 4000
         )
 
+        assertEquals(RotationOutcome.IGNORED, outcome)
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
         coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
     }
 
     @Test
-    fun `handleKeyRotation ignores a rotation that skips an epoch`() = runBlocking {
+    fun `handleKeyRotation ignores a rotation for an older epoch`() = runBlocking {
+        actAsPeer()
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 3)
+
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 2), creatorPub, groupId, createdAt = 4000)
+
+        assertEquals(RotationOutcome.IGNORED, outcome)
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation defers a rotation that skips an epoch`() = runBlocking {
         actAsPeer()
 
-        useCase.handleKeyRotation(rotationFor(epoch = 2), creatorPub, groupId, createdAt = 5000)
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 2), creatorPub, groupId, createdAt = 5000)
 
+        assertEquals(RotationOutcome.DEFERRED_EPOCH_GAP, outcome)
         coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation applies epoch 2 once epoch 1 has landed`() = runBlocking {
+        actAsPeer()
+        // The repository behaves like Room: updateKeyEpoch is reflected by the next getById.
+        var epoch = 0
+        coEvery { groupRepo.getById(groupId) } answers { group.copy(keyEpoch = epoch) }
+        coEvery { groupRepo.updateKeyEpoch(groupId, any()) } answers { epoch = secondArg() }
+
+        val first = useCase.handleKeyRotation(rotationFor(epoch = 2), creatorPub, groupId, createdAt = 5000)
+        val second = useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 4000)
+        val third = useCase.handleKeyRotation(rotationFor(epoch = 2), creatorPub, groupId, createdAt = 5000)
+
+        assertEquals(
+            listOf(RotationOutcome.DEFERRED_EPOCH_GAP, RotationOutcome.APPLIED, RotationOutcome.APPLIED),
+            listOf(first, second, third)
+        )
+        coVerify(exactly = 1) { groupRepo.saveGroupKeyForEpoch(groupId, 1, newKey) }
+        coVerify(exactly = 1) { groupRepo.saveGroupKeyForEpoch(groupId, 2, newKey) }
+        assertEquals(2, epoch)
     }
 
     @Test
@@ -272,35 +329,37 @@ class RotateGroupKeyUseCaseTest {
         actAsPeer()
         val outsider = NostrEvent.pubkeyFromPrivkey(ByteArray(32).also { it[31] = 9 })
 
-        useCase.handleKeyRotation(
+        val outcome = useCase.handleKeyRotation(
             rotationFor(epoch = 1, members = listOf(creatorPub, peerPub, removedPub), removedMember = outsider),
             creatorPub,
             groupId,
             createdAt = 5000
         )
 
+        assertEquals(RotationOutcome.REJECTED, outcome)
         coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `handleKeyRotation records my own removal with the event time`() = runBlocking {
+    fun `handleKeyRotation records my own removal unconditionally`() = runBlocking {
         actAsPeer()
 
-        useCase.handleKeyRotation(
+        val outcome = useCase.handleKeyRotation(
             rotationFor(epoch = 1, members = listOf(creatorPub, removedPub), removedMember = peerPub),
             creatorPub,
             groupId,
             createdAt = 6000
         )
 
+        assertEquals(RotationOutcome.APPLIED, outcome)
         coVerify {
             groupRepo.updateFromMeta(
                 groupId,
                 "Trip",
                 listOf(creatorPub, removedPub),
                 listOf("wss://r"),
-                6000,
+                0,
                 "",
                 match { peerPub !in it }
             )
@@ -310,12 +369,118 @@ class RotateGroupKeyUseCaseTest {
     }
 
     @Test
-    fun `handleKeyRotation ignores rotations not signed by the creator`() = runBlocking {
+    fun `handleKeyRotation rejects rotations not signed by the creator`() = runBlocking {
         actAsPeer()
 
-        useCase.handleKeyRotation(rotationFor(epoch = 1), peerPub, groupId, createdAt = 5000)
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 1), peerPub, groupId, createdAt = 5000)
 
+        assertEquals(RotationOutcome.REJECTED, outcome)
         coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation rejects an unparseable payload`() = runBlocking {
+        actAsPeer()
+
+        val outcome = useCase.handleKeyRotation("not json", creatorPub, groupId, createdAt = 5000)
+
+        assertEquals(RotationOutcome.REJECTED, outcome)
+        coVerify(exactly = 0) { groupRepo.getById(any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation rejects a rotation for an unknown group`() = runBlocking {
+        actAsPeer()
+        coEvery { groupRepo.getById(groupId) } returns null
+
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 5000)
+
+        assertEquals(RotationOutcome.REJECTED, outcome)
+    }
+
+    @Test
+    fun `handleKeyRotation rejects a member list that smuggles in an outsider`() = runBlocking {
+        actAsPeer()
+        val outsider = NostrEvent.pubkeyFromPrivkey(ByteArray(32).also { it[31] = 9 })
+
+        val outcome = useCase.handleKeyRotation(
+            rotationFor(epoch = 1, members = listOf(creatorPub, peerPub, outsider)),
+            creatorPub,
+            groupId,
+            createdAt = 5000
+        )
+
+        assertEquals(RotationOutcome.REJECTED, outcome)
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation rejects a rotation that carries no key for me`() = runBlocking {
+        actAsPeer()
+
+        val outcome = useCase.handleKeyRotation(
+            rotationFor(epoch = 1, keyFor = listOf(creatorPub)),
+            creatorPub,
+            groupId,
+            createdAt = 5000
+        )
+
+        assertEquals(RotationOutcome.REJECTED, outcome)
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+    }
+
+    @Test
+    fun `handleKeyRotation rejects a key I cannot decrypt`() = runBlocking {
+        actAsPeer()
+        // The creator wrapped the peer's key with the wrong conversation key (here: for the removed member).
+        val wrongConvKey = Nip44.getConversationKey(creatorPriv, removedPub.hexToBytes())
+        val payload = json.encodeToString(
+            KeyRotation.serializer(),
+            KeyRotation(
+                epoch = 1,
+                encryptedKeys = mapOf(peerPub to Nip44.encrypt(newKey, wrongConvKey)),
+                members = listOf(creatorPub, peerPub),
+                removedMember = removedPub
+            )
+        )
+
+        val outcome = useCase.handleKeyRotation(payload, creatorPub, groupId, createdAt = 5000)
+
+        assertEquals(RotationOutcome.REJECTED, outcome)
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
+    }
+
+    // --- key material consistency ---
+
+    @Test
+    fun `handleKeyRotation rejects a rotation whose key differs from the one already stored for that epoch`() =
+        runBlocking {
+            actAsPeer()
+            coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "some-other-key"
+
+            val outcome = useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 5000)
+
+            assertEquals(RotationOutcome.REJECTED, outcome)
+            coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+            coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
+            coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `handleKeyRotation resumes an interrupted rotation when the stored key is identical`() = runBlocking {
+        actAsPeer()
+        // Crash between saveGroupKeyForEpoch and updateKeyEpoch: the key is on disk, the epoch is not.
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns newKey
+
+        val outcome = useCase.handleKeyRotation(rotationFor(epoch = 1), creatorPub, groupId, createdAt = 5000)
+
+        assertEquals(RotationOutcome.APPLIED, outcome)
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 1) { groupRepo.updateKeyEpoch(groupId, 1) }
+        coVerify(exactly = 1) {
+            groupRepo.updateFromMeta(groupId, "Trip", listOf(creatorPub, peerPub), listOf("wss://r"), 0, "", any())
+        }
     }
 }

@@ -8,6 +8,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.sync.event.EventProcessor
+import com.splitfree.sync.event.IngestionContext
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -53,7 +54,7 @@ class SyncEngineTest {
 
         val count = engine.pullEvents(groupId, 0, groupKey)
         assertEquals(0, count)
-        coVerify(exactly = 0) { eventProcessor.process(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventProcessor.process(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -61,7 +62,7 @@ class SyncEngineTest {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
         coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
-        coEvery { eventProcessor.process(any(), any(), any(), any(), any()) } returns
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             com.splitfree.sync.event.EventProcessor.ProcessResult(
                 stored = true,
                 eventType = "expense",
@@ -91,7 +92,7 @@ class SyncEngineTest {
         coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(newer, older)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         val processed = mutableListOf<String>()
-        coEvery { eventProcessor.process(any(), any(), any(), any(), any()) } answers {
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } answers {
             processed += firstArg<NostrEvent>().id
             com.splitfree.sync.event.EventProcessor.ProcessResult(stored = false)
         }
@@ -99,6 +100,36 @@ class SyncEngineTest {
         engine.pullEvents(groupId, 0, groupKey)
 
         assertEquals(listOf("e1", "e2"), processed)
+    }
+
+    @Test
+    fun `pullEvents ingests a live pull in LIVE context`() = runBlocking {
+        val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = false)
+
+        engine.pullEvents(groupId, 0, groupKey)
+
+        coVerify {
+            eventProcessor.process(event, groupId, groupKey, false, false, IngestionContext.LIVE)
+        }
+    }
+
+    @Test
+    fun `pullEvents ingests a lenient full pull in RECONCILIATION context`() = runBlocking {
+        val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = false)
+
+        engine.pullEvents(groupId, 0, groupKey, lenientTimestamp = true)
+
+        coVerify {
+            eventProcessor.process(event, groupId, groupKey, false, true, IngestionContext.RECONCILIATION)
+        }
     }
 
     @Test

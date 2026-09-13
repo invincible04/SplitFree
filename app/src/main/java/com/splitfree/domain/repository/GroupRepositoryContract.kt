@@ -74,6 +74,8 @@ interface GroupRepositoryContract {
      * @param memberNames optional map of member pubkey -> display name
      * @param description new description, or null to preserve the existing value (local mutations and
      *   non-creator metas carry none; only a creator's `group_meta` is authoritative for it)
+     * @param eventId id of the `group_meta` event being applied; breaks ties between metas that share
+     *   an [eventTimestamp] so all devices converge on the same one. Empty for local mutations.
      */
     suspend fun updateFromMeta(
         groupId: String,
@@ -83,6 +85,21 @@ interface GroupRepositoryContract {
         eventTimestamp: Long = 0,
         createdBy: String = "",
         memberNames: Map<String, String> = emptyMap(),
-        description: String? = null
+        description: String? = null,
+        eventId: String = ""
     )
+
+    /**
+     * Apply a member's own change (self-join / own display name) without touching the creator watermark.
+     * Ordered per member by (eventTimestamp, eventId); returns true if applied, false if stale/no-op.
+     * displayName == null leaves the name unchanged; "" clears it. join adds author to members.
+     */
+    suspend fun applyMemberSelfUpdate(
+        groupId: String,
+        author: String,
+        eventTimestamp: Long,
+        eventId: String,
+        join: Boolean,
+        displayName: String?
+    ): Boolean
 }

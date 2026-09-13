@@ -1,6 +1,7 @@
 package com.splitfree.domain.usecase.expense
 
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -1569,5 +1570,220 @@ class ComputeBalancesUseCaseTest {
         val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
 
         assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
+    }
+
+    // --- Author-bound expense identity (NS-15): (author, uuid), never uuid alone ---
+
+    /** An expense/correction payload for uuid U paid by [payer] and split evenly with [other]. */
+    private fun uPayload(payer: String, other: String, amount: Long, ts: Long): String = expenseJson(
+        "U",
+        amount,
+        paidBy = payer,
+        splits = split(payer to amount / 2, other to amount / 2),
+        timestamp = ts
+    )
+
+    /** Alice's genuine expense under uuid U: alice paid 100, split with bob -> alice +50, bob -50. */
+    private val aliceExpense = makeEvent(
+        "e_alice",
+        type = "expense",
+        uuid = "U",
+        pubkey = "alice",
+        createdAt = 100,
+        content = uPayload("alice", "bob", 100, ts = 100)
+    )
+
+    /**
+     * Mallory front-runs the same uuid with an EARLIER created_at so a uuid-only index would pick hers
+     * as "the" original. Her record involves only her and carol: mallory +100, carol -100.
+     */
+    private val malloryExpense = makeEvent(
+        "e_mallory",
+        type = "expense",
+        uuid = "U",
+        pubkey = "mallory",
+        createdAt = 10,
+        content = uPayload("mallory", "carol", 200, ts = 10)
+    )
+
+    /** Mallory's correction of U: mallory +200, carol -200. */
+    private val malloryCorrection = makeEvent(
+        "c_mallory",
+        type = "expense_correction",
+        uuid = "U",
+        pubkey = "mallory",
+        createdAt = 20,
+        content = uPayload("mallory", "carol", 400, ts = 20)
+    )
+
+    private val malloryDelete =
+        makeEvent("d_mallory", type = "expense_delete", uuid = "U", pubkey = "mallory", createdAt = 30, content = "{}")
+
+    private val aliceDelete =
+        makeEvent("d_alice", type = "expense_delete", uuid = "U", pubkey = "alice", createdAt = 300, content = "{}")
+
+    private val aliceCorrection = makeEvent(
+        "c_alice",
+        type = "expense_correction",
+        uuid = "U",
+        pubkey = "alice",
+        createdAt = 200,
+        content = uPayload("alice", "bob", 300, ts = 200)
+    )
+
+    private fun <T> permutations(items: List<T>): List<List<T>> {
+        if (items.size <= 1) return listOf(items)
+        return items.indices.flatMap { i ->
+            permutations(items.take(i) + items.drop(i + 1)).map { rest -> listOf(items[i]) + rest }
+        }
+    }
+
+    private fun nets(result: BalanceResult): Map<String, Long> = result.balances.associate { it.pubkey to it.net }
+
+    /** Runs the use case once per permutation of [events] and asserts every run yields the same result. */
+    private suspend fun computeForEveryOrder(events: List<EventSnapshot>): BalanceResult {
+        val results = permutations(events).map { order ->
+            val dao = eventDao()
+            val repo = groupRepo()
+            coEvery { dao.getEventsByGroup("g1") } returns order
+            coEvery { dao.getLatestEventByType("g1", "snapshot") } returns null
+            ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+        }
+        val first = results.first()
+        for (r in results) {
+            assertEquals("balances must not depend on arrival order", nets(first), nets(r))
+            assertEquals("exclusions must not depend on order", first.excludedExpenseUuids, r.excludedExpenseUuids)
+        }
+        return first
+    }
+
+    @Test
+    fun `hostile collision - Mallory's correction of a shared uuid never touches Alice's expense`() = runTest {
+        mockLogW()
+        val result = computeForEveryOrder(listOf(aliceExpense, malloryExpense, malloryCorrection))
+
+        val n = nets(result)
+        // Alice's record: untouched by Mallory's correction, even though Mallory's created_at is earlier.
+        assertEquals(50L, n["alice"])
+        assertEquals(-50L, n["bob"])
+        // Mallory's record is its own expense and her correction applies to it alone.
+        assertEquals(200L, n["mallory"])
+        assertEquals(-200L, n["carol"])
+        assertTrue(result.excludedExpenseUuids.isEmpty())
+        verify(atLeast = 1) { android.util.Log.w("ComputeBalances", match<String> { "U" in it && "2 authors" in it }) }
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `hostile collision - Mallory's delete of a shared uuid removes only her own record`() = runTest {
+        mockLogW()
+        val result = computeForEveryOrder(listOf(aliceExpense, malloryExpense, malloryDelete))
+
+        val n = nets(result)
+        assertEquals(50L, n["alice"])
+        assertEquals(-50L, n["bob"])
+        assertTrue("Mallory's own record is gone", "mallory" !in n && "carol" !in n)
+        // Alice's record is still live, so the uuid must stay visible in the UI.
+        assertTrue("U" !in result.excludedExpenseUuids)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `hostile collision - Mallory's correction then delete leaves Alice intact`() = runTest {
+        mockLogW()
+        val result = computeForEveryOrder(listOf(aliceExpense, malloryExpense, malloryCorrection, malloryDelete))
+
+        val n = nets(result)
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), n)
+        assertTrue("U" !in result.excludedExpenseUuids)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `hostile collision - orphan correction and delete without Mallory's own expense leave Alice alone`() = runTest {
+        val result = computeForEveryOrder(listOf(aliceExpense, malloryCorrection, malloryDelete))
+
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(result))
+        assertTrue("U" !in result.excludedExpenseUuids)
+    }
+
+    @Test
+    fun `hostile collision - Alice deleting her record does not hide Mallory's separate record`() = runTest {
+        mockLogW()
+        val result = computeForEveryOrder(listOf(aliceExpense, aliceDelete, malloryExpense))
+
+        val n = nets(result)
+        assertTrue("alice" !in n && "bob" !in n)
+        assertEquals(100L, n["mallory"])
+        assertEquals(-100L, n["carol"])
+        // Mallory's record is live under the same uuid, so it must not be filtered from the list.
+        assertTrue("U" !in result.excludedExpenseUuids)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `shared uuid is excluded only once every author has deleted their own record`() = runTest {
+        mockLogW()
+        val result = computeForEveryOrder(listOf(aliceExpense, aliceDelete, malloryExpense, malloryDelete))
+
+        assertTrue(result.balances.all { it.net == 0L })
+        assertEquals(setOf("U"), result.excludedExpenseUuids)
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `correction by the original author still applies`() = runTest {
+        val result = computeForEveryOrder(listOf(aliceExpense, aliceCorrection))
+
+        assertEquals(mapOf("alice" to 150L, "bob" to -150L), nets(result))
+        assertTrue(result.excludedExpenseUuids.isEmpty())
+    }
+
+    @Test
+    fun `delete by the original author still excludes`() = runTest {
+        val result = computeForEveryOrder(listOf(aliceExpense, aliceCorrection, aliceDelete))
+
+        assertTrue(result.balances.all { it.net == 0L })
+        assertEquals(setOf("U"), result.excludedExpenseUuids)
+    }
+
+    @Test
+    fun `same-author duplicates collapse but another author's same uuid is kept`() = runTest {
+        mockLogW()
+        // Alice re-sends her expense (later duplicate, different payload); Mallory's is a distinct record.
+        val aliceDup = makeEvent(
+            "e_alice_dup",
+            type = "expense",
+            uuid = "U",
+            pubkey = "alice",
+            createdAt = 150,
+            content = uPayload("alice", "bob", 1000, ts = 150)
+        )
+        val result = computeForEveryOrder(listOf(aliceExpense, aliceDup, malloryExpense))
+
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L, "mallory" to 100L, "carol" to -100L), nets(result))
+        unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `snapshot-covered Alice expense is not reversed by Mallory's delete of the same uuid`() = runTest {
+        mockLogW()
+        val dao = eventDao()
+        val repo = groupRepo()
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(aliceExpense, malloryExpense, malloryDelete),
+            coveredIds = listOf("e_alice"),
+            // Snapshot already holds Alice's effect.
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+
+        val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+        // Alice's covered payload stays; Mallory's uncovered record is deleted before it is ever applied.
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(result))
+        assertTrue("U" !in result.excludedExpenseUuids)
+        unmockkStatic(android.util.Log::class)
     }
 }

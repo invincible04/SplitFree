@@ -104,7 +104,17 @@ class EventPublisherTest {
     private fun openDatabase() {
         db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java, databaseName).build()
         groupRepo = GroupRepository(db.groupDao(), keyStore)
-        publisher = EventPublisher(db.eventDao(), db.outboxDao(), throttler, giftWrap, groupRepo, identity, db)
+        publisher =
+            EventPublisher(
+                db.eventDao(),
+                db.outboxDao(),
+                db.deliveryDao(),
+                throttler,
+                giftWrap,
+                groupRepo,
+                identity,
+                db
+            )
     }
 
     private fun repository(): ExpenseRepository {
@@ -218,7 +228,7 @@ class EventPublisherTest {
         every { encryption.generateGroupKey() } returns "rotated-key"
         every { encryption.encrypt(any(), "rotated-key") } answers { "meta:${firstArg<String>()}" }
         val signer = mockk<EventSigner>()
-        every { signer.createSignedEvent(any(), "key_rotation", any(), any()) } answers {
+        every { signer.createSignedEvent(any(), "key_rotation", any(), any(), any()) } answers {
             event.copy(id = UUID.randomUUID().toString(), pubkey = creator, content = thirdArg())
         }
         every { signer.createSignedEvent(any(), "group_meta", any(), any()) } answers {

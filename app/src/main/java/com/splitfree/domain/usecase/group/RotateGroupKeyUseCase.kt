@@ -9,6 +9,7 @@ import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.hexToBytes
+import com.splitfree.sync.event.RotationOutcome
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import kotlinx.coroutines.NonCancellable
@@ -113,10 +114,13 @@ constructor(
                 val memberPubBytes = memberPubHex.hexToBytes()
                 val convKey = Nip44.getConversationKey(privKeyForWrap, memberPubBytes)
                 val perMemberEncrypted = Nip44.encrypt(rotationPayload, convKey)
+                // The `p` tag names the one member who can open this envelope so relays and
+                // nearby couriers can route it without decrypting it.
                 val rotationEvent = signer.createSignedEvent(
                     groupId = groupId,
                     eventType = "key_rotation",
-                    encryptedContent = perMemberEncrypted
+                    encryptedContent = perMemberEncrypted,
+                    recipientPubkey = memberPubHex
                 )
                 eventPublisher.publishDirect(rotationEvent, groupId, perMemberEncrypted, "key_rotation")
             }
@@ -170,16 +174,25 @@ constructor(
      *
      * @param createdAt the rotation event's `created_at`, used as the LWW timestamp for the
      *   member-list update so a stale `group_meta` cannot revert it
+     * @return [RotationOutcome.APPLIED] once the epoch key is installed (or my own removal recorded),
+     *   [RotationOutcome.DEFERRED_EPOCH_GAP] when an earlier epoch has not landed yet (caller keeps the
+     *   row pending and retries), [RotationOutcome.IGNORED] for a replay of the current or an older
+     *   epoch, [RotationOutcome.REJECTED] for anything malformed, unauthorized or inconsistent
      */
-    suspend fun handleKeyRotation(decryptedContent: String, authorPubkey: String, groupId: String, createdAt: Long) {
+    suspend fun handleKeyRotation(
+        decryptedContent: String,
+        authorPubkey: String,
+        groupId: String,
+        createdAt: Long
+    ): RotationOutcome {
         val rotation = try {
             json.decodeFromString<KeyRotation>(decryptedContent)
         } catch (e: Exception) {
             Log.w(TAG, "Invalid key_rotation payload: ${e.message}")
-            return
+            return RotationOutcome.REJECTED
         }
 
-        mutex.withLock {
+        return mutex.withLock {
             applyKeyRotation(rotation, authorPubkey, groupId, createdAt)
         }
     }
@@ -189,61 +202,62 @@ constructor(
         authorPubkey: String,
         groupId: String,
         createdAt: Long
-    ) {
-        val group = groupRepo.getById(groupId) ?: return
+    ): RotationOutcome {
+        val group = groupRepo.getById(groupId) ?: return RotationOutcome.REJECTED
         if (authorPubkey != group.createdBy) {
             Log.w(TAG, "Ignoring key_rotation from non-creator $authorPubkey")
-            return
+            return RotationOutcome.REJECTED
         }
 
         // Already processed this epoch (or a later one). This must run BEFORE the
         // "I was removed" branch: a replayed old rotation that predates our re-invite
         // would otherwise remove us again.
-        if (group.keyEpoch >= rotation.epoch) return
+        if (group.keyEpoch >= rotation.epoch) return RotationOutcome.IGNORED
 
         // Rotations must be applied strictly in sequence. Skipping an epoch would leave the
-        // intermediate history undecryptable (we would never receive that epoch's key), so
-        // we refuse the gap; the creator's next group_meta / re-invite is the recovery path.
+        // intermediate history undecryptable (we would never receive that epoch's key), so the
+        // row stays pending until the missing epoch arrives (relay catch-up or a nearby peer).
         if (rotation.epoch != group.keyEpoch + 1) {
             Log.w(
                 TAG,
-                "Ignoring key_rotation for epoch ${rotation.epoch} in $groupId, local epoch is ${group.keyEpoch}"
+                "Deferring key_rotation for epoch ${rotation.epoch} in $groupId, local epoch is ${group.keyEpoch}"
             )
-            return
+            return RotationOutcome.DEFERRED_EPOCH_GAP
         }
 
         // The removed member must be someone we actually know about (or unspecified).
         if (rotation.removedMember.isNotEmpty() && rotation.removedMember !in group.members) {
             Log.w(TAG, "key_rotation removes ${rotation.removedMember.take(8)} who is not a member, rejecting")
-            return
+            return RotationOutcome.REJECTED
         }
 
         val myPubkey = identity.getPublicKeyHex()
         if (myPubkey !in rotation.members) {
             Log.i(TAG, "I was removed from group $groupId at epoch ${rotation.epoch}")
-            // Update member list locally so UI reflects removal
+            // Update member list locally so UI reflects removal. Ordering is enforced by the epoch
+            // checks above, so this takes the unconditional path: a same-second group_meta must not
+            // be able to keep a removed member in the roster.
             groupRepo.updateFromMeta(
                 groupId,
                 group.name,
                 rotation.members,
                 group.relays,
-                eventTimestamp = createdAt,
                 memberNames = group.memberNames.filterKeys { it in rotation.members }
             )
-            return
+            return RotationOutcome.APPLIED
         }
 
         // Validate member list is a subset of current minus removed
         val expectedMembers = group.members.toSet() - rotation.removedMember
         if (!expectedMembers.containsAll(rotation.members.toSet())) {
             Log.w(TAG, "key_rotation contains members not in original group, rejecting")
-            return
+            return RotationOutcome.REJECTED
         }
 
         val myEncryptedKey = rotation.encryptedKeys[myPubkey]
         if (myEncryptedKey == null) {
             Log.w(TAG, "No encrypted key for me in key_rotation")
-            return
+            return RotationOutcome.REJECTED
         }
 
         val privKey = identity.getPrivateKeyBytes()
@@ -254,24 +268,39 @@ constructor(
             newGroupKey = Nip44.decrypt(myEncryptedKey, convKey)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to decrypt new group key: ${e.message}")
-            return
+            return RotationOutcome.REJECTED
         } finally {
             privKey.fill(0)
         }
 
-        groupRepo.saveGroupKeyForEpoch(groupId, rotation.epoch, newGroupKey)
+        // Key material for an epoch is immutable once written. If this device already holds a
+        // key for `rotation.epoch` (crash between saveGroupKeyForEpoch and updateKeyEpoch, or a
+        // second per-member envelope of the same rotation), it must be byte-identical: a different
+        // key would mean two rotations claim the same epoch and we must not silently overwrite.
+        val existing = groupRepo.getGroupKeyForEpoch(groupId, rotation.epoch)
+        if (existing != null && existing != newGroupKey) {
+            Log.w(TAG, "key_rotation for epoch ${rotation.epoch} in $groupId carries conflicting key material")
+            return RotationOutcome.REJECTED
+        }
+        if (existing == null) {
+            groupRepo.saveGroupKeyForEpoch(groupId, rotation.epoch, newGroupKey)
+        } else {
+            Log.i(TAG, "Epoch ${rotation.epoch} key already stored for $groupId, resuming interrupted rotation")
+        }
         groupRepo.updateKeyEpoch(groupId, rotation.epoch)
+        // Epoch order is already enforced above; the roster change is applied unconditionally, as
+        // the creator does locally, so a group_meta stamped in the same second cannot block it.
         val updatedNames = group.memberNames.filterKeys { it in rotation.members }
         groupRepo.updateFromMeta(
             groupId,
             group.name,
             rotation.members,
             group.relays,
-            eventTimestamp = createdAt,
             memberNames = updatedNames
         )
 
         Log.i(TAG, "Applied key rotation for group $groupId: epoch ${rotation.epoch}")
+        return RotationOutcome.APPLIED
     }
 
     companion object {

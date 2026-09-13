@@ -185,4 +185,145 @@ class GroupDaoTest {
 
         assertEquals("current", dao.getById("d")!!.description)
     }
+
+    // --- eventId tiebreak ---
+
+    @Test
+    fun `updateMetaIfNewer records the eventId alongside the watermark`() = runBlocking {
+        assertEquals(
+            1,
+            dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "e-600")
+        )
+
+        val row = dao.getById("g1")!!
+        assertEquals(600L, row.lastMetaTimestamp)
+        assertEquals("e-600", row.lastMetaEventId)
+    }
+
+    @Test
+    fun `same-timestamp metas converge on the greater eventId when the lower one arrives first`() = runBlocking {
+        assertEquals(
+            1,
+            dao.updateMetaIfNewer("g1", "Lower", """["creator"]""", entity.relays, "", 600, "{}", null, "aaa")
+        )
+        assertEquals(
+            1,
+            dao.updateMetaIfNewer("g1", "Higher", """["creator","carol"]""", entity.relays, "", 600, "{}", null, "bbb")
+        )
+
+        val row = dao.getById("g1")!!
+        assertEquals("Higher", row.name)
+        assertEquals("""["creator","carol"]""", row.members)
+        assertEquals(600L, row.lastMetaTimestamp)
+        assertEquals("bbb", row.lastMetaEventId)
+    }
+
+    @Test
+    fun `same-timestamp metas converge on the greater eventId when the higher one arrives first`() = runBlocking {
+        assertEquals(
+            1,
+            dao.updateMetaIfNewer("g1", "Higher", """["creator","carol"]""", entity.relays, "", 600, "{}", null, "bbb")
+        )
+        assertEquals(
+            0,
+            dao.updateMetaIfNewer("g1", "Lower", """["creator"]""", entity.relays, "", 600, "{}", null, "aaa")
+        )
+
+        val row = dao.getById("g1")!!
+        assertEquals("Higher", row.name)
+        assertEquals("""["creator","carol"]""", row.members)
+        assertEquals(600L, row.lastMetaTimestamp)
+        assertEquals("bbb", row.lastMetaEventId)
+    }
+
+    @Test
+    fun `replaying the exact same meta is a no-op`() = runBlocking {
+        assertEquals(1, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "aaa"))
+        assertEquals(0, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "aaa"))
+    }
+
+    @Test
+    fun `a newer timestamp wins regardless of eventId order`() = runBlocking {
+        assertEquals(1, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "zzz"))
+        assertEquals(1, dao.updateMetaIfNewer("g1", "Later", entity.members, entity.relays, "", 601, "{}", null, "aaa"))
+
+        val row = dao.getById("g1")!!
+        assertEquals("Later", row.name)
+        assertEquals(601L, row.lastMetaTimestamp)
+        assertEquals("aaa", row.lastMetaEventId)
+    }
+
+    @Test
+    fun `a legacy row with an empty lastMetaEventId accepts a same-timestamp meta once`() = runBlocking {
+        // Migrated rows carry lastMetaEventId = '' so the first real meta at the same createdAt applies.
+        assertEquals(1, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 500, "{}", null, "aaa"))
+        assertEquals("aaa", dao.getById("g1")!!.lastMetaEventId)
+        // ...but an eventId-less call at that timestamp can no longer win.
+        assertEquals(0, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 500, "{}", null, ""))
+    }
+
+    @Test
+    fun `updateMeta records the eventId only when its timestamp wins or ties`() = runBlocking {
+        dao.updateMeta("g1", "Local", entity.members, entity.relays, "", 900, "{}", null, "e-900")
+        var row = dao.getById("g1")!!
+        assertEquals(900L, row.lastMetaTimestamp)
+        assertEquals("e-900", row.lastMetaEventId)
+
+        // Older timestamp: metadata applies, watermark and eventId stay.
+        dao.updateMeta("g1", "Older", entity.members, entity.relays, "", 100, "{}", null, "e-100")
+        row = dao.getById("g1")!!
+        assertEquals("Older", row.name)
+        assertEquals(900L, row.lastMetaTimestamp)
+        assertEquals("e-900", row.lastMetaEventId)
+
+        // Equal timestamp: eventId is replaced.
+        dao.updateMeta("g1", "Tie", entity.members, entity.relays, "", 900, "{}", null, "e-tie")
+        row = dao.getById("g1")!!
+        assertEquals(900L, row.lastMetaTimestamp)
+        assertEquals("e-tie", row.lastMetaEventId)
+    }
+
+    // --- member self-updates ---
+
+    @Test
+    fun `updateMemberSelf writes members names and clocks without touching the watermark`() = runBlocking {
+        dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "e-600")
+
+        dao.updateMemberSelf(
+            "g1",
+            """["creator","bob","carol"]""",
+            """{"carol":"Carol"}""",
+            """{"carol":"700:e-700"}"""
+        )
+
+        val row = dao.getById("g1")!!
+        assertEquals("""["creator","bob","carol"]""", row.members)
+        assertEquals("""{"carol":"Carol"}""", row.memberNames)
+        assertEquals("""{"carol":"700:e-700"}""", row.memberClocks)
+        assertEquals(600L, row.lastMetaTimestamp)
+        assertEquals("e-600", row.lastMetaEventId)
+        assertEquals("Trip", row.name)
+        assertEquals(entity.relays, row.relays)
+        assertEquals("creator", row.createdBy)
+    }
+
+    @Test
+    fun `a self-update does not block a later creator meta and vice versa`() = runBlocking {
+        dao.updateMemberSelf(
+            "g1",
+            """["creator","bob","carol"]""",
+            """{"carol":"Carol"}""",
+            """{"carol":"900:e-900"}"""
+        )
+        assertEquals(500L, dao.getById("g1")!!.lastMetaTimestamp)
+
+        // Creator meta at 600 still applies (watermark is 500), and leaves the clocks alone.
+        assertEquals(
+            1,
+            dao.updateMetaIfNewer("g1", "Trip", """["creator","bob"]""", entity.relays, "", 600, "{}", null, "e-600")
+        )
+        val row = dao.getById("g1")!!
+        assertEquals("""["creator","bob"]""", row.members)
+        assertEquals("""{"carol":"900:e-900"}""", row.memberClocks)
+    }
 }

@@ -39,9 +39,15 @@ To be precise about the metadata: relays (and anyone watching the traffic) can s
 
 You can choose which relays to use. We do not operate any relays.
 
-### Bluetooth (BLE)
+### Nearby sync (Bluetooth / Wi-Fi)
 
-When you use nearby sync, SplitFree communicates directly with other group members over Bluetooth Low Energy using Google Nearby Connections. This is a direct peer-to-peer connection; no data passes through any server. BLE connections are authenticated via a Schnorr challenge-response handshake before any data is exchanged.
+When you use nearby sync, SplitFree communicates directly with other group members through Google Nearby Connections, which picks Bluetooth, Bluetooth Low Energy or Wi-Fi (including Wi-Fi LAN and Wi-Fi Direct) for the link. Your expense data travels only between the phones involved; no SplitFree server exists and no relay is involved.
+
+Before anything about a group is disclosed, both phones prove ownership of their Nostr keys with a signature that is bound to that specific connection, and the group is opened only if the other phone is a member. Records you receive are verified against the original author's signature; an intermediate phone that carries an envelope for you cannot read it or alter it.
+
+Nearby sync is foreground only: it runs while the Nearby sync screen is open, and stops when you leave it. A phone may carry sealed envelopes addressed to other members so it can hand them over later; these envelopes are encrypted to their recipient and are dropped after 30 days (90 days for envelopes you authored).
+
+The Nearby Connections SDK is part of Google Play services. Google documents that it may report performance and device diagnostics to Google under the device's "Usage & diagnostics" setting; this is outside SplitFree's control and does not include your expense data.
 
 ## Identity
 
@@ -73,7 +79,7 @@ SplitFree does **not** integrate with:
 - Social login providers
 - Cloud storage providers
 
-The only third-party network interaction is with the Nostr relays you choose to connect to.
+The only third-party network interactions are with the Nostr relays you choose to connect to and, when you use nearby sync, the Google Play services Nearby Connections SDK described above.
 
 ## Children's Privacy
 

@@ -5,6 +5,7 @@ import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -24,6 +25,10 @@ import kotlinx.serialization.json.Json
  * top, regardless of `createdAt`, so an event the creator had not yet received when snapshotting (offline
  * member, clock skew) is never lost. When a non-covered delete or correction targets an expense whose effect
  * is already inside the snapshot, that covered payload is reversed before the new state is applied.
+ *
+ * Expenses are identified by [ExpenseIdentity] `(author, uuid)`, never by UUID alone: a correction or delete
+ * only affects the original signed by the same pubkey, so a member reusing (or front-running) someone else's
+ * UUID cannot alter or erase that person's expense. Both records are kept and the collision is logged.
  */
 class ComputeBalancesUseCase
 @Inject
@@ -51,7 +56,9 @@ constructor(
      * snapshots, corrections, deletions, and settlements.
      *
      * @param groupId target group UUID
-     * @return [BalanceResult] with per-member balances and the UUIDs of deleted expenses
+     * @return [BalanceResult] with per-member balances and the UUIDs of deleted expenses. A UUID is excluded
+     *   only once every author-bound record carrying it has been deleted by its own author; while another
+     *   author's record with the same UUID is still live the UUID stays visible.
      */
     suspend fun computeWithExclusions(groupId: String): BalanceResult = withContext(Dispatchers.Default) {
         val events = eventRepo.getEventsByGroup(groupId)
@@ -62,10 +69,10 @@ constructor(
         val covered = seedFromSnapshot(groupId, keyCache, balances)
         val index = ExpenseIndex(events, covered)
 
-        for (uuid in index.uuids) {
-            val inSnapshot = index.snapshotEvent(uuid)
-            val wanted = index.desiredEvent(uuid)
-            // Same event (or none) on both sides: the snapshot already holds the final state for this UUID.
+        for (identity in index.identities) {
+            val inSnapshot = index.snapshotEvent(identity)
+            val wanted = index.desiredEvent(identity)
+            // Same event (or none) on both sides: the snapshot already holds the final state for this expense.
             if (inSnapshot?.eventId == wanted?.eventId) continue
             if (inSnapshot != null) applyExpenseEvent(inSnapshot, groupId, keyCache, balances, sign = -1)
             if (wanted != null) applyExpenseEvent(wanted, groupId, keyCache, balances, sign = 1)
@@ -75,7 +82,7 @@ constructor(
 
         BalanceResult(
             balances = balances.map { (key, net) -> Balance(key.first, net, key.second) },
-            excludedExpenseUuids = index.deleted.toSet()
+            excludedExpenseUuids = index.excludedUuids()
         )
     }
 
@@ -223,75 +230,114 @@ constructor(
     }
 
     /**
-     * Metadata-only index of `expense`, `expense_correction` and `expense_delete` events keyed by expense
-     * UUID. For each UUID it answers two questions: which payload the snapshot already contains
-     * ([snapshotEvent]) and which payload the final balances must contain ([desiredEvent]). Nothing is
-     * decrypted here.
+     * Metadata-only index of `expense`, `expense_correction` and `expense_delete` events keyed by
+     * [ExpenseIdentity] `(author, uuid)`. For each identity it answers two questions: which payload the
+     * snapshot already contains ([snapshotEvent]) and which payload the final balances must contain
+     * ([desiredEvent]). Nothing is decrypted here.
+     *
+     * Because the key includes the author, a correction or delete signed by B never touches an expense
+     * signed by A even when both carry the same UUID; B's events resolve to B's own record (or to nothing).
+     * When one UUID is seen under several authors the collision is logged and every record is kept.
      *
      * "Latest" is decided by `createdAt` with ties broken by `eventId`, never by storage order. Duplicate
-     * `expense` events sharing an `x` tag collapse to the earliest one.
+     * `expense` events from the same author sharing an `x` tag collapse to the earliest one.
      */
     private class ExpenseIndex(events: List<EventSnapshot>, covered: Set<String>) {
-        val deleted = mutableSetOf<String>()
-        private val coveredDeleted = mutableSetOf<String>()
-        private val latestCorrection = mutableMapOf<String, EventSnapshot>()
-        private val latestCoveredCorrection = mutableMapOf<String, EventSnapshot>()
-        private val earliestExpense = mutableMapOf<String, EventSnapshot>()
-        private val earliestCoveredExpense = mutableMapOf<String, EventSnapshot>()
+        private val deleted = mutableSetOf<ExpenseIdentity>()
+        private val coveredDeleted = mutableSetOf<ExpenseIdentity>()
+        private val latestCorrection = mutableMapOf<ExpenseIdentity, EventSnapshot>()
+        private val latestCoveredCorrection = mutableMapOf<ExpenseIdentity, EventSnapshot>()
+        private val earliestExpense = mutableMapOf<ExpenseIdentity, EventSnapshot>()
+        private val earliestCoveredExpense = mutableMapOf<ExpenseIdentity, EventSnapshot>()
 
-        /** Every UUID referenced by an expense, correction or delete event. */
-        val uuids: Set<String> get() = deleted + latestCorrection.keys + earliestExpense.keys
+        /** Every `(author, uuid)` referenced by an expense, correction or delete event. */
+        val identities: Set<ExpenseIdentity> get() = deleted + latestCorrection.keys + earliestExpense.keys
+
+        /** UUIDs that appear as an `expense` under more than one author. Both records are preserved. */
+        val conflictingUuids: Set<String>
 
         init {
+            val authorsByUuid = mutableMapOf<String, MutableSet<String>>()
             for (e in events) {
                 val uuid = e.expenseUuid ?: continue
+                val identity = ExpenseIdentity(e.pubkey, uuid)
                 val isCovered = e.eventId in covered
                 when (e.eventType) {
                     "expense_delete" -> {
-                        deleted.add(uuid)
-                        if (isCovered) coveredDeleted.add(uuid)
+                        deleted.add(identity)
+                        if (isCovered) coveredDeleted.add(identity)
                     }
 
                     "expense_correction" -> {
-                        latestCorrection.keepLatest(uuid, e)
-                        if (isCovered) latestCoveredCorrection.keepLatest(uuid, e)
+                        latestCorrection.keepLatest(identity, e)
+                        if (isCovered) latestCoveredCorrection.keepLatest(identity, e)
                     }
 
                     "expense" -> {
-                        val displaced = earliestExpense.keepEarliest(uuid, e)
+                        authorsByUuid.getOrPut(uuid) { mutableSetOf() }.add(e.pubkey)
+                        val displaced = earliestExpense.keepEarliest(identity, e)
                         if (displaced != null) {
                             Log.w(
                                 TAG,
-                                "Duplicate expense event ${displaced.eventId} for $uuid, applying earliest only"
+                                "Duplicate expense event ${displaced.eventId} for $identity, applying earliest only"
                             )
                         }
-                        if (isCovered) earliestCoveredExpense.keepEarliest(uuid, e)
+                        if (isCovered) earliestCoveredExpense.keepEarliest(identity, e)
                     }
                 }
             }
+            conflictingUuids = authorsByUuid.filterValues { it.size > 1 }.keys
+            for (uuid in conflictingUuids) {
+                val authors = authorsByUuid.getValue(uuid).sorted()
+                Log.w(
+                    TAG,
+                    "Expense uuid $uuid claimed by ${authors.size} authors (${authors.joinToString { it.take(8) }}); " +
+                        "keeping every record"
+                )
+            }
         }
 
-        /** Event whose payload the trusted snapshot already accounts for under [uuid], or null if none. */
-        fun snapshotEvent(uuid: String): EventSnapshot? =
-            if (uuid in coveredDeleted) null else (latestCoveredCorrection[uuid] ?: earliestCoveredExpense[uuid])
-
-        /** Event whose payload the final balances must contain under [uuid], or null if none. */
-        fun desiredEvent(uuid: String): EventSnapshot? =
-            if (uuid in deleted) null else (latestCorrection[uuid] ?: earliestExpense[uuid])
-
-        private fun MutableMap<String, EventSnapshot>.keepLatest(uuid: String, e: EventSnapshot) {
-            val current = this[uuid]
-            if (current == null || isBefore(current, e)) this[uuid] = e
+        /** Event whose payload the trusted snapshot already accounts for under [identity], or null if none. */
+        fun snapshotEvent(identity: ExpenseIdentity): EventSnapshot? = if (identity in coveredDeleted) {
+            null
+        } else {
+            latestCoveredCorrection[identity] ?: earliestCoveredExpense[identity]
         }
 
-        /** @return the event that lost to [e] (or [e] itself if it lost), null if [uuid] was unseen */
-        private fun MutableMap<String, EventSnapshot>.keepEarliest(uuid: String, e: EventSnapshot): EventSnapshot? {
-            val current = this[uuid] ?: run {
-                this[uuid] = e
+        /** Event whose payload the final balances must contain under [identity], or null if none. */
+        fun desiredEvent(identity: ExpenseIdentity): EventSnapshot? = if (identity in deleted) {
+            null
+        } else {
+            latestCorrection[identity] ?: earliestExpense[identity]
+        }
+
+        /**
+         * UUIDs that must be hidden: at least one author deleted their record and no author's record with
+         * that UUID is still desired. Consumers filter the expense list by UUID alone, so a UUID shared by
+         * two authors is only hidden once both records are gone; otherwise deleting one's own copy of a
+         * hijacked UUID would erase the victim's expense from view.
+         */
+        fun excludedUuids(): Set<String> {
+            val live = identities.filter { desiredEvent(it) != null }.mapTo(HashSet()) { it.expenseUuid }
+            return deleted.mapTo(HashSet()) { it.expenseUuid }.apply { removeAll(live) }
+        }
+
+        private fun MutableMap<ExpenseIdentity, EventSnapshot>.keepLatest(identity: ExpenseIdentity, e: EventSnapshot) {
+            val current = this[identity]
+            if (current == null || isBefore(current, e)) this[identity] = e
+        }
+
+        /** @return the event that lost to [e] (or [e] itself if it lost), null if [identity] was unseen */
+        private fun MutableMap<ExpenseIdentity, EventSnapshot>.keepEarliest(
+            identity: ExpenseIdentity,
+            e: EventSnapshot
+        ): EventSnapshot? {
+            val current = this[identity] ?: run {
+                this[identity] = e
                 return null
             }
             return if (isBefore(e, current)) {
-                this[uuid] = e
+                this[identity] = e
                 current
             } else {
                 e
