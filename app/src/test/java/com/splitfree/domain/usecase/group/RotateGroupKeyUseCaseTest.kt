@@ -85,8 +85,14 @@ class RotateGroupKeyUseCaseTest {
         every { identity.getPrivateKeyBytes() } answers { creatorPriv.copyOf() }
         every { encryption.generateGroupKey() } returns newKey
         every { encryption.encrypt(any(), any()) } returns "meta-enc"
-        every { signer.createSignedEvent(any(), any(), any(), any(), any()) } answers
-            { fakeEvent.copy(content = thirdArg()) }
+        // Like the real signer: an addressed envelope carries its `p` tag and an explicit created_at sticks.
+        every { signer.createSignedEvent(any(), any(), any(), any(), any(), any()) } answers {
+            fakeEvent.copy(
+                content = thirdArg(),
+                tags = listOfNotNull(arg<String?>(4)?.let { listOf("p", it) }),
+                createdAt = arg<Long?>(5) ?: fakeEvent.createdAt
+            )
+        }
         coEvery { groupRepo.getById(groupId) } returns group
         // A relaxed mock would answer "" here, which reads as conflicting key material (receiver) or as
         // an interrupted rotation to resume (creator).
@@ -352,6 +358,7 @@ class RotateGroupKeyUseCaseTest {
                 )
             val metaPlaintext = slot<String>()
             every { encryption.encrypt(capture(metaPlaintext), "K1") } returns "meta-enc"
+            every { encryption.decrypt("meta-enc", "K1") } answers { metaPlaintext.captured }
 
             useCase.resumeIfNeeded()
 
@@ -384,6 +391,9 @@ class RotateGroupKeyUseCaseTest {
         coEvery { groupRepo.getAll() } returns listOf(bigger)
         coEvery { groupRepo.getById(groupId) } returns bigger
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "K1"
+        val metaPlaintext = slot<String>()
+        every { encryption.encrypt(capture(metaPlaintext), "K1") } returns "meta-enc"
+        every { encryption.decrypt("meta-enc", "K1") } answers { metaPlaintext.captured }
         val rotation =
             KeyRotation(
                 epoch = 1,

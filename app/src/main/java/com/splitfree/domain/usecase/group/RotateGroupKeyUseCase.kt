@@ -25,13 +25,18 @@ import kotlinx.serialization.json.Json
 /**
  * Creator intents and signed envelopes are persisted before publication; retries never retarget an epoch.
  *
+ * Removal follows the person: a successor the removed key revoked itself to while the removal was pending
+ * leaves with it and never receives the new epoch key, unless it was already an independent member when
+ * the removal was decided. The payload still names the key the creator selected.
+ *
  * An interrupted removal is finished from its journal entry, whatever happened to the roster meanwhile:
  * - Nothing prepared yet: nothing was signed or published, so the intent is rebased onto the live
  *   roster (same removed member, same epoch, same key if one was already stored).
- * - Prepared: the signed envelopes are kept and re-published as they are. A member the snapshot did not
- *   know (a join, or the successor of a revoked key) gets its own envelope for the same key, and a
- *   corrective `group_meta` carrying the live roster is appended, dated strictly after the plan's
- *   metadata so it wins on every receiver whatever the arrival order.
+ * - Prepared: the signed envelopes are kept and re-published as they are. A member the plan did not
+ *   cover (a join, or the successor of another member's revoked key) gets its own envelope for the same
+ *   key, and whenever the newest prepared `group_meta` does not carry the live roster a corrective one
+ *   is appended, dated strictly after every prepared metadata so it wins on every receiver whatever the
+ *   arrival order, even when the roster drifted away and back.
  * The removal can therefore always complete; only a change of creator authority or an epoch this device
  * did not produce fails closed.
  */
@@ -110,18 +115,24 @@ constructor(
         check(landed || live.keyEpoch == intent.group.keyEpoch) {
             "Group ${groupId.take(8)} is at epoch ${live.keyEpoch}, rotation targets ${intent.epoch}"
         }
+        // Resolved against the snapshot before any rebase: once the intent follows the live roster the
+        // successor is already gone from it, so a later resume keeps recognising it as departing.
+        val departing = departingSuccessors(intent)
         if (op.preparedJson == null && live != intent.group) {
             // Nothing signed or published yet: follow the live roster instead of failing on the stale one.
             check(!landed) { "Epoch ${intent.epoch} advanced without this device publishing it" }
-            val rebased = RotationIntent(live, intent.removedMember, intent.epoch)
+            val rebased = RotationIntent(
+                live.copy(members = live.members - departing, memberNames = live.memberNames - departing),
+                intent.removedMember,
+                intent.epoch
+            )
             val rebasedJson = json.encodeToString(rebased)
             journal.rebase(op.id, op.intentJson, rebasedJson)
             op = op.copy(intentJson = rebasedJson)
             intent = rebased
         }
-        val target = if (landed) live.members else live.members - intent.removedMember
+        val target = if (landed) live.members else live.members - intent.removedMember - departing
         val names = live.memberNames.filterKeys { it in target }
-        val snapshotRoster = (intent.group.members - intent.removedMember).toSet()
 
         val events: List<PreparedControlEvent>
         if (op.preparedJson == null) {
@@ -135,7 +146,7 @@ constructor(
             val key = checkNotNull(groupRepo.getGroupKeyForEpoch(groupId, intent.epoch)) {
                 "Prepared rotation key unavailable"
             }
-            events = extendPlan(op, intent, live, target, snapshotRoster, key)
+            events = extendPlan(op, intent, live, target, key)
         }
         events.filter { it.eventType == "key_rotation" }.forEach { it.publish(eventPublisher) }
         if (!landed) {
@@ -151,20 +162,31 @@ constructor(
     }
 
     /**
-     * Keeps every event of a prepared plan and appends what the live roster needs beyond the snapshot
-     * the plan was built from: an envelope for each member without one, and a corrective metadata event
-     * when the roster moved. Amended atomically before anything new is published.
+     * The identities the removed key moved to through revocations recorded since the intent's snapshot,
+     * which leave the roster with it. A successor who already sat in the snapshot is an independent
+     * member: the repository records the `replaced` link in that case too (the revoked key is merely
+     * dropped), and a key being removed must not be able to take such a member out by revoking to it.
+     */
+    private suspend fun departingSuccessors(intent: RotationIntent): List<String> =
+        groupRepo.resolveRoster(intent.group.id, listOf(intent.removedMember))
+            .filter { it != intent.removedMember && it !in intent.group.members }
+
+    /**
+     * Keeps every event of a prepared plan and appends what the live roster needs beyond it: an envelope
+     * for each member without one, and a corrective metadata event whenever the newest prepared metadata
+     * does not carry [target]. Only the newest counts, because that is the one receivers keep: after a
+     * roster that moved away and back, an older matching metadata is already superseded by the plan's own
+     * correction. Amended atomically before anything new is published; the plan is returned as it is when
+     * nothing is missing.
      */
     private suspend fun extendPlan(
         op: ControlOperation,
         intent: RotationIntent,
         live: Group,
         target: List<String>,
-        snapshotRoster: Set<String>,
         key: String
     ): List<PreparedControlEvent> {
         val original = json.decodeFromString<List<PreparedControlEvent>>(checkNotNull(op.preparedJson))
-        if (target.toSet() == snapshotRoster) return original
         val covered = original.filter { it.eventType == "key_rotation" }.mapNotNullTo(HashSet()) { it.recipient() }
         val missing = target.filter { it !in covered }
         val extended = original.toMutableList()
@@ -172,20 +194,22 @@ constructor(
             val rotation = KeyRotation(intent.epoch, encryptKeyForMembers(key, target), target, intent.removedMember)
             extended += prepareRotation(intent.group.id, rotation, missing)
         }
-        val metas = original.filter { it.eventType == "group_meta" }
-        val alreadyCorrected = metas.any { meta ->
-            runCatching { json.decodeFromString<GroupMeta>(encryption.decrypt(meta.event().content, key)) }
-                .getOrNull()?.members?.toSet() == target.toSet()
+        val metas = original.filter { it.eventType == "group_meta" }.map { it.event() }
+        val newest = metas.maxWithOrNull(compareBy<NostrEvent>({ it.createdAt }, { it.id }))
+        val newestRoster = newest?.let { meta ->
+            runCatching { json.decodeFromString<GroupMeta>(encryption.decrypt(meta.content, key)) }
+                .getOrNull()?.members?.toSet()
         }
-        if (!alreadyCorrected) {
-            val notBefore = metas.maxOfOrNull { it.event().createdAt + 1 } ?: 0L
+        val corrected = newestRoster == target.toSet()
+        if (!corrected) {
+            val notBefore = metas.maxOfOrNull { it.createdAt + 1 } ?: 0L
             extended += prepareMeta(live, target, intent.epoch, key, notBefore)
         }
         if (extended.size == original.size) return original
         Log.i(
             TAG,
-            "Rotation to epoch ${intent.epoch} of ${intent.group.id.take(8)}: roster moved since the plan, " +
-                "${missing.size} envelope(s) and ${if (alreadyCorrected) 0 else 1} corrective meta appended"
+            "Rotation to epoch ${intent.epoch} of ${intent.group.id.take(8)}: plan extended for the live roster, " +
+                "${missing.size} envelope(s) and ${if (corrected) 0 else 1} corrective meta appended"
         )
         val amended = json.encodeToString(extended)
         journal.amend(op.id, checkNotNull(op.preparedJson), amended)
