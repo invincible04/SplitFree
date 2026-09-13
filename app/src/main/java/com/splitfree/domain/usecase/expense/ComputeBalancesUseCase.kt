@@ -197,8 +197,11 @@ constructor(
     }
 
     /**
-     * Replays every settlement the snapshot does not cover. Settlements carry their id in the `x` tag, so
-     * covered settlements seed the dedup set without decryption and a re-sent settlement is never double counted.
+     * Replays every settlement the snapshot does not cover. A settlement is identified by `(author pubkey,
+     * settlement id)`, never by its id alone: the id travels in the plaintext `x` tag and any member may sign
+     * a settlement they are party to, so two members reusing one id are two distinct settlements, while the
+     * same author re-sending one settlement (a retry under a new Nostr event id) still counts once. Covered
+     * settlements seed the dedup set from `(pubkey, x tag)` without decryption.
      *
      * @throws BalanceUnavailableException if a settlement is unreadable, malformed or overflows a total
      */
@@ -211,9 +214,10 @@ constructor(
     ) {
         val pending = events.filter { it.eventType == "settlement" && it.eventId !in covered }
         if (pending.isEmpty()) return
-        val seenSettlementIds = events
+        // Key: (author pubkey, settlement id)
+        val seenSettlements = events
             .filter { it.eventType == "settlement" && it.eventId in covered }
-            .mapNotNullTo(HashSet()) { it.expenseUuid }
+            .mapNotNullTo(HashSet()) { row -> row.expenseUuid?.let { row.pubkey to it } }
 
         for (e in pending) {
             val content = decrypt(e, groupId, keyCache)
@@ -224,7 +228,7 @@ constructor(
                     throw BalanceUnavailableException("Malformed settlement ${e.eventId}", ex)
                 }
             if (e.pubkey != s.from && e.pubkey != s.to) continue
-            if (!seenSettlementIds.add(s.id)) continue
+            if (!seenSettlements.add(e.pubkey to s.id)) continue
             val cur = s.currency.uppercase().trim()
             try {
                 balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)

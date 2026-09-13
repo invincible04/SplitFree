@@ -1928,4 +1928,94 @@ class ComputeBalancesUseCaseTest {
         assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
+
+    // --- Author-scoped settlement identity: (author, id), never id alone ---
+
+    /** Bob fronts 100 split evenly with alice, so alice owes bob 50. */
+    private val bobFronts = makeEvent(
+        "e_bob",
+        type = "expense",
+        uuid = "x1",
+        pubkey = "bob",
+        createdAt = 100,
+        content = expenseJson("x1", 100, paidBy = "bob", splits = split("bob" to 50, "alice" to 50), timestamp = 100)
+    )
+
+    /** Alice repays bob the 50 she owes, signed by alice, under settlement id `S`. */
+    private val aliceRepays = makeEvent(
+        "s_alice",
+        type = "settlement",
+        uuid = "S",
+        pubkey = "alice",
+        createdAt = 102,
+        content = settlementJson("S", "alice", "bob", 50, timestamp = 102)
+    )
+
+    /**
+     * Carol settles 1 with dave under the same id `S`, signed by carol and valid on its own: carol is a
+     * party to it. Its clock is older than alice's, so a uuid-only dedup that trusts canonical order
+     * would keep this record and drop alice's.
+     */
+    private val carolSettlesDave = makeEvent(
+        "s_carol",
+        type = "settlement",
+        uuid = "S",
+        pubkey = "carol",
+        createdAt = 101,
+        content = settlementJson("S", "carol", "dave", 1, timestamp = 101)
+    )
+
+    @Test
+    fun `a settlement id reused by an unrelated pair cannot erase another pair's repayment`() = runTest {
+        // Both settlements are stored APPLIED; only the id collides. Whatever the storage or clock order,
+        // both must count: two authors under one id are two settlements.
+        val result = computeForEveryOrder(listOf(bobFronts, aliceRepays, carolSettlesDave))
+
+        val n = nets(result)
+        assertEquals("alice's repayment squares her with bob", 0L, n["bob"])
+        assertEquals("alice's repayment squares her with bob", 0L, n["alice"])
+        assertEquals("the unrelated pair's own settlement still counts", 1L, n["carol"])
+        assertEquals("the unrelated pair's own settlement still counts", -1L, n["dave"])
+    }
+
+    @Test
+    fun `the same author re-sending one settlement under a new event id counts once`() = runTest {
+        // A retry produces a fresh Nostr event id and clock but the same payload id and amount.
+        val retry = aliceRepays.copy(eventId = "s_alice_retry", createdAt = 500)
+
+        val result = computeForEveryOrder(listOf(bobFronts, aliceRepays, retry))
+
+        assertEquals(mapOf("alice" to 0L, "bob" to 0L), nets(result))
+    }
+
+    @Test
+    fun `the same author's retry and another author's same id are told apart alongside each other`() = runTest {
+        val retry = aliceRepays.copy(eventId = "s_alice_retry", createdAt = 500)
+
+        val result = computeForEveryOrder(listOf(bobFronts, aliceRepays, retry, carolSettlesDave))
+
+        assertEquals(mapOf("alice" to 0L, "bob" to 0L, "carol" to 1L, "dave" to -1L), nets(result))
+    }
+
+    @Test
+    fun `snapshot-covered settlement is keyed by author - same author's replay skipped, other author's applied`() =
+        runTest {
+            val dao = eventDao()
+            val repo = groupRepo()
+            val aliceReplay = aliceRepays.copy(eventId = "s_alice_replay", createdAt = 500)
+            installSnapshot(
+                dao,
+                repo,
+                events = listOf(bobFronts, aliceRepays, aliceReplay, carolSettlesDave),
+                coveredIds = listOf("e_bob", "s_alice"),
+                // Snapshot already holds bob's expense and alice's repayment: both at zero.
+                balances = """[${balEntry("alice", 0, "INR")},${balEntry("bob", 0, "INR")}]"""
+            )
+
+            val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+            // (alice, S) is covered: her uncovered replay must not re-apply. (carol, S) is a different
+            // settlement that the snapshot never saw: it must be applied.
+            assertEquals(mapOf("alice" to 0L, "bob" to 0L, "carol" to 1L, "dave" to -1L), nets(result))
+        }
 }
