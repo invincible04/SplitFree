@@ -176,6 +176,7 @@ class EventProcessorTest {
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns groupKey
+        coEvery { groupRepo.resolveRoster(any(), any()) } answers { secondArg() }
         every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         // The relaxed dao would otherwise hand back a non-null relaxed EventEntity here.
         coEvery { eventDao.getEvent(any()) } returns null

@@ -45,6 +45,8 @@ class EventPostProcessorTest {
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { android.util.Log.e(any(), any(), any()) } returns 0
         coEvery { groupRepo.getById(groupId) } returns group
+        // A relaxed mock would answer an empty roster, which reads as "every identity is tombstoned".
+        coEvery { groupRepo.resolveRoster(any(), any()) } answers { secondArg() }
         rotationReturns(RotationOutcome.APPLIED)
         coEvery { revokeKey.handleRevocation(any(), any(), any(), any(), any()) } returns true
         every { identity.getPublicKeyHex() } returns pubkey

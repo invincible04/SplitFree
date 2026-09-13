@@ -152,6 +152,14 @@ constructor(
             ) {
                 return@runSafe PostProcessOutcome.REJECTED
             }
+            // A join by a tombstoned key is refused outright rather than stored as a no-op: the row
+            // would otherwise be offered to peers as a valid self-join.
+            if (authorHex !in group.members &&
+                groupRepo.resolveRoster(groupId, listOf(authorHex)) != listOf(authorHex)
+            ) {
+                Log.w(TAG, "Rejecting self-join of revoked identity ${authorHex.take(8)} in $groupId")
+                return@runSafe PostProcessOutcome.REJECTED
+            }
             applyMemberSelfMeta(
                 meta,
                 authorHex,

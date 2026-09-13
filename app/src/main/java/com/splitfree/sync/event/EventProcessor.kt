@@ -12,6 +12,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -525,6 +526,32 @@ constructor(
         historicalAuthors: suspend () -> Set<String>
     ): MembershipResult {
         if (authorHex !in group.members) {
+            if (eventType == TYPE_KEY_REVOCATION) {
+                // A revocation and the replacement metadata it travels with are both signed by the old
+                // key, and the metadata may land first: the roster then already names the successor and
+                // the old key is nobody here. Its revocation must still tombstone it, or the compromised
+                // key, which holds the unrotated group key, could rejoin. Admit exactly that case: sealed
+                // under the current key (a removed member has only older ones) and naming as successor an
+                // identity that is already a member (so the payload can add nobody). Anything else is a
+                // stranger's or a not-yet-joined member's revocation and stays retryable, unstored.
+                val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return MembershipResult(false)
+                val decryptedContent = tryDecrypt(inner.content, key)
+                val completesTransition = try {
+                    decryptedContent != null &&
+                        json.decodeFromString<KeyRevocation>(decryptedContent).let {
+                            it.oldPubkey == authorHex && it.newPubkey in group.members
+                        }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Revocation check failed for $authorHex in $groupId: ${e.message}")
+                    false
+                }
+                if (completesTransition) {
+                    Log.i(TAG, "Admitting key_revocation from replaced identity ${authorHex.take(8)} in $groupId")
+                    return MembershipResult(true, decryptedContent)
+                }
+                Log.w(TAG, "Rejecting key_revocation from non-member $authorHex in group $groupId")
+                return MembershipResult(false)
+            }
             if (eventType != "group_meta") {
                 // Reconciliation may carry the ledger history of someone since removed. Admit it
                 // provisionally; process() rejects it after decryption unless the record was sealed
@@ -543,6 +570,11 @@ constructor(
         if (eventType == "group_meta") {
             val isCreator = group.createdBy.isNotEmpty() && authorHex == group.createdBy
             if (!isCreator && authorHex !in group.members) {
+                // A tombstoned key cannot come back as a member, however it was sealed.
+                if (groupRepo.resolveRoster(groupId, listOf(authorHex)) != listOf(authorHex)) {
+                    Log.w(TAG, "Rejecting group_meta from revoked identity ${authorHex.take(8)} in group $groupId")
+                    return MembershipResult(false)
+                }
                 val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return MembershipResult(false)
                 val decryptedContent = tryDecrypt(inner.content, key)
                 // A self-join is a meta, sealed under the CURRENT group key (so its author holds an
@@ -682,9 +714,10 @@ constructor(
     companion object {
         private const val TAG = "EventProcessor"
         private const val TYPE_KEY_ROTATION = "key_rotation"
+        private const val TYPE_KEY_REVOCATION = "key_revocation"
 
         /** Types whose post-processing mutates group state; inserted PENDING and flipped once it lands. */
-        private val SIDE_EFFECT_TYPES = setOf("group_meta", TYPE_KEY_ROTATION, "key_revocation")
+        private val SIDE_EFFECT_TYPES = setOf("group_meta", TYPE_KEY_ROTATION, TYPE_KEY_REVOCATION)
 
         /** Ledger record types a former member may legitimately have authored before their removal. */
         private val HISTORY_TYPES = setOf("expense", "settlement", "expense_correction", "expense_delete")
