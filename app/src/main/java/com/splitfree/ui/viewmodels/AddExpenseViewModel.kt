@@ -14,11 +14,12 @@ import com.splitfree.domain.money.ExpenseCurrencyCatalog
 import com.splitfree.domain.money.ExpenseInputParser
 import com.splitfree.domain.money.ExpenseSplitCalculator
 import com.splitfree.domain.money.ExpenseSplitPreview
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
+import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
 import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
-import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.util.toUiMessage
 import com.splitfree.ui.viewmodels.expense.ExpenseDraft
@@ -68,6 +69,13 @@ data class AddExpenseUiState(
     val editable: Boolean = false
 )
 
+/**
+ * Editor for a new expense or a correction of an existing one.
+ *
+ * Every save is a durable command: the draft carries the command id (and, for an edit, the revision it was
+ * seeded from) in saved state, so a save interrupted by process death is recognised on restore instead of
+ * being issued twice, and an edit whose expense changed underneath fails closed.
+ */
 @HiltViewModel
 class AddExpenseViewModel
 @Inject
@@ -75,7 +83,6 @@ constructor(
     savedStateHandle: SavedStateHandle,
     private val addExpense: AddExpenseUseCase,
     private val correctExpense: CorrectExpenseUseCase,
-    private val getExpenses: GetExpensesUseCase,
     private val groupRepo: GroupRepositoryContract,
     private val identity: IdentityContract
 ) : ViewModel() {
@@ -94,7 +101,7 @@ constructor(
         store.read(editingExpenseId = editingIdentity?.expenseUuid)
     } catch (_: IllegalArgumentException) {
         draftLoadError = UiMessage.Res(R.string.expense_draft_unrestorable)
-        ExpenseDraft(expenseId = "", createdAt = 0, localeTag = Locale.getDefault().toLanguageTag())
+        ExpenseDraft(expenseId = "", createdAt = 0, localeTag = Locale.getDefault().toLanguageTag(), commandId = "")
     }
     private val parser = ExpenseInputParser(Locale.forLanguageTag(draft.localeTag))
     private val calculator = ExpenseSplitCalculator(parser)
@@ -215,11 +222,14 @@ constructor(
         )
     }
 
-    /** Fills the draft from the expense being edited; only its author may open it, mirroring the protocol. */
+    /**
+     * Fills the draft from the current revision of the expense being edited and pins that revision; only its
+     * author may open it, mirroring the protocol.
+     */
     private suspend fun seedFromExpense(pubkey: String) {
         val selected = editingIdentity ?: throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
         val authored = try {
-            getExpenses.get(groupId, selected)
+            correctExpense.getEditableExpense(groupId, selected.expenseUuid, selected.authorPubkey)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -228,7 +238,7 @@ constructor(
         if (authored.identity != selected) throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
         if (authored.authorPubkey != pubkey) throw UiMessageException(UiMessage.Res(R.string.expense_edit_not_author))
         draft = try {
-            seeder.seed(draft, authored.expense, pubkey)
+            seeder.seed(draft, authored.expense, pubkey).copy(expectedRevisionId = authored.revisionId)
         } catch (e: IllegalArgumentException) {
             throw UiMessageException(e.toUiMessage(R.string.expense_edit_load_failed))
         }
@@ -275,12 +285,15 @@ constructor(
                 val current = groupRepo.getById(groupId) ?: throw groupUnavailable()
                 applyGroup(current, currentAuthor())
                 if (!valid()) return@launch
-                val originalId = editingExpenseId
-                if (originalId != null) {
-                    // A repeated correction with the same payload is harmless, so edits skip the recovery dance.
+                // The command is durable before it is issued, so an interruption anywhere below is recovered.
+                draft = draft.copy(needsRecovery = true)
+                mustRecover = true
+                store.write(draft)
+                val selected = editingIdentity
+                if (selected != null) {
                     correctExpense(
                         groupId = groupId,
-                        originalId = originalId,
+                        originalId = selected.expenseUuid,
                         amount = parser.money(draft.amount, draft.currency),
                         currency = draft.currency,
                         description = draft.description.trim(),
@@ -289,12 +302,10 @@ constructor(
                         splitAmong = _uiState.value.previewSplits,
                         timestamp = draft.createdAt,
                         category = draft.category,
-                        expectedAuthorPubkey = checkNotNull(editingIdentity).authorPubkey
+                        expectedAuthorPubkey = selected.authorPubkey,
+                        command = correctionCommand()
                     )
                 } else {
-                    draft = draft.copy(needsRecovery = true)
-                    mustRecover = true
-                    store.write(draft)
                     addExpense(
                         groupId = groupId,
                         amount = parser.money(draft.amount, draft.currency),
@@ -324,18 +335,31 @@ constructor(
         }
     }
 
+    /**
+     * Settles an outstanding command before the editor opens: a saved command marks the draft saved, a
+     * command that never committed releases the draft, and an edit whose expense moved to another revision
+     * stays locked. Returns true when editing may proceed.
+     */
     private suspend fun recoverIfNeeded(): Boolean {
-        if (editing) mustRecover = false
         if (!mustRecover) return true
         return try {
             currentAuthor()
-            val saved = addExpense.getSavedExpense(
-                groupId,
-                draft.expenseId,
-                draft.authorPubkey.takeIf {
-                    draft.initialized
+            val saved = if (editing) {
+                if (!draft.initialized) {
+                    // The draft was never seeded, so no edit command can have been issued.
+                    mustRecover = false
+                    return true
                 }
-            )
+                val selected = checkNotNull(editingIdentity)
+                correctExpense.getSavedCorrection(
+                    groupId,
+                    selected.expenseUuid,
+                    draft.authorPubkey,
+                    correctionCommand()
+                )
+            } else {
+                addExpense.getSavedExpense(groupId, draft.expenseId, draft.authorPubkey.takeIf { draft.initialized })
+            }
             if (saved != null) {
                 val expected = expectedExpense()
                 if (expected == null || saved.copy(splitAmong = saved.splitAmong.sortedBy { it.pubkey }) != expected) {
@@ -346,6 +370,7 @@ constructor(
                 }
                 false
             } else {
+                if (editing) requireDraftRevision()
                 mustRecover = false
                 recoveryError = null
                 draft = draft.copy(needsRecovery = false)
@@ -356,8 +381,12 @@ constructor(
             recoveryError = UiMessage.Res(R.string.expense_save_check_interrupted)
             render(_uiState.value.copy(loading = false))
             throw e
-        } catch (_: Exception) {
-            recoveryError = UiMessage.Res(R.string.expense_save_check_failed)
+        } catch (e: Exception) {
+            recoveryError = when (e) {
+                is UiMessageException -> e.uiMessage
+                is ExpenseRevisionConflictException -> UiMessage.Res(R.string.expense_edit_stale)
+                else -> UiMessage.Res(R.string.expense_save_check_failed)
+            }
             render(
                 _uiState.value.copy(
                     loading = false,
@@ -368,6 +397,18 @@ constructor(
             false
         }
     }
+
+    /** An unsaved edit may only continue while its expense is still at the revision it was seeded from. */
+    private suspend fun requireDraftRevision() {
+        val selected = checkNotNull(editingIdentity)
+        val current = correctExpense.getEditableExpense(groupId, selected.expenseUuid, draft.authorPubkey)
+        if (current?.revisionId != draft.expectedRevisionId) throw ExpenseRevisionConflictException()
+    }
+
+    private fun correctionCommand() = ExpenseCorrectionCommand(
+        draft.commandId,
+        draft.expectedRevisionId ?: throw ExpenseRevisionConflictException()
+    )
 
     private fun currentAuthor(): String {
         val pubkey = identity.getPublicKeyHex()

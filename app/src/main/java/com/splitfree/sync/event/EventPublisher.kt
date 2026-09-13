@@ -9,9 +9,11 @@ import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.repository.ExpenseEventHistory
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -65,6 +67,24 @@ constructor(
         return saved
     }
 
+    override suspend fun publishMutation(
+        event: NostrEvent,
+        group: Group,
+        eventType: String,
+        expenseUuid: String,
+        commandId: String,
+        expectedRevisionId: String?
+    ): Boolean {
+        require(eventType in MUTATION_TYPES) { "Not a money mutation: $eventType" }
+        require(commandId.isNotBlank()) { "Command ID must not be blank" }
+        require(eventType == "settlement" || !expectedRevisionId.isNullOrBlank()) { "Expense revision is required" }
+        val deliveries = prepareDeliveries(event, group.members)
+        val entity = eventEntity(event, group.id, event.content, eventType, expenseUuid, group.keyEpoch)
+        val saved = commit(entity, deliveries, group, commandId, expectedRevisionId)
+        if (saved) dispatch(deliveries)
+        return saved
+    }
+
     override suspend fun publishDirect(
         event: NostrEvent,
         groupId: String,
@@ -101,19 +121,37 @@ constructor(
         }
     }
 
+    /**
+     * Persists [entity] and its delivery rows in one transaction. With [expectedGroup] the save is a money
+     * mutation: it is refused when the group's roster or key epoch moved since [expectedGroup] was read,
+     * capped by the outbox limit, and, given a [commandId], skipped (returning false) when this author
+     * already saved that command. An [expectedRevisionId] is compared against the author's current revision
+     * of the expense inside the transaction, so concurrent edits of one revision admit exactly one.
+     */
     private suspend fun commit(
         entity: EventEntity,
         deliveries: List<NostrEvent>,
-        expectedGroup: Group? = null
+        expectedGroup: Group? = null,
+        commandId: String? = null,
+        expectedRevisionId: String? = null
     ): Boolean {
         val rows = deliveries.map { OutboxEntity(it.id, it.toJson(), it.createdAt, eventType = entity.eventType) }
         check(rows.map { it.eventId }.distinct().size == rows.size) { "Duplicate prepared delivery IDs" }
         return db.withTransaction {
             if (expectedGroup != null) {
-                if (eventDao.getExpenseByAuthor(checkNotNull(entity.expenseUuid), entity.groupId, entity.pubkey) !=
-                    null
+                if (entity.eventType == "expense" &&
+                    eventDao.getExpenseByAuthor(checkNotNull(entity.expenseUuid), entity.groupId, entity.pubkey) != null
                 ) {
                     return@withTransaction false
+                }
+                if (commandId != null && savedCommand(entity, commandId) != null) return@withTransaction false
+                if (expectedRevisionId != null) {
+                    val uuid = checkNotNull(entity.expenseUuid)
+                    ExpenseEventHistory.requireRevision(
+                        eventDao.getExpenseHistoryByAuthor(uuid, entity.groupId, entity.pubkey),
+                        ExpenseIdentity(entity.pubkey, uuid),
+                        expectedRevisionId
+                    )
                 }
                 val current = groupRepo.getById(entity.groupId) ?: error("Group no longer exists")
                 check(
@@ -138,6 +176,15 @@ constructor(
             true
         }
     }
+
+    private suspend fun savedCommand(entity: EventEntity, commandId: String): EventEntity? =
+        ExpenseEventHistory.command(
+            eventDao.getEventsByTypeAndAuthor(entity.groupId, entity.eventType, entity.pubkey),
+            entity.groupId,
+            entity.pubkey,
+            entity.eventType,
+            commandId
+        )
 
     /** Keep each gift wrap so a nearby courier can hand it to its recipient later. */
     private suspend fun retainEnvelopes(groupId: String, innerEventId: String, deliveries: List<NostrEvent>) {
@@ -257,6 +304,9 @@ constructor(
     companion object {
         private const val TAG = "EventPublisher"
         private const val MAX_EXPENSE_OUTBOX_SIZE = 5000
+
+        /** Money mutations that carry a command id and are admitted against the group snapshot. */
+        private val MUTATION_TYPES = setOf("expense_correction", "expense_delete", "settlement")
 
         /** Event types that are gift-wrapped per member and therefore need re-delivery to late joiners. */
         private val REDELIVERABLE_TYPES =

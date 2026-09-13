@@ -79,6 +79,7 @@
     <string name="expense_edit_missing">This expense is no longer available</string>
     <string name="expense_edit_not_author">Only the person who added this expense can change it</string>
     <string name="expense_edit_load_failed">Could not load this expense</string>
+    <string name="expense_edit_stale">This expense changed since you opened it. Close this draft and open the expense again.</string>
     <string name="expense_amount_positive">Enter an amount greater than zero</string>
     <string name="expense_amount_too_large">Amount exceeds the maximum allowed</string>
     <string name="expense_amount_invalid">Enter a valid amount</string>

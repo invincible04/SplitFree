@@ -20,6 +20,8 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
+import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.OutboxFullException
 import com.splitfree.domain.repository.SecureStorage
@@ -37,6 +39,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -130,10 +133,36 @@ class EventPublisherTest {
         val signer = mockk<EventSigner>()
         every { signer.createSignedEvent(any(), any(), any(), any()) } answers {
             assertFalse("Signing must happen outside the transaction", db.inTransaction())
-            event.copy(id = UUID.randomUUID().toString(), content = thirdArg())
+            val address = EventSigner.relayAddress(firstArg(), secondArg(), UUID.randomUUID().toString())
+            event.copy(
+                id = UUID.randomUUID().toString(),
+                content = thirdArg(),
+                tags = listOf(listOf("d", address), listOf("g", firstArg()), listOf("t", secondArg()))
+            )
+        }
+        every { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) } answers {
+            assertFalse("Signing must happen outside the transaction", db.inTransaction())
+            val address = EventSigner.relayAddress(firstArg(), secondArg(), arg(4))
+            event.copy(
+                id = UUID.randomUUID().toString(),
+                content = thirdArg(),
+                createdAt = arg<Long?>(5) ?: 1000,
+                tags = listOf(listOf("d", address), listOf("g", firstArg()), listOf("t", secondArg()))
+            )
         }
         return ExpenseRepository(db.eventDao(), groupRepo, encryption, identity, signer, publisher)
     }
+
+    /** A signed event addressed under [commandId], as [EventSigner.createSignedCommandEvent] would produce. */
+    private fun commandEvent(id: String, type: String, commandId: String, createdAt: Long = 1000) = event.copy(
+        id = id,
+        createdAt = createdAt,
+        tags = listOf(
+            listOf("d", EventSigner.relayAddress("g1", type, commandId)),
+            listOf("g", "g1"),
+            listOf("t", type)
+        )
+    )
 
     @Test
     fun `publishToGroup atomically stores every recipient except self`() = runBlocking {
@@ -538,6 +567,239 @@ class EventPublisherTest {
         // The giftWrap mock in setup() asserts db.inTransaction() is false on every call.
         store(storedEvent("exp1"), storedEvent("exp2"))
         assertEquals(2, publisher.redeliverAuthoredEvents("g1", listOf(newMember)))
+    }
+
+    // --- publishMutation: corrections, deletions and settlements as commands ---
+
+    @Test
+    fun `correction recovery after reopen preserves signed event and deliveries and never reapplies stale command`() =
+        runBlocking {
+            repository().addExpense(expense, "g1")
+            val original = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub))
+            val first = ExpenseCorrectionCommand("correction-1", original.revisionId)
+            val corrected = expense.copy(description = "First edit")
+            repository().correctExpense(expense.id, corrected, "g1", myPub, first)
+            val edited = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub))
+            assertEquals(corrected, edited.expense)
+            assertNotEquals(original.revisionId, edited.revisionId)
+            val second = ExpenseCorrectionCommand("correction-2", edited.revisionId)
+            repository().correctExpense(expense.id, expense.copy(description = "Newer edit"), "g1", myPub, second)
+            val revisions = db.eventDao().getEventsByGroup("g1").filter { it.eventType == "expense_correction" }
+            assertTrue(revisions[1].createdAt > revisions[0].createdAt)
+            assertEquals(expense.timestamp, edited.expense.timestamp)
+            val eventJson = db.eventDao().getEventsByGroup("g1").map { it.originalEventJson }
+            val deliveries = db.outboxDao().getAll().map { it.eventJson }.toSet()
+            db.close()
+            openDatabase()
+            assertEquals(corrected, repository().getSavedCorrection("g1", expense.id, myPub, first))
+            repository().correctExpense(expense.id, corrected, "g1", myPub, first)
+            val current = repository().getEditableExpense("g1", expense.id, myPub)
+            assertEquals("Newer edit", current?.expense?.description)
+            assertEquals(eventJson, db.eventDao().getEventsByGroup("g1").map { it.originalEventJson })
+            assertEquals(deliveries, db.outboxDao().getAll().map { it.eventJson }.toSet())
+            expectFailure<ExpenseSaveConflictException> {
+                val changed = corrected.copy(description = "Changed retry")
+                repository().correctExpense(expense.id, changed, "g1", myPub, first)
+            }
+            expectFailure<ExpenseRevisionConflictException> {
+                val stale = first.copy(id = "unsaved-stale-command")
+                repository().correctExpense(expense.id, corrected, "g1", myPub, stale)
+            }
+        }
+
+    @Test
+    fun `original and each correction occupy distinct relay addresses in storage`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        repository().correctExpense(expense.id, expense.copy(description = "Edit"), "g1", myPub)
+        val addresses = db.eventDao().getEventsByGroup("g1").map { row ->
+            NostrEvent.fromJson(checkNotNull(row.originalEventJson))?.tags?.single { it[0] == "d" }?.get(1)
+        }
+        assertEquals(2, addresses.size)
+        assertEquals(2, addresses.distinct().size)
+        assertTrue(addresses.all { it != null && it.startsWith("g1:") })
+        assertNotEquals(revision, checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId)
+    }
+
+    @Test
+    fun `concurrent correction commands against one revision admit exactly one`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val results = listOf("first", "second").map { command ->
+            async {
+                runCatching {
+                    repository().correctExpense(
+                        expense.id,
+                        expense.copy(description = command),
+                        "g1",
+                        myPub,
+                        ExpenseCorrectionCommand(command, revision)
+                    )
+                }
+            }
+        }.awaitAll()
+        assertEquals(1, results.count { it.isSuccess })
+        assertEquals(1, results.count { it.exceptionOrNull() is ExpenseRevisionConflictException })
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+        assertEquals(4, db.outboxDao().count())
+    }
+
+    @Test
+    fun `every mutation refuses stale group membership and epoch at commit`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val baselineEvents = db.eventDao().getEventCount("g1")
+        val baselineOutbox = db.outboxDao().count()
+        every { keyStore.getString("g1:1", any()) } returns null
+        for (changed in listOf(group.copy(members = listOf(myPub, otherPub)), group.copy(keyEpoch = 1))) {
+            groupRepo.save(changed, if (changed.keyEpoch == 0) "group-key" else "changed-key")
+            for (type in listOf("expense_correction", "expense_delete", "settlement")) {
+                expectFailure<IllegalStateException> {
+                    publisher.publishMutation(
+                        commandEvent("$type-${changed.keyEpoch}", type, "$type-${changed.keyEpoch}"),
+                        group,
+                        type,
+                        expense.id,
+                        "$type-${changed.keyEpoch}",
+                        if (type == "settlement") null else revision
+                    )
+                }
+            }
+        }
+        assertEquals(baselineEvents, db.eventDao().getEventCount("g1"))
+        assertEquals(baselineOutbox, db.outboxDao().count())
+    }
+
+    @Test
+    fun `delete and correction CAS refuse a revision replaced after preparation`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        repository().correctExpense(
+            expense.id,
+            expense.copy(description = "New"),
+            "g1",
+            myPub,
+            ExpenseCorrectionCommand("new", revision)
+        )
+        for (type in listOf("expense_correction", "expense_delete")) {
+            expectFailure<ExpenseRevisionConflictException> {
+                val stale = commandEvent(type, type, "stale-$type")
+                publisher.publishMutation(stale, group, type, expense.id, "stale-$type", revision)
+            }
+        }
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+    }
+
+    @Test
+    fun `a mutation command already saved is not saved twice`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val first = commandEvent("first", "expense_correction", "cmd")
+        assertTrue(publisher.publishMutation(first, group, "expense_correction", expense.id, "cmd", revision))
+        // A retry re-signs the same command at a later second: new event id, same relay address.
+        val retry = commandEvent("retry", "expense_correction", "cmd", createdAt = 2000)
+        assertFalse(publisher.publishMutation(retry, group, "expense_correction", expense.id, "cmd", revision))
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+        assertEquals(4, db.outboxDao().count())
+        assertNull(db.eventDao().getEvent("retry"))
+    }
+
+    @Test
+    fun `settlement commands validate the group snapshot and dedup on command id`() = runBlocking {
+        val settlement = commandEvent("s1", "settlement", "s1")
+        assertTrue(publisher.publishMutation(settlement, group, "settlement", "s1", "s1"))
+        val retry = commandEvent("s1-retry", "settlement", "s1")
+        assertFalse(publisher.publishMutation(retry, group, "settlement", "s1", "s1"))
+        assertEquals(1, db.eventDao().getEventCount("g1"))
+        assertEquals(2, db.outboxDao().count())
+        expectFailure<IllegalArgumentException> {
+            publisher.publishMutation(commandEvent("bad", "expense", "bad"), group, "expense", "s1", "bad")
+        }
+        expectFailure<IllegalArgumentException> {
+            publisher.publishMutation(
+                commandEvent("bad", "expense_delete", "bad"),
+                group,
+                "expense_delete",
+                "s1",
+                "bad"
+            )
+        }
+    }
+
+    @Test
+    fun `mutation commands are capped by the outbox like expenses`() = runBlocking {
+        fillOutbox(4999)
+        expectFailure<OutboxFullException> {
+            publisher.publishMutation(commandEvent("s1", "settlement", "s1"), group, "settlement", "s1", "s1")
+        }
+        assertNull(db.eventDao().getEvent("s1"))
+        assertEquals(4999, db.outboxDao().count())
+    }
+
+    @Test
+    fun `deleted expense never admits a stale correction`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        repository().deleteExpense(expense.id, "g1", expectedAuthorPubkey = myPub)
+        expectFailure<ExpenseRevisionConflictException> {
+            repository().correctExpense(expense.id, expense, "g1", myPub, ExpenseCorrectionCommand("stale", revision))
+        }
+        assertNull(repository().getEditableExpense("g1", expense.id, myPub))
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+    }
+
+    @Test
+    fun `concurrent copies of one correction command reconcile without duplicate deliveries`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val command = ExpenseCorrectionCommand("same-command", revision)
+        val results = (1..2).map {
+            async { runCatching { repository().correctExpense(expense.id, expense, "g1", myPub, command) } }
+        }.awaitAll()
+        assertTrue(results.all { it.isSuccess })
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+        assertEquals(4, db.outboxDao().count())
+    }
+
+    @Test
+    fun `concurrent copies of one correction command with differing payload report conflict`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val command = ExpenseCorrectionCommand("same-command", revision)
+        val results = listOf("first", "different").map { description ->
+            async {
+                runCatching {
+                    val payload = expense.copy(description = description)
+                    repository().correctExpense(expense.id, payload, "g1", myPub, command)
+                }
+            }
+        }.awaitAll()
+        assertEquals(1, results.count { it.isSuccess })
+        assertEquals(1, results.count { it.exceptionOrNull() is ExpenseSaveConflictException })
+        assertEquals(2, db.eventDao().getEventCount("g1"))
+        assertEquals(4, db.outboxDao().count())
+    }
+
+    @Test
+    fun `command lookups stay author qualified`() = runBlocking {
+        repository().addExpense(expense, "g1")
+        val revision = checkNotNull(repository().getEditableExpense("g1", expense.id, myPub)).revisionId
+        val mine = commandEvent("mine", "expense_correction", "shared")
+        assertTrue(publisher.publishMutation(mine, group, "expense_correction", expense.id, "shared", revision))
+        // Another author's expense under the same UUID and command id is a separate record.
+        every { identity.getPublicKeyHex() } returns otherPub
+        assertTrue(publisher.publishExpense(event.copy(id = "other-original", pubkey = otherPub), group, expense.id))
+        assertTrue(
+            publisher.publishMutation(
+                commandEvent("theirs", "expense_correction", "shared").copy(pubkey = otherPub),
+                group,
+                "expense_correction",
+                expense.id,
+                "shared",
+                "other-original"
+            )
+        )
+        assertEquals(4, db.eventDao().getEventCount("g1"))
     }
 
     private suspend fun fillOutbox(count: Int) {

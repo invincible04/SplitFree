@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.expense
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -25,7 +26,8 @@ class CorrectExpenseUseCaseTest {
         splitAmong: List<SplitEntry> = listOf(SplitEntry("alice", 4_000), SplitEntry("bob", 6_000)),
         originalId: String = "exp-1",
         timestamp: Long = 1_234,
-        author: String = "alice"
+        author: String = "alice",
+        command: ExpenseCorrectionCommand? = null
     ) = useCase(
         groupId = "g1",
         originalId = originalId,
@@ -37,13 +39,14 @@ class CorrectExpenseUseCaseTest {
         splitAmong = splitAmong,
         timestamp = timestamp,
         category = "food",
-        expectedAuthorPubkey = author
+        expectedAuthorPubkey = author,
+        command = command
     )
 
     @Test
     fun `publishes a correction that keeps the original id and timestamp`() = runTest {
         val corrected = slot<Expense>()
-        coEvery { repo.correctExpense("exp-1", capture(corrected), "g1", "alice") } just Runs
+        coEvery { repo.correctExpense("exp-1", capture(corrected), "g1", "alice", null) } just Runs
 
         correct()
 
@@ -69,7 +72,9 @@ class CorrectExpenseUseCaseTest {
                 { correct(currency = "IN") },
                 { correct(originalId = " ") },
                 { correct(timestamp = -1) },
-                { correct(author = " ") }
+                { correct(author = " ") },
+                { correct(command = ExpenseCorrectionCommand(" ", "revision-1")) },
+                { correct(command = ExpenseCorrectionCommand("command-1", "")) }
             )
         attempts.forEach { attempt ->
             try {
@@ -79,12 +84,12 @@ class CorrectExpenseUseCaseTest {
             }
         }
 
-        coVerify(exactly = 0) { repo.correctExpense(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repo.correctExpense(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `repository refusal propagates`() = runTest {
-        coEvery { repo.correctExpense(any(), any(), any(), any()) } throws
+        coEvery { repo.correctExpense(any(), any(), any(), any(), any()) } throws
             IllegalStateException("Only the creator can correct")
 
         try {
@@ -93,5 +98,21 @@ class CorrectExpenseUseCaseTest {
         } catch (e: IllegalStateException) {
             assertEquals("Only the creator can correct", e.message)
         }
+    }
+
+    @Test
+    fun `the correction command reaches the repository unchanged`() = runTest {
+        val command = ExpenseCorrectionCommand("command-1", "revision-1")
+        correct(command = command)
+        coVerify(exactly = 1) { repo.correctExpense("exp-1", any(), "g1", "alice", command) }
+    }
+
+    @Test
+    fun `editable expense and saved correction lookups delegate with the author`() = runTest {
+        val command = ExpenseCorrectionCommand("command-1", "revision-1")
+        useCase.getEditableExpense("g1", "exp-1", "alice")
+        useCase.getSavedCorrection("g1", "exp-1", "alice", command)
+        coVerify(exactly = 1) { repo.getEditableExpense("g1", "exp-1", "alice") }
+        coVerify(exactly = 1) { repo.getSavedCorrection("g1", "exp-1", "alice", command) }
     }
 }

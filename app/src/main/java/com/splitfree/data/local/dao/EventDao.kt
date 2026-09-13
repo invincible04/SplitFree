@@ -65,6 +65,27 @@ interface EventDao {
     )
     suspend fun getExpenseByAuthor(uuid: String, groupId: String, author: String): EventEntity?
 
+    /**
+     * Every applied row [author] published under [uuid] in [groupId] (the original `expense`, each
+     * `expense_correction` and any `expense_delete`) in canonical order. Feeds the current-revision
+     * projection of one author-qualified expense.
+     */
+    @Query(
+        "SELECT * FROM events WHERE expenseUuid = :uuid AND groupId = :groupId AND pubkey = :author " +
+            "AND applyState = 0 ORDER BY createdAt ASC, eventId ASC"
+    )
+    suspend fun getExpenseHistoryByAuthor(uuid: String, groupId: String, author: String): List<EventEntity>
+
+    /**
+     * Rows of [type] that [author] published in [groupId], regardless of apply state. A command identity
+     * lookup; the caller matches the relay address carried in `originalEventJson`.
+     */
+    @Query(
+        "SELECT * FROM events WHERE groupId = :groupId AND pubkey = :author AND eventType = :type " +
+            "ORDER BY createdAt ASC, eventId ASC"
+    )
+    suspend fun getEventsByTypeAndAuthor(groupId: String, type: String, author: String): List<EventEntity>
+
     @Query(
         "SELECT expenseUuid FROM events WHERE groupId = :groupId AND eventType = 'expense_delete' " +
             "AND expenseUuid IS NOT NULL AND applyState = 0"

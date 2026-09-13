@@ -11,6 +11,8 @@ import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
+import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -25,6 +27,7 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -63,6 +66,23 @@ class ExpenseRepositoryTest {
         coEvery { groupRepo.getGroupKey(any()) } returns "testkey"
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns testEvent
+        every { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) } returns testEvent
+        coEvery { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) } returns true
+        coEvery { eventDao.getExpenseHistoryByAuthor(any(), any(), any()) } returns emptyList()
+        coEvery { eventDao.getEventsByTypeAndAuthor(any(), any(), any()) } returns emptyList()
+    }
+
+    /** The current identity signs as [pubkey]; the repository compares the signed event against the pinned author. */
+    private fun signsAs(pubkey: String) {
+        every { identity.getPublicKeyHex() } returns pubkey
+        every { signer.createSignedEvent(any(), any(), any(), any()) } returns testEvent.copy(pubkey = pubkey)
+        every { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) } returns
+            testEvent.copy(pubkey = pubkey)
+    }
+
+    /** Alice's stored history under u1, as the author-bound lookup returns it. */
+    private fun aliceHistory(vararg rows: EventEntity = arrayOf(aliceOriginal())) {
+        coEvery { eventDao.getExpenseHistoryByAuthor("u1", "g1", "alice") } returns rows.toList()
     }
 
     // --- addExpense ---
@@ -97,11 +117,12 @@ class ExpenseRepositoryTest {
 
     @Test
     fun `addSettlement encrypts and stores`() = runTest {
-        every { identity.getPublicKeyHex() } returns "bob"
+        signsAs("bob")
         val settlement = Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1)
         repo().addSettlement(settlement, "g1")
 
-        coVerify { eventPublisher.publishToGroup(any(), "g1", any(), "settlement", "s1") }
+        verify { signer.createSignedCommandEvent("g1", "settlement", "encrypted", "s1", "s1", null, null) }
+        coVerify { eventPublisher.publishMutation(match { it.pubkey == "bob" }, group, "settlement", "s1", "s1", null) }
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -125,49 +146,67 @@ class ExpenseRepositoryTest {
     // --- deleteExpense ---
 
     @Test
-    fun `deleteExpense stores delete event`() = runTest {
+    fun `deleteExpense stores delete event against the current revision`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
 
-        coVerify { signer.createSignedEvent("g1", "expense_delete", "encrypted", "u1") }
-        coVerify { eventPublisher.publishToGroup(any(), "g1", any(), "expense_delete", "u1") }
+        val commandId = slot<String>()
+        verify {
+            signer.createSignedCommandEvent("g1", "expense_delete", "encrypted", "u1", capture(commandId), null, null)
+        }
+        coVerify { eventPublisher.publishMutation(testEvent, group, "expense_delete", "u1", commandId.captured, "e1") }
+    }
+
+    @Test
+    fun `deleteExpense targets the latest correction when one exists`() = runTest {
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5), aliceCorrection("c2", createdAt = 9))
+        repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
+        coVerify { eventPublisher.publishMutation(any(), group, "expense_delete", "u1", any(), "c2") }
     }
 
     @Test(expected = IllegalStateException::class)
     fun `deleteExpense throws when expense not found`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns null
+        aliceHistory(*emptyArray())
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
+    }
+
+    @Test
+    fun `deleteExpense of an already deleted expense is refused without publishing`() = runTest {
+        aliceHistory(aliceOriginal(), aliceDeletion("d1"))
+        val failure = runCatching { repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice") }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertEquals("This expense was already deleted", failure?.message)
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test(expected = IllegalStateException::class)
     fun `deleteExpense throws when not creator`() = runTest {
         // Bob owns no record under u1: the author-bound lookup finds nothing even though Alice's exists.
-        every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns null
+        signsAs("bob")
+        aliceHistory()
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test
     fun `deleteExpense resolves the original by author, never by uuid alone`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
 
-        coVerify(exactly = 1) { eventDao.getExpenseByAuthor("u1", "g1", "alice") }
+        coVerify(exactly = 1) { eventDao.getExpenseHistoryByAuthor("u1", "g1", "alice") }
         coVerify(exactly = 0) { eventDao.getExpenseByUuid(any(), any()) }
     }
 
     @Test
     fun `deleteExpense of a uuid someone else owns publishes nothing`() = runTest {
-        every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns null
+        signsAs("bob")
+        aliceHistory()
         val failure = runCatching { repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "bob") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
         assertEquals("Expense not found or not yours", failure?.message)
         verify(exactly = 0) { encryption.encrypt(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     // --- correctExpense ---
@@ -175,7 +214,7 @@ class ExpenseRepositoryTest {
     @Test
     fun `correctExpense stores correction event`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val corrected =
             Expense(
                 "u1",
@@ -189,25 +228,26 @@ class ExpenseRepositoryTest {
             )
         repo().correctExpense("u1", corrected, "g1", expectedAuthorPubkey = "alice")
 
-        coVerify { signer.createSignedEvent("g1", "expense_correction", "encrypted", "u1") }
+        verify { signer.createSignedCommandEvent("g1", "expense_correction", "encrypted", "u1", any(), any(), null) }
+        coVerify { eventPublisher.publishMutation(testEvent, group, "expense_correction", "u1", any(), "e1") }
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects corrected id that differs from original uuid`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense("u1", expense.copy(id = "u1c"), "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects share sum mismatch`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         // shares 50 + 50 = 100 but amount is 200
         repo().correctExpense("u1", expense.copy(amount = 200), "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects zero share`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense(
             "u1",
             expense.copy(splitAmong = listOf(SplitEntry("alice", 100), SplitEntry("bob", 0))),
@@ -218,7 +258,7 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects duplicate participants`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense(
             "u1",
             expense.copy(splitAmong = listOf(SplitEntry("alice", 50), SplitEntry("alice", 50))),
@@ -229,13 +269,13 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects non-member payer`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense("u1", expense.copy(paidBy = "outsider"), "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects non-member split participant`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense(
             "u1",
             expense.copy(splitAmong = listOf(SplitEntry("outsider", 100))),
@@ -246,7 +286,7 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects amount exceeding max`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val huge = 1_000_000_000_001L
         repo().correctExpense(
             "u1",
@@ -258,18 +298,18 @@ class ExpenseRepositoryTest {
 
     @Test
     fun `correctExpense rejection happens before any encryption or publish`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val failure = runCatching {
             repo().correctExpense("u1", expense.copy(amount = 200), "g1", expectedAuthorPubkey = "alice")
         }.exceptionOrNull()
         assertTrue(failure is IllegalArgumentException)
         verify(exactly = 0) { encryption.encrypt(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `deleteExpense caps reason at 200 characters`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val plaintext = slot<String>()
         every { encryption.encrypt(capture(plaintext), any()) } returns "encrypted"
 
@@ -281,7 +321,7 @@ class ExpenseRepositoryTest {
 
     @Test
     fun `deleteExpense keeps short reason intact`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val plaintext = slot<String>()
         every { encryption.encrypt(capture(plaintext), any()) } returns "encrypted"
 
@@ -294,36 +334,36 @@ class ExpenseRepositoryTest {
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when not creator`() = runTest {
         // Bob owns no record under u1: the author-bound lookup finds nothing even though Alice's exists.
-        every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns null
-        repo().correctExpense("u1", mockk(), "g1", expectedAuthorPubkey = "alice")
+        signsAs("bob")
+        aliceHistory()
+        repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test
     fun `correctExpense resolves the original by author, never by uuid alone`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val corrected =
             expense.copy(amount = 200, splitAmong = listOf(SplitEntry("alice", 100), SplitEntry("bob", 100)))
         repo().correctExpense("u1", corrected, "g1", expectedAuthorPubkey = "alice")
 
-        coVerify(exactly = 1) { eventDao.getExpenseByAuthor("u1", "g1", "alice") }
+        coVerify(exactly = 1) { eventDao.getExpenseHistoryByAuthor("u1", "g1", "alice") }
         coVerify(exactly = 0) { eventDao.getExpenseByUuid(any(), any()) }
-        coVerify { eventPublisher.publishToGroup(any(), "g1", any(), "expense_correction", "u1") }
+        coVerify(exactly = 0) { eventDao.getExpenseByAuthor(any(), any(), any()) }
+        coVerify { eventPublisher.publishMutation(any(), group, "expense_correction", "u1", any(), "e1") }
     }
 
     @Test
     fun `correctExpense of a uuid someone else owns publishes nothing`() = runTest {
-        every { identity.getPublicKeyHex() } returns "bob"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns null
+        signsAs("bob")
+        aliceHistory()
         val failure = runCatching {
             repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "bob")
         }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
         assertEquals("Expense not found or not yours", failure?.message)
         verify(exactly = 0) { encryption.encrypt(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -331,7 +371,7 @@ class ExpenseRepositoryTest {
         every { identity.getPublicKeyHex() } returns "alice"
         val settlement = Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1)
         repo().addSettlement(settlement, "g1")
-        coVerify { eventPublisher.publishToGroup(any(), "g1", any(), "settlement", "s1") }
+        coVerify { eventPublisher.publishMutation(any(), group, "settlement", "s1", "s1", null) }
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -346,7 +386,7 @@ class ExpenseRepositoryTest {
     fun `addSettlement encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
         coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
-        every { identity.getPublicKeyHex() } returns "bob"
+        signsAs("bob")
         repo().addSettlement(Settlement("s1", "bob", "alice", 50, "INR", timestamp = 1), "g1")
 
         coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
@@ -358,7 +398,7 @@ class ExpenseRepositoryTest {
     fun `deleteExpense encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
         coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
 
         coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
@@ -370,7 +410,7 @@ class ExpenseRepositoryTest {
     fun `correctExpense encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {
         coEvery { groupRepo.getById("g1") } returns group.copy(keyEpoch = 3)
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 3) } returns "epoch3key"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         val corrected = expense.copy(
             amount = 200,
             splitAmong = listOf(SplitEntry("alice", 100), SplitEntry("bob", 100))
@@ -391,45 +431,47 @@ class ExpenseRepositoryTest {
 
     @Test(expected = IllegalStateException::class)
     fun `deleteExpense throws when epoch key missing`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test
     fun `mutations reject a selected other author even when I own the same uuid`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns aliceOriginal().copy(pubkey = "bob")
+        aliceHistory()
+        coEvery { eventDao.getExpenseHistoryByAuthor("u1", "g1", "bob") } returns
+            listOf(aliceOriginal().copy(pubkey = "bob"))
 
         val deletion = runCatching { repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "bob") }
         val correction = runCatching { repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "bob") }
 
         assertTrue(deletion.exceptionOrNull() is IllegalStateException)
         assertTrue(correction.exceptionOrNull() is IllegalStateException)
-        coVerify(exactly = 0) { eventDao.getExpenseByAuthor(any(), any(), any()) }
-        verify(exactly = 0) { signer.createSignedEvent(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventDao.getExpenseHistoryByAuthor(any(), any(), any()) }
+        verify(exactly = 0) { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `mutations of my colliding uuid stay bound to the selected author`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns aliceOriginal().copy(pubkey = "bob")
+        aliceHistory()
+        coEvery { eventDao.getExpenseHistoryByAuthor("u1", "g1", "bob") } returns
+            listOf(aliceOriginal().copy(pubkey = "bob"))
 
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
         repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
 
-        coVerify(exactly = 2) { eventDao.getExpenseByAuthor("u1", "g1", "alice") }
-        coVerify(exactly = 0) { eventDao.getExpenseByAuthor("u1", "g1", "bob") }
+        coVerify(exactly = 2) { eventDao.getExpenseHistoryByAuthor("u1", "g1", "alice") }
+        coVerify(exactly = 0) { eventDao.getExpenseHistoryByAuthor("u1", "g1", "bob") }
         coVerify(exactly = 0) { eventDao.getExpenseByUuid(any(), any()) }
         coVerify(exactly = 2) {
-            eventPublisher.publishToGroup(match { it.pubkey == "alice" }, "g1", any(), any(), "u1")
+            eventPublisher.publishMutation(match { it.pubkey == "alice" }, group, any(), "u1", any(), "e1")
         }
     }
 
     @Test
     fun `mutations recheck identity after suspension before publishing`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         coEvery { groupRepo.getById("g1") } coAnswers {
             every { identity.getPublicKeyHex() } returns "bob"
             group
@@ -441,21 +483,22 @@ class ExpenseRepositoryTest {
 
         assertTrue(deletion.exceptionOrNull() is IllegalStateException)
         assertTrue(correction.exceptionOrNull() is IllegalStateException)
-        verify(exactly = 2) { signer.createSignedEvent(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        verify(exactly = 2) { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `mutations reject an event signed by a different author even if identity reads still match`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
-        every { signer.createSignedEvent(any(), any(), any(), any()) } returns testEvent.copy(pubkey = "bob")
+        aliceHistory()
+        every { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) } returns
+            testEvent.copy(pubkey = "bob")
 
         val deletion = runCatching { repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice") }
         val correction = runCatching { repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice") }
 
         assertTrue(deletion.exceptionOrNull() is IllegalStateException)
         assertTrue(correction.exceptionOrNull() is IllegalStateException)
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     // --- settlement membership checks ---
@@ -487,7 +530,7 @@ class ExpenseRepositoryTest {
         }.exceptionOrNull()
         assertTrue(failure is IllegalArgumentException)
         verify(exactly = 0) { encryption.encrypt(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishToGroup(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test(expected = IllegalStateException::class)
@@ -500,29 +543,254 @@ class ExpenseRepositoryTest {
     @Test(expected = IllegalArgumentException::class)
     fun `deleteExpense rejects when author was removed from group`() = runTest {
         coEvery { groupRepo.getById("g1") } returns group.copy(members = listOf("bob"))
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().deleteExpense("u1", "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `correctExpense rejects when author was removed from group`() = runTest {
         coEvery { groupRepo.getById("g1") } returns group.copy(members = listOf("bob"))
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
     }
 
     @Test(expected = IllegalStateException::class)
     fun `correctExpense throws when no group key`() = runTest {
         every { identity.getPublicKeyHex() } returns "alice"
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns aliceOriginal()
+        aliceHistory()
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns null
         repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun `correctExpense throws when expense not found`() = runTest {
-        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns null
-        repo().correctExpense("u1", mockk(), "g1", expectedAuthorPubkey = "alice")
+        aliceHistory(*emptyArray())
+        val failure = runCatching {
+            repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertEquals("Expense not found or not yours", failure?.message)
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `correctExpense applies to the latest correction and dates the edit after it`() = runTest {
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5), aliceCorrection("c2", createdAt = 9))
+        val createdAt = slot<Long>()
+        every {
+            signer.createSignedCommandEvent("g1", "expense_correction", any(), "u1", any(), capture(createdAt), null)
+        } returns testEvent
+
+        repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
+
+        assertTrue(createdAt.captured >= 10)
+        coVerify { eventPublisher.publishMutation(testEvent, group, "expense_correction", "u1", any(), "c2") }
+    }
+
+    @Test
+    fun `correctExpense dates a same-second edit strictly after the revision it replaces`() = runTest {
+        val future = System.currentTimeMillis() / 1000 + 100
+        aliceHistory(aliceOriginal().copy(createdAt = future))
+        val createdAt = slot<Long>()
+        every {
+            signer.createSignedCommandEvent("g1", "expense_correction", any(), "u1", any(), capture(createdAt), null)
+        } returns testEvent
+
+        repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
+
+        assertEquals(future + 1, createdAt.captured)
+    }
+
+    @Test
+    fun `correctExpense of a deleted expense is refused before encryption`() = runTest {
+        aliceHistory(aliceOriginal(), aliceDeletion("d1"))
+        val failure = runCatching {
+            repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice")
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+    }
+
+    // --- correction commands ---
+
+    @Test
+    fun `a correction command carries its id and expected revision to the publisher`() = runTest {
+        aliceHistory()
+        val command = ExpenseCorrectionCommand("command-1", "e1")
+        repo().correctExpense("u1", expense, "g1", expectedAuthorPubkey = "alice", command = command)
+
+        verify {
+            signer.createSignedCommandEvent("g1", "expense_correction", "encrypted", "u1", "command-1", any(), null)
+        }
+        coVerify { eventPublisher.publishMutation(testEvent, group, "expense_correction", "u1", "command-1", "e1") }
+    }
+
+    @Test
+    fun `a correction against a stale revision is refused before encryption`() = runTest {
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5))
+        val failure = runCatching {
+            repo().correctExpense(
+                "u1",
+                expense,
+                "g1",
+                expectedAuthorPubkey = "alice",
+                command = ExpenseCorrectionCommand("cmd", "e1")
+            )
+        }.exceptionOrNull()
+        assertTrue(failure is ExpenseRevisionConflictException)
+        verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a correction command against a deleted expense is refused`() = runTest {
+        aliceHistory(aliceOriginal(), aliceDeletion("d1"))
+        val failure = runCatching {
+            repo().correctExpense(
+                "u1",
+                expense,
+                "g1",
+                expectedAuthorPubkey = "alice",
+                command = ExpenseCorrectionCommand("cmd", "e1")
+            )
+        }.exceptionOrNull()
+        assertTrue(failure is ExpenseRevisionConflictException)
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a retried correction command compares the saved payload and publishes nothing`() = runTest {
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5))
+        stubSavedCorrection("command-1")
+        val command = ExpenseCorrectionCommand("command-1", "e1")
+
+        repo().correctExpense("u1", expense.copy(splitAmong = expense.splitAmong.reversed()), "g1", "alice", command)
+
+        verify(exactly = 0) { encryption.encrypt(any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+        val changed = runCatching {
+            repo().correctExpense("u1", expense.copy(description = "Changed"), "g1", "alice", command)
+        }.exceptionOrNull()
+        assertTrue(changed is ExpenseSaveConflictException)
+    }
+
+    @Test
+    fun `correction command lookup is bound to author group and logical expense`() = runTest {
+        val command = ExpenseCorrectionCommand("command", "e1")
+        val correction = savedCorrectionRow("command")
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returns
+            listOf(correction.copy(pubkey = "bob"))
+        assertNull(repo().getSavedCorrection("g1", "u1", "alice", command))
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returns
+            listOf(correction.copy(groupId = "other"))
+        assertNull(repo().getSavedCorrection("g1", "u1", "alice", command))
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returns
+            listOf(savedCorrectionRow("other-command"))
+        assertNull(repo().getSavedCorrection("g1", "u1", "alice", command))
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returns
+            listOf(correction.copy(expenseUuid = "other-expense"))
+        assertTrue(
+            runCatching {
+                repo().getSavedCorrection("g1", "u1", "alice", command)
+            }.exceptionOrNull() is ExpenseSaveConflictException
+        )
+    }
+
+    @Test
+    fun `correction command lookup uses saved encryption epoch and checks identity afterward`() = runTest {
+        val command = ExpenseCorrectionCommand("command", "e1")
+        stubSavedCorrection("command")
+        assertEquals(expense, repo().getSavedCorrection("g1", "u1", "alice", command))
+        coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
+        every { encryption.decrypt("saved", "testkey") } answers {
+            every { identity.getPublicKeyHex() } returns "bob"
+            Json.encodeToString(Expense.serializer(), expense)
+        }
+        assertTrue(
+            runCatching {
+                repo().getSavedCorrection("g1", "u1", "alice", command)
+            }.exceptionOrNull() is IllegalStateException
+        )
+    }
+
+    @Test
+    fun `correction command lookup rejects a different current author rather than claiming not saved`() = runTest {
+        every { identity.getPublicKeyHex() } returns "bob"
+        val failure = runCatching {
+            repo().getSavedCorrection("g1", "u1", "alice", ExpenseCorrectionCommand("command", "e1"))
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        coVerify(exactly = 0) { eventDao.getEventsByTypeAndAuthor(any(), any(), any()) }
+    }
+
+    @Test
+    fun `correction publisher race loser reconciles exact payload and rejects changed payload`() = runTest {
+        aliceHistory()
+        val command = ExpenseCorrectionCommand("same-command", "e1")
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+        coEvery { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) } returns false
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returnsMany
+            listOf(emptyList(), listOf(savedCorrectionRow("same-command")))
+        repo().correctExpense("u1", expense, "g1", "alice", command)
+
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returnsMany
+            listOf(emptyList(), listOf(savedCorrectionRow("same-command")))
+        val failure = runCatching {
+            repo().correctExpense("u1", expense.copy(description = "Changed"), "g1", "alice", command)
+        }.exceptionOrNull()
+        assertTrue(failure is ExpenseSaveConflictException)
+    }
+
+    @Test
+    fun `a command whose revision moved because its own copy committed reconciles instead of conflicting`() = runTest {
+        // First lookup: not saved yet. Revision check: moved on. Second lookup: this command's row exists.
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5))
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returnsMany
+            listOf(emptyList(), listOf(savedCorrectionRow("same-command")))
+
+        repo().correctExpense("u1", expense, "g1", "alice", ExpenseCorrectionCommand("same-command", "e1"))
+
+        coVerify(exactly = 0) { eventPublisher.publishMutation(any(), any(), any(), any(), any(), any()) }
+    }
+
+    // --- editable expense ---
+
+    @Test
+    fun `getEditableExpense returns the latest correction and its revision id`() = runTest {
+        aliceHistory(aliceOriginal(), aliceCorrection("c1", createdAt = 5), aliceCorrection("c2", createdAt = 9))
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+        val editable = repo().getEditableExpense("g1", "u1", "alice")
+        assertNotNull(editable)
+        assertEquals("c2", editable?.revisionId)
+        assertEquals("alice", editable?.authorPubkey)
+        assertEquals(expense, editable?.expense)
+        coVerify { groupRepo.getGroupKeyForEpoch("g1", 3) }
+    }
+
+    @Test
+    fun `getEditableExpense returns the original when no correction exists`() = runTest {
+        aliceHistory(aliceOriginal().copy(contentEncrypted = "saved"))
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+        assertEquals("e1", repo().getEditableExpense("g1", "u1", "alice")?.revisionId)
+    }
+
+    @Test
+    fun `getEditableExpense is null for a deleted or unknown expense`() = runTest {
+        aliceHistory(aliceOriginal(), aliceDeletion("d1"))
+        assertNull(repo().getEditableExpense("g1", "u1", "alice"))
+        aliceHistory(*emptyArray())
+        assertNull(repo().getEditableExpense("g1", "u1", "alice"))
+        verify(exactly = 0) { encryption.decrypt(any(), any()) }
+    }
+
+    @Test
+    fun `getEditableExpense rejects a different current author`() = runTest {
+        every { identity.getPublicKeyHex() } returns "bob"
+        val failure = runCatching { repo().getEditableExpense("g1", "u1", "alice") }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        coVerify(exactly = 0) { eventDao.getExpenseHistoryByAuthor(any(), any(), any()) }
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -682,6 +950,28 @@ class ExpenseRepositoryTest {
     /** Alice's stored original `expense` event for u1, as returned by the author-bound lookup. */
     private fun aliceOriginal() =
         EventEntity("e1", "g1", "alice", 1, 30078, "enc", "expense", "u1", "sig", receivedAt = 1)
+
+    private fun aliceCorrection(eventId: String, createdAt: Long) = EventEntity(
+        eventId, "g1", "alice", createdAt, 30078, "saved", "expense_correction", "u1", "sig", receivedAt = createdAt,
+        keyEpoch = 3
+    )
+
+    private fun aliceDeletion(eventId: String) =
+        EventEntity(eventId, "g1", "alice", 20, 30078, "enc", "expense_delete", "u1", "sig", receivedAt = 20)
+
+    /** Alice's committed correction row addressed under [commandId], with its signed JSON. */
+    private fun savedCorrectionRow(commandId: String) = savedEvent().copy(
+        eventId = "saved-$commandId",
+        eventType = "expense_correction",
+        originalEventJson =
+        testEvent.copy(tags = listOf(listOf("d", "g1:expense_correction:$commandId"), listOf("x", "u1"))).toJson()
+    )
+
+    private fun stubSavedCorrection(commandId: String) {
+        coEvery { eventDao.getEventsByTypeAndAuthor("g1", "expense_correction", "alice") } returns
+            listOf(savedCorrectionRow(commandId))
+        every { encryption.decrypt("saved", "testkey") } returns Json.encodeToString(Expense.serializer(), expense)
+    }
 
     private fun savedEvent() = EventEntity(
         "saved-event", "g1", "alice", 1, 30078, "saved", "expense", "u1", "sig", 1,

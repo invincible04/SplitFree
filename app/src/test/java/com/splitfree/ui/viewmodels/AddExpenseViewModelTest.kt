@@ -4,17 +4,17 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
-import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EditableExpense
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
 import com.splitfree.domain.repository.ExpenseRepositoryContract
+import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
-import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
-import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.expense.ExpenseDraft
 import io.mockk.coEvery
@@ -35,9 +35,12 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -48,11 +51,11 @@ import org.junit.Test
 class AddExpenseViewModelTest {
     private val groupRepo = mockk<GroupRepositoryContract>()
     private val expenseRepo = mockk<ExpenseRepositoryContract>()
-    private val getExpenses = mockk<GetExpensesUseCase>()
     private val identity = mockk<IdentityContract>()
     private val instances = mutableListOf<AddExpenseViewModel>()
     private val commands = mutableListOf<Expense>()
     private val corrections = mutableListOf<Pair<String, Expense>>()
+    private val correctionCommands = mutableListOf<ExpenseCorrectionCommand>()
     private val saved = mutableMapOf<String, Expense>()
     private val dispatcher = UnconfinedTestDispatcher()
     private val group =
@@ -86,8 +89,10 @@ class AddExpenseViewModelTest {
             commands += expense
             writeExpense(expense)
         }
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
+        coEvery { expenseRepo.getSavedCorrection("g1", any(), "a", any()) } returns null
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } coAnswers {
             corrections += firstArg<String>() to secondArg<Expense>()
+            correctionCommands += checkNotNull(arg<ExpenseCorrectionCommand?>(4))
         }
     }
 
@@ -623,8 +628,9 @@ class AddExpenseViewModelTest {
     private fun editHandle(expenseId: String = "exp-1", author: String = "a") =
         SavedStateHandle(mapOf("groupId" to "g1", "expenseId" to expenseId, "authorPubkey" to author))
 
-    private fun stored(expense: Expense = storedExpense, author: String = "a") {
-        coEvery { getExpenses.get("g1", ExpenseIdentity(author, expense.id)) } returns AuthoredExpense(expense, author)
+    private fun stored(expense: Expense = storedExpense, author: String = "a", revisionId: String = "revision-1") {
+        coEvery { expenseRepo.getEditableExpense("g1", expense.id, author) } returns
+            EditableExpense(expense, revisionId, author)
     }
 
     @Test
@@ -730,13 +736,58 @@ class AddExpenseViewModelTest {
         assertFalse(vm.uiState.value.dirty)
         assertFalse(vm.uiState.value.editable)
         coVerify(exactly = 0) { expenseRepo.getSavedExpense(any(), any(), any()) }
+        coVerify(exactly = 1) { expenseRepo.correctExpense("exp-1", any(), "g1", "a", any()) }
+    }
+
+    @Test
+    fun `an edit carries the seeded revision and a command id that is not the expense id`() = runTest {
+        stored(revisionId = "revision-7")
+        val handle = editHandle()
+        val vm = create(handle)
+        vm.updateDescription("Changed")
+        vm.submit()
+
+        val command = correctionCommands.single()
+        assertEquals("revision-7", command.expectedRevisionId)
+        assertNotEquals("exp-1", command.id)
+        assertEquals(command.id, UUID.fromString(command.id).toString())
+        val draft = Json.decodeFromString<ExpenseDraft>(checkNotNull(handle.get<String>("expenseDraft")))
+        assertEquals("exp-1", draft.expenseId)
+        assertEquals(command.id, draft.commandId)
+        assertEquals("revision-7", draft.expectedRevisionId)
+    }
+
+    @Test
+    fun `a new expense is its own command`() = runTest {
+        val handle = handle()
+        create(handle).apply { validExpense() }.submit()
+        val draft = Json.decodeFromString<ExpenseDraft>(checkNotNull(handle.get<String>("expenseDraft")))
+        assertEquals(commands.single().id, draft.expenseId)
+        assertEquals(draft.expenseId, draft.commandId)
+    }
+
+    @Test
+    fun `a failed edit retries under the same command id`() = runTest {
+        stored()
+        val vm = create(editHandle())
+        vm.updateDescription("Changed")
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } coAnswers {
+            correctionCommands += checkNotNull(arg<ExpenseCorrectionCommand?>(4))
+            throw IOException("relay down")
+        }
+        vm.submit()
+        assertEquals(UiMessage.Raw("relay down"), vm.uiState.value.error)
+        assertTrue(vm.uiState.value.editable)
+        vm.submit()
+        assertEquals(2, correctionCommands.size)
+        assertEquals(correctionCommands[0], correctionCommands[1])
     }
 
     @Test
     fun `saving an edit ignores a second tap and a failed edit can be retried`() = runTest {
         stored()
         val gate = CompletableDeferred<Unit>()
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } coAnswers {
             gate.await()
             corrections += firstArg<String>() to secondArg<Expense>()
         }
@@ -748,13 +799,13 @@ class AddExpenseViewModelTest {
         assertEquals(1, corrections.size)
         assertTrue(vm.uiState.value.saved)
 
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } throws IOException("relay down")
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } throws IOException("relay down")
         val failing = create(editHandle())
         failing.submit()
         assertEquals(UiMessage.Raw("relay down"), failing.uiState.value.error)
         assertFalse(failing.uiState.value.saved)
         assertTrue(failing.uiState.value.editable)
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } coAnswers {
             corrections += firstArg<String>() to secondArg<Expense>()
         }
         failing.submit()
@@ -764,7 +815,7 @@ class AddExpenseViewModelTest {
 
     @Test
     fun `an expense that cannot be loaded shows a loading error and retries`() = runTest {
-        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } returns null
+        coEvery { expenseRepo.getEditableExpense("g1", "exp-1", "a") } returns null
         val vm = create(editHandle())
         assertTrue(vm.uiState.value.editing)
         assertFalse(vm.uiState.value.loading)
@@ -789,7 +840,7 @@ class AddExpenseViewModelTest {
 
     @Test
     fun `a failing expense lookup is reported as a loading error`() = runTest {
-        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } throws IOException("decrypt failed")
+        coEvery { expenseRepo.getEditableExpense("g1", "exp-1", "a") } throws IOException("decrypt failed")
         val vm = create(editHandle())
         assertEquals(UiMessage.Raw("decrypt failed"), vm.uiState.value.loadingError)
         assertFalse(vm.uiState.value.editable)
@@ -802,8 +853,8 @@ class AddExpenseViewModelTest {
         val first = create(handle)
         first.updateDescription("Changed")
         first.viewModelScope.cancel()
-        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } throws
-            AssertionError("must not reload after restore")
+        // The stored expense is consulted only for its revision; its payload must not replace the draft.
+        stored(storedExpense.copy(description = "Reseeded"))
 
         val restored = create(restore(handle))
 
@@ -831,7 +882,7 @@ class AddExpenseViewModelTest {
         vm.submit()
         assertTrue(commands.isEmpty())
         assertTrue(corrections.isEmpty())
-        coVerify(exactly = 0) { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) }
+        coVerify(exactly = 0) { expenseRepo.getEditableExpense("g1", "exp-1", "a") }
     }
 
     @Test
@@ -843,8 +894,8 @@ class AddExpenseViewModelTest {
         assertEquals("Mine", vm.uiState.value.description)
         vm.submit()
         assertTrue(vm.uiState.value.saved)
-        coVerify(exactly = 1) { expenseRepo.correctExpense("exp-1", any(), "g1", "a") }
-        coVerify(exactly = 0) { getExpenses.get("g1", ExpenseIdentity("b", "exp-1")) }
+        coVerify(exactly = 1) { expenseRepo.correctExpense("exp-1", any(), "g1", "a", any()) }
+        coVerify(exactly = 0) { expenseRepo.getEditableExpense("g1", "exp-1", "b") }
     }
 
     @Test
@@ -864,7 +915,7 @@ class AddExpenseViewModelTest {
         }
         assertTrue(commands.isEmpty())
         assertTrue(corrections.isEmpty())
-        coVerify(exactly = 0) { getExpenses.get(any(), any()) }
+        coVerify(exactly = 0) { expenseRepo.getEditableExpense(any(), any(), any()) }
     }
 
     @Test
@@ -892,6 +943,127 @@ class AddExpenseViewModelTest {
         assertFalse(create().uiState.value.editing)
     }
 
+    // --- edits are recoverable commands ---
+
+    @Test
+    fun `restored unsaved edit cannot apply over a newer revision`() = runTest {
+        stored()
+        val handle = editHandle()
+        val first = create(handle)
+        first.updateDescription("Stale edit")
+        first.viewModelScope.cancel()
+        stored(storedExpense.copy(description = "Newer edit"), revisionId = "revision-2")
+        val restored = create(restore(handle))
+        assertFalse(restored.uiState.value.editable)
+        assertFalse(restored.uiState.value.saved)
+        assertEquals(UiMessage.Res(R.string.expense_edit_stale), restored.uiState.value.loadingError)
+        assertEquals("Stale edit", restored.uiState.value.description)
+        restored.submit()
+        assertTrue(corrections.isEmpty())
+        restored.retryLoad()
+        assertFalse(restored.uiState.value.editable)
+    }
+
+    @Test
+    fun `restored edit whose revision is unchanged reopens editable`() = runTest {
+        stored()
+        val handle = editHandle()
+        create(handle).apply {
+            updateDescription("Kept")
+            viewModelScope.cancel()
+        }
+        val restored = create(restore(handle))
+        assertTrue(restored.uiState.value.editable)
+        assertNull(restored.uiState.value.loadingError)
+        restored.submit()
+        assertEquals("revision-1", correctionCommands.single().expectedRevisionId)
+    }
+
+    @Test
+    fun `committed edit interrupted before response recovers exact command even after newer edit`() = runTest {
+        stored()
+        val handle = editHandle()
+        var committed: Expense? = null
+        var command: ExpenseCorrectionCommand? = null
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } coAnswers {
+            committed = secondArg()
+            command = arg(4)
+            throw CancellationException("process stopped after commit")
+        }
+        coEvery { expenseRepo.getSavedCorrection("g1", "exp-1", "a", any()) } coAnswers {
+            assertEquals(command, arg<ExpenseCorrectionCommand>(3))
+            committed
+        }
+        val first = create(handle)
+        first.updateDescription("Saved edit")
+        first.submit()
+        first.viewModelScope.cancel()
+        stored(storedExpense.copy(description = "Newer edit"), revisionId = "revision-2")
+        val restored = create(restore(handle))
+        assertTrue(restored.uiState.value.saved)
+        assertFalse(restored.uiState.value.editable)
+        restored.submit()
+        coVerify(exactly = 1) { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) }
+    }
+
+    @Test
+    fun `restored correction with different saved payload remains locked`() = runTest {
+        stored()
+        val handle = editHandle()
+        val first = create(handle)
+        first.updateDescription("Draft")
+        first.viewModelScope.cancel()
+        coEvery { expenseRepo.getSavedCorrection("g1", "exp-1", "a", any()) } returns
+            storedExpense.copy(description = "Different")
+        val restored = create(restore(handle))
+        assertFalse(restored.uiState.value.saved)
+        assertFalse(restored.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_saved_differently), restored.uiState.value.loadingError)
+        assertEquals("Draft", restored.uiState.value.description)
+    }
+
+    @Test
+    fun `an edit refused for a stale revision at save time locks the draft`() = runTest {
+        stored()
+        val vm = create(editHandle())
+        vm.updateDescription("Late edit")
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } throws ExpenseRevisionConflictException()
+        stored(storedExpense.copy(description = "Someone else's edit"), revisionId = "revision-2")
+        vm.submit()
+        assertFalse(vm.uiState.value.saved)
+        assertFalse(vm.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_edit_stale), vm.uiState.value.loadingError)
+        assertEquals("Late edit", vm.uiState.value.description)
+    }
+
+    @Test
+    fun `an edit whose save check fails stays locked until the check succeeds`() = runTest {
+        stored()
+        val vm = create(editHandle())
+        vm.updateDescription("Changed")
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a", any()) } throws IOException("write interrupted")
+        coEvery { expenseRepo.getSavedCorrection("g1", "exp-1", "a", any()) } throws IOException("read unavailable")
+        vm.submit()
+        assertFalse(vm.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_save_check_failed), vm.uiState.value.loadingError)
+        coEvery { expenseRepo.getSavedCorrection("g1", "exp-1", "a", any()) } returns null
+        vm.retryLoad()
+        assertTrue(vm.uiState.value.editable)
+        assertEquals("Changed", vm.uiState.value.description)
+    }
+
+    @Test
+    fun `a restored draft without a command id is blocked not regenerated`() {
+        val handle = handle()
+        create(handle).apply { validExpense() }
+        val serialized = checkNotNull(handle.get<String>("expenseDraft"))
+        val withoutCommand = Json.parseToJsonElement(serialized).jsonObject.filterKeys { it != "commandId" }
+        val stripped = Json.encodeToString(JsonObject.serializer(), JsonObject(withoutCommand))
+        val restored = create(SavedStateHandle(mapOf("groupId" to "g1", "expenseDraft" to stripped)))
+        assertFalse(restored.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_draft_unrestorable), restored.uiState.value.loadingError)
+    }
+
     private fun handle() = SavedStateHandle(mapOf("groupId" to "g1"))
 
     private fun restore(handle: SavedStateHandle) = SavedStateHandle(
@@ -904,7 +1076,6 @@ class AddExpenseViewModelTest {
         handle,
         AddExpenseUseCase(expenseRepo),
         CorrectExpenseUseCase(expenseRepo),
-        getExpenses,
         groupRepo,
         identity
     ).also { instances += it }

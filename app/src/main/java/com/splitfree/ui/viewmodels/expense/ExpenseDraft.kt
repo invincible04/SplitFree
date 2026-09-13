@@ -8,11 +8,22 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+/**
+ * Persisted editor state.
+ *
+ * @property expenseId the logical expense UUID; for an edit it is the UUID of the expense being edited
+ * @property commandId stable id of the save command this draft issues. A new expense is identified by its
+ *   [expenseId]; an edit needs its own id because the expense UUID is shared with the original and every
+ *   other edit of it. Survives process recreation so a retry is recognised as the same command.
+ * @property expectedRevisionId for an edit, the event id of the revision the draft was seeded from; the
+ *   correction applies only while the expense is still at that revision
+ */
 @Serializable
 internal data class ExpenseDraft(
     val expenseId: String,
     val createdAt: Long,
     val localeTag: String,
+    val commandId: String,
     val amount: String = "",
     val description: String = "",
     val currency: String = "INR",
@@ -24,7 +35,8 @@ internal data class ExpenseDraft(
     val participants: Set<String> = emptySet(),
     val initialized: Boolean = false,
     val dirty: Boolean = false,
-    val needsRecovery: Boolean = false
+    val needsRecovery: Boolean = false,
+    val expectedRevisionId: String? = null
 )
 
 internal class ExpenseDraftStore(private val handle: SavedStateHandle) {
@@ -34,10 +46,12 @@ internal class ExpenseDraftStore(private val handle: SavedStateHandle) {
 
     fun read(editingExpenseId: String? = null): ExpenseDraft {
         if (!restored) {
+            val expenseId = UUID.randomUUID().toString()
             return ExpenseDraft(
-                UUID.randomUUID().toString(),
+                expenseId,
                 System.currentTimeMillis() / 1000,
-                Locale.getDefault().toLanguageTag()
+                Locale.getDefault().toLanguageTag(),
+                commandId = if (editingExpenseId == null) expenseId else UUID.randomUUID().toString()
             )
         }
         val value = handle.get<Any?>(KEY)
@@ -51,6 +65,7 @@ internal class ExpenseDraftStore(private val handle: SavedStateHandle) {
             require(validExpenseId && it.createdAt >= 0) {
                 "Invalid draft identity"
             }
+            require(UUID.fromString(it.commandId).toString() == it.commandId) { "Invalid draft command" }
             require(it.localeTag.isNotBlank()) { "Invalid draft locale" }
         }
     }

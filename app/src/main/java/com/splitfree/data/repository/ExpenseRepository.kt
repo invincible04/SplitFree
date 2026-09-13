@@ -1,16 +1,22 @@
 package com.splitfree.data.repository
 
 import com.splitfree.data.local.dao.EventDao
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.EditableExpense
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.ExpenseCorrectionCommand
 import com.splitfree.domain.repository.ExpenseRepositoryContract
+import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.builtins.MapSerializer
@@ -21,8 +27,12 @@ import kotlinx.serialization.json.Json
  * Encrypts expense data and publishes it as Nostr events to the group's relay set.
  * Handles add, settle, delete, and correct operations.
  *
- * All operations follow the same pattern: serialize → encrypt with group key →
- * sign as kind-30078 → publish via [EventPublisherContract].
+ * All operations follow the same pattern: serialize, encrypt with group key,
+ * sign as kind-30078, publish via [EventPublisherContract].
+ *
+ * Every mutation is a command with its own relay address. Corrections and deletions are admitted against
+ * the author's current revision of the expense, and a correction retried under the same command id after
+ * an interruption is reconciled with the saved one instead of being published twice.
  */
 @Singleton
 class ExpenseRepository
@@ -40,6 +50,7 @@ constructor(
     companion object {
         private const val MAX_AMOUNT = 1_000_000_000_000L
         private const val MAX_DELETE_REASON_CHARS = 200
+        private const val NOT_MINE = "Expense not found or not yours"
     }
 
     /**
@@ -86,11 +97,57 @@ constructor(
     /** Load and decrypt the expense [author] saved under [expenseId] in [groupId], or null if none. */
     private suspend fun loadSavedExpense(groupId: String, expenseId: String, author: String): Expense? {
         val event = eventDao.getExpenseByAuthor(expenseId, groupId, author) ?: return null
-        val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch) ?: error("Saved expense key not found")
-        return json.decodeFromString(Expense.serializer(), encryption.decrypt(event.contentEncrypted, key)).also {
+        return decryptExpense(event).also {
             check(it.id == expenseId) { "Saved expense ID does not match its event" }
         }
     }
+
+    private suspend fun decryptExpense(event: EventEntity): Expense {
+        val key = groupRepo.getGroupKeyForEpoch(event.groupId, event.keyEpoch) ?: error("Saved expense key not found")
+        return json.decodeFromString(Expense.serializer(), encryption.decrypt(event.contentEncrypted, key))
+    }
+
+    override suspend fun getEditableExpense(
+        groupId: String,
+        expenseId: String,
+        expectedAuthorPubkey: String
+    ): EditableExpense? {
+        val author = checkedAuthor(expectedAuthorPubkey)
+        val revision = currentRevision(groupId, expenseId, author) ?: return null.also { checkedAuthor(author) }
+        val expense = decryptExpense(revision)
+        check(expense.id == expenseId) { "Saved expense ID does not match its event" }
+        checkedAuthor(author)
+        return EditableExpense(expense, revision.eventId, author)
+    }
+
+    override suspend fun getSavedCorrection(
+        groupId: String,
+        expenseId: String,
+        expectedAuthorPubkey: String,
+        command: ExpenseCorrectionCommand
+    ): Expense? {
+        val author = checkedAuthor(expectedAuthorPubkey)
+        val saved =
+            ExpenseEventHistory.command(
+                eventDao.getEventsByTypeAndAuthor(groupId, "expense_correction", author),
+                groupId,
+                author,
+                "expense_correction",
+                command.id
+            ) ?: return null.also { checkedAuthor(author) }
+        if (saved.expenseUuid != expenseId) throw ExpenseSaveConflictException()
+        return decryptExpense(saved).also {
+            if (it.id != expenseId) throw ExpenseSaveConflictException()
+            checkedAuthor(author)
+        }
+    }
+
+    /** The row carrying the current state of [author]'s expense [expenseId], or null if unknown or deleted. */
+    private suspend fun currentRevision(groupId: String, expenseId: String, author: String): EventEntity? =
+        ExpenseEventHistory.current(
+            eventDao.getExpenseHistoryByAuthor(expenseId, groupId, author),
+            ExpenseIdentity(author, expenseId)
+        )
 
     private fun checkedAuthor(expectedAuthorPubkey: String?): String {
         val author = identity.getPublicKeyHex()
@@ -133,10 +190,11 @@ constructor(
     }
 
     override suspend fun addSettlement(settlement: Settlement, groupId: String) {
-        val myPubkey = identity.getPublicKeyHex()
+        val myPubkey = checkedAuthor(null)
         require(settlement.from == myPubkey || settlement.to == myPubkey) {
             "You can only record settlements you're involved in"
         }
+        require(settlement.id.isNotBlank()) { "Settlement ID must not be blank" }
         require(settlement.amount > 0) { "Settlement amount must be positive" }
         require(settlement.amount <= MAX_AMOUNT) { "Settlement amount exceeds maximum" }
 
@@ -149,13 +207,16 @@ constructor(
         val plaintext = json.encodeToString(Settlement.serializer(), settlement)
         val encrypted = encryption.encrypt(plaintext, groupKey)
         val event =
-            signer.createSignedEvent(
+            signer.createSignedCommandEvent(
                 groupId = groupId,
                 eventType = "settlement",
                 encryptedContent = encrypted,
-                expenseUuid = settlement.id
+                expenseUuid = settlement.id,
+                commandId = settlement.id
             )
-        eventPublisher.publishToGroup(event, groupId, encrypted, "settlement", settlement.id)
+        checkedAuthor(myPubkey)
+        check(event.pubkey == myPubkey) { "Identity changed while saving" }
+        eventPublisher.publishMutation(event, group, "settlement", settlement.id, settlement.id)
     }
 
     override suspend fun deleteExpense(
@@ -167,7 +228,9 @@ constructor(
         val author = checkedAuthor(expectedAuthorPubkey)
         // Author-bound identity: only my own record under this UUID can be deleted. Another member's
         // expense reusing the UUID is a separate record and is neither found here nor affected.
-        eventDao.getExpenseByAuthor(expenseUuid, groupId, author) ?: error("Expense not found or not yours")
+        val history = eventDao.getExpenseHistoryByAuthor(expenseUuid, groupId, author)
+        val revision = ExpenseEventHistory.current(history, ExpenseIdentity(author, expenseUuid))
+            ?: error(if (history.isEmpty()) NOT_MINE else "This expense was already deleted")
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
@@ -180,45 +243,85 @@ constructor(
             )
         )
         val encrypted = encryption.encrypt(plaintext, groupKey)
+        val commandId = UUID.randomUUID().toString()
         val event =
-            signer.createSignedEvent(
+            signer.createSignedCommandEvent(
                 groupId = groupId,
                 eventType = "expense_delete",
                 encryptedContent = encrypted,
-                expenseUuid = expenseUuid
+                expenseUuid = expenseUuid,
+                commandId = commandId
             )
         checkedAuthor(author)
         check(event.pubkey == author) { "Identity changed while deleting" }
-        eventPublisher.publishToGroup(event, groupId, encrypted, "expense_delete", expenseUuid)
+        eventPublisher.publishMutation(event, group, "expense_delete", expenseUuid, commandId, revision.eventId)
     }
 
     override suspend fun correctExpense(
         originalUuid: String,
         corrected: Expense,
         groupId: String,
-        expectedAuthorPubkey: String
+        expectedAuthorPubkey: String,
+        command: ExpenseCorrectionCommand?
     ) {
         val author = checkedAuthor(expectedAuthorPubkey)
+        require(corrected.id == originalUuid) { "Corrected expense must keep the original expense ID" }
+        validateExpenseShape(corrected)
+        if (command != null) {
+            require(command.id.isNotBlank() && command.expectedRevisionId.isNotBlank()) { "Invalid correction command" }
+            getSavedCorrection(groupId, originalUuid, author, command)?.let {
+                requireSameExpense(it, corrected)
+                return
+            }
+        }
         // Author-bound identity: a correction is bound to my own record under this UUID (see deleteExpense).
-        eventDao.getExpenseByAuthor(originalUuid, groupId, author) ?: error("Expense not found or not yours")
+        val identity = ExpenseIdentity(author, originalUuid)
+        val history = eventDao.getExpenseHistoryByAuthor(originalUuid, groupId, author)
+        val revision = if (command == null) {
+            ExpenseEventHistory.current(history, identity) ?: error(NOT_MINE)
+        } else {
+            try {
+                ExpenseEventHistory.requireRevision(history, identity, command.expectedRevisionId)
+            } catch (e: ExpenseRevisionConflictException) {
+                // A concurrent copy of this command may have committed since the first recovery lookup.
+                getSavedCorrection(groupId, originalUuid, author, command)?.let {
+                    requireSameExpense(it, corrected)
+                    return
+                }
+                throw e
+            }
+        }
+        val operation = command ?: ExpenseCorrectionCommand(UUID.randomUUID().toString(), revision.eventId)
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
-        require(corrected.id == originalUuid) { "Corrected expense must keep the original expense ID" }
         validateExpensePayload(corrected, group)
         // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), corrected)
         val encrypted = encryption.encrypt(plaintext, groupKey)
         val event =
-            signer.createSignedEvent(
+            signer.createSignedCommandEvent(
                 groupId = groupId,
                 eventType = "expense_correction",
                 encryptedContent = encrypted,
-                expenseUuid = originalUuid
+                expenseUuid = originalUuid,
+                commandId = operation.id,
+                // A same-second edit sorts after the revision it replaces, not by a random event id.
+                createdAt = maxOf(System.currentTimeMillis() / 1000, Math.addExact(revision.createdAt, 1L))
             )
         checkedAuthor(author)
         check(event.pubkey == author) { "Identity changed while correcting" }
-        eventPublisher.publishToGroup(event, groupId, encrypted, "expense_correction", originalUuid)
+        val saved = eventPublisher.publishMutation(
+            event,
+            group,
+            "expense_correction",
+            originalUuid,
+            operation.id,
+            operation.expectedRevisionId
+        )
+        if (!saved) {
+            requireSameExpense(checkNotNull(getSavedCorrection(groupId, originalUuid, author, operation)), corrected)
+        }
     }
 }

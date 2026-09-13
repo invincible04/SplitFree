@@ -32,6 +32,25 @@ interface EventPublisherContract {
     suspend fun publishExpense(event: NostrEvent, group: Group, expenseUuid: String): Boolean
 
     /**
+     * Atomically saves a money mutation (`expense_correction`, `expense_delete` or `settlement`) and all
+     * prepared deliveries against the validated group snapshot.
+     *
+     * [commandId] is the id under which [event] is addressed on relays; a command this author already saved
+     * in [group] is not saved again and the call returns false so the caller can compare payloads. For a
+     * correction or deletion [expectedRevisionId] must be the current revision of the author's expense
+     * [expenseUuid] at commit time, otherwise the save is refused with [ExpenseRevisionConflictException]
+     * and nothing is persisted. A settlement carries no revision.
+     */
+    suspend fun publishMutation(
+        event: NostrEvent,
+        group: Group,
+        eventType: String,
+        expenseUuid: String,
+        commandId: String,
+        expectedRevisionId: String? = null
+    ): Boolean
+
+    /**
      * Save event locally and publish directly (no gift wrap).
      */
     suspend fun publishDirect(
