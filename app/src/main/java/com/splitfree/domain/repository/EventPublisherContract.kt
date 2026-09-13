@@ -51,6 +51,16 @@ interface EventPublisherContract {
     ): Boolean
 
     /**
+     * Persists a newly created [group], its [groupKey], the creation `group_meta` [event] and its delivery
+     * in one transaction. Returns false without writing anything when a group with the same id already
+     * exists; the caller reconciles against the stored group.
+     */
+    suspend fun publishCreatedGroup(event: NostrEvent, group: Group, groupKey: String): Boolean
+
+    /** True if [author] has a stored `group_meta` in [groupId] addressed under creation command [commandId]. */
+    suspend fun hasCreatedGroupCommand(groupId: String, author: String, commandId: String): Boolean
+
+    /**
      * Save event locally and publish directly (no gift wrap).
      */
     suspend fun publishDirect(

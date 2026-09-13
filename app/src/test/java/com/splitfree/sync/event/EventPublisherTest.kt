@@ -802,6 +802,61 @@ class EventPublisherTest {
         assertEquals(4, db.eventDao().getEventCount("g1"))
     }
 
+    // --- publishCreatedGroup ---
+
+    @Test
+    fun `create persists group metadata and outbox atomically and retries preserve original key`() = runBlocking {
+        val created = group.copy(id = "created", members = listOf(myPub))
+        every { keyStore.getString("created:0", any()) } returns null
+        every { keyStore.getString("created", any()) } returns null
+        val meta = event.copy(
+            id = "created-meta",
+            tags = listOf(
+                listOf("d", EventSigner.relayAddress("created", "group_meta", "creation")),
+                listOf("g", "created")
+            )
+        )
+        assertTrue(publisher.publishCreatedGroup(meta, created, "first-key"))
+        assertTrue(publisher.hasCreatedGroupCommand("created", myPub, "creation"))
+        assertFalse(publisher.hasCreatedGroupCommand("created", myPub, "other"))
+        assertFalse(publisher.hasCreatedGroupCommand("created", otherPub, "creation"))
+        db.close()
+        openDatabase()
+        assertFalse(publisher.publishCreatedGroup(meta.copy(id = "retry-meta"), created, "replacement-key"))
+        assertNotNull(groupRepo.getById(created.id))
+        assertEquals(1, db.eventDao().getEventCount(created.id))
+        assertEquals(1, db.outboxDao().count())
+        verify(exactly = 1) { keyStore.putString("created:0", "first-key") }
+        verify(exactly = 0) { keyStore.putString("created:0", "replacement-key") }
+        verify(exactly = 1) { throttler.enqueue(meta) }
+    }
+
+    @Test
+    fun `failed create delivery rolls back group and metadata together`() = runBlocking {
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_creation BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'delivery failed'); END"
+        )
+        val created = group.copy(id = "created", members = listOf(myPub))
+        expectFailure<Exception> {
+            publisher.publishCreatedGroup(event.copy(id = "created-meta"), created, "group-key")
+        }
+        assertNull(groupRepo.getById(created.id))
+        assertEquals(0, db.eventDao().getEventCount(created.id))
+        assertEquals(0, db.outboxDao().count())
+        verify(exactly = 0) { throttler.enqueue(any()) }
+    }
+
+    @Test
+    fun `create refuses an identity that is not the creator without writing anything`() = runBlocking {
+        val created = group.copy(id = "created", createdBy = otherPub, members = listOf(otherPub))
+        expectFailure<IllegalStateException> {
+            publisher.publishCreatedGroup(event.copy(id = "created-meta"), created, "group-key")
+        }
+        assertNull(groupRepo.getById(created.id))
+        assertEquals(0, db.outboxDao().count())
+        verify(exactly = 0) { keyStore.putString("created:0", any()) }
+    }
+
     private suspend fun fillOutbox(count: Int) {
         db.withTransaction {
             repeat(count) { db.outboxDao().insert(OutboxEntity("queued-$it", "{}", 1)) }

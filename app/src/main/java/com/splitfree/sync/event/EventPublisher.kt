@@ -85,6 +85,30 @@ constructor(
         return saved
     }
 
+    override suspend fun hasCreatedGroupCommand(groupId: String, author: String, commandId: String): Boolean =
+        ExpenseEventHistory.command(
+            eventDao.getEventsByTypeAndAuthor(groupId, "group_meta", author),
+            groupId,
+            author,
+            "group_meta",
+            commandId
+        ) != null
+
+    override suspend fun publishCreatedGroup(event: NostrEvent, group: Group, groupKey: String): Boolean {
+        val saved = db.withTransaction {
+            if (groupRepo.getById(group.id) != null) return@withTransaction false
+            check(identity.getPublicKeyHex() == group.createdBy && event.pubkey == group.createdBy) {
+                "Identity changed while creating the group"
+            }
+            groupRepo.save(group, groupKey)
+            val entity = eventEntity(event, group.id, event.content, "group_meta", null, group.keyEpoch)
+            check(commit(entity, listOf(event))) { "Creation event already exists for another group" }
+            true
+        }
+        if (saved) dispatch(listOf(event))
+        return saved
+    }
+
     override suspend fun publishDirect(
         event: NostrEvent,
         groupId: String,

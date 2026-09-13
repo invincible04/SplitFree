@@ -4,6 +4,8 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -28,6 +30,7 @@ import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.theme.SplitFreeTheme
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -49,6 +52,7 @@ class CreateGroupContentTest {
     private var isCreating by mutableStateOf(false)
     private var relays by mutableStateOf(CreateGroupRelays(relays = RelayDefaults.DEFAULT_RELAYS))
     private lateinit var contentView: View
+    private lateinit var backDispatcher: OnBackPressedDispatcher
     private var renderedFontScale = 1f
 
     @Test
@@ -149,6 +153,20 @@ class CreateGroupContentTest {
     }
 
     @Test
+    fun `system Back is consumed while creating and released afterward`() {
+        var backs = 0
+        isCreating = true
+        render(onBack = { backs++ })
+        compose.runOnIdle {
+            assertTrue(backDispatcher.hasEnabledCallbacks())
+            backDispatcher.onBackPressed()
+            assertEquals(0, backs)
+            isCreating = false
+        }
+        compose.runOnIdle { assertFalse(backDispatcher.hasEnabledCallbacks()) }
+    }
+
+    @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun `light fixture captures the create screen`() {
         render()
@@ -185,6 +203,7 @@ class CreateGroupContentTest {
         dark: Boolean = false
     ) {
         compose.setContent {
+            backDispatcher = requireNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
             contentView = LocalView.current
             renderedFontScale = LocalDensity.current.fontScale
             SplitFreeTheme(darkTheme = dark) {

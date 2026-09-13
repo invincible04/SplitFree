@@ -1,5 +1,6 @@
 package com.splitfree.ui.screens.group
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -135,6 +136,8 @@ internal fun CreateGroupContent(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // A creation command in flight owns this screen: system Back is consumed until the attempt finishes.
+    BackHandler(enabled = isCreating) {}
     val tokens = adaptiveSizeTokens()
     val horizontal = tokens.screenPaddingHorizontal
 

@@ -1,5 +1,6 @@
 package com.splitfree.ui.viewmodels
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.R
@@ -13,6 +14,7 @@ import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.util.toUiMessage
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
@@ -23,6 +25,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Handles group creation with name validation and relay selection.
+ *
+ * The relay choice and the creation command (creation time, author and command id) live in saved state, so
+ * a creation interrupted by process death is retried as the same command against the same group id, and
+ * the relay list cannot change while a command is in flight.
  */
 @HiltViewModel
 class CreateGroupViewModel
@@ -30,12 +36,15 @@ class CreateGroupViewModel
 constructor(
     private val createGroup: CreateGroupUseCase,
     private val relayHealthMonitor: RelayHealthMonitor,
-    private val eventSigner: EventSigner
+    private val eventSigner: EventSigner,
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
     private val _error = MutableStateFlow<UiMessage?>(null)
     val error: StateFlow<UiMessage?> = _error.asStateFlow()
 
-    private val _relays = MutableStateFlow(RelayDefaults.DEFAULT_RELAYS)
+    private val _relays = MutableStateFlow(
+        savedStateHandle.get<ArrayList<String>>(RELAYS_KEY)?.toList() ?: RelayDefaults.DEFAULT_RELAYS
+    )
     val relays: StateFlow<List<String>> = _relays.asStateFlow()
 
     private val _relayStatuses = MutableStateFlow<Map<String, RelayCheckStatus>>(emptyMap())
@@ -51,7 +60,8 @@ constructor(
     private val creationInProgress = AtomicBoolean(false)
 
     fun addRelay(url: String) {
-        _relays.value = (_relays.value + url).distinct()
+        if (_isCreating.value) return
+        setRelays((_relays.value + url).distinct())
     }
 
     fun clearError() {
@@ -59,7 +69,7 @@ constructor(
     }
 
     fun removeRelay(url: String) {
-        if (_relays.value.size > 1) _relays.value = _relays.value - url
+        if (!_isCreating.value && _relays.value.size > 1) setRelays(_relays.value - url)
     }
 
     fun checkRelay(url: String) {
@@ -102,7 +112,7 @@ constructor(
         }
         if (status?.online != true) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-            _relays.value = _relays.value - url
+            if (!_isCreating.value) setRelays(_relays.value - url)
             _error.value = UiMessage.Res(R.string.relay_offline, host)
             return
         }
@@ -110,7 +120,7 @@ constructor(
         val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
         if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
             _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-            _relays.value = _relays.value - url
+            if (!_isCreating.value) setRelays(_relays.value - url)
             _error.value = UiMessage.Res(R.string.relay_write_read_failed, host)
             return
         }
@@ -124,13 +134,25 @@ constructor(
     /**
      * Create the group once. A second call while the first is still running is ignored so a
      * double tap cannot create two groups; the guard is released when the attempt finishes.
+     *
+     * The creation time, author and command id are pinned in saved state on the first attempt and reused by
+     * every later one, including after process recreation, so a retry addresses the same group.
      */
     fun createGroup(name: String, onCreated: (String) -> Unit) {
         if (!creationInProgress.compareAndSet(false, true)) return
         _isCreating.value = true
         viewModelScope.launch {
             try {
-                val group = createGroup(name, _relays.value)
+                val createdAt = savedStateHandle.get<Long>(CREATED_AT_KEY) ?: (System.currentTimeMillis() / 1000).also {
+                    savedStateHandle[CREATED_AT_KEY] = it
+                }
+                val author = savedStateHandle.get<String>(AUTHOR_KEY) ?: createGroup.currentAuthor().also {
+                    savedStateHandle[AUTHOR_KEY] = it
+                }
+                val command = savedStateHandle.get<String>(COMMAND_KEY) ?: UUID.randomUUID().toString().also {
+                    savedStateHandle[COMMAND_KEY] = it
+                }
+                val group = createGroup(name, _relays.value, createdAt, author, command)
                 onCreated(group.id)
             } catch (e: CancellationException) {
                 throw e
@@ -143,7 +165,16 @@ constructor(
         }
     }
 
+    private fun setRelays(relays: List<String>) {
+        _relays.value = relays
+        savedStateHandle[RELAYS_KEY] = ArrayList(relays)
+    }
+
     companion object {
+        private const val RELAYS_KEY = "createGroupRelays"
+        private const val CREATED_AT_KEY = "createGroupCreatedAt"
+        private const val COMMAND_KEY = "createGroupCommand"
+        private const val AUTHOR_KEY = "createGroupAuthor"
         private const val TAG = "CreateGroupVM"
     }
 }
