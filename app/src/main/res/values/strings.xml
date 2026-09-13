@@ -60,6 +60,12 @@
     <string name="currencies_stay_separate">Balances stay separate per currency</string>
     <string name="clipboard_no_invite">No invite link on the clipboard</string>
 
+    <!-- Balance availability (home and group overview): never a partial total -->
+    <string name="balance_unavailable">balance unavailable</string>
+    <string name="balances_unavailable_body">Some balances could not be read. The total is hidden rather than shown incomplete. Try again, or open the affected group for details.</string>
+    <string name="group_balances_unavailable_body">This group\'s balances could not be read. Amounts are hidden rather than shown incomplete.</string>
+    <string name="retry_balances">Retry balances</string>
+
     <!-- Group overview (GroupDetailScreen) -->
     <string name="nearby_sync">Nearby sync</string>
     <string name="group_nearby_sync_subtitle">Exchange updates in person over Bluetooth</string>

@@ -76,6 +76,7 @@ import com.splitfree.ui.components.SfBottomDock
 import com.splitfree.ui.components.SfCard
 import com.splitfree.ui.components.SfIconButton
 import com.splitfree.ui.components.SfLargeTitleHeader
+import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.SignedMoneyText
 import com.splitfree.ui.components.StatusPill
@@ -116,7 +117,8 @@ data class GroupsListActions(
     val openSettings: () -> Unit = {},
     val pasteInvite: () -> Unit = {},
     val scanQr: () -> Unit = {},
-    val selectCurrency: (String) -> Unit = {}
+    val selectCurrency: (String) -> Unit = {},
+    val retryBalances: () -> Unit = {}
 )
 
 /**
@@ -167,7 +169,8 @@ fun GroupsListScreen(
                     }
                 },
                 scanQr = { startQrScan(context, onScanResult) },
-                selectCurrency = viewModel::selectCurrency
+                selectCurrency = viewModel::selectCurrency,
+                retryBalances = viewModel::retryBalances
             )
         }
 
@@ -219,7 +222,9 @@ private fun startQrScan(context: Context, onScanResult: (String) -> Unit) {
 /**
  * Stateless home layout: top bar, optional offline banner, greeting with a connection pill,
  * currency line, balance hero, group cards, invite tiles and the "New group" dock.
- * Three states: `loading` shows a skeleton, an empty list shows [EmptyState], otherwise the ledger.
+ * Four states: `loading` shows a skeleton, a failed observation with no list shows the unavailable notice, an
+ * empty list shows [EmptyState], otherwise the ledger. The hero total appears only while every group's
+ * balances are available; otherwise the unavailable notice with its Retry action takes its place.
  */
 @Composable
 internal fun GroupsListContent(
@@ -284,6 +289,9 @@ internal fun GroupsListContent(
             }
             when {
                 state.loading -> item(key = "skeleton") { HomeSkeleton() }
+                state.observationUnavailable && state.groups.isEmpty() -> item(key = "unavailable") {
+                    BalanceUnavailableNotice(onRetry = actions.retryBalances)
+                }
                 state.groups.isEmpty() -> item(key = "empty") { HomeEmpty(onCreate = actions.createGroup) }
                 else -> readyItems(state, actions, stacked = stackForLargeText)
             }
@@ -306,7 +314,11 @@ private fun LazyListScope.readyItems(state: GroupsListUiState, actions: GroupsLi
             itemModifier = { Modifier.testTag("home_currency_$it") }
         )
     }
-    item(key = "hero") { BalanceHero(state) }
+    if (state.balancesAvailable) {
+        item(key = "hero") { BalanceHero(state) }
+    } else {
+        item(key = "unavailable") { BalanceUnavailableNotice(onRetry = actions.retryBalances) }
+    }
     item(key = "spaces-head") {
         val count = state.groups.size
         SectionHead(title = stringResource(R.string.your_shared_spaces)) {
@@ -321,6 +333,19 @@ private fun LazyListScope.readyItems(state: GroupsListUiState, actions: GroupsLi
             stacked = stacked,
             onClick = { actions.openGroup(summary.group.id) },
             modifier = Modifier.padding(bottom = CardSpacing)
+        )
+    }
+}
+
+/** Takes the hero's place while any balance is unknown: no total, no zero, one Retry action. */
+@Composable
+private fun BalanceUnavailableNotice(onRetry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().testTag("home_balances_unavailable")) {
+        WarningCard(text = stringResource(R.string.balances_unavailable_body))
+        SfTextButton(
+            text = stringResource(R.string.retry_balances),
+            onClick = onRetry,
+            modifier = Modifier.testTag("home_retry_balances")
         )
     }
 }
@@ -481,7 +506,8 @@ private fun HeroStat(label: String, amountMinor: Long, currency: String, modifie
 /**
  * One group card: symbol tile, name and meta, then the user's balance in [currency] with the
  * direction spelled out. [net] is null when the user has no balance entry in [currency]. [stacked] puts the
- * balance under the title (large text on compact widths) instead of in a capped trailing column.
+ * balance under the title (large text on compact widths) instead of in a capped trailing column. A group
+ * whose balances are unavailable shows no amount and says so in place of the direction.
  */
 @Composable
 private fun GroupCard(
@@ -495,10 +521,11 @@ private fun GroupCard(
     val people = summary.group.members.size
     val peopleText = pluralStringResource(R.plurals.people_count, people, people)
     val meta = if (currency == null) peopleText else stringResource(R.string.dot_separated, peopleText, currency)
-    val showAmount = currency != null && (net != null || currency in summary.currencies)
+    val showAmount = summary.balancesAvailable && currency != null && (net != null || currency in summary.currencies)
     val shownNet = net ?: 0L
     val direction =
         when {
+            !summary.balancesAvailable -> stringResource(R.string.balance_unavailable)
             currency == null -> stringResource(R.string.direction_no_expenses_yet)
             shownNet > 0 -> stringResource(R.string.direction_owed_to_you)
             shownNet < 0 -> stringResource(R.string.direction_you_owe)

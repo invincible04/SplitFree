@@ -43,6 +43,8 @@ private const val RECENT_EXPENSE_COUNT = 3
 /**
  * Summary tab: who pays whom in [currency] followed by the three most recent expenses in that currency, so
  * checking the last expense never needs a tab switch. "Record payment" appears only on debts I am party to.
+ * While balances are unavailable the debts section is withheld (the summary card above carries the Retry
+ * action) and an empty history is not announced as "no expenses": the ledger may simply be unreadable.
  */
 @Composable
 internal fun SummaryPane(
@@ -68,26 +70,28 @@ internal fun SummaryPane(
     val recentRows = rememberExpenseRows(recent, state)
 
     Column(Modifier.fillMaxWidth().testTag("group_pane_summary")) {
-        SectionHead(title = stringResource(R.string.group_who_pays_whom)) {
-            SectionMeta(pluralStringResource(R.plurals.group_open_debts, debts.size, debts.size))
-        }
-        if (debts.isEmpty()) {
-            HintCard(
-                text =
-                if (currency != null && hasCurrencyExpenses) {
-                    stringResource(R.string.group_summary_settled_in, currency)
-                } else if (currency != null) {
-                    stringResource(R.string.group_no_balances_in_currency, currency)
-                } else {
-                    stringResource(R.string.group_no_balances_hint)
-                },
-                icon = Icons.Outlined.CheckCircle
-            )
-        } else {
-            SfListCard {
-                debtRows.forEachIndexed { index, row ->
-                    if (index > 0) SfDivider()
-                    OwedRow(row = row, myPubkey = state.myPubkey, onSettle = { onSettle(row.debt) })
+        if (state.balancesAvailable) {
+            SectionHead(title = stringResource(R.string.group_who_pays_whom)) {
+                SectionMeta(pluralStringResource(R.plurals.group_open_debts, debts.size, debts.size))
+            }
+            if (debts.isEmpty()) {
+                HintCard(
+                    text =
+                    if (currency != null && hasCurrencyExpenses) {
+                        stringResource(R.string.group_summary_settled_in, currency)
+                    } else if (currency != null) {
+                        stringResource(R.string.group_no_balances_in_currency, currency)
+                    } else {
+                        stringResource(R.string.group_no_balances_hint)
+                    },
+                    icon = Icons.Outlined.CheckCircle
+                )
+            } else {
+                SfListCard {
+                    debtRows.forEachIndexed { index, row ->
+                        if (index > 0) SfDivider()
+                        OwedRow(row = row, myPubkey = state.myPubkey, onSettle = { onSettle(row.debt) })
+                    }
                 }
             }
         }
@@ -100,15 +104,17 @@ internal fun SummaryPane(
             )
         }
         if (recent.isEmpty()) {
-            HintCard(
-                text =
-                if (currency != null) {
-                    stringResource(R.string.group_summary_no_currency_expenses, currency)
-                } else {
-                    stringResource(R.string.tap_add_first_expense)
-                },
-                icon = Icons.Outlined.Receipt
-            )
+            if (state.balancesAvailable) {
+                HintCard(
+                    text =
+                    if (currency != null) {
+                        stringResource(R.string.group_summary_no_currency_expenses, currency)
+                    } else {
+                        stringResource(R.string.tap_add_first_expense)
+                    },
+                    icon = Icons.Outlined.Receipt
+                )
+            }
         } else {
             SfListCard {
                 recentRows.forEachIndexed { index, row ->

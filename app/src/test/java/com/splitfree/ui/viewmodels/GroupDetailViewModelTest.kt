@@ -19,6 +19,7 @@ import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AuthoredExpense
+import com.splitfree.domain.usecase.expense.BalanceUnavailableException
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.DeleteExpenseUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
@@ -493,12 +494,14 @@ class GroupDetailViewModelTest {
     }
 
     @Test
-    fun `unreadable identity while applying a group update surfaces an error`() = runTest {
+    fun `unreadable identity while applying a group update surfaces an error and withholds balances`() = runTest {
         every { identity.getPublicKeyHex() } throws IllegalStateException("keystore unavailable")
 
         val failing = newViewModel()
 
         assertEquals(UiMessage.Raw("keystore unavailable"), failing.error.value)
+        // Debts cannot be attributed without my key, so a successful computation does not make them available.
+        assertFalse(failing.uiState.value.balancesAvailable)
         failing.viewModelScope.cancel()
     }
 
@@ -509,7 +512,116 @@ class GroupDetailViewModelTest {
         val failing = newViewModel()
 
         assertEquals(UiMessage.Raw("disk io error"), failing.error.value)
+        assertFalse(failing.uiState.value.balancesAvailable)
         failing.viewModelScope.cancel()
+    }
+
+    // --- unavailable balances and retry ---
+
+    private val openDebt = DebtTransaction(pubkey, other, 100L, "INR")
+
+    @Test
+    fun `balances start available and stay available after a successful computation`() = runTest {
+        every { simplifyDebts(any()) } returns listOf(openDebt)
+
+        val fresh = newViewModel()
+
+        assertTrue(fresh.uiState.value.balancesAvailable)
+        assertEquals(listOf(openDebt), fresh.uiState.value.debts)
+        fresh.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `balance failure withholds debts, keeps the history and explicit retry restores them`() = runTest {
+        val history = listOf(AuthoredExpense(expense("kept"), pubkey))
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(history)
+        every { simplifyDebts(any()) } returns listOf(openDebt)
+        coEvery { computeBalances.computeWithExclusions("g1") } throws BalanceUnavailableException("missing key")
+
+        val recovering = newViewModel()
+
+        assertFalse(recovering.uiState.value.balancesAvailable)
+        assertTrue(recovering.uiState.value.debts.isEmpty())
+        assertEquals(history, recovering.uiState.value.expenses)
+        assertEquals(UiMessage.Raw("missing key"), recovering.error.value)
+
+        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(emptyList(), emptySet())
+        recovering.retryBalances()
+
+        assertNull(recovering.error.value)
+        assertTrue(recovering.uiState.value.balancesAvailable)
+        assertEquals(listOf(openDebt), recovering.uiState.value.debts)
+        recovering.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retry after a persisting failure stays unavailable`() = runTest {
+        coEvery { computeBalances.computeWithExclusions("g1") } throws BalanceUnavailableException("missing key")
+        val failing = newViewModel()
+
+        failing.retryBalances()
+
+        assertFalse(failing.uiState.value.balancesAvailable)
+        assertEquals(UiMessage.Raw("missing key"), failing.error.value)
+        failing.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retry resubscribes a dead expense observation`() = runTest {
+        every { getExpenses.observeWithAuthors("g1") } returns flow { throw IllegalStateException("disk io error") }
+        every { simplifyDebts(any()) } returns listOf(openDebt)
+        val recovering = newViewModel()
+        assertFalse(recovering.uiState.value.balancesAvailable)
+
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(emptyList())
+        recovering.retryBalances()
+
+        assertTrue(recovering.uiState.value.balancesAvailable)
+        assertEquals(listOf(openDebt), recovering.uiState.value.debts)
+        recovering.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `group observation recovery restores hidden debts rather than a false zero`() = runTest {
+        every { simplifyDebts(any()) } returns listOf(openDebt)
+        val groups = kotlinx.coroutines.flow.MutableStateFlow<Group?>(group)
+        every { groupRepo.observeById("g1") } returns groups
+        val observed = newViewModel()
+        assertTrue(observed.uiState.value.balancesAvailable)
+
+        every { identity.getPublicKeyHex() } throws IllegalStateException("key unavailable")
+        groups.value = group.copy(name = "renamed")
+        assertFalse(observed.uiState.value.balancesAvailable)
+        assertEquals("Debts stay in state, hidden by the flag", listOf(openDebt), observed.uiState.value.debts)
+
+        every { identity.getPublicKeyHex() } returns pubkey
+        groups.value = group.copy(name = "recovered")
+        assertTrue(observed.uiState.value.balancesAvailable)
+        assertEquals(listOf(openDebt), observed.uiState.value.debts)
+        observed.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retry cancels an in-flight balance computation`() = runTest {
+        var cancelled = false
+        val computing = CompletableDeferred<Unit>()
+        coEvery { computeBalances.computeWithExclusions("g1") } coAnswers {
+            computing.complete(Unit)
+            try {
+                CompletableDeferred<Unit>().await()
+                BalanceResult(emptyList(), emptySet())
+            } finally {
+                cancelled = true
+            }
+        }
+        val observed = newViewModel()
+        computing.await()
+        every { getExpenses.observeWithAuthors("g1") } returns flow { kotlinx.coroutines.awaitCancellation() }
+
+        observed.retryBalances()
+
+        assertTrue(cancelled)
+        observed.viewModelScope.cancel()
     }
 
     @Test

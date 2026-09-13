@@ -226,6 +226,80 @@ class GroupsListContentTest {
     }
 
     @Test
+    fun `unavailable balances replace the hero total but keep the other groups' amounts`() {
+        state = state.copy(
+            groups = state.groups.mapIndexed { index, group ->
+                if (index ==
+                    0
+                ) {
+                    group.copy(balancesAvailable = false, myBalances = emptyMap(), currencies = emptySet())
+                } else {
+                    group
+                }
+            }
+        )
+        var retries = 0
+        render(GroupsListActions(retryBalances = { retries++ }))
+
+        compose.onNodeWithTag("home_hero").assertDoesNotExist()
+        compose.onNodeWithTag("home_balances_unavailable").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.balances_unavailable_body)).assertIsDisplayed()
+        compose.onNodeWithTag("home_group_goa").assertTextContains(text(R.string.balance_unavailable))
+        compose.onNode(inCard("goa", hasText("₹", substring = true)), useUnmergedTree = true).assertDoesNotExist()
+        compose.onNode(inCard("goa", hasText(text(R.string.direction_settled))), useUnmergedTree = true)
+            .assertDoesNotExist()
+        compose.onNodeWithTag("home_group_flat").assertTextContains("₹750.00")
+            .assertTextContains(text(R.string.direction_owed_to_you))
+        compose.onNodeWithTag("home_retry_balances").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+
+        state = state.copy(groups = readyState().groups)
+        compose.onNodeWithTag("home_balances_unavailable").assertDoesNotExist()
+        compose.onNodeWithTag("home_hero").assertIsDisplayed().assertTextContains("₹2,500.00")
+    }
+
+    @Test
+    fun `unavailable observation with no list is not the new user empty state`() {
+        var retries = 0
+        state =
+            state.copy(
+                groups = emptyList(),
+                currencies = emptyList(),
+                selectedCurrency = null,
+                observationUnavailable = true
+            )
+        render(GroupsListActions(retryBalances = { retries++ }))
+
+        compose.onNodeWithTag("home_balances_unavailable").assertIsDisplayed()
+        compose.onNodeWithTag("home_empty").assertDoesNotExist()
+        compose.onNodeWithTag("home_hero").assertDoesNotExist()
+        compose.onAllNodes(hasText(text(R.string.no_groups_yet))).assertCountEquals(0)
+        compose.onNodeWithTag("home_retry_balances").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun `settled and no-activity groups keep their wording next to an unavailable one`() {
+        state = GroupsListUiState(
+            loading = false,
+            connection = ConnectionStatus.Connected,
+            currencies = listOf("INR"),
+            selectedCurrency = "INR",
+            groups = listOf(
+                summary("sealed", "Sealed", 2, emptyMap(), emptySet()).copy(balancesAvailable = false),
+                summary("even", "Even", 2, mapOf("INR" to 0L), setOf("INR")),
+                summary("fresh", "Fresh start", 2, emptyMap(), emptySet())
+            )
+        )
+        render()
+
+        compose.onNodeWithTag("home_group_sealed").assertTextContains(text(R.string.balance_unavailable))
+        listNode("home_group_even").assertTextContains(text(R.string.direction_settled)).assertTextContains("₹0.00")
+        listNode("home_group_fresh").assertTextContains(text(R.string.direction_no_expenses, "INR"))
+        compose.onAllNodes(hasText(text(R.string.balance_unavailable))).assertCountEquals(1)
+    }
+
+    @Test
     fun `a group with no activity in any currency shows no amount and no fake zero`() {
         state = GroupsListUiState(
             loading = false,

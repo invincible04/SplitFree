@@ -65,6 +65,22 @@ private fun GroupsListConnectingPreview() {
     }
 }
 
+@Preview(name = "Balances unavailable", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+private fun GroupsListUnavailablePreview() {
+    val ready = previewGroups()
+    SplitFreeTheme {
+        GroupsListContent(
+            state = ready.copy(
+                groups = ready.groups.mapIndexed { index, summary ->
+                    if (index == 0) summary.copy(balancesAvailable = false, myBalances = emptyMap()) else summary
+                }
+            ),
+            actions = GroupsListActions()
+        )
+    }
+}
+
 @Preview(name = "Light", widthDp = 390, heightDp = 844, showBackground = true)
 @Preview(name = "Dark", widthDp = 390, heightDp = 844, uiMode = 0x20, showBackground = true)
 @Preview(name = "Large text", widthDp = 360, heightDp = 800, fontScale = 2f, showBackground = true)

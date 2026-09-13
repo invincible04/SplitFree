@@ -14,6 +14,7 @@ import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,9 +22,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +43,8 @@ import kotlinx.coroutines.launch
  * @property selectedCurrency the currency the hero and rows describe, or null when [currencies] is empty
  * @property connection relay status to show; starts as connecting so a fresh launch never reads as offline
  * @property error a non-fatal observation failure to surface; the list keeps its last good value
+ * @property observationUnavailable true while the group observation itself has failed: [groups] is the last
+ *   list seen with every balance marked unavailable, and an empty list is not a "no groups yet" state
  */
 data class GroupsListUiState(
     val loading: Boolean = true,
@@ -47,10 +52,22 @@ data class GroupsListUiState(
     val currencies: List<String> = emptyList(),
     val selectedCurrency: String? = null,
     val connection: ConnectionStatus = ConnectionStatus.Connecting,
-    val error: UiMessage? = null
+    val error: UiMessage? = null,
+    val observationUnavailable: Boolean = false
 ) {
-    /** The current user's net in [selectedCurrency] for [summary], or null when the group has no such entry. */
-    fun myNet(summary: GroupSummary): Long? = selectedCurrency?.let { summary.myBalances[it] }
+    /**
+     * True only when every group's balances are known. A single unavailable group makes the aggregate hero
+     * unknowable: [owedMinor], [oweMinor] and [netMinor] then exclude that group and must not be shown as totals.
+     */
+    val balancesAvailable: Boolean
+        get() = !loading && !observationUnavailable && groups.all { it.balancesAvailable }
+
+    /**
+     * The current user's net in [selectedCurrency] for [summary], or null when the group has no such entry or
+     * its balances are unavailable.
+     */
+    fun myNet(summary: GroupSummary): Long? =
+        if (summary.balancesAvailable) selectedCurrency?.let { summary.myBalances[it] } else null
 
     /** Sum of every positive net in [selectedCurrency]: what others owe you, in minor units. */
     val owedMinor: Long
@@ -72,16 +89,30 @@ data class GroupsListUiState(
  * The relay status is mirrored as reported, with one exception: once [CONNECTING_GRACE_MS] have passed since
  * this ViewModel was created, a status that is still connecting is presented as offline, so a sync service that
  * never started cannot leave the screen saying "Connecting" forever.
+ *
+ * Balances are never partial: a group whose balances failed stays in the list marked unavailable, a failed
+ * observation keeps the last list with every group unavailable, and [retryBalances] recomputes and, if the
+ * observation itself died, resubscribes.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class GroupsListViewModel
 @Inject
 constructor(
     private val savedStateHandle: SavedStateHandle,
-    observeGroupSummaries: ObserveGroupSummariesUseCase,
+    private val observeGroupSummaries: ObserveGroupSummariesUseCase,
     nostrClient: NostrClientContract
 ) : ViewModel() {
     private val observationError = MutableStateFlow<UiMessage?>(null)
+
+    /** Bumped by [retryBalances]; each bump resubscribes to the group observation. */
+    private val retryRequests = MutableStateFlow(0L)
+
+    /** Last list the observation produced; shown with every balance unavailable if the observation fails. */
+    private var lastGroups: List<GroupSummary> = emptyList()
+
+    /** One observation frame: `null` groups until the first list, [unavailable] after the stream failed. */
+    private data class Observation(val groups: List<GroupSummary>?, val unavailable: Boolean = false)
 
     /** True once [CONNECTING_GRACE_MS] have elapsed since creation. */
     private val graceElapsed = MutableStateFlow(false)
@@ -98,17 +129,20 @@ constructor(
             if (status == ConnectionStatus.Connecting && elapsed) ConnectionStatus.Offline else status
         }
 
-    /** `null` until the use case has produced its first list. */
-    private val summaries: Flow<List<GroupSummary>?> =
+    private val summaries: Flow<Observation> = retryRequests.flatMapLatest {
         observeGroupSummaries.observe()
-            .map<List<GroupSummary>, List<GroupSummary>?> { it }
-            .onStart { emit(null) }
+            .map { groups ->
+                lastGroups = groups
+                Observation(groups)
+            }
+            .onStart { emit(Observation(null)) }
             .catch { e ->
                 if (e is CancellationException || e !is Exception) throw e
                 Log.e(TAG, "Group observation failed: ${e.message}", e)
                 observationError.value = e.toUiMessage(R.string.group_observation_failed)
-                emit(emptyList())
+                emit(Observation(lastGroups.map { it.copy(balancesAvailable = false) }, unavailable = true))
             }
+    }
 
     val uiState: StateFlow<GroupsListUiState> =
         combine(
@@ -116,7 +150,8 @@ constructor(
             connection,
             savedStateHandle.getStateFlow<String?>(KEY_CURRENCY, null),
             observationError
-        ) { groups, connection, saved, error ->
+        ) { observation, connection, saved, error ->
+            val groups = observation.groups
             if (groups == null) {
                 GroupsListUiState(loading = true, connection = connection, error = error)
             } else {
@@ -127,7 +162,8 @@ constructor(
                     currencies = currencies,
                     selectedCurrency = saved?.takeIf { it in currencies } ?: defaultCurrency(groups, currencies),
                     connection = connection,
-                    error = error
+                    error = error,
+                    observationUnavailable = observation.unavailable
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), GroupsListUiState())
@@ -135,6 +171,13 @@ constructor(
     /** Show balances in [code]; remembered across recreation. Unknown codes fall back to the default. */
     fun selectCurrency(code: String) {
         savedStateHandle[KEY_CURRENCY] = code
+    }
+
+    /** Recompute every group's balances and resubscribe to the observation after a failure. */
+    fun retryBalances() {
+        observationError.value = null
+        observeGroupSummaries.retry()
+        retryRequests.update { it + 1 }
     }
 
     fun clearError() {

@@ -7,6 +7,7 @@ import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.BalanceUnavailableException
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -160,15 +161,52 @@ class ObserveGroupSummariesUseCaseTest {
     }
 
     @Test
-    fun `a failing balance computation degrades that group only`() = runTest {
-        coEvery { computeBalances.computeWithExclusions("goa") } throws IllegalStateException("key missing")
+    fun `a failing balance computation marks that group unavailable and degrades that group only`() = runTest {
+        coEvery { computeBalances.computeWithExclusions("goa") } throws
+            BalanceUnavailableException("Missing key for epoch 1")
         val emissions = collect()
         runCurrent()
 
         val latest = emissions.last()
+        assertFalse(latest[0].balancesAvailable)
         assertTrue(latest[0].myBalances.isEmpty())
         assertFalse(latest[0].hasExpenses)
+        assertTrue(latest[0].currencies.isEmpty())
+        assertTrue(latest[1].balancesAvailable)
         assertEquals(setOf("INR"), latest[1].currencies)
+    }
+
+    @Test
+    fun `retry restores an unavailable balance without any new expense`() = runTest {
+        coEvery { computeBalances.computeWithExclusions("goa") } throws IllegalStateException("key unavailable")
+        val emissions = collect()
+        runCurrent()
+        assertFalse(emissions.last()[0].balancesAvailable)
+
+        coEvery { computeBalances.computeWithExclusions("goa") } returns result(Balance(me, 123L, "INR"))
+        useCase.retry()
+        advanceTimeBy(ObserveGroupSummariesUseCase.DEBOUNCE_MS + 1)
+        runCurrent()
+
+        assertTrue(emissions.last()[0].balancesAvailable)
+        assertEquals(123L, emissions.last()[0].myBalances["INR"])
+        // Retry recomputes every group, not only the failed one.
+        coVerify(exactly = 2) { computeBalances.computeWithExclusions("flat") }
+    }
+
+    @Test
+    fun `retry without a prior failure is a plain recomputation`() = runTest {
+        val emissions = collect()
+        runCurrent()
+        assertEquals(1, emissions.size)
+
+        useCase.retry()
+        advanceTimeBy(ObserveGroupSummariesUseCase.DEBOUNCE_MS + 1)
+        runCurrent()
+
+        assertEquals(2, emissions.size)
+        assertTrue(emissions.last().all { it.balancesAvailable })
+        coVerify(exactly = 2) { computeBalances.computeWithExclusions("goa") }
     }
 
     @Test

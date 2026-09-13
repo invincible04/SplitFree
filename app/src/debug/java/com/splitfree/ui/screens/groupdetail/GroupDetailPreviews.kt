@@ -115,3 +115,9 @@ private fun GroupDetailEmptyPreview() {
         )
     )
 }
+
+@Preview(name = "Balances unavailable", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+private fun GroupDetailUnavailablePreview() {
+    GroupDetailPreviewHost(previewGroup().copy(balancesAvailable = false, debts = emptyList()))
+}

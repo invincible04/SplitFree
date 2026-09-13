@@ -33,11 +33,13 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -47,6 +49,9 @@ import kotlinx.coroutines.launch
  * @property draftRelays the relay list being edited in the relay dialog, or null when no edit is open.
  *   The dialog renders `draftRelays ?: relays`; [GroupDetailViewModel.saveRelays] persists the draft
  *   and [GroupDetailViewModel.cancelRelayEdit] discards it, leaving [relays] untouched.
+ * @property balancesAvailable false while the balances cannot be vouched for: the computation failed, the
+ *   ledger or group observation died, or the user's own key could not be read. [debts] must then not be
+ *   presented as settled or as a zero; the screen shows an unavailable state with a Retry action instead.
  */
 data class GroupDetailUiState(
     val groupId: String = "",
@@ -59,7 +64,8 @@ data class GroupDetailUiState(
     val relays: List<String> = emptyList(),
     val draftRelays: List<String>? = null,
     val debts: List<DebtTransaction> = emptyList(),
-    val expenses: List<AuthoredExpense> = emptyList()
+    val expenses: List<AuthoredExpense> = emptyList(),
+    val balancesAvailable: Boolean = true
 ) {
     /** True once both keys are known and match; `"" == ""` during the initial empty frame is not creator. */
     val isCreator: Boolean get() = myPubkey.isNotEmpty() && myPubkey == createdBy
@@ -71,7 +77,12 @@ data class GroupDetailUiState(
 /**
  * Drives the group detail screen: observes expenses, computes balances,
  * handles settlements, invite links, member removal, and group export.
+ *
+ * Balances are all or nothing. A failed computation, a dead observation or an unreadable own key marks
+ * [GroupDetailUiState.balancesAvailable] false; [retryBalances] resubscribes both observations and the
+ * state becomes available again only once the group has applied and a computation has succeeded.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class GroupDetailViewModel
 @Inject
@@ -113,49 +124,71 @@ constructor(
 
     private val inviteLinkLoaded = AtomicBoolean(false)
 
+    /** Bumped by [retryBalances]; both observations restart on every bump. */
+    private val retryRequests = MutableStateFlow(0L)
+
+    /** False after the group observation or the own-key read fails; a successful [applyGroup] restores it. */
+    private var groupAvailable = true
+
+    /** False after the ledger observation or a balance computation fails; a successful computation restores it. */
+    private var ledgerAvailable = true
+
     init {
         viewModelScope.launch {
-            groupRepo.observeById(groupId)
-                .catch { e -> reportObservationFailure(R.string.group_observation_failed, "Group observation", e) }
-                .collect { group ->
-                    try {
-                        applyGroup(group)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        reportObservationFailure(R.string.group_update_failed, "Apply group update", e)
-                    }
+            retryRequests.flatMapLatest {
+                groupRepo.observeById(groupId)
+                    .catch { e -> reportGroupFailure(R.string.group_observation_failed, "Group observation", e) }
+            }.collect { group ->
+                try {
+                    applyGroup(group)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    reportGroupFailure(R.string.group_update_failed, "Apply group update", e)
                 }
+            }
         }
         viewModelScope.launch {
-            getExpenses.observeWithAuthors(groupId)
-                .catch { e -> reportObservationFailure(R.string.expense_observation_failed, "Expense observation", e) }
-                .collectLatest { allExpenses ->
-                    try {
-                        val result = computeBalances.computeWithExclusions(groupId)
-                        val excluded = result.excludedExpenses
-                        val debts = simplifyDebts(result.balances)
-                        val visible = allExpenses.filter { it.identity !in excluded }
-                        _uiState.update {
-                            it.copy(
-                                debts = debts,
-                                expenses = visible
-                            )
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to compute balances: ${e.message}", e)
-                        _error.value = e.toUiMessage(R.string.compute_balances_failed)
-                    }
-                }
+            retryRequests.collectLatest {
+                getExpenses.observeWithAuthors(groupId)
+                    .catch { e -> reportLedgerFailure(e) }
+                    .collectLatest { allExpenses -> refreshLedger(allExpenses) }
+            }
+        }
+    }
+
+    /** Recomputes balances from a fresh subscription to both the group and the ledger. */
+    fun retryBalances() {
+        _error.value = null
+        retryRequests.update { it + 1 }
+    }
+
+    private suspend fun refreshLedger(allExpenses: List<AuthoredExpense>) {
+        try {
+            val result = computeBalances.computeWithExclusions(groupId)
+            val debts = simplifyDebts(result.balances)
+            val visible = allExpenses.filter { it.identity !in result.excludedExpenses }
+            ledgerAvailable = true
+            _uiState.update {
+                it.copy(balancesAvailable = groupAvailable, debts = debts, expenses = visible)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The history stays readable; only money derived from it is withheld.
+            ledgerAvailable = false
+            _uiState.update { it.copy(balancesAvailable = false, debts = emptyList(), expenses = allExpenses) }
+            Log.e(TAG, "Failed to compute balances: ${e.message}", e)
+            _error.value = e.toUiMessage(R.string.compute_balances_failed)
         }
     }
 
     private fun applyGroup(group: Group?) {
         val myPub = identity.getPublicKeyHex()
+        groupAvailable = true
         _uiState.update {
             it.copy(
+                balancesAvailable = ledgerAvailable,
                 groupName = group?.name ?: "Group",
                 memberCount = group?.members?.size ?: 1,
                 members = group?.members ?: emptyList(),
@@ -168,6 +201,26 @@ constructor(
         if (inviteLinkLoaded.compareAndSet(false, true)) {
             loadInviteLink()
         }
+    }
+
+    /**
+     * A failing group query or an unreadable own key leaves [GroupDetailUiState.myPubkey] unknown, so debts
+     * cannot be attributed: balances are unavailable until the next successful [applyGroup]. The debts stay in
+     * state, hidden, so recovery restores them rather than showing a false zero.
+     */
+    private fun reportGroupFailure(@StringRes fallback: Int, what: String, e: Throwable) {
+        if (e is CancellationException || e !is Exception) throw e
+        groupAvailable = false
+        _uiState.update { it.copy(balancesAvailable = false) }
+        reportObservationFailure(fallback, what, e)
+    }
+
+    /** A dead ledger observation can no longer refresh the debts, so they are withdrawn until [retryBalances]. */
+    private fun reportLedgerFailure(e: Throwable) {
+        if (e is CancellationException || e !is Exception) throw e
+        ledgerAvailable = false
+        _uiState.update { it.copy(balancesAvailable = false, debts = emptyList()) }
+        reportObservationFailure(R.string.expense_observation_failed, "Expense observation", e)
     }
 
     /**

@@ -11,6 +11,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,7 @@ class GroupsListViewModelTest {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { observeSummaries.observe() } returns summaries
+        every { observeSummaries.retry() } returns Unit
         every { nostrClient.connectionStatus } returns connection
     }
 
@@ -219,11 +221,68 @@ class GroupsListViewModelTest {
 
         val state = vm.uiState.value
         assertFalse(state.loading)
+        assertTrue(state.observationUnavailable)
+        assertFalse(state.balancesAvailable)
         assertEquals(UiMessage.Raw("db closed"), state.error)
         vm.clearError()
         assertNull(vm.uiState.value.error)
         job.cancel()
     }
+
+    @Test
+    fun `observation failure keeps the last list with every balance unavailable`() = runTest(testDispatcher) {
+        summaries.value = listOf(goa, flat)
+        every { observeSummaries.observe() } returns flow {
+            emit(summaries.value)
+            throw IllegalStateException("db closed")
+        }
+        val vm = viewModel()
+        val job = launch { vm.uiState.collect {} }
+
+        val state = vm.uiState.value
+        assertTrue(state.observationUnavailable)
+        assertEquals(listOf("goa", "flat"), state.groups.map { it.group.id })
+        assertTrue(state.groups.none { it.balancesAvailable })
+        assertFalse(state.balancesAvailable)
+        assertNull(state.myNet(state.groups.first()))
+        job.cancel()
+    }
+
+    @Test
+    fun `unavailable group prevents presenting an aggregate total`() = runTest(testDispatcher) {
+        summaries.value = listOf(goa.copy(balancesAvailable = false), flat)
+        val vm = viewModel()
+        val job = launch { vm.uiState.collect {} }
+
+        val state = vm.uiState.value
+        assertFalse(state.loading)
+        assertFalse(state.observationUnavailable)
+        assertFalse(state.balancesAvailable)
+        assertNull(state.myNet(state.groups.first()))
+        assertEquals("The available group still reports its own net", 75000L, state.myNet(state.groups[1]))
+        job.cancel()
+    }
+
+    @Test
+    fun `retry recomputes through the use case and resubscribes after an observation failure`() =
+        runTest(testDispatcher) {
+            every { observeSummaries.observe() } returns flow { throw IllegalStateException("db closed") }
+            val vm = viewModel()
+            val job = launch { vm.uiState.collect {} }
+            assertTrue(vm.uiState.value.observationUnavailable)
+
+            every { observeSummaries.observe() } returns summaries
+            summaries.value = listOf(goa)
+            vm.retryBalances()
+
+            verify(exactly = 1) { observeSummaries.retry() }
+            val state = vm.uiState.value
+            assertNull(state.error)
+            assertFalse(state.observationUnavailable)
+            assertTrue(state.balancesAvailable)
+            assertEquals(240000L, state.netMinor)
+            job.cancel()
+        }
 
     @Test
     fun `later emissions replace the group list`() = runTest(testDispatcher) {

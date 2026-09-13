@@ -71,6 +71,7 @@ import com.splitfree.ui.components.SfIconButton
 import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.SignedMoneyText
+import com.splitfree.ui.components.WarningCard
 import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
@@ -171,7 +172,8 @@ data class GroupDetailActions(
     val checkRelay: (String) -> Unit = {},
     val checkAllRelays: () -> Unit = {},
     val saveRelays: (onDone: () -> Unit) -> Unit = { it() },
-    val selectCurrency: (String) -> Unit = {}
+    val selectCurrency: (String) -> Unit = {},
+    val retryBalances: () -> Unit = {}
 )
 
 @Composable
@@ -251,7 +253,8 @@ fun GroupDetailScreen(
             checkRelay = viewModel::checkRelay,
             checkAllRelays = viewModel::checkAllRelays,
             saveRelays = viewModel::saveRelays,
-            selectCurrency = { selectedCurrency = it }
+            selectCurrency = { selectedCurrency = it },
+            retryBalances = viewModel::retryBalances
         ),
         sheet = sheet,
         onSheet = { sheet = it },
@@ -347,7 +350,7 @@ internal fun GroupDetailContent(
                         chipModifier = Modifier.testTag("group_currency"),
                         itemModifier = { Modifier.testTag("group_currency_$it") }
                     )
-                    SummaryCard(state = state, currency = currency)
+                    SummaryCard(state = state, currency = currency, onRetry = actions.retryBalances)
                     SegmentedTabs(
                         options =
                         listOf(
@@ -454,9 +457,23 @@ private fun GroupHeader(state: GroupDetailUiState) {
     }
 }
 
-/** `primaryContainer` wash with eyebrow, signed net balance and an honest footnote. */
+/**
+ * `primaryContainer` wash with eyebrow, signed net balance and an honest footnote. While balances are
+ * unavailable the card gives way to a warning with a Retry action: no amount, no zero, no "settled".
+ */
 @Composable
-private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
+private fun SummaryCard(state: GroupDetailUiState, currency: String?, onRetry: () -> Unit) {
+    if (!state.balancesAvailable) {
+        Column(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_summary_unavailable")) {
+            WarningCard(text = stringResource(R.string.group_balances_unavailable_body))
+            SfTextButton(
+                text = stringResource(R.string.retry_balances),
+                onClick = onRetry,
+                modifier = Modifier.testTag("group_retry_balances")
+            )
+        }
+        return
+    }
     val net = currency?.let { myNetBalance(state.debts, it, state.myPubkey) } ?: 0L
     val direction =
         stringResource(

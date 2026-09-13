@@ -118,6 +118,44 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_summary_amount").assertDoesNotExist()
     }
 
+    @Test
+    fun `unavailable balances show recovery without a zero or settled wording and keep the history`() {
+        state = state.copy(balancesAvailable = false)
+        var retries = 0
+        render(GroupDetailActions(retryBalances = { retries++ }))
+
+        compose.onNodeWithTag("group_summary_unavailable").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.group_balances_unavailable_body)).assertIsDisplayed()
+        compose.onNodeWithTag("group_summary").assertDoesNotExist()
+        compose.onNodeWithTag("group_summary_amount").assertDoesNotExist()
+        compose.onAllNodesWithText(text(R.string.record_payment)).assertCountEquals(0)
+        compose.onAllNodesWithText(text(R.string.group_who_pays_whom)).assertCountEquals(0)
+        compose.onAllNodesWithText("Everyone is settled in INR").assertCountEquals(0)
+        compose.onAllNodesWithText("YOUR BALANCE · INR").assertCountEquals(0)
+        compose.onAllNodes(hasText("₹0.00")).assertCountEquals(0)
+        compose.onNodeWithTag("group_retry_balances").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+
+        // The expense history is still readable: only money derived from it is withheld.
+        scrollScreen(700f)
+        compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertIsDisplayed()
+
+        state = state.copy(balancesAvailable = true)
+        compose.onNodeWithTag("group_summary_unavailable").assertDoesNotExist()
+        compose.onNodeWithTag("group_summary_amount").assertTextEquals("₹2,100.00")
+    }
+
+    @Test
+    fun `unavailable balances with an empty history do not read as no expenses`() {
+        state = state.copy(balancesAvailable = false, debts = emptyList(), expenses = emptyList())
+        render()
+
+        compose.onNodeWithTag("group_summary_unavailable").assertIsDisplayed()
+        compose.onAllNodesWithText(text(R.string.no_expenses_yet)).assertCountEquals(0)
+        compose.onAllNodesWithText(text(R.string.tap_add_first_expense)).assertCountEquals(0)
+        compose.onAllNodesWithText(text(R.string.group_no_balances_hint)).assertCountEquals(0)
+    }
+
     // --- Currency selection -------------------------------------------------------------------------------
 
     @Test

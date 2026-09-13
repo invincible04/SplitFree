@@ -11,12 +11,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.withIndex
 
 /**
@@ -29,25 +31,29 @@ import kotlinx.coroutines.flow.withIndex
  * @property currencies every currency in which the group has any balance activity, for any member. Lets the
  *   UI tell "settled in INR" (group has INR history, your net is zero) apart from "no INR expenses".
  * @property hasExpenses true when the group has any balance-affecting activity at all
+ * @property balancesAvailable false when this group's balances could not be computed (a money event this
+ *   device cannot read yet, for example); [myBalances], [currencies] and [hasExpenses] are then empty and
+ *   say nothing about the ledger, and the UI must show the group as unavailable rather than settled or idle
  */
 data class GroupSummary(
     val group: Group,
     val myBalances: Map<String, Long>,
     val hasExpenses: Boolean,
-    val currencies: Set<String> = myBalances.keys
+    val currencies: Set<String> = myBalances.keys,
+    val balancesAvailable: Boolean = true
 )
 
 /**
  * Observes every local group together with the current user's per-currency balance in it.
  *
  * The group list comes from [GroupRepositoryContract.observeAll]; for each group a per-group flow
- * recomputes [ComputeBalancesUseCase.computeWithExclusions] whenever that group's events change. Bursts of
- * incoming events are smoothed with a short debounce so relay catch-up does not thrash the decryptor, but
- * the first computation for a group runs immediately so the screen is not held in a loading state. An
- * empty group list emits `emptyList()` at once.
+ * recomputes [ComputeBalancesUseCase.computeWithExclusions] whenever that group's events change or
+ * [retry] is called. Bursts of incoming events are smoothed with a short debounce so relay catch-up does
+ * not thrash the decryptor, but the first computation for a group runs immediately so the screen is not
+ * held in a loading state. An empty group list emits `emptyList()` at once.
  *
- * Balance failures for one group are logged and reported as "no balances" for that group rather than
- * tearing down the whole stream; the other groups keep updating.
+ * A balance failure is reported for that group alone as [GroupSummary.balancesAvailable] `= false`, which is
+ * distinct from an empty ledger; the other groups keep updating and the stream stays alive.
  */
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class ObserveGroupSummariesUseCase
@@ -58,6 +64,14 @@ constructor(
     private val computeBalances: ComputeBalancesUseCase,
     private val identity: IdentityContract
 ) {
+    /** Bumped by [retry]; every per-group flow combines it with its event stream so a bump recomputes. */
+    private val retryRequests = MutableStateFlow(0L)
+
+    /** Recompute every group's balances without waiting for a new event, after a key or storage failure. */
+    fun retry() {
+        retryRequests.update { it + 1 }
+    }
+
     /** @return a stream of one [GroupSummary] per group, in the repository's order */
     fun observe(): Flow<List<GroupSummary>> = groupRepo.observeAll().flatMapLatest { groups ->
         if (groups.isEmpty()) {
@@ -67,12 +81,13 @@ constructor(
         }
     }
 
-    private fun summaryFlow(group: Group): Flow<GroupSummary> = eventRepo.observeEventsByGroup(group.id)
-        .withIndex()
-        // Never delay the first computation; only smooth bursts after it.
-        .debounce { if (it.index == 0) 0L else DEBOUNCE_MS }
-        .map { it.value }
-        .mapLatest { summarize(group) }
+    private fun summaryFlow(group: Group): Flow<GroupSummary> =
+        combine(eventRepo.observeEventsByGroup(group.id), retryRequests) { _, _ -> }
+            .withIndex()
+            // Never delay the first computation; only smooth bursts after it.
+            .debounce { if (it.index == 0) 0L else DEBOUNCE_MS }
+            .map { it.value }
+            .mapLatest { summarize(group) }
 
     private suspend fun summarize(group: Group): GroupSummary {
         val myPubkey = identity.getPublicKeyHex()
@@ -83,7 +98,12 @@ constructor(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Balances unavailable for group ${group.id}: ${e.message}")
-                return GroupSummary(group = group, myBalances = emptyMap(), hasExpenses = false)
+                return GroupSummary(
+                    group = group,
+                    myBalances = emptyMap(),
+                    hasExpenses = false,
+                    balancesAvailable = false
+                )
             }
         val mine = balances.filter { it.pubkey == myPubkey }.associate { it.currency to it.net }
         return GroupSummary(
