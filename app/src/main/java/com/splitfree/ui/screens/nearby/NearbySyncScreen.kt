@@ -545,7 +545,11 @@ private fun NearbyDock(state: NearbySyncUiState, permissions: NearbyPermissionSt
  * Android 12 ignores a request for fine location that does not include coarse location in the same
  * request, so both are always requested together below API 33. API 37 (target) adds the local-network
  * permission for the Wi-Fi LAN path; without it Nearby still falls back to Bluetooth.
+ *
+ * The permission names are compile-time string constants, so they are safe to reference on any API
+ * level; the [sdk] parameter (a test seam) is the guard lint's InlinedApi check cannot follow.
  */
+@SuppressLint("InlinedApi")
 internal fun requiredNearbyPermissions(sdk: Int = Build.VERSION.SDK_INT): List<String> = buildList {
     if (sdk >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.BLUETOOTH_SCAN)
