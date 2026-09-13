@@ -18,9 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.CellTower
@@ -190,7 +188,27 @@ private fun InviteSheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_invite_title, groupName),
-        modifier = Modifier.testTag("group_sheet_invite")
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_invite"),
+        footer = {
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                SfSecondaryButton(
+                    text = stringResource(R.string.group_copy_link),
+                    onClick = onCopy,
+                    modifier = Modifier.weight(1f).testTag("group_copy_invite"),
+                    enabled = inviteLink != null,
+                    leadingIcon = Icons.Outlined.ContentCopy
+                )
+                SfSecondaryButton(
+                    text = stringResource(R.string.share),
+                    onClick = onShare,
+                    modifier = Modifier.weight(1f).testTag("group_share_invite"),
+                    enabled = inviteLink != null,
+                    leadingIcon = Icons.Outlined.Share
+                )
+            }
+        }
     ) {
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             QrTile(inviteLink)
@@ -201,23 +219,6 @@ private fun InviteSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
-            )
-        }
-        Spacer(Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            SfSecondaryButton(
-                text = stringResource(R.string.group_copy_link),
-                onClick = onCopy,
-                modifier = Modifier.weight(1f).testTag("group_copy_invite"),
-                enabled = inviteLink != null,
-                leadingIcon = Icons.Outlined.ContentCopy
-            )
-            SfSecondaryButton(
-                text = stringResource(R.string.share),
-                onClick = onShare,
-                modifier = Modifier.weight(1f).testTag("group_share_invite"),
-                enabled = inviteLink != null,
-                leadingIcon = Icons.Outlined.Share
             )
         }
         Spacer(Modifier.height(12.dp))
@@ -259,6 +260,7 @@ private fun ToolsSheet(onNearbySync: () -> Unit, onSyncStatus: () -> Unit, onDis
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_tools),
+        scrollable = true,
         modifier = Modifier.testTag("group_sheet_tools")
     ) {
         SfListCard {
@@ -295,47 +297,48 @@ private fun RelaysSheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_relays_title, relays.size),
-        modifier = Modifier.testTag("group_sheet_relays")
-    ) {
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-            HintCard(
-                text =
-                stringResource(
-                    if (isCreator) R.string.relay_editor_hint_creator else R.string.relay_editor_hint_member
-                ),
-                icon = Icons.Outlined.CellTower
-            )
-            Spacer(Modifier.height(14.dp))
-            RelayEditor(
-                relays = relays,
-                relayStatuses = relayStatuses,
-                relayInfo = relayInfo,
-                onAdd = actions.addRelay,
-                onRemove = actions.removeRelay,
-                onCheck = actions.checkRelay,
-                editable = isCreator
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_relays"),
+        footer = {
+            SfSheetFooter(
+                secondary =
+                if (isCreator) {
+                    {
+                        SfSecondaryButton(
+                            text = stringResource(R.string.cancel),
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                } else {
+                    null
+                },
+                primary = {
+                    if (isCreator) {
+                        SfPrimaryButton(text = stringResource(R.string.save), onClick = onSave)
+                    } else {
+                        SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
+                    }
+                }
             )
         }
-        SfSheetFooter(
-            secondary =
-            if (isCreator) {
-                {
-                    SfSecondaryButton(
-                        text = stringResource(R.string.cancel),
-                        onClick = onDismiss,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            } else {
-                null
-            },
-            primary = {
-                if (isCreator) {
-                    SfPrimaryButton(text = stringResource(R.string.save), onClick = onSave)
-                } else {
-                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
-                }
-            }
+    ) {
+        HintCard(
+            text =
+            stringResource(
+                if (isCreator) R.string.relay_editor_hint_creator else R.string.relay_editor_hint_member
+            ),
+            icon = Icons.Outlined.CellTower
+        )
+        Spacer(Modifier.height(14.dp))
+        RelayEditor(
+            relays = relays,
+            relayStatuses = relayStatuses,
+            relayInfo = relayInfo,
+            onAdd = actions.addRelay,
+            onRemove = actions.removeRelay,
+            onCheck = actions.checkRelay,
+            editable = isCreator
         )
     }
 }
@@ -353,7 +356,26 @@ private fun SettleSheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.record_payment),
-        modifier = Modifier.testTag("group_sheet_settle")
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_settle"),
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                primary = {
+                    SfPrimaryButton(
+                        text = stringResource(R.string.confirm_payment),
+                        onClick = onConfirm,
+                        modifier = Modifier.testTag("group_confirm_settle")
+                    )
+                }
+            )
+        }
     ) {
         CenteredAmount(amountMinor = debt.amount, currency = debt.currency) {
             Text(
@@ -365,22 +387,6 @@ private fun SettleSheet(
         }
         Spacer(Modifier.height(20.dp))
         WarningCard(text = stringResource(R.string.group_settle_warning))
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.cancel),
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            primary = {
-                SfPrimaryButton(
-                    text = stringResource(R.string.confirm_payment),
-                    onClick = onConfirm,
-                    modifier = Modifier.testTag("group_confirm_settle")
-                )
-            }
-        )
     }
 }
 
@@ -416,7 +422,43 @@ private fun ExpenseDetailSheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_expense_details),
-        modifier = Modifier.testTag("group_sheet_expense")
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_expense"),
+        footer = {
+            SfSheetFooter(
+                secondary =
+                if (mine) {
+                    {
+                        SfTextButton(
+                            text = stringResource(R.string.group_expense_delete),
+                            onClick = { confirmingDelete = true },
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.fillMaxWidth().testTag("group_expense_delete")
+                        )
+                    }
+                } else {
+                    null
+                },
+                primary = {
+                    if (mine) {
+                        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            SfSecondaryButton(
+                                text = stringResource(R.string.edit),
+                                onClick = onEdit,
+                                modifier = Modifier.weight(1f).fillMaxHeight().testTag("group_expense_edit")
+                            )
+                            SfPrimaryButton(
+                                text = stringResource(R.string.done),
+                                onClick = onDismiss,
+                                modifier = Modifier.weight(1f).fillMaxHeight()
+                            )
+                        }
+                    } else {
+                        SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
+                    }
+                }
+            )
+        }
     ) {
         CenteredAmount(amountMinor = expense.amount, currency = expense.currency) {
             Text(
@@ -434,66 +476,31 @@ private fun ExpenseDetailSheet(
             )
         }
         Spacer(Modifier.height(18.dp))
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-            SfListCard {
-                expense.splitAmong.forEachIndexed { index, entry ->
-                    if (index > 0) SfDivider()
-                    DetailRow(label = memberLabel(entry.pubkey, state, youLabel = stringResource(R.string.you))) {
-                        MoneyText(
-                            amountMinor = entry.share,
-                            currency = expense.currency,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-            if (!mine && author.isNotBlank()) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    stringResource(
-                        R.string.group_expense_only_author,
-                        memberLabel(author, state, youLabel = stringResource(R.string.you))
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("group_expense_only_author")
-                )
-            }
-        }
-        SfSheetFooter(
-            secondary =
-            if (mine) {
-                {
-                    SfTextButton(
-                        text = stringResource(R.string.group_expense_delete),
-                        onClick = { confirmingDelete = true },
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.fillMaxWidth().testTag("group_expense_delete")
+        SfListCard {
+            expense.splitAmong.forEachIndexed { index, entry ->
+                if (index > 0) SfDivider()
+                DetailRow(label = memberLabel(entry.pubkey, state, youLabel = stringResource(R.string.you))) {
+                    MoneyText(
+                        amountMinor = entry.share,
+                        currency = expense.currency,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-            } else {
-                null
-            },
-            primary = {
-                if (mine) {
-                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        SfSecondaryButton(
-                            text = stringResource(R.string.edit),
-                            onClick = onEdit,
-                            modifier = Modifier.weight(1f).fillMaxHeight().testTag("group_expense_edit")
-                        )
-                        SfPrimaryButton(
-                            text = stringResource(R.string.done),
-                            onClick = onDismiss,
-                            modifier = Modifier.weight(1f).fillMaxHeight()
-                        )
-                    }
-                } else {
-                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
-                }
             }
-        )
+        }
+        if (!mine && author.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                stringResource(
+                    R.string.group_expense_only_author,
+                    memberLabel(author, state, youLabel = stringResource(R.string.you))
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("group_expense_only_author")
+            )
+        }
     }
 }
 
@@ -503,30 +510,33 @@ private fun DeleteExpenseConfirmation(onConfirm: () -> Unit, onCancel: () -> Uni
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_expense_delete_title),
-        modifier = Modifier.testTag("group_sheet_delete_expense")
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_delete_expense"),
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = onCancel,
+                        modifier = Modifier.fillMaxWidth().testTag("group_cancel_delete")
+                    )
+                },
+                primary = {
+                    SfPrimaryButton(
+                        text = stringResource(R.string.group_expense_delete),
+                        onClick = onConfirm,
+                        modifier = Modifier.testTag("group_confirm_delete"),
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                }
+            )
+        }
     ) {
         Text(
             stringResource(R.string.group_expense_delete_body),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.cancel),
-                    onClick = onCancel,
-                    modifier = Modifier.fillMaxWidth().testTag("group_cancel_delete")
-                )
-            },
-            primary = {
-                SfPrimaryButton(
-                    text = stringResource(R.string.group_expense_delete),
-                    onClick = onConfirm,
-                    modifier = Modifier.testTag("group_confirm_delete"),
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                )
-            }
         )
     }
 }
@@ -538,30 +548,33 @@ private fun RemoveMemberSheet(pubkey: String, state: GroupDetailUiState, onConfi
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.remove_member),
-        modifier = Modifier.testTag("group_sheet_remove")
+        scrollable = true,
+        modifier = Modifier.testTag("group_sheet_remove"),
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                primary = {
+                    SfPrimaryButton(
+                        text = stringResource(R.string.remove),
+                        onClick = onConfirm,
+                        modifier = Modifier.testTag("group_confirm_remove"),
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                }
+            )
+        }
     ) {
         Text(
             stringResource(R.string.remove_member_body, name),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.cancel),
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            primary = {
-                SfPrimaryButton(
-                    text = stringResource(R.string.remove),
-                    onClick = onConfirm,
-                    modifier = Modifier.testTag("group_confirm_remove"),
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                )
-            }
         )
     }
 }

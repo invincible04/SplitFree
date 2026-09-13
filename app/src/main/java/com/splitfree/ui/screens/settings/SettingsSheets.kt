@@ -9,12 +9,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Description
@@ -46,6 +43,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import com.splitfree.R
 import com.splitfree.ui.components.ChoiceRow
 import com.splitfree.ui.components.DetailRow
@@ -166,7 +165,26 @@ private fun ProfileSheet(displayName: String, onSave: (String) -> Unit, onDismis
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_profile_title),
-        modifier = Modifier.testTag("settings_sheet_profile")
+        scrollable = true,
+        modifier = Modifier.testTag("settings_sheet_profile"),
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_name_cancel")
+                    )
+                },
+                primary = {
+                    SfPrimaryButton(
+                        text = stringResource(R.string.save),
+                        onClick = { onSave(draft.trim()) },
+                        modifier = Modifier.testTag("settings_name_save")
+                    )
+                }
+            )
+        }
     ) {
         MiniLabel(stringResource(R.string.display_name))
         Spacer(Modifier.height(7.dp))
@@ -199,22 +217,6 @@ private fun ProfileSheet(displayName: String, onSave: (String) -> Unit, onDismis
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.cancel),
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth().testTag("settings_name_cancel")
-                )
-            },
-            primary = {
-                SfPrimaryButton(
-                    text = stringResource(R.string.save),
-                    onClick = { onSave(draft.trim()) },
-                    modifier = Modifier.testTag("settings_name_save")
-                )
-            }
-        )
     }
 }
 
@@ -224,6 +226,7 @@ private fun ThemeSheet(mode: ThemeMode, onSelect: (ThemeMode) -> Unit, onDismiss
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.appearance),
+        scrollable = true,
         modifier = Modifier.testTag("settings_sheet_theme")
     ) {
         Column(Modifier.selectableGroup()) {
@@ -253,6 +256,7 @@ private fun RecoverySheet(onPhrase: () -> Unit, onPrivateKey: () -> Unit, onExpo
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_backup_recovery),
+        scrollable = true,
         modifier = Modifier.testTag("settings_sheet_recovery")
     ) {
         HintCard(text = stringResource(R.string.settings_recovery_intro), icon = Icons.Outlined.Shield)
@@ -288,6 +292,8 @@ private fun RecoverySheet(onPhrase: () -> Unit, onPrivateKey: () -> Unit, onExpo
 /**
  * The 24 recovery words. Masked cells until Reveal; the warning sits inline so revealing
  * is one explicit step. Copy still asks once more because the clipboard is readable by other apps.
+ * The grid scrolls inside the sheet while Hide / Copy stay fixed below it, and the sheet's own window is
+ * secure while the words are on screen.
  */
 @Composable
 private fun PhraseSheet(
@@ -303,42 +309,47 @@ private fun PhraseSheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_phrase_title),
-        modifier = Modifier.testTag("settings_sheet_phrase")
-    ) {
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-            WarningCard(text = stringResource(R.string.key_backup_warning))
-            Spacer(Modifier.height(14.dp))
-            if (revealed) {
-                PhraseGrid(
-                    cells = words.mapIndexed { i, word -> stringResource(R.string.settings_phrase_word, i + 1, word) },
-                    columns = columns,
-                    modifier = Modifier.testTag("settings_phrase_words")
-                )
-            } else {
-                PhraseGrid(
-                    cells = List(PHRASE_WORD_COUNT) { i ->
-                        stringResource(R.string.settings_phrase_masked_cell, i + 1)
-                    },
-                    columns = columns,
-                    modifier =
-                    Modifier
-                        .testTag("settings_phrase_masked")
-                        .clearAndSetSemantics { contentDescription = hiddenLabel }
-                )
-            }
+        scrollable = true,
+        secure = revealed,
+        modifier = Modifier.testTag("settings_sheet_phrase"),
+        footer = {
+            SecretFooter(
+                revealed = revealed,
+                onReveal = onReveal,
+                onHide = onHide,
+                onCopy = onCopy,
+                copyWarning = stringResource(R.string.copy_seed_warning),
+                tagPrefix = "settings_phrase"
+            )
         }
-        SecretFooter(
-            revealed = revealed,
-            onReveal = onReveal,
-            onHide = onHide,
-            onCopy = onCopy,
-            copyWarning = stringResource(R.string.copy_seed_warning),
-            tagPrefix = "settings_phrase"
-        )
+    ) {
+        WarningCard(text = stringResource(R.string.key_backup_warning))
+        Spacer(Modifier.height(14.dp))
+        if (revealed) {
+            PhraseGrid(
+                cells = words.mapIndexed { i, word -> stringResource(R.string.settings_phrase_word, i + 1, word) },
+                columns = columns,
+                modifier = Modifier.testTag("settings_phrase_words")
+            )
+        } else {
+            PhraseGrid(
+                cells = List(PHRASE_WORD_COUNT) { i ->
+                    stringResource(R.string.settings_phrase_masked_cell, i + 1)
+                },
+                columns = columns,
+                modifier =
+                Modifier
+                    .testTag("settings_phrase_masked")
+                    .clearAndSetSemantics { contentDescription = hiddenLabel }
+            )
+        }
     }
 }
 
-/** The raw private key as one masked cell, then selectable tabular text after Reveal. */
+/**
+ * The raw private key as one masked cell, then plain tabular text after Reveal. The revealed key carries no
+ * selection handling: the guarded Copy in the footer is the only way it reaches the clipboard.
+ */
 @Composable
 private fun PrivateKeySheet(
     nsec: String,
@@ -352,7 +363,19 @@ private fun PrivateKeySheet(
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_private_key_title),
-        modifier = Modifier.testTag("settings_sheet_key")
+        scrollable = true,
+        secure = revealed,
+        modifier = Modifier.testTag("settings_sheet_key"),
+        footer = {
+            SecretFooter(
+                revealed = revealed,
+                onReveal = onReveal,
+                onHide = onHide,
+                onCopy = onCopy,
+                copyWarning = stringResource(R.string.copy_key_warning),
+                tagPrefix = "settings_key"
+            )
+        }
     ) {
         WarningCard(text = stringResource(R.string.key_backup_warning))
         Spacer(Modifier.height(14.dp))
@@ -362,14 +385,12 @@ private fun PrivateKeySheet(
             color = MaterialTheme.colorScheme.surfaceContainer
         ) {
             if (revealed) {
-                SelectionContainer {
-                    Text(
-                        nsec,
-                        style = MaterialTheme.typography.bodyMedium.tabular(),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(PhraseCellPadding).testTag("settings_key_value")
-                    )
-                }
+                Text(
+                    nsec,
+                    style = MaterialTheme.typography.bodyMedium.tabular(),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(PhraseCellPadding).testTag("settings_key_value")
+                )
             } else {
                 Text(
                     stringResource(R.string.settings_private_key_masked),
@@ -385,18 +406,13 @@ private fun PrivateKeySheet(
                 )
             }
         }
-        SecretFooter(
-            revealed = revealed,
-            onReveal = onReveal,
-            onHide = onHide,
-            onCopy = onCopy,
-            copyWarning = stringResource(R.string.copy_key_warning),
-            tagPrefix = "settings_key"
-        )
     }
 }
 
-/** Reveal while hidden; Hide + Copy (with the clipboard confirmation) once revealed. */
+/**
+ * Reveal while hidden; Hide + Copy (with the clipboard confirmation) once revealed. The confirmation is
+ * keyed on [revealed] so hiding the secret also withdraws a pending copy.
+ */
 @Composable
 private fun SecretFooter(
     revealed: Boolean,
@@ -407,7 +423,7 @@ private fun SecretFooter(
     tagPrefix: String
 ) {
     // Plain remember: a rotation or process death drops the confirmation instead of restoring it.
-    var confirmCopy by remember { mutableStateOf(false) }
+    var confirmCopy by remember(revealed) { mutableStateOf(false) }
     if (revealed) {
         SfSheetFooter(
             secondary = {
@@ -485,7 +501,17 @@ private fun ExportSheet(exportState: ExportState, onExport: () -> Unit, onDismis
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_export_title),
-        modifier = Modifier.testTag("settings_sheet_export")
+        scrollable = true,
+        modifier = Modifier.testTag("settings_sheet_export"),
+        footer = {
+            if (exportState == ExportState.Done) {
+                SfSheetFooter(secondary = null, primary = {
+                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
+                })
+            } else {
+                ExportFooter(loading = exportState is ExportState.InProgress, onExport = onExport, onCancel = onDismiss)
+            }
+        }
     ) {
         HintCard(text = stringResource(R.string.export_hint), icon = Icons.Outlined.Description)
         when (exportState) {
@@ -496,9 +522,6 @@ private fun ExportSheet(exportState: ExportState, onExport: () -> Unit, onDismis
                     icon = Icons.Outlined.Check,
                     modifier = Modifier.testTag("settings_export_done")
                 )
-                SfSheetFooter(secondary = null, primary = {
-                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
-                })
             }
             is ExportState.Error -> {
                 Spacer(Modifier.height(10.dp))
@@ -506,13 +529,8 @@ private fun ExportSheet(exportState: ExportState, onExport: () -> Unit, onDismis
                     text = stringResource(R.string.export_failed) + "\n" + exportState.message,
                     modifier = Modifier.testTag("settings_export_error")
                 )
-                ExportFooter(loading = false, onExport = onExport, onCancel = onDismiss)
             }
-            else -> ExportFooter(
-                loading = exportState is ExportState.InProgress,
-                onExport = onExport,
-                onCancel = onDismiss
-            )
+            else -> Unit
         }
     }
 }
@@ -545,7 +563,20 @@ private fun DiagnosticsSheet(state: SettingsUiState, onCopyReport: () -> Unit, o
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.settings_diagnostics),
-        modifier = Modifier.testTag("settings_sheet_diagnostics")
+        scrollable = true,
+        modifier = Modifier.testTag("settings_sheet_diagnostics"),
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.settings_copy_report),
+                        onClick = onCopyReport,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_copy_report")
+                    )
+                },
+                primary = { SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss) }
+            )
+        }
     ) {
         SfListCard {
             DetailRow(label = stringResource(R.string.settings_pending_events), value = state.pendingOutbox.toString())
@@ -554,16 +585,6 @@ private fun DiagnosticsSheet(state: SettingsUiState, onCopyReport: () -> Unit, o
             SfDivider()
             DetailRow(label = stringResource(R.string.settings_version), value = state.appVersion)
         }
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.settings_copy_report),
-                    onClick = onCopyReport,
-                    modifier = Modifier.fillMaxWidth().testTag("settings_copy_report")
-                )
-            },
-            primary = { SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss) }
-        )
     }
 }
 
@@ -577,7 +598,37 @@ private fun RevokeSheet(revokeState: RevokeState, onConfirm: () -> Unit, onDismi
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.revoke_key_title),
-        modifier = Modifier.testTag("settings_sheet_revoke")
+        scrollable = true,
+        modifier = Modifier.testTag("settings_sheet_revoke"),
+        footer = {
+            if (revokeState is RevokeState.Done) {
+                SfSheetFooter(secondary = null, primary = {
+                    SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
+                })
+            } else {
+                val inProgress = revokeState is RevokeState.InProgress
+                SfSheetFooter(
+                    secondary = {
+                        SfSecondaryButton(
+                            text = stringResource(R.string.cancel),
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !inProgress
+                        )
+                    },
+                    primary = {
+                        SfPrimaryButton(
+                            text = stringResource(R.string.settings_replace_identity),
+                            onClick = onConfirm,
+                            loading = inProgress,
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                            modifier = Modifier.testTag("settings_revoke_confirm")
+                        )
+                    }
+                )
+            }
+        }
     ) {
         if (revokeState is RevokeState.Done) {
             HintCard(
@@ -587,9 +638,6 @@ private fun RevokeSheet(revokeState: RevokeState, onConfirm: () -> Unit, onDismi
                 icon = Icons.Outlined.Check,
                 modifier = Modifier.testTag("settings_revoke_done")
             )
-            SfSheetFooter(secondary = null, primary = {
-                SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
-            })
         } else {
             WarningCard(text = stringResource(R.string.revoke_key_warning))
             Spacer(Modifier.height(14.dp))
@@ -602,35 +650,18 @@ private fun RevokeSheet(revokeState: RevokeState, onConfirm: () -> Unit, onDismi
                 Spacer(Modifier.height(14.dp))
                 WarningCard(text = revokeState.message, modifier = Modifier.testTag("settings_revoke_error"))
             }
-            val inProgress = revokeState is RevokeState.InProgress
-            SfSheetFooter(
-                secondary = {
-                    SfSecondaryButton(
-                        text = stringResource(R.string.cancel),
-                        onClick = onDismiss,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !inProgress
-                    )
-                },
-                primary = {
-                    SfPrimaryButton(
-                        text = stringResource(R.string.settings_replace_identity),
-                        onClick = onConfirm,
-                        loading = inProgress,
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                        modifier = Modifier.testTag("settings_revoke_confirm")
-                    )
-                }
-            )
         }
     }
 }
 
-/** The clipboard confirmation for secrets: a dialog above the sheet, destructive confirm, Cancel escapes. */
+/**
+ * The clipboard confirmation for secrets: a dialog above the sheet, destructive confirm, Cancel escapes.
+ * Its window is secure because it is shown over a revealed secret.
+ */
 @Composable
 private fun SecurityWarningDialog(text: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
+        properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         onDismissRequest = onDismiss,
         icon = {
             Icon(

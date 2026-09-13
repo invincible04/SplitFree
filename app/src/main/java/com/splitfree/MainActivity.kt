@@ -282,7 +282,23 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun InviteConfirmSheet(invite: PendingInvite, onJoin: () -> Unit, onDismiss: () -> Unit) {
-        SfSheet(onDismiss = onDismiss, title = stringResource(R.string.join_group_title, invite.groupName)) {
+        SfSheet(
+            onDismiss = onDismiss,
+            title = stringResource(R.string.join_group_title, invite.groupName),
+            scrollable = true,
+            footer = {
+                SfSheetFooter(
+                    secondary = {
+                        SfSecondaryButton(
+                            text = stringResource(R.string.cancel),
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    primary = { SfPrimaryButton(text = stringResource(R.string.join), onClick = onJoin) }
+                )
+            }
+        ) {
             HintCard(text = stringResource(R.string.join_group_body), icon = Icons.Outlined.Group)
             Spacer(Modifier.height(SHEET_BLOCK_SPACING))
             SfListCard {
@@ -316,16 +332,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            SfSheetFooter(
-                secondary = {
-                    SfSecondaryButton(
-                        text = stringResource(R.string.cancel),
-                        onClick = onDismiss,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                },
-                primary = { SfPrimaryButton(text = stringResource(R.string.join), onClick = onJoin) }
-            )
         }
     }
 

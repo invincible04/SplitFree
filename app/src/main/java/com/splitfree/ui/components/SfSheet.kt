@@ -13,12 +13,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -30,6 +33,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.SecureFlagPolicy
 import com.splitfree.R
 
 private val SheetCorner = 28.dp
@@ -37,8 +41,13 @@ private val SheetPadding = 20.dp
 
 /**
  * Modal bottom sheet for pickers and confirmations: `surface` colour, 28dp top corners, a 40x4dp grab
- * handle, a header row with a `titleLarge` [title] and a close button, then [content] padded 20dp. Put
- * [SfSheetFooter] at the end of [content] for the Cancel / Apply row.
+ * handle, a header row with a `titleLarge` [title] and a close button, then [content] padded 20dp.
+ *
+ * [footer] (normally an [SfSheetFooter]) sits below the body and is measured first, so its buttons keep
+ * their full height however tall the body is. A [scrollable] body scrolls inside the remaining height;
+ * bodies that host a lazy list own their scrolling and must leave [scrollable] false so the list is never
+ * measured with infinite height. [secure] puts `FLAG_SECURE` on the sheet's own window: the sheet is a
+ * separate window, so the hosting activity's flag does not cover what it draws.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,19 +56,62 @@ fun SfSheet(
     title: String,
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    scrollable: Boolean = false,
+    secure: Boolean = false,
+    footer: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         modifier = modifier,
         sheetState = sheetState,
+        properties =
+        ModalBottomSheetProperties(
+            shouldDismissOnBackPress = true,
+            shouldDismissOnClickOutside = true,
+            securePolicy = if (secure) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit
+        ),
         shape = RoundedCornerShape(topStart = SheetCorner, topEnd = SheetCorner),
         containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
         dragHandle = { SfSheetHandle() }
     ) {
+        SfSheetContent(
+            title = title,
+            onDismiss = onDismiss,
+            scrollable = scrollable,
+            footer = footer,
+            content = content
+        )
+    }
+}
+
+/**
+ * Header, body and footer of an [SfSheet] inside whatever height the host allows. The body takes only the
+ * height left after the header and [footer], so the footer is never pushed below the sheet's edge; with
+ * [scrollable] the body scrolls when it does not fit. Exposed for layout tests that host it directly.
+ */
+@Composable
+internal fun SfSheetContent(
+    title: String,
+    onDismiss: () -> Unit,
+    scrollable: Boolean,
+    footer: (@Composable () -> Unit)?,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier) {
         SfSheetHeader(title = title, onClose = onDismiss)
-        Column(modifier = Modifier.padding(horizontal = SheetPadding).padding(bottom = 27.dp), content = content)
+        Column(Modifier.weight(1f, fill = false).padding(horizontal = SheetPadding).padding(bottom = 27.dp)) {
+            Column(
+                modifier =
+                Modifier
+                    .weight(1f, fill = false)
+                    .then(if (scrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                content = content
+            )
+            footer?.invoke()
+        }
     }
 }
 
@@ -102,7 +154,7 @@ fun SfSheetHeader(title: String, onClose: () -> Unit, modifier: Modifier = Modif
 /**
  * Sheet action row: optional [secondary] taking one third and [primary] two thirds, 9dp apart, 18dp above.
  * Both slots are as tall as the taller button. Pass [SfSecondaryButton] / [SfPrimaryButton] with
- * `Modifier.fillMaxWidth()`.
+ * `Modifier.fillMaxWidth()`. Lives in the `footer` slot of [SfSheet] so it stays outside the scrolling body.
  */
 @Composable
 fun SfSheetFooter(
