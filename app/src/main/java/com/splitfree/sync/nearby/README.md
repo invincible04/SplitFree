@@ -80,10 +80,15 @@ sends `ReconcileResult`. Inventories list:
   could not verify them; rows whose effect was permanently rejected here are not offered either.
 - `d` entries: recipient-encrypted envelopes (gift wraps, per-member key rotations) this phone holds,
   with the recipient pubkey and, when known, the inner event id.
-- `h` entries: applied money records this phone holds only as a gift-wrap rumor. They cannot be
-  offered (a peer could not verify them) and are never wanted; they are listed so a peer that lacks
-  one knows the two ledgers differ. Control records are not listed this way; a peer missing one shows
-  up through its epoch or roster.
+- `h` entries: applied records this phone holds only as a gift-wrap rumor, money and control alike.
+  They cannot be offered (a peer could not verify them) and are never wanted; they are listed so a
+  peer that lacks one knows the two ledgers differ. Control records are listed too: the wire carries
+  no roster or epoch digest, so a rumor-only `group_meta` or `key_revocation` the peer never saw would
+  otherwise go unnoticed. The one exclusion is a rumor-only `key_rotation`: it is addressed to a
+  single recipient, another recipient's copy of the same epoch is a different event id, and a rotation
+  for someone else is carried as an envelope rather than stored as an event, so listing it would keep
+  two phones that both installed the epoch permanently incomplete. Epochs are not compared on the
+  wire: two recipients at different epochs with no other differing rows still report up to date.
 
 Key rotations and other control records are advertised first. A record refused for want of another
 record (undecryptable under any known epoch, or by an author whose join has not landed) is kept for the
@@ -108,7 +113,7 @@ arrives out of order is ignored, not treated as a violation, for the same reason
 
 Completion: a session is **up to date** only when both snapshots are consumed, every wanted record
 has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, **neither side holds pending
-rows**, and neither side lacks a money record the other holds as a rumor (`h` entries missing here are
+rows**, and neither side lacks a record the other holds as a rumor (`h` entries missing here are
 counted as `held`, reported back, and recounted when the local store changes). Such a record can only
 come from its author or a surviving signed copy; until then both phones show the round as incomplete. The pending count is read from durable storage (`applyState = PENDING`), so work left
 over from an earlier session or a process restart counts, and is re-driven when the screen opens and

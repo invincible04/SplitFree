@@ -521,7 +521,7 @@ class PeerSession(
     }
 
     /**
-     * Money records the peer applied but cannot hand over: if any is missing here the two ledgers differ
+     * Records the peer applied but cannot hand over: if any is missing here the two ledgers differ
      * and neither side may call itself up to date. Recounted when the peer advertises and when the local
      * store changes, since the record may arrive from its author meanwhile.
      *

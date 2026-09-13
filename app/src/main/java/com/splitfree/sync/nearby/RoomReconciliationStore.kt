@@ -48,9 +48,10 @@ constructor(
             deliveryDao.getAvailable(groupId)
                 .map { InventoryItem(it.envelopeId, NearbyWire.KIND_DELIVERY, r = it.recipient, e = it.eventId) to it }
                 .partition { (_, row) -> row.eventType == DeliveryEntity.TYPE_KEY_ROTATION }
-        // Applied money records this phone cannot vouch for to anyone else; listed so the peer can tell
-        // its ledger differs. Control records are not listed: a peer missing one is already visible
-        // through its epoch or roster.
+        // Applied records this phone cannot vouch for to anyone else, money and control alike; listed so
+        // the peer can tell its ledger differs. Nothing else on the wire compares rosters or epochs. A
+        // rumor-only key_rotation is the exception (see EventDao.getHeldEventIds): another recipient's
+        // copy of the same epoch is a different event id, so it would never hold this row.
         val held = eventDao.getHeldEventIds(groupId).map { InventoryItem(it, NearbyWire.KIND_HELD) }
         // Prioritize key and membership records so consumers can resolve dependencies early.
         return control + keyEnvelopes.map { it.first } + ledger + otherEnvelopes.map { it.first } + held

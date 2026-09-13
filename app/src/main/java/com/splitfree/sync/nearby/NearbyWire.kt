@@ -52,9 +52,10 @@ object NearbyWire {
     const val KIND_DELIVERY = "d"
 
     /**
-     * An applied money record this phone holds only as a gift-wrap rumor: authenticated by the seal for
-     * this phone alone, so it cannot be forwarded, but a peer that lacks it is not up to date with this
-     * one. Advertised for accounting, never wanted or served.
+     * An applied record (money or control) this phone holds only as a gift-wrap rumor: authenticated by
+     * the seal for this phone alone, so it cannot be forwarded, but a peer that lacks it is not up to date
+     * with this one. Advertised for accounting, never wanted or served. A rumor-only per-recipient
+     * `key_rotation` is not advertised: the peer's copy of that epoch is a different event id.
      */
     const val KIND_HELD = "h"
 

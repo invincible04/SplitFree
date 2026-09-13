@@ -1353,6 +1353,123 @@ class RoomReconciliationStoreTest {
         assertTrue(EventSnapshot.isThirdPartyVerifiable(checkNotNull(b.row(event.id)).sig))
     }
 
+    /**
+     * A control record held only as a rumor is history the peer lacks, exactly like a money record: the
+     * wire carries no roster or epoch digest, so nothing else would tell B that A's roster has grown.
+     */
+    @Test
+    fun `a rumor-only join on one phone keeps a divergent pair from reporting up to date`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val members = listOf(a.pub, b.pub)
+        listOf(a, b).forEach { it.join(members, creator = a.pub) }
+        c.join(members + c.pub, creator = a.pub)
+        val join = authorMeta(c, epoch = 0, name = "Trip", members = members + c.pub)
+        assertEquals(IngestOutcome.APPLIED, ingest(c, join))
+        // A learns of C's join only through its gift wrap: applied, readable, but not forwardable.
+        assertEquals(IngestOutcome.APPLIED, ingest(a, c.giftWrap.wrapIfEnabled(join, a.pub)))
+        assertFalse(EventSnapshot.isThirdPartyVerifiable(checkNotNull(a.row(join.id)).sig))
+        assertEquals(setOf(a.pub, b.pub, c.pub), a.group().members.toSet())
+        assertEquals(setOf(a.pub, b.pub), b.group().members.toSet())
+        val offered = runBlocking { a.store.inventory(groupId) }
+        assertTrue(offered.none { it.id == join.id && it.t == NearbyWire.KIND_EVENT })
+        assertTrue(offered.any { it.id == join.id && it.t == NearbyWire.KIND_HELD })
+
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+
+        assertNull("a rumor must not be forwarded", b.row(join.id))
+        assertEquals(setOf(a.pub, b.pub), b.group().members.toSet())
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+        assertEquals(PeerPhase.INCOMPLETE, a.phase(ep(b)))
+        assertEquals(1, b.stats(ep(a)).held)
+        assertTrue(b.transport.sentMessages().filterIsInstance<Want>().none { join.id in it.ids })
+
+        // The author's signed join resolves it: B applies it, A's rumor is upgraded in place, rosters converge.
+        c.activate()
+        connect(c, a)
+        connect(c, b)
+        router.pump()
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(join.id)?.applyState)
+        assertTrue(EventSnapshot.isThirdPartyVerifiable(checkNotNull(a.row(join.id)).sig))
+        assertEquals(setOf(a.pub, b.pub, c.pub), b.group().members.toSet())
+        assertTrue(runBlocking { a.store.inventory(groupId) }.none { it.t == NearbyWire.KIND_HELD })
+        a.coordinator.notifyGroupChanged(groupId)
+        b.coordinator.notifyGroupChanged(groupId)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `a signed join on one phone is forwarded and the pair reports up to date`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val members = listOf(a.pub, b.pub)
+        listOf(a, b).forEach { it.join(members, creator = a.pub) }
+        c.join(members + c.pub, creator = a.pub)
+        val join = authorMeta(c, epoch = 0, name = "Trip", members = members + c.pub)
+        assertEquals(IngestOutcome.APPLIED, ingest(a, join))
+        assertEquals(setOf(a.pub, b.pub, c.pub), a.group().members.toSet())
+        assertEquals(setOf(a.pub, b.pub), b.group().members.toSet())
+
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(join.id)?.applyState)
+        assertEquals(setOf(a.pub, b.pub, c.pub), b.group().members.toSet())
+        assertEquals(0, b.stats(ep(a)).held)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    /**
+     * A key rotation is addressed to one recipient: B's envelope for epoch 1 and C's are different event
+     * ids, and a rotation for someone else is carried as an envelope, never stored as an event row. Two
+     * phones that installed the same epoch from their own rumor-delivered envelopes hold nothing the
+     * other could ever obtain, so neither rotation row may count as held.
+     */
+    @Test
+    fun `rumor-only rotations applied on both phones from their own envelopes still report up to date`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val removed = TestIdentity(4).pub
+        val members = listOf(a.pub, b.pub, c.pub, removed)
+        listOf(a, b, c).forEach { it.join(members, creator = a.pub) }
+        runBlocking { a.rotateGroupKey(groupId, removed) }
+        val forB = rotationsFor(a, b.pub).single()
+        val forC = rotationsFor(a, c.pub).single()
+        assertEquals(IngestOutcome.APPLIED, ingest(b, a.giftWrap.wrapIfEnabled(forB, b.pub)))
+        assertEquals(IngestOutcome.APPLIED, ingest(c, a.giftWrap.wrapIfEnabled(forC, c.pub)))
+        for ((device, rotation) in listOf(b to forB, c to forC)) {
+            val row = checkNotNull(device.row(rotation.id))
+            assertEquals(EventEntity.APPLY_STATE_APPLIED, row.applyState)
+            assertFalse(EventSnapshot.isThirdPartyVerifiable(row.sig))
+            assertEquals(1, device.group().keyEpoch)
+            assertEquals(a.keyForEpoch(1), device.keyForEpoch(1))
+            assertTrue(runBlocking { device.store.inventory(groupId) }.none { it.t == NearbyWire.KIND_HELD })
+        }
+        assertNull(b.row(forC.id))
+        assertNull(c.row(forB.id))
+
+        b.activate()
+        c.activate()
+        connect(b, c)
+        router.pump()
+
+        assertEquals(0, c.stats(ep(b)).held)
+        assertEquals(0, b.stats(ep(c)).held)
+        assertEquals(PeerPhase.UP_TO_DATE, c.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(c)))
+    }
+
     @Test
     fun `a full courier cache evicts the oldest carried envelope rather than refusing a new key or gift`() {
         val a = Device(1)
@@ -1522,8 +1639,13 @@ class RoomReconciliationStoreTest {
         assertEquals(a.keyForEpoch(1), b.keyForEpoch(1))
         assertFalse(removed in b.group().members)
         assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(rotation.id)?.applyState)
-        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(courier)))
-        assertEquals(PeerPhase.UP_TO_DATE, courier.phase(ep(b)))
+        // B holds C's join only as a rumor and the courier never learned the inner event: history one side
+        // lacks that B cannot give it. The pair is not up to date until C's signed join reaches the courier.
+        assertFalse(EventSnapshot.isThirdPartyVerifiable(checkNotNull(b.row(join.id)).sig))
+        assertNull(courier.row(join.id))
+        assertEquals(1, courier.stats(ep(b)).held)
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(courier)))
+        assertEquals(PeerPhase.INCOMPLETE, courier.phase(ep(b)))
     }
 
     @Test

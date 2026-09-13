@@ -184,12 +184,18 @@ abstract class EventDao {
     abstract suspend fun countPending(groupId: String): Int
 
     /**
-     * Applied money records whose only evidence is a gift-wrap seal (`seal:` signature): readable here, not
-     * forwardable. Control records are left out; a peer missing one shows up through its epoch or roster.
+     * Applied records whose only evidence is a gift-wrap seal (`seal:` signature): readable here, not
+     * forwardable, and history a peer that lacks them is missing. Money and control records alike; the
+     * wire carries no roster or epoch digest, so a rumor-only `group_meta` or `key_revocation` a peer
+     * never saw would otherwise go unnoticed. `key_rotation` is the one exclusion: it is addressed to a
+     * single recipient, so another recipient's copy of the same epoch is a different event id and it
+     * stores this one only as a carried envelope, never as an event row. Listing it would keep two
+     * phones that both installed the epoch permanently incomplete. Epochs themselves are not compared
+     * on the wire; two recipients at different epochs with no other differing rows still converge.
      */
     @Query(
         "SELECT eventId FROM events WHERE groupId = :groupId AND applyState = 0 AND sig LIKE 'seal:%' " +
-            "AND eventType IN ('expense', 'settlement', 'expense_correction', 'expense_delete')"
+            "AND eventType != 'key_rotation'"
     )
     abstract suspend fun getHeldEventIds(groupId: String): List<String>
 
