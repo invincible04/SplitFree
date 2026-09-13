@@ -21,6 +21,7 @@ import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
 import java.security.MessageDigest
+import java.util.Base64
 import javax.inject.Inject
 import kotlinx.serialization.json.Json
 
@@ -28,8 +29,9 @@ import kotlinx.serialization.json.Json
  * Import group events from a `.splitfree` JSON export.
  *
  * Verifies the file's MAC against a key derived from the user's own private key (see
- * [SplitFreeExport]) before anything else, decrypts the embedded group key, creates the group if
- * needed, restores all epoch keys, then imports events in two passes inside one transaction:
+ * [SplitFreeExport]) before anything else, decrypts and checks every embedded key, then runs the rest
+ * inside one transaction: reconcile the key state (see [reconcileKeyState]), create the group if
+ * needed, and import events in two passes:
  *
  * 1. `group_meta` / `key_rotation` / `key_revocation` events are stored and replayed so the
  *    member list, creator, name and relays are reconstructed first.
@@ -37,8 +39,10 @@ import kotlinx.serialization.json.Json
  *    a member according to the structural events) and validated the same way
  *    [com.splitfree.sync.event.EventProcessor] validates live events.
  *
- * On a fresh device the group starts with `members = [me]`; filtering before replay would drop
- * every event authored by anyone else, which is exactly what a restore must not do.
+ * Nothing is written before the whole file has been authenticated and every key it carries has been
+ * checked against local storage. On a fresh device the group starts with `members = [me]`; filtering
+ * before replay would drop every event authored by anyone else, which is exactly what a restore must
+ * not do.
  */
 class ImportGroupUseCase
 @Inject
@@ -54,16 +58,18 @@ constructor(
     /**
      * @param jsonContent raw JSON string from a `.splitfree` export file
      * @return number of new events imported (duplicates are skipped)
-     * @throws IllegalArgumentException if the MAC is missing/invalid or the version is unsupported
-     * @throws IllegalStateException if the group key cannot be obtained
+     * @throws IllegalArgumentException if the MAC is missing/invalid, the version is unsupported, or
+     *   the backup's key material is malformed or conflicts with keys already stored for the group
+     * @throws IllegalStateException if the key for the backup's epoch cannot be obtained
      */
     suspend operator fun invoke(jsonContent: String): Int = invoke(json.decodeFromString<SplitFreeExport>(jsonContent))
 
     /**
      * @param export a decoded `.splitfree` export
      * @return number of new events imported (duplicates are skipped)
-     * @throws IllegalArgumentException if the MAC is missing/invalid or the version is unsupported
-     * @throws IllegalStateException if the group key cannot be obtained
+     * @throws IllegalArgumentException if the MAC is missing/invalid, the version is unsupported, or
+     *   the backup's key material is malformed or conflicts with keys already stored for the group
+     * @throws IllegalStateException if the key for the backup's epoch cannot be obtained
      */
     suspend operator fun invoke(export: SplitFreeExport): Int {
         require(export.version == SplitFreeExport.CURRENT_VERSION) {
@@ -71,57 +77,14 @@ constructor(
         }
         // Authenticate before touching the key store or the database.
         verifyMac(export)
+        val backupKeys = decryptBackupKeys(export)
 
         val groupId = export.groupId
-        val groupKey = resolveGroupKey(export)
-
-        // Create the group if it doesn't exist locally. The name is cosmetic and replayPostImport
-        // overwrites it from the creator's group_meta anyway, so a blank name is no reason to
-        // skip creation (which would leave every imported event orphaned).
-        if (groupRepo.getById(groupId) == null) {
-            val group = Group(
-                id = groupId,
-                name = sanitizeGroupName(export.groupName),
-                createdBy = "",
-                createdAt = export.exportedAt,
-                members = listOf(identity.getPublicKeyHex()),
-                relays = sanitizeRelays(export.relays),
-                keyEpoch = export.keyEpoch
-            )
-            groupRepo.save(group, groupKey)
-        }
-
-        // Restore all epoch keys so events from before key rotations can be decrypted
-        if (export.encryptedEpochKeys.isNotEmpty()) {
-            val privKey = identity.getPrivateKeyBytes()
-            try {
-                val convKey = Nip44.getConversationKey(privKey, identity.getPublicKeyBytes())
-                for ((epochStr, encKey) in export.encryptedEpochKeys) {
-                    val epoch = epochStr.toIntOrNull() ?: continue
-                    val key = try {
-                        Nip44.decrypt(encKey, convKey)
-                    } catch (_: Exception) {
-                        continue
-                    }
-                    try {
-                        groupRepo.saveGroupKeyForEpoch(groupId, epoch, key)
-                    } catch (e: IllegalStateException) {
-                        // The device already holds different material for this epoch; keep it.
-                        Log.w(
-                            TAG,
-                            "Backup carries a conflicting key for epoch $epoch of ${groupId.take(8)}, kept local"
-                        )
-                    }
-                }
-            } finally {
-                privKey.fill(0)
-            }
-        }
-
         val candidates = export.events.mapNotNull { toCandidate(it) }
         val (structural, content) = candidates.partition { it.eventType in STRUCTURAL_TYPES }
 
         return eventRepo.withTransaction {
+            val groupKey = reconcileKeyState(export, backupKeys)
             val knownEventIds = eventRepo.getEventIds(groupId).toMutableSet()
             var imported = 0
 
@@ -173,6 +136,129 @@ constructor(
 
             imported
         }
+    }
+
+    /**
+     * Decrypt every key the backup carries to this identity and check it, before anything is written.
+     *
+     * Epoch labels must be canonical integers in `0..keyEpoch`, every key must be a 32-byte group key,
+     * and a current key present both as [SplitFreeExport.encryptedGroupKey] and under its own epoch must
+     * agree. The file is authenticated, so a key that fails these checks means a corrupt or incompatible
+     * export and the import is refused rather than partially applied.
+     *
+     * @return decrypted key per epoch; empty when the backup carries no keys
+     * @throws IllegalArgumentException if any key or epoch label is malformed
+     */
+    private fun decryptBackupKeys(export: SplitFreeExport): Map<Int, String> {
+        require(export.keyEpoch >= 0) { "Backup key epoch must not be negative" }
+        if (export.encryptedEpochKeys.isEmpty() && export.encryptedGroupKey.isEmpty()) return emptyMap()
+
+        val keys = LinkedHashMap<Int, String>()
+        val privKey = identity.getPrivateKeyBytes()
+        try {
+            val convKey = Nip44.getConversationKey(privKey, identity.getPublicKeyBytes())
+            try {
+                for ((label, encryptedKey) in export.encryptedEpochKeys) {
+                    val epoch = label.toIntOrNull()
+                    require(epoch != null && epoch.toString() == label && epoch in 0..export.keyEpoch) {
+                        "Backup names an epoch key outside 0..${export.keyEpoch}: $label"
+                    }
+                    keys[epoch] = decryptGroupKey(encryptedKey, convKey, "epoch $epoch")
+                }
+                if (export.encryptedGroupKey.isNotEmpty()) {
+                    val current = decryptGroupKey(export.encryptedGroupKey, convKey, "epoch ${export.keyEpoch}")
+                    val listed = keys[export.keyEpoch]
+                    require(listed == null || listed == current) {
+                        "Backup's current key disagrees with its epoch ${export.keyEpoch} key"
+                    }
+                    keys[export.keyEpoch] = current
+                }
+            } finally {
+                convKey.fill(0)
+            }
+        } finally {
+            privKey.fill(0)
+        }
+        return keys
+    }
+
+    /** One NIP-44 self-encrypted group key from the file, required to open and to be 32 bytes of base64. */
+    private fun decryptGroupKey(encryptedKey: String, convKey: ByteArray, label: String): String {
+        val key = try {
+            Nip44.decrypt(encryptedKey, convKey)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Backup key for $label cannot be decrypted", e)
+        }
+        val bytes = try {
+            Base64.getDecoder().decode(key)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+        try {
+            require(bytes != null && bytes.size == GROUP_KEY_BYTES) { "Backup key for $label is not a group key" }
+        } finally {
+            bytes?.fill(0)
+        }
+        return key
+    }
+
+    /**
+     * Merge the backup's key material into local storage and install its epoch, or throw before the
+     * first write. Runs inside the import transaction.
+     *
+     * - Every epoch held by both the backup and this device must carry the same key; a mismatch fails
+     *   the import with nothing written. Epoch key material is immutable, so a stored key is never
+     *   replaced and only missing epochs are installed.
+     * - The key for the backup's epoch must be available, from the backup or from local storage;
+     *   older key material is never reused for a newer epoch.
+     * - The group's current epoch only moves forward. A backup newer than the group installs its epoch
+     *   through [GroupRepositoryContract.applyKeyRotation], which is guarded by epoch and resolves
+     *   tombstoned identities; the roster itself is reconstructed by the structural replay. An older
+     *   or equal backup leaves the epoch alone.
+     * - A group unknown to this device is created at the backup's epoch.
+     *
+     * @return the key of the backup's epoch, the fallback for rows whose epoch key is not stored
+     * @throws IllegalArgumentException if the backup conflicts with a stored key
+     * @throws IllegalStateException if no key for the backup's epoch is available
+     */
+    private suspend fun reconcileKeyState(export: SplitFreeExport, backupKeys: Map<Int, String>): String {
+        val groupId = export.groupId
+        val local = groupRepo.getById(groupId)
+        for ((epoch, key) in backupKeys) {
+            val stored = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+            require(stored == key) { "Backup carries a different key for epoch $epoch of group $groupId" }
+        }
+        val groupKey = backupKeys[export.keyEpoch]
+            ?: groupRepo.getGroupKeyForEpoch(groupId, export.keyEpoch)
+            ?: throw IllegalStateException("No key for group $groupId at epoch ${export.keyEpoch}")
+
+        // Create the group if it doesn't exist locally. The name is cosmetic and replayPostImport
+        // overwrites it from the creator's group_meta anyway, so a blank name is no reason to
+        // skip creation (which would leave every imported event orphaned).
+        if (local == null) {
+            val group = Group(
+                id = groupId,
+                name = sanitizeGroupName(export.groupName),
+                createdBy = "",
+                createdAt = export.exportedAt,
+                members = listOf(identity.getPublicKeyHex()),
+                relays = sanitizeRelays(export.relays),
+                keyEpoch = export.keyEpoch
+            )
+            groupRepo.save(group, groupKey)
+        }
+        // Restore all epoch keys so events from before key rotations can be decrypted.
+        for ((epoch, key) in backupKeys) groupRepo.saveGroupKeyForEpoch(groupId, epoch, key)
+
+        if (local != null && export.keyEpoch > local.keyEpoch) {
+            val advanced = groupRepo.applyKeyRotation(groupId, export.keyEpoch, local.members, local.memberNames)
+            if (advanced) {
+                Log.i(TAG, "Backup advanced ${groupId.take(8)} from epoch ${local.keyEpoch} to ${export.keyEpoch}")
+            } else {
+                Log.w(TAG, "Group ${groupId.take(8)} did not advance to epoch ${export.keyEpoch}; epoch kept")
+            }
+        }
+        return groupKey
     }
 
     /**
@@ -373,8 +459,10 @@ constructor(
      * ([GroupIdentity.matches]); a `created_by` claim by anyone else is ignored, and if no
      * meta is bound to the id the creator stays unknown.
      *
-     * Key rotation events are NOT replayed here; all epoch keys are restored
-     * directly from [SplitFreeExport.encryptedEpochKeys] before event import.
+     * Key rotation events are NOT replayed here; all epoch keys and the backup's epoch are installed
+     * by [reconcileKeyState] before event import. A roster that names a tombstoned identity resolves to
+     * its recorded replacement inside [GroupRepositoryContract.updateFromMeta]; the revoked key never
+     * re-enters the roster.
      *
      * @param stored every event of the group as read after pass 1
      */
@@ -458,23 +546,6 @@ constructor(
         }
     }
 
-    /** Resolve the group key: local storage first, then embedded encrypted key. */
-    private suspend fun resolveGroupKey(export: SplitFreeExport): String {
-        groupRepo.getGroupKey(export.groupId)?.let { return it }
-
-        if (export.encryptedGroupKey.isNotEmpty()) {
-            val privKey = identity.getPrivateKeyBytes()
-            try {
-                val convKey = Nip44.getConversationKey(privKey, identity.getPublicKeyBytes())
-                return Nip44.decrypt(export.encryptedGroupKey, convKey)
-            } finally {
-                privKey.fill(0)
-            }
-        }
-
-        throw IllegalStateException("No key for group ${export.groupId}")
-    }
-
     private fun hexToBytes(hex: String): ByteArray? {
         if (hex.length % 2 != 0 || hex.any { Character.digit(it, 16) < 0 }) return null
         return ByteArray(hex.length / 2) { i ->
@@ -488,6 +559,9 @@ constructor(
         private const val MAX_GROUP_NAME_LENGTH = 100
         private const val MAX_RELAYS = 10
         private const val MAX_RELAY_URL_LENGTH = 256
+
+        /** Length of a decoded symmetric group key, as [GroupEncryption] requires. */
+        private const val GROUP_KEY_BYTES = 32
 
         /** Events that define membership/keys; stored and replayed before anything else is filtered. */
         private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")

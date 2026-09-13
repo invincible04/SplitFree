@@ -261,7 +261,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import stores new events and returns count`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { encryption.decrypt(any(), any()) } returns expenseJson()
@@ -275,7 +275,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import deduplicates existing events`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val existingEvent = buildSignedExportedEvent()
         coEvery { eventRepo.getEventIds(groupId) } returns listOf(existingEvent.eventId)
         coEvery { groupRepo.getById(groupId) } returns group
@@ -288,7 +288,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import skips events from non-members`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
 
@@ -300,7 +300,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import allows group_meta from non-members`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { encryption.decrypt(any(), any()) } returns "decrypted"
@@ -323,7 +323,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import rejects a version 1 file with a clear message before touching anything`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val v1 = """{"version":1,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
 
         val e = assertThrows(IllegalArgumentException::class.java) { runBlocking { newImport()(v1) } }
@@ -342,14 +342,15 @@ class ExportImportUseCaseTest {
 
     @Test(expected = IllegalStateException::class)
     fun `import rejects unknown group`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getById(groupId) } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns null
         newImport()(buildExportJson(emptyList()))
         Unit
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects missing HMAC`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val noHmac = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
         newImport()(noHmac)
         Unit
@@ -357,7 +358,7 @@ class ExportImportUseCaseTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects tampered HMAC`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val events = listOf(ExportedEvent("evt1", "pub1", 1700000000, 30078, "enc", "expense", "uuid1", "sig1"))
         val badHmac = "ff".repeat(32)
         val export = SplitFreeExport(groupId = groupId, exportedAt = 0, events = events, hmac = badHmac)
@@ -367,7 +368,7 @@ class ExportImportUseCaseTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects invalid HMAC hex`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val badJson = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
         newImport()(badJson)
         Unit
@@ -391,7 +392,7 @@ class ExportImportUseCaseTest {
     )
 
     private fun assertRejectedUntouched(tampered: SplitFreeExport) {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val e = assertThrows(IllegalArgumentException::class.java) {
             runBlocking { newImport()(Json.encodeToString(SplitFreeExport.serializer(), tampered)) }
         }
@@ -439,7 +440,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `MAC signed by another identity is rejected and attributed to an identity mismatch`() {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val export = SplitFreeExport(version = 2, groupId = groupId, exportedAt = 1700000100, events = emptyList())
         val foreign = signed(export, privKey = strangerPrivKey)
 
@@ -456,7 +457,7 @@ class ExportImportUseCaseTest {
     @Test
     fun `import accepts a file whose defaults were omitted by the writer`() = runBlocking {
         // A hand-minified file that leaves out every default still has the same canonical body.
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         val export = signed(SplitFreeExport(groupId = groupId, exportedAt = 5, events = emptyList()))
@@ -467,7 +468,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import skips event with invalid original JSON signature`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { eventValidator.isWithinRateLimit(any()) } returns true
@@ -495,7 +496,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import skips correction from wrong author`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { eventRepo.getExpenseByUuid("uuid1", groupId) } returns sampleEntity.copy(pubkey = "other-pub")
@@ -518,7 +519,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import handles decryption failure gracefully`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { encryption.decrypt(any(), any()) } throws RuntimeException("bad")
@@ -533,7 +534,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import with null group still imports member events`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns null
         coEvery { groupRepo.save(any(), any()) } just Runs
@@ -549,7 +550,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import skips event when originalEventJson is missing`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
 
@@ -572,7 +573,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import stores parsed signed fields when wrapper fields differ`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { encryption.decrypt(any(), any()) } returns expenseJson()
@@ -617,7 +618,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import does not drop valid historical events due to live rate limits`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         // Each row decrypts to a payload whose id matches its own x tag.
@@ -676,7 +677,6 @@ class ExportImportUseCaseTest {
     )
 
     private fun stubReplayRepo(snapshots: List<EventSnapshot>) {
-        coEvery { groupRepo.getGroupKey(boundGroupId) } returns groupKey
         coEvery { groupRepo.getGroupKeyForEpoch(boundGroupId, any()) } returns groupKey
         coEvery { groupRepo.getById(boundGroupId) } returns legacyGroup
         coEvery { groupRepo.updateCreator(any(), any(), any()) } just Runs
@@ -827,7 +827,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import accepts unsigned rumor whose exported row carries a seal marker`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns strangerGroup
         every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
@@ -850,7 +850,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import rejects unsigned rumor without a seal marker`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns strangerGroup
         every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
@@ -870,7 +870,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import rejects seal-marked rumor whose id is not self-consistent`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns strangerGroup
         every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
@@ -887,7 +887,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import still enforces membership for seal-marked rumors`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group // stranger is not a member
         every { encryption.decrypt(any(), any()) } returns expenseJson(paidBy = strangerPubkey)
@@ -902,7 +902,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import applies payload validation to decryptable expenses`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns strangerGroup
         // Payload id disagrees with the x tag. EventProcessor rejects this, so import must too.
@@ -919,7 +919,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `import rejects expense that fails validator`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
         every { encryption.decrypt(any(), any()) } returns expenseJson()
@@ -962,7 +962,20 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(gid) } answers { store.group?.let { store.epochKeys[it.keyEpoch] } }
         coEvery { groupRepo.getGroupKeyForEpoch(gid, any()) } answers { store.epochKeys[secondArg()] }
         coEvery { groupRepo.saveGroupKeyForEpoch(gid, any(), any()) } answers {
+            // Same immutability rule as GroupRepository: a second, different key for an epoch is refused.
+            val existing = store.epochKeys[secondArg()]
+            check(existing == null || existing == thirdArg<String>()) { "epoch ${secondArg<Int>()} already keyed" }
             store.epochKeys[secondArg()] = thirdArg()
+        }
+        coEvery { groupRepo.applyKeyRotation(gid, any(), any(), any(), any()) } answers {
+            // Guarded like GroupDao.applyKeyRotation: only a strictly newer epoch lands.
+            val current = store.group
+            if (current == null || secondArg<Int>() <= current.keyEpoch) {
+                false
+            } else {
+                store.group = current.copy(keyEpoch = secondArg(), members = thirdArg(), memberNames = arg(3))
+                true
+            }
         }
         coEvery { groupRepo.updateCreator(gid, any(), any()) } answers {
             store.group = store.group?.copy(createdBy = secondArg(), createdAt = thirdArg())
@@ -1341,5 +1354,190 @@ class ExportImportUseCaseTest {
 
         assertEquals(1, count)
         assertTrue(store.events.none { it.pubkey == thirdPubkey })
+    }
+
+    // --- ImportGroupUseCase: epoch and key reconciliation on an existing group ---
+
+    private val key1 = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
+    private val key2 = Base64.getEncoder().encodeToString(ByteArray(32) { 9 })
+
+    /** An authenticated backup of [groupId] at [keyEpoch] carrying [epochKeys] and, optionally, a current key. */
+    private fun keyedBackup(
+        keyEpoch: Int,
+        epochKeys: Map<Int, String>,
+        currentKey: String? = epochKeys[keyEpoch],
+        events: List<ExportedEvent> = emptyList()
+    ): SplitFreeExport = signed(
+        SplitFreeExport(
+            groupId = groupId,
+            exportedAt = 1700000100,
+            events = events,
+            encryptedGroupKey = currentKey?.let(::encryptKeyToSelf) ?: "",
+            keyEpoch = keyEpoch,
+            encryptedEpochKeys = epochKeys.entries.associate { (epoch, key) ->
+                epoch.toString() to encryptKeyToSelf(key)
+            }
+        )
+    )
+
+    /** The stored group at [keyEpoch] holding exactly [epochKeys], wired to the fake store. */
+    private fun storeAtEpoch(keyEpoch: Int, epochKeys: Map<Int, String>): FakeStore {
+        val store = FakeStore().apply {
+            group = this@ExportImportUseCaseTest.group.copy(keyEpoch = keyEpoch)
+            this.epochKeys += epochKeys
+        }
+        wireFakeStore(groupId, store)
+        return store
+    }
+
+    @Test
+    fun `a newer authenticated backup advances the current epoch with its keys`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        every { encryption.decrypt("enc-e1", key1) } returns expenseJson("u1", memberPubkey, 100)
+        val newer = buildSignedExportedEvent(expenseUuid = "u1", contentEncrypted = "enc-e1") { it.copy(keyEpoch = 1) }
+
+        val count = newImport()(keyedBackup(1, mapOf(0 to groupKey, 1 to key1), events = listOf(newer)))
+
+        assertEquals(1, count)
+        assertEquals(mapOf(0 to groupKey, 1 to key1), store.epochKeys)
+        assertEquals(1, store.group!!.keyEpoch)
+        // The advance goes through the guarded rotation path and leaves the roster to the structural replay.
+        coVerify(exactly = 1) { groupRepo.applyKeyRotation(groupId, 1, group.members, group.memberNames, null) }
+        coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
+        assertEquals(group.members, store.group!!.members)
+        assertEquals(1, store.events.single().keyEpoch)
+    }
+
+    @Test
+    fun `the backup's epoch key may come from its epoch map alone`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+
+        newImport()(keyedBackup(1, mapOf(0 to groupKey, 1 to key1), currentKey = null))
+
+        assertEquals(key1, store.epochKeys[1])
+        assertEquals(1, store.group!!.keyEpoch)
+    }
+
+    @Test
+    fun `an older backup restores a missing historical key without downgrading the epoch`() = runBlocking {
+        val store = storeAtEpoch(2, mapOf(2 to key2))
+
+        val count = newImport()(keyedBackup(1, mapOf(0 to groupKey, 1 to key1)))
+
+        assertEquals(0, count)
+        assertEquals(mapOf(0 to groupKey, 1 to key1, 2 to key2), store.epochKeys)
+        assertEquals(2, store.group!!.keyEpoch)
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
+    }
+
+    @Test
+    fun `a backup at the group's own epoch leaves the epoch alone`() = runBlocking {
+        val store = storeAtEpoch(1, mapOf(0 to groupKey, 1 to key1))
+
+        newImport()(keyedBackup(1, mapOf(0 to groupKey, 1 to key1)))
+
+        assertEquals(1, store.group!!.keyEpoch)
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a backup carrying a different key for a stored epoch fails closed before any write`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        val backup = keyedBackup(
+            1,
+            mapOf(0 to key2, 1 to key1),
+            events = listOf(buildSignedExportedEvent(expenseUuid = "u1", contentEncrypted = "enc-e1"))
+        )
+
+        val e = assertThrows(IllegalArgumentException::class.java) { runBlocking { newImport()(backup) } }
+
+        assertTrue(e.message!!.contains("different key for epoch 0"))
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+        assertEquals(0, store.group!!.keyEpoch)
+        assertTrue(store.events.isEmpty())
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
+    }
+
+    @Test
+    fun `a newer backup without the key for its epoch never reuses an older key`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { newImport()(keyedBackup(1, mapOf(0 to groupKey), currentKey = null)) }
+        }
+
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+        assertEquals(0, store.group!!.keyEpoch)
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a backup whose current key disagrees with its own epoch key is refused untouched`() {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { newImport()(keyedBackup(1, mapOf(0 to groupKey, 1 to key1), currentKey = key2)) }
+        }
+
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+        assertEquals(0, store.group!!.keyEpoch)
+        coVerify(exactly = 0) { eventRepo.withTransaction(any<suspend () -> Int>()) }
+    }
+
+    @Test
+    fun `malformed epoch labels and key material are refused before the transaction`() {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        val shortKey = Base64.getEncoder().encodeToString(ByteArray(31))
+        val malformed = listOf("-1", "2", "01", "epoch").map { label ->
+            signed(
+                SplitFreeExport(
+                    groupId = groupId,
+                    exportedAt = 1700000100,
+                    events = emptyList(),
+                    keyEpoch = 1,
+                    encryptedEpochKeys = mapOf(label to encryptKeyToSelf(key1))
+                )
+            )
+        } + keyedBackup(0, mapOf(0 to shortKey)) +
+            signed(SplitFreeExport(groupId = groupId, exportedAt = 1700000100, events = emptyList(), keyEpoch = -1)) +
+            keyedBackup(0, emptyMap(), currentKey = null).let {
+                signed(it.copy(encryptedEpochKeys = mapOf("0" to "not-a-nip44-payload")))
+            }
+
+        for (backup in malformed) {
+            assertThrows(IllegalArgumentException::class.java) { runBlocking { newImport()(backup) } }
+        }
+
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+        assertEquals(0, store.group!!.keyEpoch)
+        coVerify(exactly = 0) { eventRepo.withTransaction(any<suspend () -> Int>()) }
+    }
+
+    @Test
+    fun `a fresh device restores a newer backup at the backup's epoch`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val backup = signed(
+            SplitFreeExport(
+                groupId = gid,
+                exportedAt = 1700000100,
+                events = emptyList(),
+                encryptedGroupKey = encryptKeyToSelf(key1),
+                groupName = "Trip",
+                keyEpoch = 1,
+                encryptedEpochKeys = mapOf("0" to encryptKeyToSelf(groupKey), "1" to encryptKeyToSelf(key1))
+            )
+        )
+
+        newImport()(backup)
+
+        assertEquals(1, store.group!!.keyEpoch)
+        assertEquals(mapOf(0 to groupKey, 1 to key1), store.epochKeys)
+        coVerify(exactly = 1) { groupRepo.save(match { it.id == gid && it.keyEpoch == 1 }, key1) }
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
     }
 }
