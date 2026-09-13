@@ -14,6 +14,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.relay.RelayConnectionManager
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.BalanceUnavailableException
 import com.splitfree.domain.usecase.expense.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
@@ -58,7 +59,7 @@ constructor(
                 val count = syncEngine.pullEvents(group.id, 0, groupKey, lenientTimestamp = true)
                 if (count > 0) Log.i(TAG, "Midnight sync pulled $count events for ${group.name}")
                 selfHeal(group.id)
-                createSnapshot(group.id)
+                snapshotIfReadable(group.id)
             }
             // Cleanup outbox rows with no publish activity for 90 days (self-heal has covered
             // them by now). Keyed off the last attempt, not event time; see OutboxDao.deleteOlderThan.
@@ -72,6 +73,18 @@ constructor(
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         } finally {
             if (acquired) nostrClient.releaseConnection()
+        }
+    }
+
+    /**
+     * A snapshot is an optimisation: a group whose money events this device cannot read yet is logged and
+     * skipped so the remaining groups still sync, the outbox is still trimmed and the run succeeds.
+     */
+    private suspend fun snapshotIfReadable(groupId: String) {
+        try {
+            createSnapshot(groupId)
+        } catch (e: BalanceUnavailableException) {
+            Log.w(TAG, "Skipping snapshot for group $groupId: ${e.message}")
         }
     }
 

@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.balance.Balance
+import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventPublisherContract
@@ -25,6 +26,7 @@ import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -60,8 +62,13 @@ class CreateSnapshotUseCaseTest {
             relays = emptyList()
         )
         every { identity.getPublicKeyHex() } returns myPubkey
-        coEvery { computeBalances(groupId) } returns listOf(Balance("pub1", 100, "INR"), Balance("pub2", -100, "INR"))
-        coEvery { eventRepo.getEventIds(groupId) } returns listOf("e1", "e2")
+        coEvery { computeBalances.computeWithExclusions(groupId, any(), false) } returns
+            BalanceResult(listOf(Balance("pub1", 100, "INR"), Balance("pub2", -100, "INR")), emptySet())
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(150)
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+        coEvery { eventRepo.withTransaction(captureLambda<suspend () -> Boolean>()) } coAnswers {
+            lambda<suspend () -> Boolean>().captured.invoke()
+        }
         every { encryption.encrypt(any(), groupKey) } returns "encrypted"
         every { encryption.decrypt(any(), groupKey) } answers { firstArg() }
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns fakeEvent
@@ -75,7 +82,7 @@ class CreateSnapshotUseCaseTest {
         unmockkStatic(android.util.Log::class)
     }
 
-    private fun snapshotEvent(eventId: String, asOfCount: Int, createdAt: Long) = EventSnapshot(
+    private fun snapshotEvent(eventId: String, asOfCount: Int, createdAt: Long, keyEpoch: Int = 0) = EventSnapshot(
         eventId = eventId,
         groupId = groupId,
         pubkey = "pub",
@@ -86,62 +93,77 @@ class CreateSnapshotUseCaseTest {
             """"as_of_timestamp":1,"balances":[],"event_hashes":[]}""",
         eventType = "snapshot",
         sig = "sig",
-        receivedAt = 1
+        receivedAt = 1,
+        keyEpoch = keyEpoch
     )
+
+    /** [count] non-money rows plus an optional [snapshot], the way the applied ledger is read. */
+    private fun ledger(count: Int, snapshot: EventSnapshot? = null): List<EventSnapshot> = (1..count).map {
+        EventSnapshot("event-$it", groupId, myPubkey, 1, contentEncrypted = "{}", eventType = "group_meta")
+    } + listOfNotNull(snapshot)
+
+    private fun daysAgo(days: Long): Long = System.currentTimeMillis() / 1000 - days * 86400
 
     @Test
     fun `creates snapshot when threshold exceeded`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 150
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
         val result = useCase(groupId)
         assertTrue(result)
         coVerify { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `does not wrap the work in a repository transaction`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 150
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
-
+    fun `guards the final checks and publication in one repository transaction`() = runBlocking {
         assertTrue(useCase(groupId))
 
-        coVerify(exactly = 0) { eventRepo.withTransaction<Any?>(any()) }
+        coVerify(exactly = 1) { eventRepo.withTransaction<Boolean>(any()) }
         coVerify(exactly = 1) { eventPublisher.saveAndQueue(any(), groupId, "encrypted", "snapshot", any()) }
     }
 
     @Test
+    fun `computes balances by full replay of the same ledger list it hashes`() = runBlocking {
+        val events = ledger(120)
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns events
+        val plaintext = slot<String>()
+        every { encryption.encrypt(capture(plaintext), groupKey) } returns "encrypted"
+
+        assertTrue(useCase(groupId))
+
+        coVerify(exactly = 1) { computeBalances.computeWithExclusions(groupId, events, false) }
+        coVerify(exactly = 1) { eventRepo.getEventsByGroup(groupId) }
+        coVerify(exactly = 0) { eventRepo.getEventIds(any()) }
+        coVerify(exactly = 0) { eventRepo.getEventCount(any()) }
+        val snapshot = json.decodeFromString<BalanceSnapshot>(plaintext.captured)
+        assertEquals(events.map { HashUtil.eventHashPrefix(it.eventId) }, snapshot.event_hashes)
+        assertEquals(events.size, snapshot.as_of_event_count)
+    }
+
+    @Test
     fun `skips when below threshold`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 50
         // 1 day old snapshot at 40 events: 50-40=10 events, 1 day < 30 days
-        val recentSnapshot = snapshotEvent(
-            "snap1",
-            asOfCount = 40,
-            createdAt =
-            System.currentTimeMillis() / 1000 - 86400
-        )
+        val recentSnapshot = snapshotEvent("snap1", asOfCount = 40, createdAt = daysAgo(1))
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(49, recentSnapshot)
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns recentSnapshot
         val result = useCase(groupId)
         assertFalse(result)
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { computeBalances.computeWithExclusions(any(), any(), any()) }
     }
 
     @Test
     fun `creates snapshot when 30 days elapsed`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 50
-        val oldSnapshot =
-            snapshotEvent("snap1", asOfCount = 40, createdAt = System.currentTimeMillis() / 1000 - 31 * 86400)
+        val oldSnapshot = snapshotEvent("snap1", asOfCount = 40, createdAt = daysAgo(31))
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(49, oldSnapshot)
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns oldSnapshot
         val result = useCase(groupId)
         assertTrue(result)
     }
 
     @Test
-    fun `returns false when no group key`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 200
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+    fun `surfaces a missing current group key instead of silently skipping`() = runBlocking {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns null
-        val result = useCase(groupId)
-        assertFalse(result)
+
+        assertThrows(BalanceUnavailableException::class.java) { runBlocking { useCase(groupId) } }
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -154,8 +176,6 @@ class CreateSnapshotUseCaseTest {
             members = listOf("someone-else", myPubkey),
             relays = emptyList()
         )
-        coEvery { eventRepo.getEventCount(groupId) } returns 200
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
 
         assertFalse(useCase(groupId))
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
@@ -173,8 +193,6 @@ class CreateSnapshotUseCaseTest {
             members = listOf(myPubkey),
             relays = emptyList()
         )
-        coEvery { eventRepo.getEventCount(groupId) } returns 200
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
 
         assertFalse(useCase(groupId))
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
@@ -194,8 +212,6 @@ class CreateSnapshotUseCaseTest {
         )
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 2) } returns "epoch2"
         every { encryption.encrypt(any(), "epoch2") } returns "encrypted2"
-        coEvery { eventRepo.getEventCount(groupId) } returns 150
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
 
         assertTrue(useCase(groupId))
         coVerify { groupRepo.getGroupKeyForEpoch(groupId, 2) }
@@ -203,14 +219,28 @@ class CreateSnapshotUseCaseTest {
         coVerify { eventPublisher.saveAndQueue(any(), groupId, "encrypted2", "snapshot", any()) }
     }
 
+    @Test
+    fun `reads the previous snapshot threshold with the key of its own epoch`() = runBlocking {
+        val current = checkNotNull(groupRepo.getById(groupId)).copy(keyEpoch = 1)
+        coEvery { groupRepo.getById(groupId) } returns current
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "epoch1"
+        // 149 events at the old snapshot, 149 + 1 now: below the 100-event threshold and fresh.
+        val old = snapshotEvent("old", asOfCount = 149, createdAt = daysAgo(0), keyEpoch = 0)
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(149, old)
+
+        assertFalse(useCase(groupId))
+        verify { encryption.decrypt(old.contentEncrypted, groupKey) }
+        verify(exactly = 0) { encryption.decrypt(any(), "epoch1") }
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
     // --- Snapshot size (S3) ---
 
     @Test
     fun `event hashes are 24-char prefixes of sha256 of each event id`() = runBlocking {
-        val ids = (1..12).map { "event-$it" }
-        coEvery { eventRepo.getEventIds(groupId) } returns ids
-        coEvery { eventRepo.getEventCount(groupId) } returns 150
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+        val events = ledger(120)
+        val ids = events.map { it.eventId }
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns events
         val plaintext = slot<String>()
         every { encryption.encrypt(capture(plaintext), groupKey) } returns "encrypted"
 
@@ -228,9 +258,7 @@ class CreateSnapshotUseCaseTest {
 
     @Test
     fun `oversized snapshot is not created`() = runBlocking {
-        coEvery { eventRepo.getEventIds(groupId) } returns (1..3000).map { "event-$it" }
-        coEvery { eventRepo.getEventCount(groupId) } returns 3000
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(3000)
 
         assertFalse(useCase(groupId))
 
@@ -243,9 +271,7 @@ class CreateSnapshotUseCaseTest {
     @Test
     fun `snapshot just under the cap is still created`() = runBlocking {
         // ~27 bytes per hash entry: 2000 events stays under MAX_SNAPSHOT_PLAINTEXT, 3000 does not.
-        coEvery { eventRepo.getEventIds(groupId) } returns (1..2000).map { "event-$it" }
-        coEvery { eventRepo.getEventCount(groupId) } returns 2000
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(2000)
         val plaintext = slot<String>()
         every { encryption.encrypt(capture(plaintext), groupKey) } returns "encrypted"
 
@@ -253,26 +279,25 @@ class CreateSnapshotUseCaseTest {
         assertTrue(plaintext.captured.toByteArray(Charsets.UTF_8).size <= CreateSnapshotUseCase.MAX_SNAPSHOT_PLAINTEXT)
     }
 
-    // --- Concurrency guard (S4) ---
+    // --- Concurrency guard (S4): the transaction re-reads the ledger head and the group ---
 
     @Test
     fun `aborts when a new snapshot appeared between the initial read and save`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 150
-        val concurrent = snapshotEvent("snap-other", asOfCount = 150, createdAt = System.currentTimeMillis() / 1000)
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returnsMany listOf(null, concurrent)
+        val concurrent = snapshotEvent("snap-other", asOfCount = 150, createdAt = daysAgo(0))
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns concurrent
 
         assertFalse(useCase(groupId))
 
-        coVerify(exactly = 2) { eventRepo.getLatestEventByType(groupId, "snapshot") }
+        coVerify(exactly = 1) { eventRepo.getLatestEventByType(groupId, "snapshot") }
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `aborts when the latest snapshot changed identity between the initial read and save`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 200
-        val old = snapshotEvent("snap-old", asOfCount = 40, createdAt = System.currentTimeMillis() / 1000 - 31 * 86400)
-        val newer = snapshotEvent("snap-new", asOfCount = 200, createdAt = System.currentTimeMillis() / 1000)
-        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returnsMany listOf(old, newer)
+        val old = snapshotEvent("snap-old", asOfCount = 40, createdAt = daysAgo(31))
+        val newer = snapshotEvent("snap-new", asOfCount = 200, createdAt = daysAgo(0))
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(199, old)
+        coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns newer
 
         assertFalse(useCase(groupId))
 
@@ -281,12 +306,57 @@ class CreateSnapshotUseCaseTest {
 
     @Test
     fun `proceeds when the latest snapshot is unchanged between the initial read and save`() = runBlocking {
-        coEvery { eventRepo.getEventCount(groupId) } returns 200
-        val old = snapshotEvent("snap-old", asOfCount = 40, createdAt = System.currentTimeMillis() / 1000 - 31 * 86400)
+        val old = snapshotEvent("snap-old", asOfCount = 40, createdAt = daysAgo(31))
+        coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(199, old)
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns old
 
         assertTrue(useCase(groupId))
 
         coVerify(exactly = 1) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `epoch rotation during computation aborts publication`() = runBlocking {
+        val original = checkNotNull(groupRepo.getById(groupId))
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(original, original.copy(keyEpoch = 1))
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `creator change during computation aborts publication`() = runBlocking {
+        val original = checkNotNull(groupRepo.getById(groupId))
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(original, original.copy(createdBy = "successor"))
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `identity change during computation aborts publication`() = runBlocking {
+        every { identity.getPublicKeyHex() } returnsMany listOf(myPubkey, "rotated-self")
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `group deleted during computation aborts publication`() = runBlocking {
+        val original = checkNotNull(groupRepo.getById(groupId))
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(original, null)
+
+        assertFalse(useCase(groupId))
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `balance failure prevents publishing a partial snapshot`() = runBlocking {
+        coEvery { computeBalances.computeWithExclusions(groupId, any(), false) } throws
+            BalanceUnavailableException("Missing historical key")
+
+        assertThrows(BalanceUnavailableException::class.java) { runBlocking { useCase(groupId) } }
+        coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { signer.createSignedEvent(any(), any(), any(), any()) }
     }
 }

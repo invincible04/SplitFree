@@ -13,6 +13,7 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.util.HashUtil
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -29,6 +30,11 @@ import kotlinx.serialization.json.Json
  * Expenses are identified by [ExpenseIdentity] `(author, uuid)`, never by UUID alone: a correction or delete
  * only affects the original signed by the same pubkey, so a member reusing (or front-running) someone else's
  * UUID cannot alter or erase that person's expense. Both records are kept and the collision is logged.
+ *
+ * Money is all or nothing: a money event this device cannot read (missing epoch key, failed decryption,
+ * malformed payload) or cannot add without overflow raises [BalanceUnavailableException] rather than being
+ * skipped, so a caller never receives a partial total that looks authoritative. Snapshot and coverage are
+ * derived from the same ledger list as the replay, never from a second read.
  */
 class ComputeBalancesUseCase
 @Inject
@@ -39,32 +45,58 @@ constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Decrypt event content on-the-fly using epoch-aware key lookup. Returns null if key missing or decryption fails. */
-    private suspend fun decrypt(event: EventSnapshot, groupId: String, keyCache: MutableMap<Int, String?>): String? {
+    /**
+     * Decrypts [event] with the key of its epoch.
+     *
+     * @throws BalanceUnavailableException if the epoch key is missing or the ciphertext does not open
+     */
+    private suspend fun decrypt(event: EventSnapshot, groupId: String, keyCache: MutableMap<Int, String>): String {
         val key = keyCache.getOrPut(event.keyEpoch) {
             groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch)
-        } ?: return null
+                ?: throw BalanceUnavailableException("Missing key for epoch ${event.keyEpoch}")
+        }
         return try {
             encryption.decrypt(event.contentEncrypted, key)
-        } catch (_: Exception) {
-            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw BalanceUnavailableException("Cannot decrypt ${event.eventType} ${event.eventId}", e)
         }
     }
 
     /**
-     * Compute net balances for all members in a group, accounting for
-     * snapshots, corrections, deletions, and settlements.
+     * Compute net balances for all members in a group from one read of its applied ledger.
      *
      * @param groupId target group UUID
      * @return [BalanceResult] with per-member balances and the exact identities of deleted expenses.
+     * @throws BalanceUnavailableException if any money event is unreadable or a total overflows
      */
-    suspend fun computeWithExclusions(groupId: String): BalanceResult = withContext(Dispatchers.Default) {
-        val events = eventRepo.getEventsByGroup(groupId)
-        val keyCache = mutableMapOf<Int, String?>()
+    suspend fun computeWithExclusions(groupId: String): BalanceResult =
+        computeWithExclusions(groupId, eventRepo.getEventsByGroup(groupId))
+
+    /**
+     * Compute net balances from an immutable ledger list the caller already holds.
+     *
+     * [events] is the only source of truth: the latest snapshot, the ids it covers and every replayed event
+     * come from this list, so an event arriving after the read can neither be counted nor hashed. With
+     * [useSnapshots] false every event is replayed and no snapshot is trusted, which is what a new snapshot
+     * needs so that its balances describe exactly the ids it hashes.
+     *
+     * @param groupId target group UUID
+     * @param events applied events of [groupId], in any order
+     * @param useSnapshots false to ignore any snapshot in [events] and replay everything
+     * @throws BalanceUnavailableException if any money event is unreadable or a total overflows
+     */
+    suspend fun computeWithExclusions(
+        groupId: String,
+        events: List<EventSnapshot>,
+        useSnapshots: Boolean = true
+    ): BalanceResult = withContext(Dispatchers.Default) {
+        val keyCache = mutableMapOf<Int, String>()
         // Key: (pubkey, currency) -> net amount
         val balances = mutableMapOf<Pair<String, String>, Long>()
 
-        val covered = seedFromSnapshot(groupId, keyCache, balances)
+        val covered = if (useSnapshots) seedFromSnapshot(groupId, events, keyCache, balances) else emptySet()
         val index = ExpenseIndex(events, covered)
 
         for (identity in index.identities) {
@@ -87,19 +119,23 @@ constructor(
     suspend operator fun invoke(groupId: String): List<Balance> = computeWithExclusions(groupId).balances
 
     /**
-     * Seeds [balances] from the latest snapshot if it is trustworthy: authored by the group creator, carrying
-     * at least [MIN_SNAPSHOT_HASHES] event hashes of which at least [MIN_SNAPSHOT_MATCH_RATIO] are known
-     * locally. Hashes are compared on their first [HashUtil.EVENT_HASH_PREFIX_LENGTH] characters so snapshots
-     * written with full-length SHA-256 hashes stay readable.
+     * Seeds [balances] from the latest snapshot in [events] if it is trustworthy: authored by the group creator,
+     * carrying at least [MIN_SNAPSHOT_HASHES] event hashes of which at least [MIN_SNAPSHOT_MATCH_RATIO] are
+     * present in [events]. Hashes are compared on their first [HashUtil.EVENT_HASH_PREFIX_LENGTH] characters so
+     * snapshots written with full-length SHA-256 hashes stay readable.
      *
-     * @return ids of the local events whose effect the snapshot already contains; empty if no snapshot is trusted
+     * A snapshot is an optimisation, not a source of truth: one that cannot be read or verified is ignored and
+     * every event is replayed instead, so an unreadable snapshot never hides an unreadable ledger.
+     *
+     * @return ids in [events] whose effect the snapshot already contains; empty if no snapshot is trusted
      */
     private suspend fun seedFromSnapshot(
         groupId: String,
-        keyCache: MutableMap<Int, String?>,
+        events: List<EventSnapshot>,
+        keyCache: MutableMap<Int, String>,
         balances: MutableMap<Pair<String, String>, Long>
     ): Set<String> {
-        val snapshotEvent = eventRepo.getLatestEventByType(groupId, "snapshot") ?: return emptySet()
+        val snapshotEvent = events.latestSnapshot() ?: return emptySet()
         try {
             val group = groupRepo.getById(groupId)
             // Snapshots are only trusted from a known creator. With an unknown creator there is
@@ -108,7 +144,7 @@ constructor(
                 group.createdBy.isNotEmpty() &&
                 snapshotEvent.pubkey == group.createdBy
             if (!trusted) return emptySet()
-            val content = decrypt(snapshotEvent, groupId, keyCache) ?: return emptySet()
+            val content = decrypt(snapshotEvent, groupId, keyCache)
             val snap = json.decodeFromString<BalanceSnapshot>(content)
             if (snap.event_hashes.isEmpty()) {
                 // Reject snapshots without event hashes; they cannot be verified
@@ -116,7 +152,7 @@ constructor(
                 return emptySet()
             }
             val snapshotPrefixes = snap.event_hashes.mapTo(HashSet()) { it.take(HashUtil.EVENT_HASH_PREFIX_LENGTH) }
-            val covered = eventRepo.getEventIds(groupId).filterTo(HashSet()) {
+            val covered = events.mapTo(HashSet()) { it.eventId }.filterTo(HashSet()) {
                 HashUtil.eventHashPrefix(it) in snapshotPrefixes
             }
             if (snap.event_hashes.size < MIN_SNAPSHOT_HASHES ||
@@ -129,33 +165,33 @@ constructor(
                 balances[b.pubkey to b.currency] = b.net
             }
             return covered
-        } catch (_: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Snapshot ${snapshotEvent.eventId} unreadable, replaying every event: ${e.message}")
             return emptySet()
         }
     }
 
     /**
      * Decrypts [event] as an [Expense] and applies it with [sign] (+1 to apply, -1 to reverse a payload the
-     * snapshot already contains). Unreadable or malformed payloads are skipped.
+     * snapshot already contains).
+     *
+     * @throws BalanceUnavailableException if the payload is unreadable, malformed or overflows a total
      */
     private suspend fun applyExpenseEvent(
         event: EventSnapshot,
         groupId: String,
-        keyCache: MutableMap<Int, String?>,
+        keyCache: MutableMap<Int, String>,
         balances: MutableMap<Pair<String, String>, Long>,
         sign: Int
     ) {
         val content = decrypt(event, groupId, keyCache)
-        if (content == null) {
-            if (sign < 0) Log.w(TAG, "Cannot reverse undecryptable ${event.eventType} ${event.eventId}")
-            return
-        }
         val expense =
             try {
                 json.decodeFromString<Expense>(content)
             } catch (ex: Exception) {
-                Log.w(TAG, "Skipping malformed ${event.eventType} event ${event.eventId}: ${ex.message}")
-                return
+                throw BalanceUnavailableException("Malformed ${event.eventType} ${event.eventId}", ex)
             }
         applyExpense(expense, balances, sign)
     }
@@ -163,12 +199,14 @@ constructor(
     /**
      * Replays every settlement the snapshot does not cover. Settlements carry their id in the `x` tag, so
      * covered settlements seed the dedup set without decryption and a re-sent settlement is never double counted.
+     *
+     * @throws BalanceUnavailableException if a settlement is unreadable, malformed or overflows a total
      */
     private suspend fun applySettlements(
         events: List<EventSnapshot>,
         covered: Set<String>,
         groupId: String,
-        keyCache: MutableMap<Int, String?>,
+        keyCache: MutableMap<Int, String>,
         balances: MutableMap<Pair<String, String>, Long>
     ) {
         val pending = events.filter { it.eventType == "settlement" && it.eventId !in covered }
@@ -178,13 +216,12 @@ constructor(
             .mapNotNullTo(HashSet()) { it.expenseUuid }
 
         for (e in pending) {
-            val content = decrypt(e, groupId, keyCache) ?: continue
+            val content = decrypt(e, groupId, keyCache)
             val s =
                 try {
                     json.decodeFromString<Settlement>(content)
                 } catch (ex: Exception) {
-                    Log.w(TAG, "Skipping malformed settlement ${e.eventId}: ${ex.message}")
-                    continue
+                    throw BalanceUnavailableException("Malformed settlement ${e.eventId}", ex)
                 }
             if (e.pubkey != s.from && e.pubkey != s.to) continue
             if (!seenSettlementIds.add(s.id)) continue
@@ -193,7 +230,7 @@ constructor(
                 balances[s.from to cur] = Math.addExact(balances[s.from to cur] ?: 0L, s.amount)
                 balances[s.to to cur] = Math.addExact(balances[s.to to cur] ?: 0L, -s.amount)
             } catch (ex: ArithmeticException) {
-                Log.w(TAG, "Skipping overflow settlement ${e.eventId}: ${ex.message}")
+                throw BalanceUnavailableException("Settlement ${e.eventId} overflows a balance", ex)
             }
         }
     }
@@ -202,7 +239,8 @@ constructor(
      * Applies [expense] to [balances].
      *
      * @param sign +1 to apply the expense, -1 to reverse a payload that was applied earlier
-     * @return false if the expense was skipped (negative share or arithmetic overflow)
+     * @return false if the expense was skipped because of a negative share
+     * @throws BalanceUnavailableException if a total overflows
      */
     private fun applyExpense(expense: Expense, balances: MutableMap<Pair<String, String>, Long>, sign: Int): Boolean {
         require(sign == 1 || sign == -1) { "sign must be +1 or -1" }
@@ -222,8 +260,7 @@ constructor(
             }
             true
         } catch (e: ArithmeticException) {
-            Log.w(TAG, "Skipping overflow expense ${expense.id}: ${e.message}")
-            false
+            throw BalanceUnavailableException("Expense ${expense.id} overflows a balance", e)
         }
     }
 
@@ -347,3 +384,14 @@ constructor(
         private const val MIN_SNAPSHOT_MATCH_RATIO = 0.8
     }
 }
+
+/**
+ * Raised when a group's balances cannot be stated in full: a money event is unreadable on this device
+ * (missing epoch key, failed decryption, malformed payload) or a total overflows. Callers present the
+ * balances as unavailable and offer a retry; they never fall back to a partial total.
+ */
+class BalanceUnavailableException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+
+/** The `snapshot` event that is latest by [EventSnapshot.CANONICAL_ORDER], or null if the list has none. */
+internal fun List<EventSnapshot>.latestSnapshot(): EventSnapshot? =
+    filter { it.eventType == "snapshot" }.maxWithOrNull(EventSnapshot.CANONICAL_ORDER)

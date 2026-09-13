@@ -8,6 +8,7 @@ import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.relay.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.usecase.expense.BalanceUnavailableException
 import com.splitfree.domain.usecase.expense.CreateSnapshotUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
@@ -50,7 +51,7 @@ constructor(
                 val count = syncEngine.pullEvents(group.id, since, groupKey, notifyContext = applicationContext)
                 if (count > 0) Log.i(TAG, "Pulled $count new events for group ${group.name}")
                 selfHeal(group.id)
-                createSnapshot(group.id)
+                snapshotIfReadable(group.id)
             }
             ProcessHealthTracker.heartbeat(applicationContext, "sync_worker_success")
             Result.success()
@@ -60,6 +61,18 @@ constructor(
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         } finally {
             if (acquiredConnection) nostrClient.releaseConnection()
+        }
+    }
+
+    /**
+     * A snapshot is an optimisation: a group whose money events this device cannot read yet (a key still in
+     * transit, for example) is logged and skipped so the remaining groups still sync and the run succeeds.
+     */
+    private suspend fun snapshotIfReadable(groupId: String) {
+        try {
+            createSnapshot(groupId)
+        } catch (e: BalanceUnavailableException) {
+            Log.w(TAG, "Skipping snapshot for group $groupId: ${e.message}")
         }
     }
 
