@@ -495,19 +495,15 @@ class ExportImportUseCaseTest {
     }
 
     @Test
-    fun `import skips correction from wrong author`() = runBlocking {
+    fun `import skips correction whose author stored no original under that uuid`() = runBlocking {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         coEvery { eventRepo.getEventIds(groupId) } returns emptyList()
         coEvery { groupRepo.getById(groupId) } returns group
+        // Another member's original under the same uuid is not this author's expense.
         coEvery { eventRepo.getExpenseByUuid("uuid1", groupId) } returns sampleEntity.copy(pubkey = "other-pub")
+        coEvery { eventRepo.getExpenseByAuthor("uuid1", groupId, memberPubkey) } returns null
         every { eventValidator.isWithinRateLimit(any()) } returns true
-        every {
-            eventValidator.isCorrectionAuthorValid(
-                "expense_correction",
-                memberPubkey,
-                "other-pub"
-            )
-        } returns false
+        every { eventValidator.isCorrectionAuthorValid("expense_correction", memberPubkey, null) } returns false
 
         val events = listOf(
             buildSignedExportedEvent(eventType = "expense_correction", expenseUuid = "uuid1")
@@ -515,6 +511,8 @@ class ExportImportUseCaseTest {
         val count =
             ImportGroupUseCase(eventRepo, groupRepo, encryption, eventValidator, identityMock)(buildExportJson(events))
         assertEquals(0, count)
+        coVerify(exactly = 1) { eventRepo.getExpenseByAuthor("uuid1", groupId, memberPubkey) }
+        coVerify(exactly = 0) { eventRepo.getExpenseByUuid(any(), any()) }
     }
 
     @Test
@@ -953,6 +951,11 @@ class ExportImportUseCaseTest {
         coEvery { eventRepo.getExpenseByUuid(any(), gid) } answers {
             store.events.firstOrNull { it.eventType == "expense" && it.expenseUuid == firstArg<String>() }
         }
+        coEvery { eventRepo.getExpenseByAuthor(any(), gid, any()) } answers {
+            store.events.firstOrNull {
+                it.eventType == "expense" && it.expenseUuid == firstArg<String>() && it.pubkey == thirdArg<String>()
+            }
+        }
 
         coEvery { groupRepo.getById(gid) } answers { store.group }
         coEvery { groupRepo.save(any(), any()) } answers {
@@ -1354,6 +1357,140 @@ class ExportImportUseCaseTest {
 
         assertEquals(1, count)
         assertTrue(store.events.none { it.pubkey == thirdPubkey })
+    }
+
+    // --- ImportGroupUseCase: corrections and deletes resolve their original by (author, uuid) ---
+
+    /** A stored group with two members and the epoch-0 key, wired to the fake store. */
+    private fun storeWithTwoMembers(): FakeStore {
+        val store = FakeStore().apply {
+            group = this@ExportImportUseCaseTest.group.copy(members = listOf(memberPubkey, strangerPubkey))
+            epochKeys[0] = groupKey
+        }
+        wireFakeStore(groupId, store)
+        return store
+    }
+
+    /** The two members' originals under one shared uuid, followed by a [mutation] the stranger signs. */
+    private fun sharedUuidRecords(mutation: String): List<ExportedEvent> = listOf(
+        buildSignedExportedEvent(expenseUuid = "shared", contentEncrypted = "a-original", createdAt = 1700000100),
+        buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            expenseUuid = "shared",
+            contentEncrypted = "b-original",
+            createdAt = 1700000101
+        ),
+        buildSignedExportedEvent(
+            privateKey = strangerPrivKey,
+            eventType = mutation,
+            expenseUuid = "shared",
+            contentEncrypted = "b-$mutation",
+            createdAt = 1700000102
+        )
+    )
+
+    private fun stubSharedUuidPayloads() {
+        every { encryption.decrypt("a-original", groupKey) } returns expenseJson("shared", memberPubkey, 100)
+        every { encryption.decrypt("b-original", groupKey) } returns expenseJson("shared", strangerPubkey, 200)
+        every { encryption.decrypt("b-expense_correction", groupKey) } returns
+            expenseJson("shared", strangerPubkey, 300)
+        every { encryption.decrypt("b-expense_delete", groupKey) } returns """{"id":"shared"}"""
+    }
+
+    @Test
+    fun `restore keeps a second owner's correction sharing a uuid`() = runBlocking {
+        val store = storeWithTwoMembers()
+        stubSharedUuidPayloads()
+        val records = sharedUuidRecords("expense_correction")
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildExportJson(records)
+        )
+
+        assertEquals(3, count)
+        val correction = store.events.single { it.eventType == "expense_correction" }
+        assertEquals(strangerPubkey, correction.pubkey)
+        assertEquals(2, store.events.count { it.eventType == "expense" && it.expenseUuid == "shared" })
+        // The original was resolved for the correction's own author, never by uuid alone.
+        coVerify { eventRepo.getExpenseByAuthor("shared", groupId, strangerPubkey) }
+        coVerify(exactly = 0) { eventRepo.getExpenseByUuid(any(), any()) }
+    }
+
+    @Test
+    fun `restore keeps a second owner's delete sharing a uuid`() = runBlocking {
+        val store = storeWithTwoMembers()
+        stubSharedUuidPayloads()
+        val records = sharedUuidRecords("expense_delete")
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildExportJson(records)
+        )
+
+        assertEquals(3, count)
+        assertEquals(strangerPubkey, store.events.single { it.eventType == "expense_delete" }.pubkey)
+        coVerify { eventRepo.getExpenseByAuthor("shared", groupId, strangerPubkey) }
+    }
+
+    @Test
+    fun `restore stores an original before the correction that depends on it`() = runBlocking {
+        val store = storeWithTwoMembers()
+        // The correction is listed first and even carries the earlier timestamp.
+        val correction = buildSignedExportedEvent(
+            eventType = "expense_correction",
+            expenseUuid = "u1",
+            contentEncrypted = "enc-correction",
+            createdAt = 1700000050
+        )
+        val original =
+            buildSignedExportedEvent(expenseUuid = "u1", contentEncrypted = "enc-original", createdAt = 1700000060)
+        every { encryption.decrypt("enc-original", groupKey) } returns expenseJson("u1", memberPubkey, 100)
+        every { encryption.decrypt("enc-correction", groupKey) } returns expenseJson("u1", memberPubkey, 150)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildExportJson(listOf(correction, original))
+        )
+
+        assertEquals(2, count)
+        assertEquals(listOf("expense", "expense_correction"), store.events.map { it.eventType })
+    }
+
+    @Test
+    fun `restore skips a correction whose original is neither in the backup nor stored`() = runBlocking {
+        val store = storeWithTwoMembers()
+        val correction = buildSignedExportedEvent(
+            eventType = "expense_correction",
+            expenseUuid = "orphan",
+            contentEncrypted = "enc-orphan"
+        )
+        every { encryption.decrypt("enc-orphan", groupKey) } returns expenseJson("orphan", memberPubkey, 150)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildExportJson(listOf(correction))
+        )
+
+        assertEquals(0, count)
+        assertTrue(store.events.isEmpty())
+    }
+
+    @Test
+    fun `restore admits a correction whose original is already stored locally`() = runBlocking {
+        val store = storeWithTwoMembers()
+        val original = buildSignedExportedEvent(expenseUuid = "u1", contentEncrypted = "enc-original")
+        store.events += snapshotOf(original, groupId)
+        val correction = buildSignedExportedEvent(
+            eventType = "expense_correction",
+            expenseUuid = "u1",
+            contentEncrypted = "enc-correction",
+            createdAt = 1700000050
+        )
+        every { encryption.decrypt("enc-correction", groupKey) } returns expenseJson("u1", memberPubkey, 150)
+
+        val count = ImportGroupUseCase(eventRepo, groupRepo, encryption, EventValidator(), identityMock)(
+            buildExportJson(listOf(correction))
+        )
+
+        assertEquals(1, count)
+        assertEquals(1, store.events.count { it.eventType == "expense_correction" })
     }
 
     // --- ImportGroupUseCase: epoch and key reconciliation on an existing group ---

@@ -267,6 +267,62 @@ class ImportGroupEpochRoomTest {
         assertFalse(other in group.members)
     }
 
+    // --- corrections and deletes resolve their original by (author, uuid) ---
+
+    @Test
+    fun `restore keeps a second owner's correction sharing a uuid`() = runBlocking {
+        val rows = listOf(
+            expense("shared", 0, amount = 100),
+            expense("shared", 0, signer = otherPrivateKey, amount = 200, offset = 1),
+            expense("shared", 0, signer = otherPrivateKey, amount = 300, type = "expense_correction", offset = 2)
+        )
+
+        assertEquals(3, importer(backup(epoch = 0, rows = rows)))
+
+        val stored = events.getEventsByGroup(groupId)
+        assertEquals(2, stored.count { it.eventType == "expense" })
+        assertEquals(other, stored.single { it.eventType == "expense_correction" }.pubkey)
+        // The author's 100 (author +50) against the other's corrected 300 (author -150).
+        assertEquals(-100L, net(author))
+        assertEquals(100L, net(other))
+    }
+
+    @Test
+    fun `restore keeps a second owner's delete sharing a uuid`() = runBlocking {
+        val rows = listOf(
+            expense("shared", 0, amount = 100),
+            expense("shared", 0, signer = otherPrivateKey, amount = 200, offset = 1),
+            expense("shared", 0, signer = otherPrivateKey, amount = 200, type = "expense_delete", offset = 2)
+        )
+
+        assertEquals(3, importer(backup(epoch = 0, rows = rows)))
+
+        val stored = events.getEventsByGroup(groupId)
+        assertEquals(other, stored.single { it.eventType == "expense_delete" }.pubkey)
+        // Only the author's expense counts: the other's record is deleted, the author's is untouched.
+        assertEquals(50L, net(author))
+        assertEquals(-50L, net(other))
+    }
+
+    @Test
+    fun `restore stores an original before the correction that precedes it in the file`() = runBlocking {
+        val original = expense("u1", 0, offset = 5)
+        val correction = expense("u1", 0, amount = 150, type = "expense_correction", offset = 1)
+
+        assertEquals(2, importer(backup(epoch = 0, rows = listOf(correction, original))))
+
+        assertEquals(1, events.getEventsByGroup(groupId).count { it.eventType == "expense_correction" })
+    }
+
+    @Test
+    fun `restore skips a correction whose original is neither in the backup nor stored`() = runBlocking {
+        val orphan = expense("orphan", 0, amount = 150, type = "expense_correction")
+
+        assertEquals(0, importer(backup(epoch = 0, rows = listOf(orphan))))
+
+        assertEquals(0, events.getEventCount(groupId))
+    }
+
     private fun snapshotKeys(): Map<String, String?> =
         (0..2).flatMap { listOf("$groupId:$it") }.plus(groupId).associateWith { keyStore.getString(it, null) }
 }

@@ -37,7 +37,10 @@ import kotlinx.serialization.json.Json
  *    member list, creator, name and relays are reconstructed first.
  * 2. Everything else is stored, filtered against the *historical* membership (everyone who was ever
  *    a member according to the structural events) and validated the same way
- *    [com.splitfree.sync.event.EventProcessor] validates live events.
+ *    [com.splitfree.sync.event.EventProcessor] validates live events. Originals are stored before the
+ *    corrections and deletes that depend on them, and a correction or delete resolves its original by
+ *    `(author, uuid)` (see [com.splitfree.domain.model.expense.ExpenseIdentity]); one whose original is
+ *    neither in the backup nor already stored is skipped.
  *
  * Nothing is written before the whole file has been authenticated and every key it carries has been
  * checked against local storage. On a fresh device the group starts with `members = [me]`; filtering
@@ -107,17 +110,23 @@ constructor(
             // still owe/credit them). Filtering by the *current* member list would silently drop
             // that history on restore, so the filter is the union of every membership the
             // structural events describe plus the reconstructed current list.
+            //
+            // Corrections and deletes are admitted only against an original the same author stored, so
+            // every original goes first; within each phase the canonical event order applies.
             val group = groupRepo.getById(groupId)
             val members = group?.let { collectHistoricalMembers(groupId, groupKey, stored) + it.members }
-            for (candidate in content) {
+            for (candidate in content.sortedWith(DEPENDENCY_ORDER)) {
                 if (candidate.eventId in knownEventIds) continue
                 if (members != null && candidate.pubkey !in members) continue
 
                 val eventType = candidate.eventType
                 val expenseUuid = candidate.expenseUuid
-                if (eventType == "expense_correction" || eventType == "expense_delete") {
-                    val originalCreator = expenseUuid?.let { eventRepo.getExpenseByUuid(it, groupId)?.pubkey }
-                    if (!eventValidator.isCorrectionAuthorValid(eventType, candidate.pubkey, originalCreator)) continue
+                if (eventType in DEPENDENT_TYPES) {
+                    val original = expenseUuid?.let { eventRepo.getExpenseByAuthor(it, groupId, candidate.pubkey) }
+                    if (!eventValidator.isCorrectionAuthorValid(eventType, candidate.pubkey, original?.pubkey)) {
+                        Log.w(TAG, "Skipping $eventType ${candidate.eventId.take(8)}: no original by its author")
+                        continue
+                    }
                 }
 
                 // Import is a local, integrity-checked batch operation; relay runtime rate limits
@@ -565,5 +574,14 @@ constructor(
 
         /** Events that define membership/keys; stored and replayed before anything else is filtered. */
         private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")
+
+        /** Events that only apply against an original `expense` stored by the same author. */
+        private val DEPENDENT_TYPES = setOf("expense_correction", "expense_delete")
+
+        /** Pass 2 order: independent records first, then dependent ones, canonical order within each. */
+        private val DEPENDENCY_ORDER: Comparator<Candidate> =
+            compareBy<Candidate> { it.eventType in DEPENDENT_TYPES }
+                .thenBy { it.parsed.createdAt }
+                .thenBy { it.eventId }
     }
 }

@@ -26,6 +26,14 @@ interface EventRepositoryContract {
      */
     suspend fun getExpenseByUuid(uuid: String, groupId: String): EventSnapshot?
 
+    /**
+     * Resolve the original expense that [author] stored under [uuid] in [groupId], or null.
+     *
+     * Expense identity is `(author, uuid)` (see [com.splitfree.domain.model.expense.ExpenseIdentity]):
+     * another member's expense carrying the same UUID is never returned.
+     */
+    suspend fun getExpenseByAuthor(uuid: String, groupId: String, author: String): EventSnapshot?
+
     /** @return the most recent event of [eventType] in a group, or null */
     suspend fun getLatestEventByType(groupId: String, eventType: String): EventSnapshot?
 

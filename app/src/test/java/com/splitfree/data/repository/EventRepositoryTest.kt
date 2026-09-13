@@ -88,6 +88,14 @@ class EventRepositoryTest {
     }
 
     @Test
+    fun `getExpenseByAuthor binds the lookup to the author`() = runTest {
+        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "alice") } returns entity
+        coEvery { eventDao.getExpenseByAuthor("u1", "g1", "bob") } returns null
+        assertEquals("e1", repo.getExpenseByAuthor("u1", "g1", "alice")!!.eventId)
+        assertNull(repo.getExpenseByAuthor("u1", "g1", "bob"))
+    }
+
+    @Test
     fun `getLatestEventByType returns mapped snapshot`() = runTest {
         coEvery { eventDao.getLatestEventByType("g1", "snapshot") } returns entity
         assertEquals("e1", repo.getLatestEventByType("g1", "snapshot")!!.eventId)
