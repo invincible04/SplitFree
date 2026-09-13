@@ -40,9 +40,10 @@ import kotlinx.serialization.json.Json
  * stay [EventEntity.APPLY_STATE_PENDING] and are re-driven by [retryDeferred]; rows whose effect can
  * never apply on this device are marked [EventEntity.APPLY_STATE_FAILED]. A correction or delete whose
  * original has not arrived is such a pending row too: it has passed every check that does not need the
- * original, is invisible to every ledger read until the original lands, and is applied by the next
- * [retryDeferred] after it does. Relays return gift wraps in outer-timestamp order and a nearby transfer
- * can lose one frame, so a correction routinely precedes its original.
+ * original and is invisible to every ledger read until the original lands. Deletes apply atomically
+ * with that original's insert so it never becomes visible; corrections apply on the next [retryDeferred].
+ * Relays return gift wraps in outer-timestamp order and a nearby transfer can lose one frame, so a
+ * correction routinely precedes its original.
  */
 @Singleton
 class EventProcessor
@@ -70,6 +71,7 @@ constructor(
      * @property outcome what happened to the record; the vocabulary shared with the nearby wire protocol
      * @property reason short diagnostic for a non-applied outcome, never shown to users
      * @property eventId id of the inner (unwrapped) event, once it is known
+     * @property decrypted plaintext for notifications; omitted for already-deleted expense history
      * @property retryable true for a [IngestOutcome.REJECTED] whose cause is a record this device lacks
      *   (the key epoch it was sealed under, or the author's join): the same event may be accepted once
      *   that record lands, so a caller holding it should offer it again rather than discard it
@@ -270,7 +272,7 @@ constructor(
         val storedSig = if (unwrapResult != null) EventSnapshot.SEAL_SIG_PREFIX + unwrapResult.sealSig else inner.sig
         val hasSideEffects = eventType in SIDE_EFFECT_TYPES
         val pendingOnInsert = hasSideEffects || awaitsOriginal
-        val inserted = eventDao.insertIfNew(
+        val rowId = eventDao.insert(
             EventEntity(
                 eventId = inner.id, groupId = groupId, pubkey = authorHex,
                 createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
@@ -280,7 +282,12 @@ constructor(
                 applyState = if (pendingOnInsert) EventEntity.APPLY_STATE_PENDING else EventEntity.APPLY_STATE_APPLIED
             )
         )
-        if (!inserted) {
+        if (rowId == EventDao.REJECTED_DELETED) {
+            // The author's delete was applied between the business-rule check and the write.
+            Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
+            return rejected("business rule", inner.id, eventType, authorHex)
+        }
+        if (rowId == -1L) {
             // Lost a race with a concurrent insert of the same id.
             return ProcessResult(
                 stored = false,
@@ -293,17 +300,12 @@ constructor(
         }
 
         if (awaitsOriginal) {
+            val held = ProcessResult(true, group.name, eventType, decrypted, authorHex, eventId = inner.id)
+            // The original may have committed (import, local publish) since the business-rule check;
+            // the insert then stored the delete applied and there is nothing left to hold.
+            if (eventDao.getEvent(inner.id)?.applyState == EventEntity.APPLY_STATE_APPLIED) return held
             Log.i(TAG, "Holding $eventType from ${authorHex.take(8)} in group ${group.name} until its original arrives")
-            return ProcessResult(
-                true,
-                group.name,
-                eventType,
-                decrypted,
-                authorHex,
-                outcome = IngestOutcome.DEFERRED,
-                reason = "missing original",
-                eventId = inner.id
-            )
+            return held.copy(outcome = IngestOutcome.DEFERRED, reason = "missing original")
         }
 
         // 10. Post-process (delegated)
@@ -318,7 +320,16 @@ constructor(
                 inner.id,
                 decryptedEpoch
             )
-        val stored = ProcessResult(true, group.name, eventType, decrypted, authorHex, eventId = inner.id)
+        // The original can be admitted as deleted history. Sync callers use this plaintext to announce
+        // a new expense, so omit it when a held delete took effect with the insert (or raced it).
+        val notificationContent = if (eventType == "expense" &&
+            expenseUuid in eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, authorHex)
+        ) {
+            null
+        } else {
+            decrypted
+        }
+        val stored = ProcessResult(true, group.name, eventType, notificationContent, authorHex, eventId = inner.id)
         return when (effect) {
             PostProcessOutcome.APPLIED -> {
                 if (hasSideEffects) markApplied(inner.id, nonCancellable)
@@ -684,7 +695,9 @@ constructor(
             }
         }
         if (eventType == "expense" && expenseUuid != null) {
-            val deletedUuids = eventDao.getDeletedExpenseUuidsByAuthor(groupId, authorHex).toSet()
+            // Pending deletes need this history to satisfy their dependency, and failed deletes never
+            // took effect. EventDao.insert repeats this check inside the write transaction.
+            val deletedUuids = eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, authorHex).toSet()
             if (eventValidator.isDeletedExpense(eventType, expenseUuid, deletedUuids)) {
                 Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
                 return BusinessRules.REJECTED
@@ -701,8 +714,9 @@ constructor(
 
     /**
      * Parse and validate the decrypted payload of expense/settlement events.
-     * The `x` tag ([expenseUuid]) must match the id embedded in the payload so a
-     * sender cannot attach one UUID in the envelope and a different one inside.
+     * The `x` tag ([expenseUuid]) is required and must match the id embedded in the payload so a
+     * sender cannot attach one UUID in the envelope and a different one inside; balance computation
+     * reads a covered settlement's dedup identity from that tag without decrypting it.
      */
     private fun validatePayload(
         eventType: String,
@@ -743,7 +757,7 @@ constructor(
                     Log.w(TAG, "Rejecting settlement with invalid payload: $eventId")
                     return false
                 }
-                if (expenseUuid != null && settlement.id != expenseUuid) {
+                if (settlement.id != expenseUuid) {
                     Log.w(TAG, "Rejecting settlement: x tag $expenseUuid does not match payload id ${settlement.id}")
                     return false
                 }

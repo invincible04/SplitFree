@@ -119,13 +119,13 @@ class EventProcessorTest {
      * keyed by id, `getEvent` sees them, `setApplyState` updates them and `getPendingEvents` filters them.
      */
     private fun useInMemoryEventStore() {
-        coEvery { eventDao.insertIfNew(any()) } answers {
+        coEvery { eventDao.insert(any()) } answers {
             val entity = firstArg<EventEntity>()
             if (store.containsKey(entity.eventId)) {
-                false
+                -1L
             } else {
                 store[entity.eventId] = entity
-                true
+                1L
             }
         }
         coEvery { eventDao.getEvent(any()) } answers { store[firstArg()] }
@@ -180,8 +180,8 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         // The relaxed dao would otherwise hand back a non-null relaxed EventEntity here.
         coEvery { eventDao.getEvent(any()) } returns null
-        coEvery { eventDao.insertIfNew(any()) } returns true
-        coEvery { eventDao.getDeletedExpenseUuidsByAuthor(any(), any()) } returns emptyList()
+        coEvery { eventDao.insert(any()) } returns 1L
+        coEvery { eventDao.getAppliedDeletedExpenseUuidsByAuthor(any(), any()) } returns emptyList()
         coEvery { eventDao.getExpenseByAuthor(any(), any(), any()) } returns null
         coEvery { eventDao.getPendingEvents(any()) } returns emptyList()
         coEvery { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) } returns
@@ -291,7 +291,7 @@ class EventProcessorTest {
     @Test
     fun `process reports a lost insert race as ALREADY_APPLIED`() = runBlocking {
         // getEvent saw nothing, but another writer inserted the same id before our insert landed.
-        coEvery { eventDao.insertIfNew(any()) } returns false
+        coEvery { eventDao.insert(any()) } returns -1L
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse(result.stored)
         assertEquals(IngestOutcome.ALREADY_APPLIED, result.outcome)
@@ -301,7 +301,7 @@ class EventProcessorTest {
     @Test
     fun `process rejects deleted expense replay`() = runBlocking {
         every { eventValidator.isDeletedExpense(any(), any(), any()) } returns true
-        coEvery { eventDao.getDeletedExpenseUuidsByAuthor(any(), any()) } returns listOf("uuid1")
+        coEvery { eventDao.getAppliedDeletedExpenseUuidsByAuthor(any(), any()) } returns listOf("uuid1")
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse(result.stored)
     }
@@ -392,7 +392,7 @@ class EventProcessorTest {
         assertEquals(IngestOutcome.REJECTED, result.outcome)
         assertEquals("pending quota", result.reason)
         assertFalse(result.retryable)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -518,7 +518,7 @@ class EventProcessorTest {
             coEvery { groupRepo.getById(groupId) } returns onlyA.copy(members = listOf(pubkey, joinerC))
             assertTrue(processor.process(joinOf(joinerB, "enc-b"), knownGroupKey = groupKey).stored)
 
-            coVerify(exactly = 4) { eventDao.insertIfNew(any()) }
+            coVerify(exactly = 4) { eventDao.insert(any()) }
         }
 
     @Test
@@ -535,7 +535,7 @@ class EventProcessorTest {
             )
         assertFalse(result.stored)
         assertEquals("not a member", result.reason)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -550,7 +550,7 @@ class EventProcessorTest {
                 knownGroupKey = groupKey
             )
         assertFalse(result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -606,7 +606,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse("Undecryptable expense must not be stored", result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
         coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
@@ -615,7 +615,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } throws RuntimeException("bad")
         val result = processor.process(makeEvent(eventType = "settlement"), knownGroupKey = groupKey)
         assertFalse("Undecryptable settlement must not be stored", result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -628,7 +628,7 @@ class EventProcessorTest {
         assertFalse(result.stored)
         coVerify { groupRepo.getGroupKeyForEpoch(groupId, 1) }
         coVerify { groupRepo.getGroupKeyForEpoch(groupId, 0) }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -648,7 +648,7 @@ class EventProcessorTest {
         every { giftWrap.tryUnwrap(any()) } returns Nip59.Unwrapped(rumor, pubkey, sealSig)
         every { signer.verify(any()) } returns false
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
 
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
 
@@ -664,7 +664,7 @@ class EventProcessorTest {
     @Test
     fun `process stores direct signed event with its own signature`() = runBlocking {
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
 
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
 
@@ -845,11 +845,11 @@ class EventProcessorTest {
     fun `process settlement type skips tombstone check`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns settlementJson()
         val result = processor.process(
-            makeEvent(eventType = "settlement", expenseUuid = null),
+            makeEvent(eventType = "settlement", expenseUuid = "s1"),
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify(exactly = 0) { eventDao.getDeletedExpenseUuidsByAuthor(any(), any()) }
+        coVerify(exactly = 0) { eventDao.getAppliedDeletedExpenseUuidsByAuthor(any(), any()) }
     }
 
     @Test
@@ -897,14 +897,15 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process accepts settlement without x tag`() = runBlocking {
+    fun `process rejects settlement without x tag`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
         every { encryption.decrypt(any(), groupKey) } returns settlementJson(id = "s1", from = pubkey, to = bob)
         val result = realValidatorProcessor().process(
             makeEvent(eventType = "settlement", expenseUuid = null),
             knownGroupKey = groupKey
         )
-        assertTrue(result.stored)
+        assertFalse(result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
     }
 
     @Test
@@ -916,7 +917,7 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertFalse(result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1028,8 +1029,8 @@ class EventProcessorTest {
                 knownGroupKey = groupKey
             )
             assertFalse("Expense without x tag cannot match its payload id", result.stored)
-            coVerify(exactly = 0) { eventDao.getDeletedExpenseUuidsByAuthor(any(), any()) }
-            coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+            coVerify(exactly = 0) { eventDao.getAppliedDeletedExpenseUuidsByAuthor(any(), any()) }
+            coVerify(exactly = 0) { eventDao.insert(any()) }
         }
 
     @Test
@@ -1044,7 +1045,7 @@ class EventProcessorTest {
             )
             assertFalse("Correction without x tag cannot match its payload id", result.stored)
             coVerify(exactly = 0) { eventDao.getExpenseByAuthor(any(), any(), any()) }
-            coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+            coVerify(exactly = 0) { eventDao.insert(any()) }
         }
 
     @Test
@@ -1187,7 +1188,7 @@ class EventProcessorTest {
             expenseJson(amount = 100, splits = listOf(pubkey to 50L, bob to 40L))
         val result = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
         assertFalse("sum(shares) != amount must be rejected", result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1204,7 +1205,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } returns expenseJson(id = "uuid-payload")
         val result = realValidatorProcessor().process(makeEvent(expenseUuid = "uuid-tag"), knownGroupKey = groupKey)
         assertFalse("x tag must match payload id", result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1218,7 +1219,7 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertFalse("Correction payload must keep the original uuid", result.stored)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1303,7 +1304,7 @@ class EventProcessorTest {
         assertEquals(event.id, result.eventId)
         assertEquals("expense", result.eventType)
         assertEquals(pubkey, result.authorHex)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
         coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.getById(any()) }
     }
@@ -1365,7 +1366,7 @@ class EventProcessorTest {
             real.process(makeEvent(), knownGroupKey = groupKey, context = IngestionContext.RECONCILIATION)
         }
         assertTrue(results.all { it.outcome == IngestOutcome.APPLIED })
-        coVerify(exactly = 31) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 31) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1430,7 +1431,7 @@ class EventProcessorTest {
             assertEquals("created_at=$bad must be rejected", IngestOutcome.REJECTED, result.outcome)
             assertEquals("invalid timestamp", result.reason)
         }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     // --- Apply state, deferral and retry ---
@@ -1438,7 +1439,7 @@ class EventProcessorTest {
     @Test
     fun `process inserts an expense as APPLIED without a state flip`() = runBlocking {
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
         processor.process(makeEvent(), knownGroupKey = groupKey)
         assertEquals(EventEntity.APPLY_STATE_APPLIED, stored.captured.applyState)
         coVerify(exactly = 0) { eventDao.setApplyState(any(), any()) }
@@ -1448,7 +1449,7 @@ class EventProcessorTest {
     fun `process inserts a key_rotation as PENDING and flips it to APPLIED after the effect lands`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns rotationJson()
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
         val event = makeEvent(eventType = "key_rotation", expenseUuid = null)
 
         val result = processor.process(event, knownGroupKey = groupKey)
@@ -1456,7 +1457,7 @@ class EventProcessorTest {
         assertEquals(IngestOutcome.APPLIED, result.outcome)
         assertEquals(EventEntity.APPLY_STATE_PENDING, stored.captured.applyState)
         coVerifyOrder {
-            eventDao.insertIfNew(any())
+            eventDao.insert(any())
             postProcessor.handle(
                 "key_rotation",
                 rotationJson(),
@@ -1476,7 +1477,7 @@ class EventProcessorTest {
         val meta = """{"name":"Test","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
         every { encryption.decrypt(any(), groupKey) } returns meta
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
         val event = makeEvent(eventType = "group_meta", expenseUuid = null)
 
         processor.process(event, knownGroupKey = groupKey)
@@ -1602,7 +1603,7 @@ class EventProcessorTest {
         assertEquals(IngestOutcome.REJECTED, result.outcome)
         assertEquals("effect rejected", result.reason)
         coVerify(exactly = 1) { eventDao.setApplyState("rot-pending", EventEntity.APPLY_STATE_FAILED) }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1634,7 +1635,7 @@ class EventProcessorTest {
         assertEquals("expense", result.eventType)
         // Rejected before the duplicate check, any DB read, any decryption or any write.
         coVerify(exactly = 0) { eventDao.getEvent(any()) }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
         coVerify(exactly = 0) { groupRepo.getById(any()) }
         verify(exactly = 0) { encryption.decrypt(any(), any<String>()) }
         coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
@@ -1658,7 +1659,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } throws RuntimeException("wrong epoch")
         every { encryption.decrypt(any(), "old1") } returns meta
         val stored = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+        coEvery { eventDao.insert(capture(stored)) } returns 1L
 
         processor.process(event, knownGroupKey = groupKey)
 
@@ -1680,7 +1681,7 @@ class EventProcessorTest {
         assertEquals(IngestOutcome.APPLIED, result.outcome)
         assertTrue(result.stored)
         assertEquals("Test", result.groupName)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
         coVerify {
             postProcessor.handle(
                 "key_rotation",
@@ -1853,7 +1854,7 @@ class EventProcessorTest {
         assertEquals("missing original", result.reason)
         coVerify { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) }
         coVerify(exactly = 0) { eventDao.getExpenseByAuthor("uuid1", groupId, bob) }
-        coVerify { eventDao.insertIfNew(match { it.applyState == EventEntity.APPLY_STATE_PENDING }) }
+        coVerify { eventDao.insert(match { it.applyState == EventEntity.APPLY_STATE_PENDING }) }
     }
 
     @Test
@@ -1871,23 +1872,23 @@ class EventProcessorTest {
     fun `process only treats an expense as a tombstoned replay if the same author deleted it`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
         // Bob deleted *his* uuid1; pubkey's uuid1 is a different expense.
-        coEvery { eventDao.getDeletedExpenseUuidsByAuthor(groupId, bob) } returns listOf("uuid1")
-        coEvery { eventDao.getDeletedExpenseUuidsByAuthor(groupId, pubkey) } returns emptyList()
+        coEvery { eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, bob) } returns listOf("uuid1")
+        coEvery { eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, pubkey) } returns emptyList()
 
         val result = realValidatorProcessor().process(makeEvent(expenseUuid = "uuid1"), knownGroupKey = groupKey)
 
         assertEquals(IngestOutcome.APPLIED, result.outcome)
-        coVerify { eventDao.getDeletedExpenseUuidsByAuthor(groupId, pubkey) }
+        coVerify { eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, pubkey) }
     }
 
     @Test
     fun `process rejects a replayed expense the same author deleted`() = runBlocking {
-        coEvery { eventDao.getDeletedExpenseUuidsByAuthor(groupId, pubkey) } returns listOf("uuid1")
+        coEvery { eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, pubkey) } returns listOf("uuid1")
 
         val result = realValidatorProcessor().process(makeEvent(expenseUuid = "uuid1"), knownGroupKey = groupKey)
 
         assertEquals(IngestOutcome.REJECTED, result.outcome)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     // --- Historical authors during reconciliation (NS-13) ---
@@ -1909,7 +1910,7 @@ class EventProcessorTest {
             every { encryption.decrypt(any(), "key-epoch0") } returns
                 expenseJson(paidBy = bob, splits = listOf(bob to 100L))
             val stored = slot<EventEntity>()
-            coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+            coEvery { eventDao.insert(capture(stored)) } returns 1L
 
             val result = realValidatorProcessor().process(
                 makeEvent(author = bob),
@@ -1934,7 +1935,7 @@ class EventProcessorTest {
         assertEquals(IngestOutcome.REJECTED, result.outcome)
         assertEquals("not a member", result.reason)
         coVerify(exactly = 0) { membershipHistory.historicalAuthors(any()) }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -1951,7 +1952,7 @@ class EventProcessorTest {
 
         assertEquals(IngestOutcome.REJECTED, result.outcome)
         assertEquals("post-removal history", result.reason)
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
     @Test
@@ -2044,7 +2045,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), groupKey) } returns
             """{"name":"Old","created_by":"$pubkey","members":["$pubkey"],"relays":[]}"""
         val row = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(row)) } returns true
+        coEvery { eventDao.insert(capture(row)) } returns 1L
         processor.process(event, knownGroupKey = groupKey)
         assertEquals(0, row.captured.keyEpoch)
         coVerify { postProcessor.handle("group_meta", any(), pubkey, groupId, event.createdAt, false, event.id, 0) }
@@ -2057,7 +2058,7 @@ class EventProcessorTest {
         every { encryption.decrypt(any(), "current-key") } returns expenseJson()
         every { encryption.decrypt(any(), groupKey) } throws IllegalArgumentException("stale")
         val row = slot<EventEntity>()
-        coEvery { eventDao.insertIfNew(capture(row)) } returns true
+        coEvery { eventDao.insert(capture(row)) } returns 1L
         assertEquals(IngestOutcome.APPLIED, processor.process(makeEvent(), knownGroupKey = groupKey).outcome)
         assertEquals(1, row.captured.keyEpoch)
     }

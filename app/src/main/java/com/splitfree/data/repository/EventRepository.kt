@@ -47,8 +47,9 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
 
     override suspend fun insertIfNew(snapshot: EventSnapshot): Boolean = eventDao.insertIfNew(snapshot.toEntity())
 
+    /** Backup restore only: stores deleted history that the sync path would refuse as a replay. */
     override suspend fun insert(snapshot: EventSnapshot) {
-        eventDao.insert(snapshot.toEntity())
+        eventDao.insertHistory(snapshot.toEntity())
     }
 
     override suspend fun <T> withTransaction(block: suspend () -> T): T = db.withTransaction { block() }

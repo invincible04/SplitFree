@@ -21,7 +21,7 @@ import kotlinx.serialization.json.Json
 /**
  * Computes net balances for all members in a group, accounting for snapshots, corrections, deletions, and settlements.
  *
- * A trusted snapshot (creator-signed and verifiable through its `event_hashes`) seeds the balances with the
+ * A trusted snapshot (creator-signed with every covered event present locally) seeds the balances with the
  * effect of exactly the events it covers. Every local event the snapshot does NOT cover is then replayed on
  * top, regardless of `createdAt`, so an event the creator had not yet received when snapshotting (offline
  * member, clock skew) is never lost. When a non-covered delete or correction targets an expense whose effect
@@ -119,10 +119,13 @@ constructor(
     suspend operator fun invoke(groupId: String): List<Balance> = computeWithExclusions(groupId).balances
 
     /**
-     * Seeds [balances] from the latest snapshot in [events] if it is trustworthy: authored by the group creator,
-     * carrying at least [MIN_SNAPSHOT_HASHES] event hashes of which at least [MIN_SNAPSHOT_MATCH_RATIO] are
-     * present in [events]. Hashes are compared on their first [HashUtil.EVENT_HASH_PREFIX_LENGTH] characters so
-     * snapshots written with full-length SHA-256 hashes stay readable.
+     * Seeds [balances] from the latest snapshot in [events] if it is trustworthy: authored by the group creator
+     * and carrying at least [MIN_SNAPSHOT_HASHES] distinct [HashUtil.eventHashPrefix] values, one per event it
+     * counts, each matching exactly one local event id.
+     *
+     * Coverage must be complete even when most hashes match: a missing correction or delete changes which
+     * covered payload must be reversed, and a missing settlement loses the `(author, id)` needed to dedup a
+     * retry. Local events outside the hash list are replayed on top regardless of their timestamps.
      *
      * A snapshot is an optimisation, not a source of truth: one that cannot be read or verified is ignored and
      * every event is replayed instead, so an unreadable snapshot never hides an unreadable ledger.
@@ -146,20 +149,22 @@ constructor(
             if (!trusted) return emptySet()
             val content = decrypt(snapshotEvent, groupId, keyCache)
             val snap = json.decodeFromString<BalanceSnapshot>(content)
-            if (snap.event_hashes.isEmpty()) {
-                // Reject snapshots without event hashes; they cannot be verified
-                Log.w(TAG, "Snapshot has empty event_hashes, ignoring unverifiable snapshot")
-                return emptySet()
-            }
-            val snapshotPrefixes = snap.event_hashes.mapTo(HashSet()) { it.take(HashUtil.EVENT_HASH_PREFIX_LENGTH) }
-            val covered = events.mapTo(HashSet()) { it.eventId }.filterTo(HashSet()) {
-                HashUtil.eventHashPrefix(it) in snapshotPrefixes
-            }
-            if (snap.event_hashes.size < MIN_SNAPSHOT_HASHES ||
-                covered.size.toDouble() / snap.event_hashes.size < MIN_SNAPSHOT_MATCH_RATIO
+            val hashes = snap.event_hashes
+            if (hashes.size < MIN_SNAPSHOT_HASHES ||
+                snap.as_of_event_count != hashes.size ||
+                hashes.toSet().size != hashes.size ||
+                hashes.any { !EVENT_HASH_PATTERN.matches(it) }
             ) {
-                Log.w(TAG, "Snapshot hash mismatch, ignoring")
+                Log.w(TAG, "Snapshot hash list invalid, replaying every event")
                 return emptySet()
+            }
+            val idsByHash = events.mapTo(HashSet()) { it.eventId }.groupBy(HashUtil::eventHashPrefix)
+            val covered = HashSet<String>()
+            for (hash in hashes) {
+                covered += idsByHash[hash]?.singleOrNull() ?: run {
+                    Log.w(TAG, "Snapshot covers an event that is missing or ambiguous locally, replaying every event")
+                    return emptySet()
+                }
             }
             for (b in snap.balances) {
                 balances[b.pubkey to b.currency] = b.net
@@ -198,10 +203,12 @@ constructor(
 
     /**
      * Replays every settlement the snapshot does not cover. A settlement is identified by `(author pubkey,
-     * settlement id)`, never by its id alone: the id travels in the plaintext `x` tag and any member may sign
-     * a settlement they are party to, so two members reusing one id are two distinct settlements, while the
-     * same author re-sending one settlement (a retry under a new Nostr event id) still counts once. Covered
-     * settlements seed the dedup set from `(pubkey, x tag)` without decryption.
+     * settlement id)`, never by its id alone: the id travels in the plaintext `x` tag, which every stored
+     * settlement row carries (`EventProcessor` rejects one without it), and any member may sign a settlement
+     * they are party to, so two members reusing one id are two distinct settlements, while the same author
+     * re-sending one settlement (a retry under a new Nostr event id) still counts once. Covered settlements
+     * seed the dedup set from `(pubkey, x tag)` without decryption; snapshot admission guarantees every
+     * covered row is present locally.
      *
      * @throws BalanceUnavailableException if a settlement is unreadable, malformed or overflows a total
      */
@@ -384,8 +391,8 @@ constructor(
         /** A snapshot with fewer hashes than this cannot be meaningfully verified. */
         private const val MIN_SNAPSHOT_HASHES = 10
 
-        /** Fraction of snapshot hashes that must be known locally for the snapshot to be trusted. */
-        private const val MIN_SNAPSHOT_MATCH_RATIO = 0.8
+        /** The only hash form a snapshot may carry: [HashUtil.eventHashPrefix] of an event id. */
+        private val EVENT_HASH_PATTERN = Regex("[0-9a-f]{${HashUtil.EVENT_HASH_PREFIX_LENGTH}}")
     }
 }
 

@@ -9,10 +9,10 @@ import kotlinx.serialization.Serializable
  *
  * @property as_of_timestamp creation time of the snapshot; informational only, readers decide which
  *   events to replay by [event_hashes] coverage, never by timestamp
- * @property event_hashes hashes of every event ID the creator had stored when snapshotting. New snapshots
- *   carry the first 24 hex chars of SHA-256(eventId) (see `HashUtil.eventHashPrefix`); older ones carry the
- *   full 64-char digest. Readers match on the 24-char prefix so both remain valid. Used to detect
- *   divergence and to decide which local events the snapshot already covers.
+ * @property as_of_event_count number of entries in [event_hashes]; readers reject a snapshot whose count differs
+ * @property event_hashes `HashUtil.eventHashPrefix` (first 24 hex chars of SHA-256) of every event ID the
+ *   creator had stored when snapshotting. Readers seed balances only when each hash matches exactly one local
+ *   event and replay the whole local ledger otherwise; local events outside the list are replayed on top.
  */
 @Serializable
 data class BalanceSnapshot(

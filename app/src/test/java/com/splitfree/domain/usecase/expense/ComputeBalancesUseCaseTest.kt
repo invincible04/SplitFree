@@ -12,7 +12,9 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
 import io.mockk.mockkStatic
+import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
@@ -681,7 +683,7 @@ class ComputeBalancesUseCaseTest {
         coEvery { repo.getById("g1") } returns group("").copy(members = listOf("alice", "bob"))
         val eventIds = (1..10).map { "event_$it" }
         val hashArr = eventIds.joinToString(",", "[", "]") {
-            "\"${com.splitfree.domain.util.HashUtil.sha256Hex(it)}\""
+            "\"${HashUtil.eventHashPrefix(it)}\""
         }
         val snapContent = snapJson(
             eventCount = 10,
@@ -704,7 +706,7 @@ class ComputeBalancesUseCaseTest {
         coEvery { repo.getById("g1") } returns group("").copy(members = listOf("alice", "bob"))
         val eventIds = (1..10).map { "event_$it" }
         val hashArr = eventIds.joinToString(",", "[", "]") {
-            "\"${com.splitfree.domain.util.HashUtil.sha256Hex(it)}\""
+            "\"${HashUtil.eventHashPrefix(it)}\""
         }
         val snapContent = snapJson(
             eventCount = 10,
@@ -730,7 +732,7 @@ class ComputeBalancesUseCaseTest {
         coEvery { repo.getById("g1") } returns group("alice")
         val eventIds = (1..10).map { "event_$it" }
         val hashes = eventIds.map {
-            com.splitfree.domain.util.HashUtil.sha256Hex(it)
+            HashUtil.eventHashPrefix(it)
         }
         val hashArr = hashes.joinToString(",", "[", "]") {
             "\"$it\""
@@ -1076,8 +1078,8 @@ class ComputeBalancesUseCaseTest {
     /** Ten filler ids that are known locally and covered by the snapshot, so the trust checks pass. */
     private val fillerIds = (1..10).map { "filler_$it" }
 
-    private fun hashArr(ids: List<String>, hash: (String) -> String = HashUtil::eventHashPrefix): String =
-        ids.joinToString(",", "[", "]") { "\"${hash(it)}\"" }
+    private fun hashArr(ids: List<String>): String =
+        ids.joinToString(",", "[", "]") { "\"${HashUtil.eventHashPrefix(it)}\"" }
 
     private fun mockLogW() {
         mockkStatic(android.util.Log::class)
@@ -1100,8 +1102,9 @@ class ComputeBalancesUseCaseTest {
     }
 
     /**
-     * Installs a trusted creator snapshot with the given balances that covers [fillerIds] plus [coveredIds].
-     * The ledger holds the snapshot, [events] and a filler row for every id in [fillerIds].
+     * Installs a creator snapshot with the given balances that covers [fillerIds] plus [coveredIds].
+     * The ledger holds the snapshot, [events] and a filler row for every id in [fillerIds]. A [coveredIds]
+     * entry with no row in [events] makes the snapshot unverifiable, so the ledger is replayed in full.
      */
     private fun installSnapshot(
         dao: EventRepositoryContract,
@@ -1109,8 +1112,7 @@ class ComputeBalancesUseCaseTest {
         events: List<EventSnapshot>,
         coveredIds: List<String>,
         balances: String,
-        asOfTs: Long = 100,
-        hash: (String) -> String = HashUtil::eventHashPrefix
+        asOfTs: Long = 100
     ) {
         coEvery { repo.getById("g1") } returns group("alice")
         val snapshot = makeEvent(
@@ -1122,7 +1124,7 @@ class ComputeBalancesUseCaseTest {
                 eventCount = fillerIds.size + coveredIds.size,
                 asOfTs = asOfTs,
                 balances = balances,
-                hashes = hashArr(fillerIds + coveredIds, hash)
+                hashes = hashArr(fillerIds + coveredIds)
             )
         )
         installLedger(dao, events + snapshot, knownIds = fillerIds)
@@ -1476,72 +1478,120 @@ class ComputeBalancesUseCaseTest {
         unmockkStatic(android.util.Log::class)
     }
 
-    @Test
-    fun `snapshot with truncated 24-char hashes is matched`() = runTest {
+    /** A rejected snapshot must replay the real 50, not its claimed 500, including the covered expense. */
+    private suspend fun assertCoverageRejected(
+        hashes: List<String>,
+        count: Int = hashes.size,
+        knownIds: List<String> = fillerIds
+    ) {
         val dao = eventDao()
         val repo = groupRepo()
-        installSnapshot(
-            dao,
-            repo,
-            events = emptyList(),
-            coveredIds = emptyList(),
-            balances = """[${balEntry("alice", 500, "INR")}]""",
-            hash = HashUtil::eventHashPrefix
+        coEvery { repo.getById("g1") } returns group()
+        val expense = makeEvent(
+            "e1",
+            type = "expense",
+            uuid = "u1",
+            content = expenseJson("u1", 100, splits = split("alice" to 50, "bob" to 50))
         )
-
-        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
-
-        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
-    }
-
-    @Test
-    fun `legacy snapshot with full-length hashes is still matched`() = runTest {
-        val dao = eventDao()
-        val repo = groupRepo()
-        val ab50 = split("alice" to 50, "bob" to 50)
-        val original =
-            makeEvent(
-                "e1",
-                type = "expense",
-                uuid = "u1",
-                createdAt = 1,
-                content = expenseJson("u1", 100, splits = ab50)
+        val snapshot = makeEvent(
+            "snap",
+            type = "snapshot",
+            content = snapJson(
+                eventCount = count,
+                balances = "[${balEntry("alice", 500, "INR")},${balEntry("bob", -500, "INR")}]",
+                hashes = hashes.joinToString(",", "[", "]") { "\"$it\"" }
             )
-        installSnapshot(
-            dao,
-            repo,
-            events = listOf(original),
-            coveredIds = listOf("e1"),
-            balances = """[${balEntry("alice", 500, "INR")}]""",
-            hash = HashUtil::sha256Hex
         )
-
-        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
-
-        // Snapshot trusted AND e1 recognised as covered (not replayed on top of the 500).
-        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
+        installLedger(dao, listOf(expense, snapshot), knownIds)
+        val compute = ComputeBalancesUseCase(dao, repo, encryption())
+        val ledger = dao.getEventsByGroup("g1")
+        val replay = compute.computeWithExclusions("g1", ledger, useSnapshots = false)
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(replay))
+        for (order in listOf(ledger, ledger.reversed())) {
+            val result = compute.computeWithExclusions("g1", order)
+            assertEquals("Invalid coverage must fall back regardless of storage order", nets(replay), nets(result))
+            assertEquals(replay.excludedExpenses, result.excludedExpenses)
+        }
     }
 
     @Test
-    fun `snapshot mixing legacy and truncated hashes is matched`() = runTest {
+    fun `one missing hash cannot be masked by unrelated local events`() = runTest {
+        assertCoverageRejected(
+            (fillerIds + "missing" + "e1").map(HashUtil::eventHashPrefix),
+            knownIds = fillerIds + (1..20).map { "unrelated-$it" }
+        )
+    }
+
+    @Test
+    fun `duplicate hashes cannot inflate coverage`() = runTest {
+        val hashes = (fillerIds + "e1").map(HashUtil::eventHashPrefix)
+        assertCoverageRejected(hashes + hashes.first())
+    }
+
+    @Test
+    fun `as_of_event_count must equal the number of hashes`() = runTest {
+        val hashes = (fillerIds + "e1").map(HashUtil::eventHashPrefix)
+        for (count in listOf(hashes.size - 1, hashes.size + 1)) assertCoverageRejected(hashes, count = count)
+    }
+
+    @Test
+    fun `snapshot with full-length hashes is rejected and replayed`() = runTest {
+        assertCoverageRejected((fillerIds + "e1").map(HashUtil::sha256Hex))
+    }
+
+    @Test
+    fun `malformed hash cannot hide among otherwise matching hashes`() = runTest {
+        val hashes = (fillerIds + "e1").map(HashUtil::eventHashPrefix)
+        val first = hashes.first()
+        for (bad in listOf(first.dropLast(1), first + "0", first.dropLast(1) + "g")) {
+            assertCoverageRejected(listOf(bad) + hashes.drop(1))
+        }
+    }
+
+    @Test
+    fun `one prefix matching two distinct local event ids is ambiguous coverage`() = runTest {
+        val hashes = (fillerIds + "e1").map(HashUtil::eventHashPrefix)
+        // An actual 96-bit collision is infeasible to generate in a test; model only the hash lookup.
+        mockkObject(HashUtil)
+        try {
+            every { HashUtil.eventHashPrefix("collision") } returns hashes.first()
+            assertCoverageRejected(hashes, knownIds = fillerIds + "collision")
+        } finally {
+            unmockkObject(HashUtil)
+        }
+    }
+
+    @Test
+    fun `rejected partial snapshot does not hide unreadable covered money`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
-        var toggle = false
-        installSnapshot(
-            dao,
-            repo,
-            events = emptyList(),
-            coveredIds = emptyList(),
-            balances = """[${balEntry("alice", 500, "INR")}]""",
-            hash = { id ->
-                toggle = !toggle
-                if (toggle) HashUtil.sha256Hex(id) else HashUtil.eventHashPrefix(id)
-            }
-        )
+        val bad = makeEvent("e1", type = "expense", uuid = "u1", content = "not-json")
+        installSnapshot(dao, repo, listOf(bad), listOf("e1", "missing"), "[${balEntry("alice", 500, "INR")}]")
+        assertThrows(BalanceUnavailableException::class.java) {
+            runBlocking { ComputeBalancesUseCase(dao, repo, encryption())("g1") }
+        }
+    }
 
-        val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
-
-        assertEquals(500L, balances.find { it.pubkey == "alice" }?.net)
+    @Test
+    fun `rejected partial snapshot does not hide overflow in covered money`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val money = (1..2).map {
+            makeEvent(
+                "e$it",
+                type = "expense",
+                uuid = "u$it",
+                content = expenseJson(
+                    "u$it",
+                    Long.MAX_VALUE,
+                    splits = split("alice" to 0L, "bob" to Long.MAX_VALUE)
+                )
+            )
+        }
+        installSnapshot(dao, repo, money, listOf("e1", "e2", "missing"), "[${balEntry("alice", 500, "INR")}]")
+        assertThrows(BalanceUnavailableException::class.java) {
+            runBlocking { ComputeBalancesUseCase(dao, repo, encryption())("g1") }
+        }
     }
 
     // --- Fail closed: unreadable money is an exception, never a partial total ---
@@ -1654,11 +1704,19 @@ class ComputeBalancesUseCaseTest {
         val older = makeEvent(
             "a",
             type = "snapshot",
-            content = snapJson(balances = "[${balEntry("alice", 50, "INR")}]", hashes = hashArr(fillerIds))
+            content = snapJson(
+                eventCount = fillerIds.size,
+                balances = "[${balEntry("alice", 50, "INR")}]",
+                hashes = hashArr(fillerIds)
+            )
         )
         val newer = older.copy(
             eventId = "z",
-            contentEncrypted = snapJson(balances = "[${balEntry("alice", 100, "INR")}]", hashes = hashArr(fillerIds))
+            contentEncrypted = snapJson(
+                eventCount = fillerIds.size,
+                balances = "[${balEntry("alice", 100, "INR")}]",
+                hashes = hashArr(fillerIds)
+            )
         )
         installLedger(dao, listOf(newer, older), knownIds = fillerIds)
 

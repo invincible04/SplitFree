@@ -196,27 +196,132 @@ class EventDaoTest {
     }
 
     @Test
-    fun `getDeletedExpenseUuidsByAuthor filters by author and ignores applyState`() = runBlocking {
-        dao.insert(event("alice-d1", pubkey = "alice", eventType = "expense_delete", expenseUuid = "u1"))
+    fun `admission tombstones count only applied deletes of the author`() = runBlocking {
+        dao.insert(event("applied", eventType = "expense_delete", expenseUuid = "u1"))
         dao.insert(
             event(
-                "alice-d2",
-                pubkey = "alice",
+                "pending",
                 eventType = "expense_delete",
                 expenseUuid = "u2",
                 applyState = EventEntity.APPLY_STATE_PENDING
             )
         )
-        dao.insert(event("bob-d", pubkey = "bob", eventType = "expense_delete", expenseUuid = "u3"))
-        dao.insert(event("alice-null", pubkey = "alice", eventType = "expense_delete", expenseUuid = null))
-        dao.insert(event("alice-expense", pubkey = "alice", expenseUuid = "u4"))
         dao.insert(
-            event("other-group", groupId = "g2", pubkey = "alice", eventType = "expense_delete", expenseUuid = "u5")
+            event(
+                "failed",
+                eventType = "expense_delete",
+                expenseUuid = "u3",
+                applyState = EventEntity.APPLY_STATE_FAILED
+            )
         )
+        dao.insert(event("bob", pubkey = "bob", eventType = "expense_delete", expenseUuid = "u4"))
+        dao.insert(event("other-group", groupId = "g2", eventType = "expense_delete", expenseUuid = "u5"))
+        dao.insert(event("no-uuid", eventType = "expense_delete"))
+        dao.insert(event("not-delete", expenseUuid = "u6"))
 
-        assertEquals(setOf("u1", "u2"), dao.getDeletedExpenseUuidsByAuthor("g1", "alice").toSet())
-        assertEquals(listOf("u3"), dao.getDeletedExpenseUuidsByAuthor("g1", "bob"))
-        assertEquals(emptyList<String>(), dao.getDeletedExpenseUuidsByAuthor("g1", "carol"))
+        assertEquals(listOf("u1"), dao.getAppliedDeletedExpenseUuidsByAuthor("g1", "alice"))
+        assertEquals(listOf("u4"), dao.getAppliedDeletedExpenseUuidsByAuthor("g1", "bob"))
+        assertTrue(dao.getAppliedDeletedExpenseUuidsByAuthor("g1", "carol").isEmpty())
+        assertEquals(listOf("u1", "u4"), dao.getDeletedExpenseUuids("g1"))
+        assertEquals(
+            setOf("applied", "bob", "no-uuid", "not-delete"),
+            dao.observeEventsByGroup("g1").first().map { it.eventId }.toSet()
+        )
+    }
+
+    @Test
+    fun `original insert applies only pending deletes of the same group author and uuid`() = runBlocking {
+        val pending = event(
+            "delete",
+            expenseUuid = "u",
+            eventType = "expense_delete",
+            applyState = EventEntity.APPLY_STATE_PENDING
+        )
+        val untouched = listOf(
+            pending.copy(eventId = "other-author", pubkey = "bob"),
+            pending.copy(eventId = "other-group", groupId = "g2"),
+            pending.copy(eventId = "other-uuid", expenseUuid = "v"),
+            pending.copy(eventId = "failed", applyState = EventEntity.APPLY_STATE_FAILED),
+            pending.copy(eventId = "correction", eventType = "expense_correction")
+        )
+        (listOf(pending) + untouched).forEach { dao.insert(it) }
+        assertTrue(dao.insert(event("original", expenseUuid = "u")) != -1L)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, dao.getEvent("delete")!!.applyState)
+        untouched.forEach { assertEquals(it, dao.getEvent(it.eventId)) }
+        assertEquals(-1L, dao.insert(event("original", expenseUuid = "u")))
+        assertEquals(setOf("original", "delete"), dao.getEventsByGroup("g1").map { it.eventId }.toSet())
+    }
+
+    @Test
+    fun `interleaved second original after promotion is rejected distinctly from a duplicate`() = runBlocking {
+        // Both originals passed the pre-transaction tombstone check while the delete was still pending.
+        dao.insert(
+            event(
+                "delete",
+                expenseUuid = "u",
+                eventType = "expense_delete",
+                applyState = EventEntity.APPLY_STATE_PENDING
+            )
+        )
+        assertTrue(dao.insert(event("first", expenseUuid = "u")) != -1L)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, dao.getEvent("delete")!!.applyState)
+
+        assertEquals(EventDao.REJECTED_DELETED, dao.insert(event("second", expenseUuid = "u", createdAt = 200)))
+        assertNull(dao.getEvent("second"))
+        assertEquals(-1L, dao.insert(event("first", expenseUuid = "u")))
+        // Deleted history from a backup is not a replay: import stores it through insertHistory.
+        assertTrue(dao.insertHistory(event("second", expenseUuid = "u", createdAt = 200)) != -1L)
+        assertEquals(-1L, dao.insertHistory(event("second", expenseUuid = "u", createdAt = 200)))
+        assertEquals(setOf("delete", "first", "second"), dao.getEventsByGroup("g1").map { it.eventId }.toSet())
+        // Other authors, uuids and groups are unaffected by alice's applied tombstone.
+        assertTrue(dao.insert(event("bob", pubkey = "bob", expenseUuid = "u")) != -1L)
+        assertTrue(dao.insert(event("other-uuid", expenseUuid = "v")) != -1L)
+        assertTrue(dao.insert(event("other-group", groupId = "g2", expenseUuid = "u")) != -1L)
+    }
+
+    @Test
+    fun `delete inserted after its original committed is applied immediately`() = runBlocking {
+        // The processor saw no original, then a concurrent import or publish committed it.
+        dao.insert(event("original", expenseUuid = "u"))
+        val delete =
+            event(
+                "delete",
+                expenseUuid = "u",
+                eventType = "expense_delete",
+                applyState = EventEntity.APPLY_STATE_PENDING
+            )
+
+        assertTrue(dao.insert(delete) != -1L)
+
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, dao.getEvent("delete")!!.applyState)
+        assertEquals(0, dao.countPending("g1"))
+        assertEquals(listOf("u"), dao.getDeletedExpenseUuids("g1"))
+        // Without an applied same-author original the delete still waits.
+        assertTrue(dao.insert(delete.copy(eventId = "bob-delete", pubkey = "bob")) != -1L)
+        assertTrue(dao.insert(delete.copy(eventId = "other-uuid", expenseUuid = "v")) != -1L)
+        assertTrue(dao.insert(delete.copy(eventId = "correction", eventType = "expense_correction")) != -1L)
+        assertEquals(
+            setOf("bob-delete", "other-uuid", "correction"),
+            dao.getPendingEvents("g1").map {
+                it.eventId
+            }.toSet()
+        )
+    }
+
+    @Test
+    fun `pending failed and duplicate original inserts do not promote deletes`() = runBlocking {
+        val delete = event(
+            "delete",
+            expenseUuid = "u",
+            eventType = "expense_delete",
+            applyState = EventEntity.APPLY_STATE_PENDING
+        )
+        dao.insert(delete)
+        assertTrue(dao.insert(event("pending", expenseUuid = "u", applyState = EventEntity.APPLY_STATE_PENDING)) != -1L)
+        assertTrue(dao.insert(event("failed", expenseUuid = "u", applyState = EventEntity.APPLY_STATE_FAILED)) != -1L)
+        assertEquals(-1L, dao.insert(event("pending", expenseUuid = "u")))
+        assertEquals(delete, dao.getEvent(delete.eventId))
+        assertTrue(dao.getEventsByGroup("g1").isEmpty())
     }
 
     @Test

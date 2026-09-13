@@ -452,7 +452,7 @@ constructor(
                         return false
                     }
                 if (!eventValidator.isSettlementValid(settlement, candidate.pubkey, members)) return false
-                if (candidate.expenseUuid != null && settlement.id != candidate.expenseUuid) return false
+                if (settlement.id != candidate.expenseUuid) return false
             }
         }
         return true
