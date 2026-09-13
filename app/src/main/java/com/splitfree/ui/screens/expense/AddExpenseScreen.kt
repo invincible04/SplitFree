@@ -278,22 +278,25 @@ private fun ExpenseForm(
 private fun ExpenseDiscardSheet(editing: Boolean, onKeepEditing: () -> Unit, onDiscard: () -> Unit) {
     SfSheet(
         onDismiss = onKeepEditing,
-        title = stringResource(if (editing) R.string.expense_discard_changes_title else R.string.expense_discard_title)
+        title = stringResource(if (editing) R.string.expense_discard_changes_title else R.string.expense_discard_title),
+        scrollable = true,
+        footer = {
+            SfSheetFooter(
+                secondary = {
+                    SfSecondaryButton(
+                        text = stringResource(R.string.expense_keep_editing),
+                        onClick = onKeepEditing,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                primary = { SfPrimaryButton(text = stringResource(R.string.expense_discard), onClick = onDiscard) }
+            )
+        }
     ) {
         Text(
             stringResource(R.string.expense_discard_body),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SfSheetFooter(
-            secondary = {
-                SfSecondaryButton(
-                    text = stringResource(R.string.expense_keep_editing),
-                    onClick = onKeepEditing,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            primary = { SfPrimaryButton(text = stringResource(R.string.expense_discard), onClick = onDiscard) }
         )
     }
 }

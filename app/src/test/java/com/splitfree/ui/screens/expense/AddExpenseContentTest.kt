@@ -485,6 +485,22 @@ class AddExpenseContentTest {
     }
 
     @Test
+    @Config(qualifiers = "en-rUS-w640dp-h360dp-land-mdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `landscape at 200 percent keeps discard confirmation actions reachable`() {
+        RuntimeEnvironment.setFontScale(2f)
+        state = state.copy(dirty = true)
+        var backs = 0
+        render(ExpenseEditorActions(back = { backs++ }))
+
+        compose.runOnIdle { backDispatcher.onBackPressed() }
+
+        compose.onNodeWithText(text(R.string.expense_keep_editing)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.expense_discard)).assertIsDisplayed().performAccessibleClick()
+        compose.runOnIdle { assertEquals(1, backs) }
+    }
+
+    @Test
     fun `saving an edit shows the saving label like a new expense`() {
         state = state.copy(editing = true, saving = true, editable = false)
         render()
