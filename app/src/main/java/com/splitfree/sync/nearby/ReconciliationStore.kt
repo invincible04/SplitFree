@@ -74,5 +74,13 @@ data class StoreVersion(val revision: Long)
  *
  * @property upgraded true when an existing rumor row gains a third-party-verifiable signature
  * @property controlApplied true when a key or membership record is applied, so deferred rows should be retried
+ * @property retryable true for a [RecordOutcome.REJECTED] caused by a record this device lacks (the sealing
+ *   key's epoch or the author's join); the session keeps the item and asks for it again once a control
+ *   record lands or the local store changes, instead of forgetting it with the snapshot
  */
-data class IngestReport(val outcome: RecordOutcome, val upgraded: Boolean = false, val controlApplied: Boolean = false)
+data class IngestReport(
+    val outcome: RecordOutcome,
+    val upgraded: Boolean = false,
+    val controlApplied: Boolean = false,
+    val retryable: Boolean = false
+)

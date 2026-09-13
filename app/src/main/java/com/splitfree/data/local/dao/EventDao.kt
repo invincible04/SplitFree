@@ -134,6 +134,10 @@ interface EventDao {
     @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND applyState = 1")
     suspend fun countPending(groupId: String): Int
 
+    /** Rows by [pubkey] in [groupId] still awaiting a dependency; bounds what one author may hold pending. */
+    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND pubkey = :pubkey AND applyState = 1")
+    suspend fun countPendingByAuthor(groupId: String, pubkey: String): Int
+
     /** Atomic insert; returns true only if the row was actually inserted (not a duplicate). */
     suspend fun insertIfNew(event: EventEntity): Boolean = insert(event) != -1L
 }

@@ -18,6 +18,9 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     val deliveries = LinkedHashMap<String, Delivery>()
     val ingested = mutableListOf<String>()
     val outcomes = HashMap<String, RecordOutcome>()
+
+    /** Scripted rejections in here are malformed or unauthorized, not waiting for a dependency. */
+    val permanentRejects = HashSet<String>()
     var controlIds = HashSet<String>()
 
     /** Durable pending rows: grows on a scripted DEFERRED ingest, shrinks by what [retryDeferred] reports. */
@@ -86,7 +89,8 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         ingested += item.id
         outcomes[item.id]?.let {
             if (it == RecordOutcome.DEFERRED) deferredPending++
-            return IngestReport(it)
+            // A scripted rejection stands for a missing key or join unless the test says it is permanent.
+            return IngestReport(it, retryable = it == RecordOutcome.REJECTED && item.id !in permanentRejects)
         }
         return when (item.t) {
             NearbyWire.KIND_EVENT -> {

@@ -38,7 +38,11 @@ import kotlinx.serialization.json.Json
  * only) → group + membership → decrypt → content safety → business rules → payload → insert →
  * post-process. Rows whose side effects could not run yet (missing dependency or a transient failure)
  * stay [EventEntity.APPLY_STATE_PENDING] and are re-driven by [retryDeferred]; rows whose effect can
- * never apply on this device are marked [EventEntity.APPLY_STATE_FAILED].
+ * never apply on this device are marked [EventEntity.APPLY_STATE_FAILED]. A correction or delete whose
+ * original has not arrived is such a pending row too: it has passed every check that does not need the
+ * original, is invisible to every ledger read until the original lands, and is applied by the next
+ * [retryDeferred] after it does. Relays return gift wraps in outer-timestamp order and a nearby transfer
+ * can lose one frame, so a correction routinely precedes its original.
  */
 @Singleton
 class EventProcessor
@@ -66,6 +70,9 @@ constructor(
      * @property outcome what happened to the record; the vocabulary shared with the nearby wire protocol
      * @property reason short diagnostic for a non-applied outcome, never shown to users
      * @property eventId id of the inner (unwrapped) event, once it is known
+     * @property retryable true for a [IngestOutcome.REJECTED] whose cause is a record this device lacks
+     *   (the key epoch it was sealed under, or the author's join): the same event may be accepted once
+     *   that record lands, so a caller holding it should offer it again rather than discard it
      */
     data class ProcessResult(
         val stored: Boolean,
@@ -75,7 +82,8 @@ constructor(
         val authorHex: String? = null,
         val outcome: IngestOutcome = if (stored) IngestOutcome.APPLIED else IngestOutcome.REJECTED,
         val reason: String? = null,
-        val eventId: String? = null
+        val eventId: String? = null,
+        val retryable: Boolean = false
     )
 
     /**
@@ -148,6 +156,7 @@ constructor(
                 content = existing.contentEncrypted,
                 createdAt = existing.createdAt,
                 groupId = existing.groupId,
+                expenseUuid = existing.expenseUuid,
                 nonCancellable = nonCancellable
             )
         }
@@ -226,10 +235,11 @@ constructor(
             return rejected("unsafe content", inner.id, eventType, authorHex)
         }
 
-        // 8. Business rule validations
-        if (!validateBusinessRules(eventType, authorHex, expenseUuid, groupId)) {
-            return rejected("business rule", inner.id, eventType, authorHex)
-        }
+        // 8. Business rule validations. A correction or delete may legitimately outrun its original;
+        //    it is then stored pending rather than refused (see the class comment).
+        val rules = validateBusinessRules(eventType, authorHex, expenseUuid, groupId)
+        if (rules == BusinessRules.REJECTED) return rejected("business rule", inner.id, eventType, authorHex)
+        val awaitsOriginal = rules == BusinessRules.MISSING_ORIGINAL
 
         // 8b. Validate remote payloads before storing. Participants may include past members when
         //     reconciling history; live traffic is checked against the current roster only.
@@ -242,6 +252,12 @@ constructor(
         if (!validatePayload(eventType, decrypted, authorHex, expenseUuid, participants, inner.id)) {
             return rejected("invalid payload", inner.id, eventType, authorHex)
         }
+        if (awaitsOriginal && eventDao.countPendingByAuthor(groupId, authorHex) >= MAX_PENDING_LEDGER_PER_AUTHOR) {
+            // Bounded retention: a member cannot fill the database with corrections to nothing. The
+            // record is not stored, so a later pull or session offers it again.
+            Log.w(TAG, "Rejecting $eventType from ${authorHex.take(8)}: too many records awaiting originals")
+            return rejected("pending quota", inner.id, eventType, authorHex)
+        }
 
         // 9. Store
         // A gift-wrapped rumor is unsigned; the seal signature is the proof that `authorHex` wrote
@@ -253,6 +269,7 @@ constructor(
         // that looks applied but never was.
         val storedSig = if (unwrapResult != null) EventSnapshot.SEAL_SIG_PREFIX + unwrapResult.sealSig else inner.sig
         val hasSideEffects = eventType in SIDE_EFFECT_TYPES
+        val pendingOnInsert = hasSideEffects || awaitsOriginal
         val inserted = eventDao.insertIfNew(
             EventEntity(
                 eventId = inner.id, groupId = groupId, pubkey = authorHex,
@@ -260,7 +277,7 @@ constructor(
                 eventType = eventType, expenseUuid = expenseUuid, sig = storedSig,
                 receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson(),
                 keyEpoch = decryptedEpoch,
-                applyState = if (hasSideEffects) EventEntity.APPLY_STATE_PENDING else EventEntity.APPLY_STATE_APPLIED
+                applyState = if (pendingOnInsert) EventEntity.APPLY_STATE_PENDING else EventEntity.APPLY_STATE_APPLIED
             )
         )
         if (!inserted) {
@@ -271,6 +288,20 @@ constructor(
                 authorHex = authorHex,
                 outcome = IngestOutcome.ALREADY_APPLIED,
                 reason = "duplicate",
+                eventId = inner.id
+            )
+        }
+
+        if (awaitsOriginal) {
+            Log.i(TAG, "Holding $eventType from ${authorHex.take(8)} in group ${group.name} until its original arrives")
+            return ProcessResult(
+                true,
+                group.name,
+                eventType,
+                decrypted,
+                authorHex,
+                outcome = IngestOutcome.DEFERRED,
+                reason = "missing original",
                 eventId = inner.id
             )
         }
@@ -361,6 +392,7 @@ constructor(
                     content = row.contentEncrypted,
                     createdAt = row.createdAt,
                     groupId = row.groupId,
+                    expenseUuid = row.expenseUuid,
                     nonCancellable = false
                 )
                 if (result.outcome == IngestOutcome.APPLIED) progress++
@@ -377,6 +409,9 @@ constructor(
      * against the live epoch in EventPostProcessor and the repository's atomic mutation guard.
      * On [PostProcessOutcome.FAILED] the row stays pending (retried later); on
      * [PostProcessOutcome.REJECTED] it is marked failed and no longer retried.
+     *
+     * A pending correction or delete has no side effect to run; it is applied as soon as an applied
+     * original by the same author exists for its expense, and stays pending until then.
      */
     private suspend fun applyStoredEffects(
         eventId: String,
@@ -385,10 +420,19 @@ constructor(
         content: String,
         createdAt: Long,
         groupId: String,
+        expenseUuid: String?,
         nonCancellable: Boolean
     ): ProcessResult {
         val group = groupRepo.getById(groupId)
             ?: return rejected("unknown group", eventId, eventType, authorHex)
+        if (eventType in ORIGINAL_DEPENDENT_TYPES) {
+            val original = expenseUuid?.let { eventDao.getExpenseByAuthor(it, groupId, authorHex) }
+            val base = ProcessResult(true, group.name, eventType, null, authorHex, eventId = eventId)
+            if (original == null) return base.copy(outcome = IngestOutcome.DEFERRED, reason = "missing original")
+            markApplied(eventId, nonCancellable)
+            Log.i(TAG, "Applied held $eventType ${eventId.take(8)} in group ${group.name}: original arrived")
+            return base
+        }
         val decrypted = decryptContent(content, eventType, authorHex, group, groupId)
             ?: return rejected("undecryptable", eventId, eventType, authorHex)
         val effect =
@@ -610,29 +654,40 @@ constructor(
         return MembershipResult(true)
     }
 
+    /** Outcome of [validateBusinessRules]. */
+    private enum class BusinessRules { OK, REJECTED, MISSING_ORIGINAL }
+
     /**
      * Expense identity is bound to its author (NS-15): a correction or delete only resolves against an
      * expense the same pubkey stored, and a replayed expense is only a tombstoned replay if the same
      * author deleted that uuid. Two members can therefore never collide on (or hijack) each other's ids.
+     *
+     * Because the lookup is author-qualified, an original that exists is always by the right author; the
+     * only open question for a correction or delete is whether that original has arrived yet.
      */
     private suspend fun validateBusinessRules(
         eventType: String,
         authorHex: String,
         expenseUuid: String?,
         groupId: String
-    ): Boolean {
-        if (eventType == "expense_correction" || eventType == "expense_delete") {
-            val originalCreator = expenseUuid?.let { eventDao.getExpenseByAuthor(it, groupId, authorHex)?.pubkey }
+    ): BusinessRules {
+        if (eventType in ORIGINAL_DEPENDENT_TYPES) {
+            if (expenseUuid == null) {
+                Log.w(TAG, "Rejecting $eventType without an expense id")
+                return BusinessRules.REJECTED
+            }
+            val originalCreator = eventDao.getExpenseByAuthor(expenseUuid, groupId, authorHex)?.pubkey
+            if (originalCreator == null) return BusinessRules.MISSING_ORIGINAL
             if (!eventValidator.isCorrectionAuthorValid(eventType, authorHex, originalCreator)) {
                 Log.w(TAG, "Rejecting $eventType: author $authorHex is not the original creator")
-                return false
+                return BusinessRules.REJECTED
             }
         }
         if (eventType == "expense" && expenseUuid != null) {
             val deletedUuids = eventDao.getDeletedExpenseUuidsByAuthor(groupId, authorHex).toSet()
             if (eventValidator.isDeletedExpense(eventType, expenseUuid, deletedUuids)) {
                 Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
-                return false
+                return BusinessRules.REJECTED
             }
         }
         // Intentionally no timestamp-ordering rule between expenses and settlements.
@@ -641,7 +696,7 @@ constructor(
         // Ordinary clock skew between phones (plus the +1h future tolerance) would
         // otherwise silently and permanently drop legitimate expenses on every peer
         // except the author.
-        return true
+        return BusinessRules.OK
     }
 
     /**
@@ -708,7 +763,8 @@ constructor(
         authorHex = authorHex,
         outcome = IngestOutcome.REJECTED,
         reason = reason,
-        eventId = eventId
+        eventId = eventId,
+        retryable = reason in RETRYABLE_REASONS
     )
 
     companion object {
@@ -721,6 +777,15 @@ constructor(
 
         /** Ledger record types a former member may legitimately have authored before their removal. */
         private val HISTORY_TYPES = setOf("expense", "settlement", "expense_correction", "expense_delete")
+
+        /** Types that apply only once the same author's original expense is stored. */
+        private val ORIGINAL_DEPENDENT_TYPES = setOf("expense_correction", "expense_delete")
+
+        /** Rejections a record this device lacks would lift: the sealing key's epoch, or the author's join. */
+        private val RETRYABLE_REASONS = setOf("undecryptable", "not a member")
+
+        /** Rows one author may hold pending for missing originals in one group. */
+        internal const val MAX_PENDING_LEDGER_PER_AUTHOR = 128
 
         /** Upper bound on [retryDeferred] passes; each pass must apply at least one row to continue. */
         private const val MAX_RETRY_PASSES = 8

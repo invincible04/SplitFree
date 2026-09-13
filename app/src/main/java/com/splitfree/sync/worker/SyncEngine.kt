@@ -82,11 +82,7 @@ constructor(
                     lenientTimestamp = lenientTimestamp,
                     context = context
                 )
-            if (result.outcome == IngestOutcome.REJECTED &&
-                result.reason in setOf("undecryptable", "not a member")
-            ) {
-                retryable += event
-            }
+            if (result.retryable) retryable += event
             if (result.stored && event.id !in existingIds) {
                 if (notifyContext != null && result.outcome == IngestOutcome.APPLIED) {
                     ExpenseNotifier.notifyIfNeeded(

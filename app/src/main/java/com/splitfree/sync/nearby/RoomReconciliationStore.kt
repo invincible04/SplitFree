@@ -198,7 +198,7 @@ constructor(
                 result.eventType in CONTROL_TYPES
             )
             IngestOutcome.DEFERRED -> IngestReport(RecordOutcome.DEFERRED)
-            IngestOutcome.REJECTED -> rejected(result.reason ?: "rejected")
+            IngestOutcome.REJECTED -> rejected(result.reason ?: "rejected", retryable = result.retryable)
             IngestOutcome.ALREADY_APPLIED -> {
                 val id = result.eventId ?: event.id
                 val existing = eventDao.getEvent(id)
@@ -306,9 +306,9 @@ constructor(
         deliveryDao.deleteOlderThan(now - CARRIED_RETENTION_SECS, DeliveryEntity.SOURCE_CARRIED)
     }
 
-    private fun rejected(reason: String): IngestReport {
+    private fun rejected(reason: String, retryable: Boolean = false): IngestReport {
         Log.w(TAG, "Rejected record: $reason")
-        return IngestReport(RecordOutcome.REJECTED)
+        return IngestReport(RecordOutcome.REJECTED, retryable = retryable)
     }
 
     private fun NostrEvent.tag(name: String): String? = tags.firstOrNull { it.size >= 2 && it[0] == name }?.get(1)

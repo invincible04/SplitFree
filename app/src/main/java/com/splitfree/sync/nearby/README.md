@@ -81,9 +81,13 @@ sends `ReconcileResult`. Inventories list:
 - `d` entries: recipient-encrypted envelopes (gift wraps, per-member key rotations) this phone holds,
   with the recipient pubkey and, when known, the inner event id.
 
-Key rotations and other control records are advertised first. A record refused as undecryptable
-before its key arrived is requested once more in the same snapshot after a control record applies,
-and rows deferred on a missing epoch are re-driven (`EventProcessor.retryDeferred`).
+Key rotations and other control records are advertised first. A record refused for want of another
+record (undecryptable under any known epoch, or by an author whose join has not landed) is kept for the
+life of the session and requested again after a control record applies or the local store changes,
+whichever snapshot first offered it; the provider serves any id in its current inventory, acknowledged
+or not. Malformed and unauthorized records are not retried. A correction or delete that arrives before
+its original is stored pending, invisible to the ledger, and applied by `EventProcessor.retryDeferred`
+once the original lands; rows deferred on a missing epoch are re-driven the same way.
 
 A consumer wants: unknown verifiable events; a signed original for an event it only holds as a rumor
 (the row is upgraded in place, never duplicated); envelopes addressed to itself; and envelopes for
@@ -180,11 +184,13 @@ and delivery-only writes all advance it; no-op writes and sync timestamps do not
   device addressed only through its own revoked key advances without key material, exactly as if
   removed, until the creator rotates again. Refusing would park the record as failed and leave the
   device at the old epoch for good, since every later epoch is then a gap.
-- **Stored vs applied**: control events are stored pending until their effect lands (`applyState`).
-  A missing dependency (epoch gap, a member whose join has not arrived) or a transient failure
-  keeps the row pending and retried; an effect that can never apply on this device (key material it
-  cannot open, conflicting epoch key) parks the row as failed. A receipt of `APPLIED` for a control
-  record therefore means its durable effect landed. Only applied rows enter balances.
+- **Stored vs applied**: control events are stored pending until their effect lands (`applyState`),
+  and so is a correction or delete whose original has not arrived (bounded per author and group).
+  A missing dependency (epoch gap, a member whose join has not arrived, a missing original) or a
+  transient failure keeps the row pending and retried; an effect that can never apply on this device
+  (key material it cannot open, conflicting epoch key) parks the row as failed. A receipt of
+  `APPLIED` for a control record therefore means its durable effect landed. Only applied rows enter
+  balances.
 - **Historical authors** are admitted during reconciliation if the record decrypts under an epoch
   older than the one that removed them.
 

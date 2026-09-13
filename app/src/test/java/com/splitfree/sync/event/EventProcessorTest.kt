@@ -320,6 +320,9 @@ class EventProcessorTest {
 
     @Test
     fun `process rejects correction from wrong author`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
         every {
             eventValidator.isCorrectionAuthorValid(any(), any(), any())
         } returns false
@@ -328,6 +331,88 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertFalse(result.stored)
+        assertEquals("business rule", result.reason)
+    }
+
+    @Test
+    fun `process holds a correction whose original has not arrived and applies it once it has`() = runBlocking {
+        useInMemoryEventStore()
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns null
+        val correction = makeEvent(id = "corr1", eventType = "expense_correction", expenseUuid = "uuid1")
+
+        val held = processor.process(correction, knownGroupKey = groupKey)
+
+        assertTrue(held.stored)
+        assertEquals(IngestOutcome.DEFERRED, held.outcome)
+        assertEquals("missing original", held.reason)
+        assertEquals(EventEntity.APPLY_STATE_PENDING, store["corr1"]?.applyState)
+        assertEquals(0, processor.retryDeferred(groupId))
+        assertEquals(EventEntity.APPLY_STATE_PENDING, store["corr1"]?.applyState)
+
+        // The original lands (from anywhere): the next retry applies the held correction.
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
+        assertEquals(1, processor.retryDeferred(groupId))
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, store["corr1"]?.applyState)
+        // A replay of the held record while pending is a re-drive, not a new row.
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns null
+        store["corr1"] = store.getValue("corr1").copy(applyState = EventEntity.APPLY_STATE_PENDING)
+        assertEquals(IngestOutcome.DEFERRED, processor.process(correction, knownGroupKey = groupKey).outcome)
+        assertEquals(1, store.size)
+    }
+
+    @Test
+    fun `process holds a delete ahead of its original and applies it when the original lands`() = runBlocking {
+        useInMemoryEventStore()
+        val now = System.currentTimeMillis() / 1000
+        every { encryption.decrypt(any(), groupKey) } returns "{}"
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns null
+
+        val held = processor.process(
+            makeEvent(id = "del1", eventType = "expense_delete", expenseUuid = "uuid1"),
+            knownGroupKey = groupKey
+        )
+
+        assertEquals(IngestOutcome.DEFERRED, held.outcome)
+        assertEquals(EventEntity.APPLY_STATE_PENDING, store["del1"]?.applyState)
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
+        assertEquals(1, processor.retryDeferred(groupId))
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, store["del1"]?.applyState)
+    }
+
+    @Test
+    fun `process stops holding corrections for an author past the pending quota`() = runBlocking {
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns null
+        coEvery { eventDao.countPendingByAuthor(groupId, pubkey) } returns EventProcessor.MAX_PENDING_LEDGER_PER_AUTHOR
+
+        val result = processor.process(makeEvent(eventType = "expense_correction"), knownGroupKey = groupKey)
+
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertEquals("pending quota", result.reason)
+        assertFalse(result.retryable)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `rejections for a missing key or join are marked retryable, others are not`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("wrong key")
+        val undecryptable = processor.process(makeEvent(), knownGroupKey = groupKey)
+        assertEquals("undecryptable", undecryptable.reason)
+        assertTrue(undecryptable.retryable)
+
+        every { encryption.decrypt(any(), groupKey) } returns expenseJson()
+        coEvery { groupRepo.getById(groupId) } returns group.copy(members = listOf("f".repeat(64)))
+        val nonMember = processor.process(makeEvent(), knownGroupKey = groupKey)
+        assertEquals("not a member", nonMember.reason)
+        assertTrue(nonMember.retryable)
+
+        coEvery { groupRepo.getById(groupId) } returns group
+        every { eventValidator.isExpenseValid(any(), any()) } returns false
+        val malformed = processor.process(makeEvent(), knownGroupKey = groupKey)
+        assertEquals("invalid payload", malformed.reason)
+        assertFalse(malformed.retryable)
     }
 
     @Test
@@ -717,6 +802,9 @@ class EventProcessorTest {
 
     @Test
     fun `process expense_delete checks correction author`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns
+            EventEntity("orig", groupId, pubkey, now, 30078, "enc", "expense", "uuid1", "sig", now)
         every { eventValidator.isCorrectionAuthorValid(any(), any(), any()) } returns false
         val result = processor.process(makeEvent(eventType = "expense_delete"), knownGroupKey = groupKey)
         assertFalse(result.stored)
@@ -961,11 +1049,13 @@ class EventProcessorTest {
 
     @Test
     fun `process expense_delete with null expenseUuid`() = runBlocking {
+        // Without an x tag there is nothing a delete could ever resolve against; it is refused, not held.
         val result = processor.process(
             makeEvent(eventType = "expense_delete", expenseUuid = null),
             knownGroupKey = groupKey
         )
-        assertTrue(result.stored)
+        assertFalse(result.stored)
+        assertEquals("business rule", result.reason)
     }
 
     @Test
@@ -1757,9 +1847,13 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
 
-        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        // Bob's expense is not this author's original: the correction waits for the author's own, and
+        // is never resolved against Bob's.
+        assertEquals(IngestOutcome.DEFERRED, result.outcome)
+        assertEquals("missing original", result.reason)
         coVerify { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) }
-        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { eventDao.getExpenseByAuthor("uuid1", groupId, bob) }
+        coVerify { eventDao.insertIfNew(match { it.applyState == EventEntity.APPLY_STATE_PENDING }) }
     }
 
     @Test

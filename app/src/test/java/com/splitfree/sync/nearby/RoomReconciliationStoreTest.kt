@@ -1093,6 +1093,199 @@ class RoomReconciliationStoreTest {
         assertEquals(1, runBlocking { courier.deliveryDao.getEnvelopeIds(otherId) }.count { it == wrap.id })
     }
 
+    /** A signed expense by [device], not stored anywhere: callers decide which phone ingests it. */
+    private fun signedExpense(device: Device, amount: Long, description: String): NostrEvent {
+        val group = device.group()
+        val key = checkNotNull(runBlocking { device.groupRepo.getGroupKey(groupId) })
+        val id = UUID.randomUUID().toString()
+        val expense = Expense(
+            id = id,
+            amount = amount,
+            currency = "USD",
+            description = description,
+            paidBy = device.pub,
+            splitType = SplitType.EQUAL,
+            splitAmong = splitAmong(group.members, amount),
+            timestamp = nowSecs()
+        )
+        val encrypted = device.encryption.encrypt(json.encodeToString(Expense.serializer(), expense), key)
+        return device.signer.createSignedEvent(groupId, "expense", encrypted, expenseUuid = id)
+    }
+
+    /** A signed correction of [original] by [device], not stored anywhere. */
+    private fun signedCorrection(device: Device, original: NostrEvent, amount: Long): NostrEvent {
+        val group = device.group()
+        val key = checkNotNull(runBlocking { device.groupRepo.getGroupKey(groupId) })
+        val id = checkNotNull(original.tag("x"))
+        val expense = Expense(
+            id = id,
+            amount = amount,
+            currency = "USD",
+            description = "corrected",
+            paidBy = device.pub,
+            splitType = SplitType.EQUAL,
+            splitAmong = splitAmong(group.members, amount),
+            timestamp = nowSecs()
+        )
+        val encrypted = device.encryption.encrypt(json.encodeToString(Expense.serializer(), expense), key)
+        return device.signer.createSignedCommandEvent(groupId, "expense_correction", encrypted, expenseUuid = id)
+    }
+
+    /**
+     * A signed correction of [original] by its author on [device], persisted through the publisher.
+     * [amount] is the corrected amount.
+     */
+    private fun authorCorrection(device: Device, original: NostrEvent, amount: Long): NostrEvent = runBlocking {
+        val group = device.group()
+        val key = checkNotNull(device.groupRepo.getGroupKey(groupId))
+        val id = checkNotNull(original.tag("x"))
+        val expense = Expense(
+            id = id,
+            amount = amount,
+            currency = "USD",
+            description = "corrected",
+            paidBy = device.pub,
+            splitType = SplitType.EQUAL,
+            splitAmong = splitAmong(group.members, amount),
+            timestamp = nowSecs()
+        )
+        val encrypted = device.encryption.encrypt(json.encodeToString(Expense.serializer(), expense), key)
+        val commandId = UUID.randomUUID().toString()
+        val event = device.signer.createSignedCommandEvent(
+            groupId,
+            "expense_correction",
+            encrypted,
+            expenseUuid = id,
+            commandId = commandId
+        )
+        check(
+            device.publisher.publishMutation(
+                event,
+                group,
+                "expense_correction",
+                id,
+                commandId,
+                expectedRevisionId = original.id
+            )
+        ) { "correction of $id was not saved" }
+        event
+    }
+
+    @Test
+    fun `a correction that arrives before its original is held and applied when the original lands`() {
+        val a = Device(1)
+        val b = Device(2)
+        listOf(a, b).forEach { it.join(listOf(a.pub, b.pub), creator = a.pub) }
+        val original = authorExpense(a, amount = 100, description = "dinner")
+        val correction = authorCorrection(a, original, amount = 200)
+
+        val first = runBlocking {
+            b.processor.process(correction, knownGroupId = groupId, context = IngestionContext.RECONCILIATION)
+        }
+        assertEquals(IngestOutcome.DEFERRED, first.outcome)
+        assertEquals("missing original", first.reason)
+        assertEquals(EventEntity.APPLY_STATE_PENDING, b.row(correction.id)?.applyState)
+        // Invisible to the ledger while held: the applied view has no correction yet.
+        assertTrue(b.appliedRows().none { it.eventId == correction.id })
+        assertEquals(1, runBlocking { b.store.pendingCount(groupId) })
+        // But offered onward: another phone may hold the original and be waiting for exactly this record.
+        assertTrue(runBlocking { b.store.inventory(groupId) }.any { it.id == correction.id })
+
+        val second = runBlocking {
+            b.processor.process(original, knownGroupId = groupId, context = IngestionContext.RECONCILIATION)
+        }
+        assertEquals(IngestOutcome.APPLIED, second.outcome)
+        assertEquals(1, runBlocking { b.processor.retryDeferred(groupId) })
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(correction.id)?.applyState)
+        assertEquals(0, runBlocking { b.store.pendingCount(groupId) })
+        assertEquals(setOf(original.id, correction.id), b.appliedRows().map { it.eventId }.toSet())
+    }
+
+    @Test
+    fun `a dropped original frame is retried without losing the correction that arrived first`() {
+        val a = Device(1)
+        val b = Device(2)
+        listOf(a, b).forEach { it.join(listOf(a.pub, b.pub), creator = a.pub) }
+        // Signed records only, no envelopes: the transfer has exactly one path for each record.
+        val original = signedExpense(a, amount = 100, description = "dinner")
+        val correction = signedCorrection(a, original, amount = 200)
+        assertEquals(IngestOutcome.APPLIED, ingest(a, original))
+        assertEquals(IngestOutcome.APPLIED, ingest(a, correction))
+        var dropped = false
+        a.transport.dropIf = { message ->
+            (message is Record && message.id == original.id && !dropped).also { if (it) dropped = true }
+        }
+
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertTrue(dropped)
+        assertNull(b.row(original.id))
+        // The correction crossed first and is held, not discarded; the original is still in flight.
+        assertEquals(EventEntity.APPLY_STATE_PENDING, b.row(correction.id)?.applyState)
+        assertEquals(PeerPhase.TRANSFERRING, b.phase(ep(a)))
+
+        scheduler.advanceTimeBy(PeerSession.TRANSFER_TIMEOUT_MS + PeerSession.WATCHDOG_INTERVAL_MS)
+        scheduler.runCurrent()
+        router.pump()
+
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(original.id)?.applyState)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(correction.id)?.applyState)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `an expense refused for a missing key is asked for again when the key lands in a later snapshot`() {
+        val a = Device(1)
+        val b = Device(2)
+        listOf(a, b).forEach { it.join(listOf(a.pub, b.pub), creator = a.pub) }
+        // A is at epoch 1 with an expense under it; B is still at epoch 0 and has no rotation yet.
+        val key1 = GroupEncryption(CompressionUtil).generateGroupKey()
+        runBlocking {
+            a.groupRepo.saveGroupKeyForEpoch(groupId, 1, key1)
+            assertTrue(a.groupRepo.applyKeyRotation(groupId, 1, listOf(a.pub, b.pub), emptyMap()))
+        }
+        val expense = authorExpense(a, amount = 100, description = "under epoch 1")
+
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertNull(b.row(expense.id))
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+        // The signed event and A's gift-wrapped copy for B are both refused for want of the key.
+        assertTrue(b.stats(ep(a)).rejected >= 1)
+
+        // The rotation reaches A's store now (it was published to B by the creator, A is the creator here).
+        val convKey = Nip44.getConversationKey(a.identity.priv, b.pub.hexToBytes())
+        val payload = KeyRotation(1, mapOf(b.pub to Nip44.encrypt(key1, convKey)), listOf(a.pub, b.pub), "")
+        val rotation = a.signer.createSignedEvent(
+            groupId,
+            "key_rotation",
+            Nip44.encrypt(json.encodeToString(KeyRotation.serializer(), payload), convKey),
+            recipientPubkey = b.pub
+        )
+        runBlocking { a.publisher.publishDirect(rotation, groupId, rotation.content, "key_rotation", null) }
+        a.coordinator.notifyGroupChanged(groupId)
+        router.pump()
+
+        assertEquals(1, b.group().keyEpoch)
+        assertEquals(key1, b.keyForEpoch(1))
+        val requested = b.transport.sentMessages().filterIsInstance<Want>().flatMap {
+            it.ids
+        }.count { it == expense.id }
+        assertTrue(
+            "the refused expense must be asked for again once the key landed, requested $requested time(s)",
+            requested >= 2
+        )
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(expense.id)?.applyState)
+        assertEquals(0, b.stats(ep(a)).rejected)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
     @Test
     fun `a full courier cache evicts the oldest carried envelope rather than refusing a new key or gift`() {
         val a = Device(1)

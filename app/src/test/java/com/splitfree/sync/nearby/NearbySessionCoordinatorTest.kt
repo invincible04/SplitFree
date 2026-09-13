@@ -536,6 +536,63 @@ class NearbySessionCoordinatorTest {
     }
 
     @Test
+    fun `a record refused for a missing key is re-requested when the key arrives in a later snapshot`() {
+        val (a, b) = twoMembers()
+        val expense = idOf("epoch1-expense")
+        val key = idOf("late-rotation")
+        a.store.putEvent(expense)
+        b.store.controlIds += key
+        b.store.outcomes[expense] = RecordOutcome.REJECTED
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+        assertEquals(1, b.progress(ep(a))?.stats?.rejected)
+        val requestedBefore = b.transport.sentMessages().filterIsInstance<Want>().flatMap { it.ids }.count {
+            it ==
+                expense
+        }
+        assertEquals(1, requestedBefore)
+
+        // The key lands on A only now, in a new snapshot; once B applies it the expense becomes readable.
+        a.store.putEvent(key)
+        b.store.outcomes.remove(expense)
+        a.touchStore()
+        router.pump()
+
+        val requestedAfter = b.transport.sentMessages().filterIsInstance<Want>().flatMap { it.ids }.count {
+            it ==
+                expense
+        }
+        assertEquals(2, requestedAfter)
+        assertTrue(expense in b.store.events)
+        assertEquals(0, b.progress(ep(a))?.stats?.rejected)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `a permanently rejected record is not re-requested when a key lands`() {
+        val (a, b) = twoMembers()
+        val bad = idOf("malformed")
+        val key = idOf("rotation")
+        a.store.putEvent(bad)
+        a.store.putEvent(key)
+        b.store.controlIds += key
+        b.store.outcomes[bad] = RecordOutcome.REJECTED
+        b.store.permanentRejects += bad
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+
+        assertEquals(1, b.transport.sentMessages().filterIsInstance<Want>().flatMap { it.ids }.count { it == bad })
+        assertEquals(1, b.progress(ep(a))?.stats?.rejected)
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+    }
+
+    @Test
     fun `disconnect after zero applied records is interrupted, not up to date`() {
         val (a, b) = twoMembers()
         seed(a, "z", 30)

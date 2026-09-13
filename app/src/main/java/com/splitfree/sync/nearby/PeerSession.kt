@@ -90,8 +90,15 @@ class PeerSession(
     private var appliedThisSnapshot = 0
     private var retriedInflight = false
     private var outReadvertised = 0
-    private val rejectedThisSnapshot = ArrayList<InventoryItem>()
-    private var retriedRejected = false
+
+    /**
+     * Records this session could not apply for want of another record (a key epoch, a join), kept for
+     * the life of the session rather than the snapshot: the provider still serves an acknowledged id on
+     * request, so they are asked for again after a control record lands or the local store changes.
+     * Malformed or unauthorized records are not kept; they stay rejected.
+     */
+    private val dependencyRetry = LinkedHashMap<String, InventoryItem>()
+    private var retriedDependencies = false
 
     // ----------------------------------------------------------- lifecycle state
     var phase: PeerPhase = PeerPhase.AUTHENTICATING
@@ -322,13 +329,21 @@ class PeerSession(
 
     // ------------------------------------------------------------- provider half
 
-    /** Refreshes pending state and re-advertises changed data when the current provider snapshot completes. */
+    /**
+     * Refreshes pending state and re-advertises changed data when the current provider snapshot completes.
+     * A local store change may also be the dependency a rejected record was waiting for (a key that came
+     * over a relay, say), so a finished consumer with retained records asks for them again.
+     */
     suspend fun markDirty() {
         if (closed || !groupOpen || !requireGroupOpen()) return
         refreshPending()
         if (inDone && outStateDirty) sendReconcileResult()
         outDirty = true
         if (outPeerDone) advertise(force = false)
+        if (inDone && dependencyRetry.isNotEmpty()) {
+            inDone = false
+            requeueDependencies()
+        }
     }
 
     private suspend fun advertise(force: Boolean) {
@@ -449,8 +464,7 @@ class PeerSession(
         controlApplied = false
         appliedThisSnapshot = 0
         retriedInflight = false
-        rejectedThisSnapshot.clear()
-        retriedRejected = false
+        retriedDependencies = false
     }
 
     private suspend fun pumpWants() {
@@ -467,29 +481,36 @@ class PeerSession(
     }
 
     private suspend fun finishConsuming() {
-        if (controlApplied) {
+        if (appliedThisSnapshot > 0) {
+            // Anything applied may be what a durable pending row was waiting for: a key or join for a
+            // control record, an original for a correction that arrived ahead of it.
             val retried = store.retryDeferred(groupId)
             if (retried > 0) {
                 stats = stats.copy(applied = stats.applied + retried)
                 appliedThisSnapshot += retried
             }
             refreshPending()
-            if (!retriedRejected && rejectedThisSnapshot.isNotEmpty()) {
-                // Applied control records may supply missing keys; retry rejected records once per snapshot.
-                retriedRejected = true
-                controlApplied = false
-                val again = rejectedThisSnapshot.toList()
-                rejectedThisSnapshot.clear()
-                stats = stats.copy(rejected = (stats.rejected - again.size).coerceAtLeast(0))
-                wantQueue.addAll(again)
-                pumpWants()
-                return
-            }
+        }
+        if (controlApplied && !retriedDependencies && dependencyRetry.isNotEmpty()) {
+            // A key or membership record landed; records refused for lack of one are asked for again,
+            // once per snapshot, whichever snapshot first offered them.
+            retriedDependencies = true
+            controlApplied = false
+            requeueDependencies()
+            return
         }
         refreshPending()
         inDone = true
         sendReconcileResult()
         if (appliedThisSnapshot > 0) listener.onDataChanged(this)
+    }
+
+    /** Asks for every retained record again; their rejections are uncounted until they resolve. */
+    private suspend fun requeueDependencies() {
+        val again = dependencyRetry.values.toList()
+        stats = stats.copy(rejected = (stats.rejected - again.size).coerceAtLeast(0))
+        wantQueue.addAll(again)
+        pumpWants()
     }
 
     private fun sendReconcileResult() {
@@ -563,7 +584,11 @@ class PeerSession(
         if (report.upgraded) stats = stats.copy(upgraded = stats.upgraded + 1)
         if (report.controlApplied) controlApplied = true
         if (report.outcome == RecordOutcome.DEFERRED || report.controlApplied) refreshPending()
-        if (report.outcome == RecordOutcome.REJECTED && !retriedRejected) rejectedThisSnapshot.add(item)
+        if (report.outcome == RecordOutcome.REJECTED && report.retryable) {
+            if (dependencyRetry.size < MAX_RETAINED_DEPENDENCIES) dependencyRetry[item.id] = item
+        } else {
+            dependencyRetry.remove(item.id)
+        }
         if (report.outcome == RecordOutcome.APPLIED || report.outcome == RecordOutcome.CARRIED || report.upgraded) {
             appliedThisSnapshot++
         }
@@ -692,6 +717,7 @@ class PeerSession(
         partials.clear()
         wantQueue.clear()
         inItems.clear()
+        dependencyRetry.clear()
         awaitingResult.clear()
         outItemsById = emptyMap()
         outAdvertised = emptySet()
@@ -754,6 +780,9 @@ class PeerSession(
 
         /** Snapshot re-advertisements to a silent peer before the session is interrupted. */
         private const val MAX_READVERTISE = 2
+
+        /** Records kept for re-request after a dependency-shaped rejection; beyond this they stay rejected. */
+        private const val MAX_RETAINED_DEPENDENCIES = 4_096
 
         /** Capabilities offered in [Hello]; the intersection with the peer's is bound into the auth transcript. */
         val CAPABILITIES: Set<String> = setOf(NearbyWire.CAP_RECONCILE_V2, NearbyWire.CAP_DELIVERIES)
