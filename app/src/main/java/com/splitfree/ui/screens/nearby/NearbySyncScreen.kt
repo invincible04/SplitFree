@@ -42,7 +42,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -69,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.data.ble.NearbyPeer
@@ -150,8 +150,11 @@ fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltVi
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { viewModel.stopScan() }
+    // Nearby sync is foreground only. ON_STOP (Home, lock screen, app switch) ends every session and
+    // stops advertising/discovery; ON_PAUSE is deliberately not used because the system consent
+    // dialog Nearby shows on first connection pauses the activity mid-handshake.
+    LifecycleStartEffect(Unit) {
+        onStopOrDispose { viewModel.stopScan() }
     }
 
     LifecycleResumeEffect(Unit) {

@@ -28,11 +28,12 @@ import kotlinx.serialization.json.Json
  * Event processing pipeline: unwrap → validate → decrypt → store → post-process.
  * Handles both direct kind-30078 events and NIP-59 gift-wrapped events.
  *
- * Gate order (see `docs/nearby-repair-contract.md`): signature → tags → duplicate check (before any
- * rate limit is charged) → timestamp (lenient in [IngestionContext.RECONCILIATION]) → rate limits
- * ([IngestionContext.LIVE] only) → group + membership → decrypt → content safety → business rules →
- * payload → insert → post-process. Rows whose side effects could not run yet stay
- * [EventEntity.APPLY_STATE_PENDING] and are re-driven by [retryDeferred].
+ * Gate order: signature → tags → session scope → duplicate check (before any rate limit is charged) →
+ * timestamp (lenient in [IngestionContext.RECONCILIATION]) → rate limits ([IngestionContext.LIVE]
+ * only) → group + membership → decrypt → content safety → business rules → payload → insert →
+ * post-process. Rows whose side effects could not run yet (missing dependency or a transient failure)
+ * stay [EventEntity.APPLY_STATE_PENDING] and are re-driven by [retryDeferred]; rows whose effect can
+ * never apply on this device are marked [EventEntity.APPLY_STATE_FAILED].
  */
 @Singleton
 class EventProcessor
@@ -81,6 +82,9 @@ constructor(
      * @param lenientTimestamp if true, allows events older than 30 days (for initial/full sync)
      * @param context why the event is being ingested; [IngestionContext.RECONCILIATION] implies
      *   [lenientTimestamp], skips the in-memory rate counters and admits pre-removal history
+     * @param expectedGroupId when set, the event (after unwrapping) must belong to exactly this group or
+     *   it is rejected before anything is read or written. A nearby session is authenticated for one
+     *   group; an envelope it delivers must not be able to mutate another.
      * @return [ProcessResult] with the [IngestOutcome] and, when stored, the event's metadata
      */
     suspend fun process(
@@ -89,7 +93,8 @@ constructor(
         knownGroupKey: String? = null,
         nonCancellable: Boolean = false,
         lenientTimestamp: Boolean = false,
-        context: IngestionContext = IngestionContext.LIVE
+        context: IngestionContext = IngestionContext.LIVE,
+        expectedGroupId: String? = null
     ): ProcessResult {
         // 1. Unwrap gift wrap if applicable
         val unwrapResult = giftWrap.tryUnwrap(rawEvent)
@@ -102,6 +107,10 @@ constructor(
         val expenseUuid = tags.expenseUuid
         val authorHex = inner.pubkey
         val groupId = tags.groupId ?: return rejected("missing group tag", inner.id, eventType, authorHex)
+        if (expectedGroupId != null && groupId != expectedGroupId) {
+            Log.w(TAG, "Rejecting $eventType ${inner.id.take(8)} for group $groupId delivered in a session for another")
+            return rejected("out of scope", inner.id, eventType, authorHex)
+        }
 
         // 3. Duplicate check, before rate limits: a replay must not eat the author's budget, and a
         //    pending row only needs its side effects re-driven, not the whole pipeline.
@@ -254,7 +263,16 @@ constructor(
 
         // 10. Post-process (delegated)
         val effect =
-            postProcessor.handle(eventType, decrypted, authorHex, groupId, inner.createdAt, nonCancellable, inner.id)
+            postProcessor.handle(
+                eventType,
+                decrypted,
+                authorHex,
+                groupId,
+                inner.createdAt,
+                nonCancellable,
+                inner.id,
+                decryptedEpoch
+            )
         val stored = ProcessResult(true, group.name, eventType, decrypted, authorHex, eventId = inner.id)
         return when (effect) {
             PostProcessOutcome.APPLIED -> {
@@ -270,15 +288,21 @@ constructor(
             }
 
             PostProcessOutcome.FAILED -> {
-                if (eventType == TYPE_KEY_ROTATION) {
-                    // Key material must not be lost: leave the row pending so retryDeferred can re-drive it.
-                    Log.w(TAG, "key_rotation ${inner.id.take(8)} in $groupId did not apply, kept pending")
+                if (hasSideEffects) {
+                    // A control effect that did not land is not applied. The row stays pending so
+                    // retryDeferred re-drives it; the receipt says so rather than claiming success.
+                    Log.w(TAG, "$eventType ${inner.id.take(8)} in $groupId did not apply, kept pending")
                     stored.copy(outcome = IngestOutcome.DEFERRED, reason = "side effect failed")
                 } else {
                     // Nothing about the ledger depends on this side effect; the row itself is fine.
-                    if (hasSideEffects) markApplied(inner.id, nonCancellable)
                     stored
                 }
+            }
+
+            PostProcessOutcome.REJECTED -> {
+                markFailed(inner.id, nonCancellable)
+                Log.w(TAG, "$eventType ${inner.id.take(8)} in $groupId can never apply here, marked failed")
+                rejected("effect rejected", inner.id, eventType, authorHex)
             }
         }
     }
@@ -320,7 +344,8 @@ constructor(
     /**
      * Decrypt an already-stored row and run its side effects, flipping it to APPLIED on success. The
      * row was fully validated when it was inserted, so membership and payload rules are not repeated.
-     * On [PostProcessOutcome.FAILED] the row stays pending and the caller sees [IngestOutcome.REJECTED].
+     * On [PostProcessOutcome.FAILED] the row stays pending (retried later); on
+     * [PostProcessOutcome.REJECTED] it is marked failed and no longer retried.
      */
     private suspend fun applyStoredEffects(
         eventId: String,
@@ -337,7 +362,16 @@ constructor(
         val decrypted = decryptContent(content, eventType, authorHex, group, groupId, knownGroupKey)
             ?: return rejected("undecryptable", eventId, eventType, authorHex)
         val effect =
-            postProcessor.handle(eventType, decrypted.content, authorHex, groupId, createdAt, nonCancellable, eventId)
+            postProcessor.handle(
+                eventType,
+                decrypted.content,
+                authorHex,
+                groupId,
+                createdAt,
+                nonCancellable,
+                eventId,
+                decrypted.epoch
+            )
         val base = ProcessResult(true, group.name, eventType, decrypted.content, authorHex, eventId = eventId)
         return when (effect) {
             PostProcessOutcome.APPLIED -> {
@@ -347,17 +381,33 @@ constructor(
             }
 
             PostProcessOutcome.DEFERRED -> base.copy(outcome = IngestOutcome.DEFERRED, reason = "missing dependency")
-            PostProcessOutcome.FAILED ->
-                base.copy(stored = false, outcome = IngestOutcome.REJECTED, reason = "side effect failed")
+            PostProcessOutcome.FAILED -> base.copy(outcome = IngestOutcome.DEFERRED, reason = "side effect failed")
+            PostProcessOutcome.REJECTED -> {
+                markFailed(eventId, nonCancellable)
+                base.copy(stored = false, outcome = IngestOutcome.REJECTED, reason = "effect rejected")
+            }
         }
     }
 
     /** Flip a row to APPLIED; not interruptible when the effect it records ran non-cancellably. */
-    private suspend fun markApplied(eventId: String, nonCancellable: Boolean) {
+    private suspend fun markApplied(eventId: String, nonCancellable: Boolean) = setState(
+        eventId,
+        EventEntity.APPLY_STATE_APPLIED,
+        nonCancellable
+    )
+
+    /** Park a row whose effect can never apply here; it is kept for dedup and not retried. */
+    private suspend fun markFailed(eventId: String, nonCancellable: Boolean) = setState(
+        eventId,
+        EventEntity.APPLY_STATE_FAILED,
+        nonCancellable
+    )
+
+    private suspend fun setState(eventId: String, state: Int, nonCancellable: Boolean) {
         if (nonCancellable) {
-            withContext(NonCancellable) { eventDao.setApplyState(eventId, EventEntity.APPLY_STATE_APPLIED) }
+            withContext(NonCancellable) { eventDao.setApplyState(eventId, state) }
         } else {
-            eventDao.setApplyState(eventId, EventEntity.APPLY_STATE_APPLIED)
+            eventDao.setApplyState(eventId, state)
         }
     }
 
@@ -470,17 +520,19 @@ constructor(
             if (!isCreator && authorHex !in group.members) {
                 val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
                 val decryptedContent = tryDecrypt(inner.content, key)
+                // A self-join is a meta, sealed under the CURRENT group key (so its author holds an
+                // invite), whose roster adds nobody but its author. What it says about the name,
+                // relays or other members is irrelevant: applyMemberSelfUpdate only ever records the
+                // author's own membership and display name. Two members joining concurrently (each
+                // unaware of the other) or a joiner unaware of a recent rename are therefore admitted
+                // in any arrival order; a removed member cannot pass because they lack the current key.
                 val isSelfJoin = try {
                     if (decryptedContent == null) {
                         false
                     } else {
                         val meta = json.decodeFromString<GroupMeta>(decryptedContent)
-                        val current = group.members.toSet()
                         val proposed = meta.members.toSet()
-                        (proposed - current) == setOf(authorHex) &&
-                            (current - proposed).isEmpty() &&
-                            meta.name == group.name &&
-                            meta.relays.toSet() == group.relays.toSet()
+                        authorHex in proposed && (proposed - group.members.toSet() - authorHex).isEmpty()
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Self-join check failed for $authorHex in $groupId: ${e.message}")

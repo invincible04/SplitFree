@@ -293,6 +293,7 @@ class CustomRelayIntegrationTest {
 
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) } returns groupKey
 
         val useCase = UpdateGroupRelaysUseCase(
             groupRepo,
@@ -307,9 +308,20 @@ class CustomRelayIntegrationTest {
         val newRelays = listOf(relayA, relayB)
         useCase(groupId, newRelays)
 
-        // Verify local update with both relays
+        // Verify local update with both relays, ordered by the published event's clock (positive timestamp).
         coVerify {
-            groupRepo.updateFromMeta(groupId, "UseCaseTest", listOf(pubKey), newRelays, any(), any(), any())
+            groupRepo.updateFromMeta(
+                groupId,
+                "UseCaseTest",
+                listOf(pubKey),
+                newRelays,
+                more(0L),
+                pubKey,
+                mapOf(pubKey to "Tester"),
+                any(),
+                any(),
+                any()
+            )
         }
 
         // Verify group_meta was published with real encryption

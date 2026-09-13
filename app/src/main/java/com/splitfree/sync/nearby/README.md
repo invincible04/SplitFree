@@ -74,8 +74,10 @@ After the group opens the protocol is symmetric. Each side advertises its invent
 snapshot; the other side asks for what it lacks, applies each record and answers with a `Result`, then
 sends `ReconcileResult`. Inventories list:
 
-- `e` entries: ledger events with a third-party-verifiable signature. Rows that only hold a
-  gift-wrap rumor (`seal:` signature) are not offered, because a peer could not verify them.
+- `e` entries: ledger and control events with a third-party-verifiable signature, applied or still
+  pending (a rotation this phone cannot apply yet is exactly what the next phone may be waiting
+  for). Rows that only hold a gift-wrap rumor (`seal:` signature) are not offered, because a peer
+  could not verify them; rows whose effect was permanently rejected here are not offered either.
 - `d` entries: recipient-encrypted envelopes (gift wraps, per-member key rotations) this phone holds,
   with the recipient pubkey and, when known, the inner event id.
 
@@ -85,18 +87,28 @@ and rows deferred on a missing epoch are re-driven (`EventProcessor.retryDeferre
 
 A consumer wants: unknown verifiable events; a signed original for an event it only holds as a rumor
 (the row is upgraded in place, never duplicated); envelopes addressed to itself; and envelopes for
-other current members, within quota (512 envelopes / 4 MiB per group, oldest evicted, 30-day
-retention for carried, 90 for authored).
+other current members. Courier storage is bounded (512 envelopes / 4 MiB per group, 30-day retention
+for carried, 90 for authored) by evicting the oldest carried envelope when a new one arrives, never by
+refusing it: a full cache must not stop a key from propagating.
+
+Acknowledged baseline: the provider only treats an id as known to the peer once a `ReconcileResult`
+for a snapshot that carried it has come back. Every later snapshot resends whatever is still
+unacknowledged, so a page lost in transit (a failed send) is simply sent again after the 30 s
+silence; it can never turn into an empty delta that both sides mistake for "done". A page that
+arrives out of order is ignored, not treated as a violation, for the same reason.
 
 Completion: a session is **up to date** only when both snapshots are consumed, every wanted record
-has a terminal `Result`, and nothing was `REJECTED`, `BUSY` or unresolved. Deferred records give
-**waiting for a key or earlier update**; failures give **incomplete** with a count. A dropped
+has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, and **neither side holds
+pending rows**. The pending count is read from durable storage (`applyState = PENDING`), so work left
+over from an earlier session or a process restart counts, and is re-driven when the screen opens and
+when a group opens; the peer's count travels in its `ReconcileResult`. Either side pending gives
+**waiting for a key or earlier update** on both. Failures give **incomplete** with a count. A dropped
 transport gives **interrupted** with the durable progress kept: a reconnect authenticates afresh and
 only transfers what is still missing. `CARRIED` is never shown as delivery to the recipient.
 
 Retries: a record with no terminal result after 30 s of silence is re-requested once, then counted
-unresolved. A lost `ReconcileResult` is recovered by re-advertising an empty delta (twice at most).
-Duplicates are harmless everywhere.
+unresolved. A lost `ReconcileResult` or page is recovered by re-advertising the unacknowledged delta
+(twice at most). Duplicates are harmless everywhere.
 
 ## Forwarding
 
@@ -107,19 +119,44 @@ trusted as the author. Per-member key rotation events carry a `p` tag; a phone t
 one carries it the same way, so a removed member's rotation reaches everyone without exposing the new
 key under the old shared key.
 
-While the Nearby screen is open, data applied from one peer (or from a relay) is re-advertised to
-every other connected peer, so an A–B–C chain propagates without a second button press. Records are
-identified by immutable ids, and a peer is never offered an id it was already offered in the session,
-so cycles converge.
+An envelope addressed to this phone is opened by the same `EventProcessor` as relay traffic, with the
+session's group as the expected group: a wrap whose inner event belongs to another group the phone
+happens to know is rejected before anything is read or written, so a session authenticated for G
+cannot mutate H.
+
+While the Nearby screen is open, any change to the offerable inventory (a ledger row applied from a
+peer or a relay, or an envelope that appeared without a new row, such as history re-wrapped for a new
+member) is re-advertised to every other connected peer, so an A–B–C chain propagates without a second
+button press. Records are identified by immutable ids, and a peer is never offered an id it has
+already acknowledged, so cycles converge.
 
 ## Ledger rules that changed with this protocol
 
 - **Expense identity** is `(group, original author, uuid)`. A correction or deletion only affects the
-  original by the same author; two authors using one uuid are two expenses.
-- **Membership changes** by the creator follow the `(created_at, event id)` watermark; a member's own
-  join or display-name update only touches that member's record and cannot block a removal.
-- **Stored vs applied**: control events are stored pending until their effect lands (`applyState`),
-  so an out-of-order rotation is retried rather than lost. Only applied rows enter balances.
+  original by the same author; two authors using one uuid are two expenses; editing resolves to the
+  editor's own entry.
+- **Three orderings for group state**, each with its own clock, never mixed:
+  - *Rotations* are ordered by epoch. Applying one installs the epoch and the roster it defines in a
+    single statement and never touches the creator's metadata watermark.
+  - *Creator metas* are ordered by `(created_at, event id)`. A meta sealed under an epoch older than
+    the group's current one predates a rotation: it still updates name, relays and description, but
+    may not touch the roster. So a rotation delivered late cannot block a newer rename, and a stale
+    pre-rotation meta cannot re-add the removed member, in any arrival order.
+  - *A member's own join and display name* are ordered by that member's `(created_at, event id)`
+    clock. A creator meta older than a member's rename keeps the member's name. A self-join is any
+    meta sealed under the current key whose roster adds nobody but its author, so two members
+    joining concurrently, or a joiner unaware of a recent rename, are admitted in either order.
+  - Key revocation (an identity swap) has no epoch and rides the creator watermark, raised to the
+    revocation's own clock rather than to the wall clock.
+- **Rotation is resumable.** The key for epoch N+1 is generated once and immutable; an interrupted
+  removal reuses it, so every member ends up with the same key however many attempts it took.
+  Envelopes are published (durably queued) before the local transition; at start-up the creator
+  recognises a stored key for N+1 with published envelopes and finishes the transition.
+- **Stored vs applied**: control events are stored pending until their effect lands (`applyState`).
+  A missing dependency (epoch gap, a member whose join has not arrived) or a transient failure
+  keeps the row pending and retried; an effect that can never apply on this device (key material it
+  cannot open, conflicting epoch key) parks the row as failed. A receipt of `APPLIED` for a control
+  record therefore means its durable effect landed. Only applied rows enter balances.
 - **Historical authors** are admitted during reconciliation if the record decrypts under an epoch
   older than the one that removed them.
 
@@ -128,8 +165,10 @@ so cycles converge.
 - Android 12 and below: fine and coarse location are requested in the same prompt.
 - Android 17 (target 37): `ACCESS_LOCAL_NETWORK` is declared and requested for the Wi-Fi LAN path;
   Nearby still uses Bluetooth if it is denied.
-- Nearby sync is foreground only. Leaving the screen closes every session; durable records and
-  envelopes remain for the next session.
+- Nearby sync is foreground only. Leaving the screen, or the activity stopping (Home, lock screen,
+  app switch), closes every session and stops advertising; durable records and envelopes remain for
+  the next session. `ON_PAUSE` is deliberately not used: the system consent dialog Nearby shows on a
+  first connection pauses the activity mid-handshake.
 
 ## Known limits
 

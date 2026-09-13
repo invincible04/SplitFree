@@ -123,14 +123,17 @@ constructor(
             // 4. Every publish succeeded; only now swap old -> new in local membership. Until this
             //    point local state still names the OLD pubkey, so a failure above leaves a
             //    consistent (unrevoked) device.
+            //    The watermark is raised to the published meta's clock, not "now": metas authored
+            //    after the revocation must still apply, metas authored before it must not resurrect
+            //    the old key.
             for (plan in plans) {
-                groupRepo.updateFromMeta(
+                groupRepo.overrideMembership(
                     plan.group.id,
-                    plan.group.name,
                     plan.updatedMembers,
-                    plan.group.relays,
-                    createdBy = plan.updatedCreatedBy,
-                    memberNames = plan.updatedNames
+                    plan.updatedNames,
+                    plan.updatedCreatedBy,
+                    plan.metaEvent.createdAt,
+                    plan.metaEvent.id
                 )
             }
 
@@ -257,8 +260,18 @@ constructor(
     /**
      * Handle an incoming key_revocation event from another member.
      * Replace their old pubkey with the new one in the group member list.
+     *
+     * @param createdAt the revocation event's `created_at`; the creator watermark is raised to it so a
+     *   `group_meta` authored before the revocation cannot re-add the revoked key
+     * @param eventId the revocation event's id (watermark tiebreak)
      */
-    suspend fun handleRevocation(decryptedContent: String, authorPubkey: String, groupId: String) {
+    suspend fun handleRevocation(
+        decryptedContent: String,
+        authorPubkey: String,
+        groupId: String,
+        createdAt: Long,
+        eventId: String
+    ) {
         val revocation =
             try {
                 json.decodeFromString<KeyRevocation>(decryptedContent)
@@ -301,13 +314,10 @@ constructor(
             // Carry the display name over, but never clobber a name the new key already announced.
             if (newPubkey.isNotEmpty() && oldName != null && newPubkey !in this) put(newPubkey, oldName)
         }
-        groupRepo.updateFromMeta(
-            groupId,
-            group.name,
-            updated,
-            group.relays,
-            memberNames = updatedNames
-        )
+        // A creator revoking their own key hands the creator role to the new key; the revocation is
+        // signed by the old creator key, which is the only proof that could authorise that.
+        val createdBy = if (replace && group.createdBy == revocation.oldPubkey) newPubkey else ""
+        groupRepo.overrideMembership(groupId, updated, updatedNames, createdBy, createdAt, eventId)
         Log.i(
             TAG,
             "Processed key revocation ${revocation.oldPubkey.take(8)}… → ${newPubkey.take(8)}… in group $groupId"

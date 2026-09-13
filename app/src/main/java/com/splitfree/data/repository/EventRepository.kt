@@ -37,6 +37,9 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
     override suspend fun getLatestEventByType(groupId: String, eventType: String): EventSnapshot? =
         eventDao.getLatestEventByType(groupId, eventType)?.toSnapshot()
 
+    override suspend fun getEventsByType(groupId: String, eventType: String): List<EventSnapshot> =
+        eventDao.getEventsByType(groupId, eventType).map { it.toSnapshot() }
+
     override suspend fun getEventCount(groupId: String): Int = eventDao.getEventCount(groupId)
 
     override suspend fun insertIfNew(snapshot: EventSnapshot): Boolean = eventDao.insertIfNew(snapshot.toEntity())

@@ -29,6 +29,9 @@ interface EventRepositoryContract {
     /** @return the most recent event of [eventType] in a group, or null */
     suspend fun getLatestEventByType(groupId: String, eventType: String): EventSnapshot?
 
+    /** @return every stored row of [eventType] in a group, oldest first, regardless of apply state */
+    suspend fun getEventsByType(groupId: String, eventType: String): List<EventSnapshot>
+
     /** @return total number of events stored for a group */
     suspend fun getEventCount(groupId: String): Int
 

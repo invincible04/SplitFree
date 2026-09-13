@@ -12,6 +12,8 @@ import javax.inject.Named
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -32,6 +34,14 @@ constructor(
     @Named("groupKeys") private val keyStore: SecureStorage
 ) : GroupRepositoryContract {
     private val json = Json
+
+    /**
+     * Metadata writes are read-modify-write (roster scope, per-member name clocks), so writers to the
+     * same group are serialised here. Relay and nearby ingestion may otherwise interleave.
+     */
+    private val groupLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    private fun lockFor(groupId: String): Mutex = groupLocks.getOrPut(groupId) { Mutex() }
     private val stringListSerializer = ListSerializer(String.serializer())
     private val nameMapSerializer = MapSerializer(
         String.serializer(),
@@ -112,8 +122,17 @@ constructor(
      * Store the key for [epoch]. Throws [com.splitfree.domain.repository.SecureStorageException]
      * if the write cannot be durably committed; callers must not advance the group's epoch
      * or publish rotation events until this returns.
+     *
+     * Epoch key material is immutable: storing the same key again is a no-op, and a different key for
+     * an epoch that already has one is refused with [IllegalStateException]. Two keys for one epoch
+     * would mean two rotations claim it, and silently replacing one would strand whoever holds the other.
      */
     override suspend fun saveGroupKeyForEpoch(groupId: String, epoch: Int, groupKey: String) {
+        val existing = keyStore.getString("$groupId:$epoch", null)
+        if (existing != null) {
+            check(existing == groupKey) { "Epoch $epoch of ${groupId.take(8)} already has different key material" }
+            return
+        }
         keyStore.putString("$groupId:$epoch", groupKey)
     }
 
@@ -139,46 +158,94 @@ constructor(
         createdBy: String,
         memberNames: Map<String, String>,
         description: String?,
-        eventId: String
-    ) {
+        eventId: String,
+        applyRoster: Boolean
+    ): Boolean {
+        require(eventTimestamp > 0) { "group_meta needs the event's created_at to be ordered" }
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
                 TAG,
                 "Rejecting group_meta with ${members.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
             )
-            return
+            return false
         }
-        val safeRelays = relays.filter { it.startsWith("wss://") && it.length <= 256 }
-        val membersJson = json.encodeToString(stringListSerializer, members)
-        val relaysJson = json.encodeToString(stringListSerializer, safeRelays)
-        val safeMemberNames = sanitizeMemberNames(memberNames, members)
-        val namesJson = json.encodeToString(nameMapSerializer, safeMemberNames)
-        if (eventTimestamp > 0) {
-            // Single-statement LWW: metadata, lastMetaTimestamp and lastMetaEventId land together or not at all.
+        return lockFor(groupId).withLock {
+            val entity = groupDao.getById(groupId) ?: return@withLock false
+            if (!isNewerClock(eventTimestamp, eventId, entity.lastMetaTimestamp to entity.lastMetaEventId)) {
+                return@withLock false
+            }
+            val storedMembers = decodeList(entity.members, groupId, "members")
+            val finalMembers = if (applyRoster) members else storedMembers
+            if (!applyRoster) {
+                Log.i(TAG, "group_meta ${eventId.take(8)} predates the current key epoch; roster kept")
+            }
+            val storedNames = decodeMap(entity.memberNames, groupId, "memberNames")
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            // Per member: the creator's map wins unless that member's own rename is newer.
+            val merged = LinkedHashMap<String, String>()
+            for (member in finalMembers) {
+                val ownClock = clocks[member]?.let(::parseMemberClock)
+                val memberIsNewer =
+                    ownClock != null && isNewerClock(ownClock.first, ownClock.second, eventTimestamp to eventId)
+                val chosen = if (memberIsNewer) storedNames[member] else memberNames[member]
+                if (chosen != null) merged[member] = chosen
+            }
+            val safeRelays = relays.filter { it.startsWith("wss://") && it.length <= 256 }
+            // The conditional statement is kept as the final guard: the watermark, roster and names
+            // land together or not at all, even if another writer slipped in between read and write.
             groupDao.updateMetaIfNewer(
                 groupId,
                 name,
-                membersJson,
-                relaysJson,
+                json.encodeToString(stringListSerializer, finalMembers),
+                json.encodeToString(stringListSerializer, safeRelays),
                 createdBy,
                 eventTimestamp,
-                namesJson,
+                json.encodeToString(nameMapSerializer, sanitizeMemberNames(merged, finalMembers)),
                 description,
                 eventId
-            )
-        } else {
-            // Local mutation (rotation, revocation, join): apply unconditionally, but still advance
-            // the watermark to "now" so a stale group_meta replayed from a relay cannot revert it.
-            val localTimestamp = System.currentTimeMillis() / 1000
-            groupDao.updateMeta(
+            ) == 1
+        }
+    }
+
+    override suspend fun applyKeyRotation(
+        groupId: String,
+        epoch: Int,
+        members: List<String>,
+        memberNames: Map<String, String>
+    ): Boolean {
+        if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
+            Log.w(TAG, "Rejecting key_rotation with ${members.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})")
+            return false
+        }
+        return lockFor(groupId).withLock {
+            groupDao.applyKeyRotation(
                 groupId,
-                name,
-                membersJson,
-                relaysJson,
+                epoch,
+                json.encodeToString(stringListSerializer, members),
+                json.encodeToString(nameMapSerializer, sanitizeMemberNames(memberNames, members))
+            ) == 1
+        }
+    }
+
+    override suspend fun overrideMembership(
+        groupId: String,
+        members: List<String>,
+        memberNames: Map<String, String>,
+        createdBy: String,
+        eventTimestamp: Long,
+        eventId: String
+    ) {
+        if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
+            Log.w(TAG, "Rejecting membership override with ${members.size} members")
+            return
+        }
+        lockFor(groupId).withLock {
+            groupDao.overrideMembership(
+                groupId,
+                json.encodeToString(stringListSerializer, members),
+                json.encodeToString(nameMapSerializer, sanitizeMemberNames(memberNames, members)),
                 createdBy,
-                localTimestamp,
-                namesJson,
-                description,
+                eventTimestamp,
                 eventId
             )
         }
@@ -201,24 +268,24 @@ constructor(
         eventId: String,
         join: Boolean,
         displayName: String?
-    ): Boolean {
-        val entity = groupDao.getById(groupId) ?: return false
+    ): Boolean = lockFor(groupId).withLock {
+        val entity = groupDao.getById(groupId) ?: return@withLock false
         val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
         val stored = clocks[author]?.let(::parseMemberClock)
-        if (stored != null && !isNewerClock(eventTimestamp, eventId, stored)) return false
+        if (stored != null && !isNewerClock(eventTimestamp, eventId, stored)) return@withLock false
 
         val members = decodeList(entity.members, groupId, "members")
         val newMembers = when {
             join && author !in members -> members + author
             else -> members
         }
-        if (author !in newMembers) return false // name change for a non-member: nothing to apply
+        if (author !in newMembers) return@withLock false // name change for a non-member: nothing to apply
         if (newMembers.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(
                 TAG,
                 "Rejecting self-join to $groupId: ${newMembers.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
             )
-            return false
+            return@withLock false
         }
 
         val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
@@ -234,7 +301,7 @@ constructor(
             json.encodeToString(nameMapSerializer, names),
             json.encodeToString(nameMapSerializer, newClocks)
         )
-        return true
+        true
     }
 
     /** `"createdAt:eventId"` -> `(createdAt, eventId)`, or null when the stored value is unreadable. */

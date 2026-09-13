@@ -15,6 +15,8 @@ import com.splitfree.sync.event.IngestionContext
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 
 /**
  * [ReconciliationStore] over Room. Nearby ingress goes through the same [EventProcessor] as relay
@@ -39,7 +41,8 @@ constructor(
     /**
      * Key material and membership control records are advertised first, so a consumer receives the
      * epoch it needs before the records encrypted under it. Within each class the order is the
-     * DAO's deterministic `(createdAt, eventId)`.
+     * DAO's deterministic `(createdAt, eventId)`. Pending rows are offered too: a rotation this phone
+     * cannot apply yet is still the signed record the next phone may be waiting for.
      */
     override suspend fun inventory(groupId: String): List<InventoryItem> {
         val controlIds =
@@ -60,7 +63,7 @@ constructor(
         NearbyWire.KIND_EVENT -> {
             val row = eventDao.getEvent(item.id) ?: return null
             val json = row.originalEventJson ?: return null
-            if (row.groupId != groupId || row.applyState != EventEntity.APPLY_STATE_APPLIED) return null
+            if (row.groupId != groupId || row.applyState == EventEntity.APPLY_STATE_FAILED) return null
             if (!EventSnapshot.isThirdPartyVerifiable(row.sig)) return null
             LoadedRecord(NearbyWire.KIND_EVENT, json)
         }
@@ -85,7 +88,9 @@ constructor(
         val envelopes = deliveryDao.getEnvelopeIds(groupId).toHashSet()
         val me = identity.getPublicKeyHex()
         val members = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
-        var carriedCount = deliveryDao.countCarried(groupId)
+        // Bounds how much new courier storage one snapshot may claim; a full cache is not a reason
+        // to refuse (carry() evicts the oldest), or a new key could stop propagating silently.
+        var newCarried = 0
         val wanted = ArrayList<InventoryItem>()
         for (item in items) {
             when (item.t) {
@@ -104,8 +109,8 @@ constructor(
                     if (recipient == me) {
                         if (item.e != null && item.e in knownIds) continue
                         wanted += item
-                    } else if (recipient in members && carriedCount < MAX_CARRIED_PER_GROUP) {
-                        carriedCount++
+                    } else if (recipient in members && newCarried < MAX_CARRIED_PER_GROUP) {
+                        newCarried++
                         wanted += item
                     }
                 }
@@ -149,6 +154,8 @@ constructor(
                     }
                 if (type == DeliveryEntity.TYPE_KEY_ROTATION && gTag != groupId) return rejected("out of scope")
                 if (recipient == me) {
+                    // A gift wrap reveals its group only once unwrapped; the processor checks the
+                    // inner event against this session's group before touching anything.
                     val report =
                         applyOwn(
                             event,
@@ -187,7 +194,8 @@ constructor(
         val result = eventProcessor.process(
             event,
             knownGroupId = knownGroupId,
-            context = IngestionContext.RECONCILIATION
+            context = IngestionContext.RECONCILIATION,
+            expectedGroupId = groupId
         )
         return when (result.outcome) {
             IngestOutcome.APPLIED -> IngestReport(RecordOutcome.APPLIED, controlApplied = eventType in CONTROL_TYPES)
@@ -250,11 +258,23 @@ constructor(
         if (event.pubkey != peerPubkey || event.kind != NostrKind.APP_SPECIFIC) return false
         if (event.tag("g") != groupId || event.tag("t") != "group_meta") return false
         if (!event.verify()) return false
-        eventProcessor.process(event, knownGroupId = groupId, context = IngestionContext.RECONCILIATION)
+        eventProcessor.process(
+            event,
+            knownGroupId = groupId,
+            context = IngestionContext.RECONCILIATION,
+            expectedGroupId = groupId
+        )
         return isAuthorizedForGroup(groupId, peerPubkey)
     }
 
     override suspend fun retryDeferred(groupId: String): Int = eventProcessor.retryDeferred(groupId)
+
+    override suspend fun pendingCount(groupId: String): Int = eventDao.countPending(groupId)
+
+    override fun observeChanges(groupId: String): Flow<StoreVersion> =
+        combine(eventDao.observeEventCount(groupId), deliveryDao.observeAvailableCount(groupId)) { e, d ->
+            StoreVersion(e, d)
+        }
 
     override suspend fun ownJoinEvent(groupId: String): String? {
         val me = identity.getPublicKeyHex()

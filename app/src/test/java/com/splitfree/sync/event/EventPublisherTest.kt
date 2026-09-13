@@ -224,6 +224,8 @@ class EventPublisherTest {
         groupRepo.save(rotationGroup, "group-key")
         every { identity.getPublicKeyHex() } returns creator
         every { identity.getPrivateKeyBytes() } answers { privateKey.copyOf() }
+        // No key stored for epoch 1 yet, so the rotation generates one instead of resuming an interrupted attempt.
+        every { keyStore.getString("g1:1", any()) } returns null
         val encryption = mockk<GroupEncryption>()
         every { encryption.generateGroupKey() } returns "rotated-key"
         every { encryption.encrypt(any(), "rotated-key") } answers { "meta:${firstArg<String>()}" }
@@ -235,7 +237,7 @@ class EventPublisherTest {
             event.copy(id = "post-rotation-meta", pubkey = creator, content = thirdArg())
         }
 
-        RotateGroupKeyUseCase(groupRepo, encryption, identity, signer, publisher)("g1", thirdPub)
+        RotateGroupKeyUseCase(groupRepo, encryption, identity, signer, publisher, mockk(relaxed = true))("g1", thirdPub)
 
         val stored = db.eventDao().getEventsByGroup("g1")
         val rotations = stored.filter { it.eventType == "key_rotation" }

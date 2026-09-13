@@ -1,13 +1,11 @@
 package com.splitfree.sync.nearby
 
 import com.splitfree.data.ble.BleEvent
-import com.splitfree.data.local.dao.EventDao
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.repository.IdentityContract
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Deterministic in-memory transport pair. Frames are queued on [Router] and delivered only when the
@@ -111,7 +109,3 @@ class TestIdentity(seed: Int) {
             every { it.getPrivateKeyBytes() } answers { priv.copyOf() }
         }
 }
-
-/** An [EventDao] stand-in whose only job is to expose a controllable applied-count flow. */
-fun countingEventDao(counter: MutableStateFlow<Int>): EventDao =
-    mockk<EventDao>(relaxed = true).also { every { it.observeEventCount(any()) } returns counter }

@@ -182,7 +182,7 @@ class EventProcessorTest {
         coEvery { eventDao.getDeletedExpenseUuidsByAuthor(any(), any()) } returns emptyList()
         coEvery { eventDao.getExpenseByAuthor(any(), any(), any()) } returns null
         coEvery { eventDao.getPendingEvents(any()) } returns emptyList()
-        coEvery { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.APPLIED
         coEvery { membershipHistory.historicalAuthors(any()) } returns emptySet()
         coEvery { membershipHistory.removalEpochOf(any(), any()) } returns null
@@ -293,7 +293,7 @@ class EventProcessorTest {
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse(result.stored)
         assertEquals(IngestOutcome.ALREADY_APPLIED, result.outcome)
-        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -340,7 +340,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("group_meta"), eq(meta), eq(pubkey), eq(groupId), any(), eq(false), any()) }
+        coVerify {
+            postProcessor.handle(eq("group_meta"), eq(meta), eq(pubkey), eq(groupId), any(), eq(false), any(), any())
+        }
     }
 
     @Test
@@ -379,12 +381,14 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process rejects group_meta self-join that removes members`() = runBlocking {
+    fun `process accepts group_meta self-join whose roster omits members it has not seen`() = runBlocking {
         val joiner = "cc".repeat(32)
         val otherMember = "dd".repeat(32)
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey, otherMember))
         coEvery { groupRepo.getById(groupId) } returns creatorGroup
-        // joiner adds themselves but meta omits otherMember; the CWE-863 check rejects this
+        // The joiner's meta does not list otherMember: they simply have not seen that join yet. The
+        // roster it carries adds nobody but its author, and the member path only records the author's
+        // own membership, so this is a legitimate self-join, not a removal.
         val meta =
             """{"name":"Test","description":"",""" +
                 """"created_by":"$pubkey","created_at":1000,""" +
@@ -396,7 +400,70 @@ class EventProcessorTest {
                 makeEvent(eventType = "group_meta", author = joiner, expenseUuid = null),
                 knownGroupKey = groupKey
             )
-        assertFalse("Self-join that removes members must be rejected", result.stored)
+        assertTrue("A joiner unaware of another member is a legitimate self-join", result.stored)
+        coVerify {
+            postProcessor.handle(eq("group_meta"), eq(meta), eq(joiner), eq(groupId), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `process accepts concurrent self-joins whose rosters are each unaware of the other in any order`() =
+        runBlocking {
+            val joinerB = "cc".repeat(32)
+            val joinerC = "dd".repeat(32)
+            val onlyA = group.copy(createdBy = pubkey, members = listOf(pubkey))
+            val metaB = """{"name":"Test","members":["$pubkey","$joinerB"],"relays":["wss://r"]}"""
+            val metaC = """{"name":"Test","members":["$pubkey","$joinerC"],"relays":["wss://r"]}"""
+            every { encryption.decrypt("enc-b", groupKey) } returns metaB
+            every { encryption.decrypt("enc-c", groupKey) } returns metaC
+            fun joinOf(author: String, content: String) =
+                makeEvent(eventType = "group_meta", author = author, expenseUuid = null, content = content)
+
+            // B first, then C (C's meta still only knows A and C).
+            coEvery { groupRepo.getById(groupId) } returns onlyA
+            assertTrue(processor.process(joinOf(joinerB, "enc-b"), knownGroupKey = groupKey).stored)
+            coEvery { groupRepo.getById(groupId) } returns onlyA.copy(members = listOf(pubkey, joinerB))
+            assertTrue(processor.process(joinOf(joinerC, "enc-c"), knownGroupKey = groupKey).stored)
+
+            // C first, then B.
+            coEvery { groupRepo.getById(groupId) } returns onlyA
+            assertTrue(processor.process(joinOf(joinerC, "enc-c"), knownGroupKey = groupKey).stored)
+            coEvery { groupRepo.getById(groupId) } returns onlyA.copy(members = listOf(pubkey, joinerC))
+            assertTrue(processor.process(joinOf(joinerB, "enc-b"), knownGroupKey = groupKey).stored)
+
+            coVerify(exactly = 4) { eventDao.insertIfNew(any()) }
+        }
+
+    @Test
+    fun `process rejects a non-member group_meta that adds anyone but its author`() = runBlocking {
+        val joiner = "cc".repeat(32)
+        val smuggled = "dd".repeat(32)
+        coEvery { groupRepo.getById(groupId) } returns group.copy(createdBy = pubkey, members = listOf(pubkey))
+        every { encryption.decrypt(any(), groupKey) } returns
+            """{"name":"Test","members":["$pubkey","$joiner","$smuggled"],"relays":["wss://r"]}"""
+        val result =
+            processor.process(
+                makeEvent(eventType = "group_meta", author = joiner, expenseUuid = null),
+                knownGroupKey = groupKey
+            )
+        assertFalse(result.stored)
+        assertEquals("not a member", result.reason)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `process rejects a non-member group_meta that does not list its author`() = runBlocking {
+        val stranger = "cc".repeat(32)
+        coEvery { groupRepo.getById(groupId) } returns group.copy(createdBy = pubkey, members = listOf(pubkey))
+        every { encryption.decrypt(any(), groupKey) } returns
+            """{"name":"Test","members":["$pubkey"],"relays":["wss://r"]}"""
+        val result =
+            processor.process(
+                makeEvent(eventType = "group_meta", author = stranger, expenseUuid = null),
+                knownGroupKey = groupKey
+            )
+        assertFalse(result.stored)
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
     }
 
     @Test
@@ -412,7 +479,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -426,7 +495,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -448,7 +519,7 @@ class EventProcessorTest {
         val result = processor.process(makeEvent(), knownGroupKey = groupKey)
         assertFalse("Undecryptable expense must not be stored", result.stored)
         coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
-        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -546,7 +617,9 @@ class EventProcessorTest {
                 nonCancellable = true
             )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("group_meta"), eq(meta), eq(pubkey), eq(groupId), any(), eq(true), any()) }
+        coVerify {
+            postProcessor.handle(eq("group_meta"), eq(meta), eq(pubkey), eq(groupId), any(), eq(true), any(), any())
+        }
     }
 
     @Test
@@ -561,7 +634,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify(exactly = 0) { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -584,7 +659,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -595,7 +672,9 @@ class EventProcessorTest {
             knownGroupKey = groupKey
         )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -780,7 +859,9 @@ class EventProcessorTest {
                 nonCancellable = true
             )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_rotation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -793,7 +874,9 @@ class EventProcessorTest {
                 nonCancellable = true
             )
         assertTrue(result.stored)
-        coVerify { postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any()) }
+        coVerify {
+            postProcessor.handle(eq("key_revocation"), any(), eq(pubkey), eq(groupId), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -807,7 +890,7 @@ class EventProcessorTest {
         )
         assertFalse(result.stored)
         coVerify(exactly = 0) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         }
     }
 
@@ -906,7 +989,7 @@ class EventProcessorTest {
     @Test
     fun `process group_meta CancellationException is rethrown`() {
         coEvery {
-            postProcessor.handle(eq("group_meta"), any(), any(), any(), any(), any(), any())
+            postProcessor.handle(eq("group_meta"), any(), any(), any(), any(), any(), any(), any())
         } throws kotlinx.coroutines.CancellationException("cancel")
         val meta =
             """{"name":"X","description":"",""" +
@@ -929,7 +1012,7 @@ class EventProcessorTest {
     @Test
     fun `process key_rotation CancellationException is rethrown`() {
         coEvery {
-            postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any())
+            postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any())
         } throws kotlinx.coroutines.CancellationException("cancel")
         every {
             encryption.decrypt(any(), groupKey)
@@ -953,7 +1036,7 @@ class EventProcessorTest {
     @Test
     fun `process key_revocation CancellationException is rethrown`() {
         coEvery {
-            postProcessor.handle(eq("key_revocation"), any(), any(), any(), any(), any(), any())
+            postProcessor.handle(eq("key_revocation"), any(), any(), any(), any(), any(), any(), any())
         } throws kotlinx.coroutines.CancellationException("cancel")
         every {
             encryption.decrypt(any(), groupKey)
@@ -1128,7 +1211,7 @@ class EventProcessorTest {
         assertEquals("expense", result.eventType)
         assertEquals(pubkey, result.authorHex)
         coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
-        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { groupRepo.getById(any()) }
     }
 
@@ -1281,7 +1364,16 @@ class EventProcessorTest {
         assertEquals(EventEntity.APPLY_STATE_PENDING, stored.captured.applyState)
         coVerifyOrder {
             eventDao.insertIfNew(any())
-            postProcessor.handle("key_rotation", rotationJson(), pubkey, groupId, event.createdAt, false, event.id)
+            postProcessor.handle(
+                "key_rotation",
+                rotationJson(),
+                pubkey,
+                groupId,
+                event.createdAt,
+                false,
+                event.id,
+                any()
+            )
             eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_APPLIED)
         }
     }
@@ -1306,13 +1398,13 @@ class EventProcessorTest {
         val meta = """{"name":"Test","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
         every { encryption.decrypt(any(), groupKey) } returns meta
         processor.process(event, knownGroupKey = groupKey)
-        coVerify { postProcessor.handle("group_meta", meta, pubkey, groupId, event.createdAt, false, event.id) }
+        coVerify { postProcessor.handle("group_meta", meta, pubkey, groupId, event.createdAt, false, event.id, any()) }
     }
 
     @Test
     fun `process reports DEFERRED and leaves the row pending when a key_rotation hits an epoch gap`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns rotationJson(epoch = 2)
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.DEFERRED
         val event = makeEvent(eventType = "key_rotation", expenseUuid = null)
 
@@ -1327,7 +1419,7 @@ class EventProcessorTest {
     @Test
     fun `process keeps a failed key_rotation pending and reports it DEFERRED`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns rotationJson()
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.FAILED
         val event = makeEvent(eventType = "key_rotation", expenseUuid = null)
 
@@ -1340,17 +1432,147 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process marks a group_meta APPLIED even when its side effect failed`() = runBlocking {
+    fun `failed group_meta side effect keeps the row pending and reports DEFERRED`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns "not-json"
-        coEvery { postProcessor.handle(eq("group_meta"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("group_meta"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.FAILED
         val event = makeEvent(eventType = "group_meta", expenseUuid = null)
 
         val result = processor.process(event, knownGroupKey = groupKey)
 
+        // The row is durably stored, but the receipt must not claim the effect landed.
+        assertTrue(result.stored)
+        assertEquals(IngestOutcome.DEFERRED, result.outcome)
+        assertEquals("side effect failed", result.reason)
+        coVerify(exactly = 0) { eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_APPLIED) }
+        coVerify(exactly = 0) { eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_FAILED) }
+    }
+
+    @Test
+    fun `failed key_revocation side effect keeps the row pending and reports DEFERRED`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns """{"oldPubkey":"$pubkey","newPubkey":""}"""
+        coEvery { postProcessor.handle(eq("key_revocation"), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.FAILED
+        val event = makeEvent(eventType = "key_revocation", expenseUuid = null)
+
+        val result = processor.process(event, knownGroupKey = groupKey)
+
+        assertTrue(result.stored)
+        assertEquals(IngestOutcome.DEFERRED, result.outcome)
+        coVerify(exactly = 0) { eventDao.setApplyState(any(), any()) }
+    }
+
+    @Test
+    fun `failed side effect on a type without side effects still reports APPLIED`() = runBlocking {
+        coEvery { postProcessor.handle(eq("expense"), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.FAILED
+        val event = makeEvent()
+
+        val result = processor.process(event, knownGroupKey = groupKey)
+
+        // Nothing about the ledger depends on a post-processing side effect for an expense.
         assertTrue(result.stored)
         assertEquals(IngestOutcome.APPLIED, result.outcome)
-        coVerify(exactly = 1) { eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_APPLIED) }
+        coVerify(exactly = 0) { eventDao.setApplyState(any(), any()) }
+    }
+
+    @Test
+    fun `permanently rejected side effect marks the row failed`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns rotationJson()
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.REJECTED
+        val event = makeEvent(eventType = "key_rotation", expenseUuid = null)
+
+        val result = processor.process(event, knownGroupKey = groupKey)
+
+        assertFalse(result.stored)
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertEquals("effect rejected", result.reason)
+        assertEquals(event.id, result.eventId)
+        assertEquals(2, EventEntity.APPLY_STATE_FAILED)
+        coVerify(exactly = 1) { eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_FAILED) }
+        coVerify(exactly = 0) { eventDao.setApplyState(event.id, EventEntity.APPLY_STATE_APPLIED) }
+    }
+
+    @Test
+    fun `re-driving a pending duplicate whose effect is permanently rejected marks the row failed`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns rotationJson()
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.REJECTED
+        val event = makeEvent(eventType = "key_rotation", expenseUuid = null, id = "rot-pending")
+        coEvery { eventDao.getEvent("rot-pending") } returns
+            storedRow("rot-pending", "key_rotation", EventEntity.APPLY_STATE_PENDING)
+
+        val result = processor.process(event, knownGroupKey = groupKey)
+
+        assertFalse(result.stored)
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertEquals("effect rejected", result.reason)
+        coVerify(exactly = 1) { eventDao.setApplyState("rot-pending", EventEntity.APPLY_STATE_FAILED) }
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+    }
+
+    @Test
+    fun `retryDeferred parks a row whose effect is permanently rejected and does not retry it`() = runBlocking {
+        useInMemoryEventStore()
+        store["rot"] = storedRow("rot", "key_rotation", EventEntity.APPLY_STATE_PENDING)
+        every { encryption.decrypt(any(), groupKey) } returns rotationJson()
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.REJECTED
+
+        assertEquals(0, processor.retryDeferred(groupId))
+        assertEquals(EventEntity.APPLY_STATE_FAILED, store.getValue("rot").applyState)
+
+        // A failed row is no longer pending, so a later pass leaves it alone.
+        assertEquals(0, processor.retryDeferred(groupId))
+        coVerify(exactly = 1) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `event for another group delivered with expectedGroupId is rejected before any storage`() = runBlocking {
+        val event = makeEvent() // tagged g = groupId
+
+        val result = processor.process(event, knownGroupKey = groupKey, expectedGroupId = "other-group")
+
+        assertFalse(result.stored)
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertEquals("out of scope", result.reason)
+        assertEquals(event.id, result.eventId)
+        assertEquals("expense", result.eventType)
+        // Rejected before the duplicate check, any DB read, any decryption or any write.
+        coVerify(exactly = 0) { eventDao.getEvent(any()) }
+        coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
+        coVerify(exactly = 0) { groupRepo.getById(any()) }
+        verify(exactly = 0) { encryption.decrypt(any(), any<String>()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { eventValidator.isWithinRateLimit(any()) }
+    }
+
+    @Test
+    fun `event for the expected group is processed normally`() = runBlocking {
+        val result = processor.process(makeEvent(), knownGroupKey = groupKey, expectedGroupId = groupId)
+        assertEquals(IngestOutcome.APPLIED, result.outcome)
+        assertTrue(result.stored)
+    }
+
+    @Test
+    fun `process passes the epoch the content decrypted under to the post-processor`() = runBlocking {
+        val event = makeEvent(eventType = "group_meta", expenseUuid = null)
+        val meta = """{"name":"Old","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 2)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "old1"
+        // Only the epoch-1 key opens it: the meta predates the rotation to epoch 2.
+        every { encryption.decrypt(any(), groupKey) } throws RuntimeException("wrong epoch")
+        every { encryption.decrypt(any(), "old1") } returns meta
+        val stored = slot<EventEntity>()
+        coEvery { eventDao.insertIfNew(capture(stored)) } returns true
+
+        processor.process(event, knownGroupKey = groupKey)
+
+        assertEquals(1, stored.captured.keyEpoch)
+        coVerify(exactly = 1) {
+            postProcessor.handle("group_meta", meta, pubkey, groupId, event.createdAt, false, event.id, 1)
+        }
     }
 
     @Test
@@ -1367,7 +1589,16 @@ class EventProcessorTest {
         assertEquals("Test", result.groupName)
         coVerify(exactly = 0) { eventDao.insertIfNew(any()) }
         coVerify {
-            postProcessor.handle("key_rotation", rotationJson(), pubkey, groupId, event.createdAt, false, "rot-pending")
+            postProcessor.handle(
+                "key_rotation",
+                rotationJson(),
+                pubkey,
+                groupId,
+                event.createdAt,
+                false,
+                "rot-pending",
+                any()
+            )
         }
         coVerify(exactly = 1) { eventDao.setApplyState("rot-pending", EventEntity.APPLY_STATE_APPLIED) }
         // Re-driving a known row is not new traffic.
@@ -1377,7 +1608,7 @@ class EventProcessorTest {
     @Test
     fun `process re-driving a pending duplicate that is still blocked stays DEFERRED`() = runBlocking {
         every { encryption.decrypt(any(), groupKey) } returns rotationJson(epoch = 2)
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.DEFERRED
         val event = makeEvent(eventType = "key_rotation", expenseUuid = null, id = "rot-pending")
         coEvery { eventDao.getEvent("rot-pending") } returns
@@ -1391,10 +1622,12 @@ class EventProcessorTest {
     }
 
     @Test
-    fun `process re-driving a pending duplicate whose effect fails is REJECTED but the row stays pending`() =
+    fun `process re-driving a pending duplicate whose effect fails stays DEFERRED and the row stays pending`() =
         runBlocking {
             every { encryption.decrypt(any(), groupKey) } returns rotationJson()
-            coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+            coEvery {
+                postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any())
+            } returns
                 PostProcessOutcome.FAILED
             val event = makeEvent(eventType = "key_rotation", expenseUuid = null, id = "rot-pending")
             coEvery { eventDao.getEvent("rot-pending") } returns
@@ -1402,8 +1635,9 @@ class EventProcessorTest {
 
             val result = processor.process(event, knownGroupKey = groupKey)
 
-            assertEquals(IngestOutcome.REJECTED, result.outcome)
-            assertFalse(result.stored)
+            // A transient failure is retried later; the row is still durably stored.
+            assertEquals(IngestOutcome.DEFERRED, result.outcome)
+            assertTrue(result.stored)
             assertEquals("side effect failed", result.reason)
             coVerify(exactly = 0) { eventDao.setApplyState(any(), any()) }
         }
@@ -1412,7 +1646,9 @@ class EventProcessorTest {
     fun `retryDeferred applies a deferred key_rotation once the missing epoch has landed`() = runBlocking {
         useInMemoryEventStore()
         every { encryption.decrypt(any(), groupKey) } returns rotationJson(epoch = 2)
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returnsMany
+        coEvery {
+            postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any())
+        } returnsMany
             listOf(PostProcessOutcome.DEFERRED, PostProcessOutcome.APPLIED)
         val event = makeEvent(eventType = "key_rotation", expenseUuid = null)
 
@@ -1424,19 +1660,19 @@ class EventProcessorTest {
         assertEquals(1, processor.retryDeferred(groupId))
         assertEquals(EventEntity.APPLY_STATE_APPLIED, store.getValue(event.id).applyState)
         coVerify(exactly = 2) {
-            postProcessor.handle("key_rotation", any(), pubkey, groupId, event.createdAt, false, event.id)
+            postProcessor.handle("key_rotation", any(), pubkey, groupId, event.createdAt, false, event.id, any())
         }
 
         // Nothing left to do, and calling again is harmless.
         assertEquals(0, processor.retryDeferred(groupId))
-        coVerify(exactly = 2) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 2) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `retryDeferred returns 0 when nothing is pending`() = runBlocking {
         coEvery { eventDao.getPendingEvents(groupId) } returns emptyList()
         assertEquals(0, processor.retryDeferred(groupId))
-        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1444,7 +1680,7 @@ class EventProcessorTest {
         useInMemoryEventStore()
         store["rot"] = storedRow("rot", "key_rotation", EventEntity.APPLY_STATE_PENDING)
         every { encryption.decrypt(any(), groupKey) } returns rotationJson(epoch = 2)
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.DEFERRED
 
         assertEquals(0, processor.retryDeferred(groupId))
@@ -1456,7 +1692,7 @@ class EventProcessorTest {
         useInMemoryEventStore()
         store["rot"] = storedRow("rot", "key_rotation", EventEntity.APPLY_STATE_PENDING)
         every { encryption.decrypt(any(), groupKey) } returns rotationJson()
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.FAILED
 
         assertEquals(0, processor.retryDeferred(groupId))
@@ -1473,7 +1709,7 @@ class EventProcessorTest {
         every { encryption.decrypt("enc-2", groupKey) } returns rotationJson(epoch = 2)
         // Behave like RotateGroupKeyUseCase: only the next epoch applies.
         var localEpoch = 0
-        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any()) } answers {
+        coEvery { postProcessor.handle(eq("key_rotation"), any(), any(), any(), any(), any(), any(), any()) } answers {
             val epoch = Regex("\"epoch\":(\\d+)").find(secondArg<String>())!!.groupValues[1].toInt()
             if (epoch == localEpoch + 1) {
                 localEpoch = epoch
@@ -1498,7 +1734,7 @@ class EventProcessorTest {
         coEvery { groupRepo.getById(groupId) } returns null
 
         assertEquals(0, processor.retryDeferred(groupId))
-        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
         assertEquals(EventEntity.APPLY_STATE_PENDING, store.getValue("rot").applyState)
     }
 

@@ -234,16 +234,30 @@ class EventDaoTest {
     // --- evidence ---
 
     @Test
-    fun `getEventEvidence lists id and sig for applied rows only`() = runBlocking {
+    fun `getEventEvidence lists applied and pending rows but never permanently failed ones`() = runBlocking {
         dao.insert(event("a", sig = "sig-a"))
         dao.insert(event("seal", sig = "seal:abc"))
         dao.insert(event("pending", sig = "sig-p", applyState = EventEntity.APPLY_STATE_PENDING))
+        dao.insert(event("failed", sig = "sig-f", applyState = EventEntity.APPLY_STATE_FAILED))
         dao.insert(event("other", groupId = "g2"))
 
         assertEquals(
-            setOf(EventEvidence("a", "sig-a"), EventEvidence("seal", "seal:abc")),
+            setOf(EventEvidence("a", "sig-a"), EventEvidence("seal", "seal:abc"), EventEvidence("pending", "sig-p")),
             dao.getEventEvidence("g1").toSet()
         )
+    }
+
+    @Test
+    fun `countPending counts only rows still waiting for their effect`() = runBlocking {
+        dao.insert(event("a"))
+        dao.insert(event("p1", applyState = EventEntity.APPLY_STATE_PENDING))
+        dao.insert(event("p2", applyState = EventEntity.APPLY_STATE_PENDING))
+        dao.insert(event("f", applyState = EventEntity.APPLY_STATE_FAILED))
+        dao.insert(event("other", groupId = "g2", applyState = EventEntity.APPLY_STATE_PENDING))
+
+        assertEquals(2, dao.countPending("g1"))
+        dao.setApplyState("p1", EventEntity.APPLY_STATE_APPLIED)
+        assertEquals(1, dao.countPending("g1"))
     }
 
     @Test

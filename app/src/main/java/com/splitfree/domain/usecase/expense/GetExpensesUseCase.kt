@@ -49,9 +49,17 @@ constructor(
     fun observe(groupId: String): Flow<List<Expense>> =
         observeWithAuthors(groupId).map { authored -> authored.map { it.expense } }
 
-    /** The current payload and author of one visible expense, or null when it is unknown or deleted. */
-    suspend fun get(groupId: String, expenseId: String): AuthoredExpense? =
-        observeWithAuthors(groupId).first().firstOrNull { it.expense.id == expenseId }
+    /**
+     * The current payload and author of one visible expense, or null when it is unknown or deleted.
+     *
+     * Expense identity is `(author, uuid)`, so two members may legitimately hold the same uuid. When
+     * [preferAuthor] is given, that author's entry is returned if it exists; otherwise the first in
+     * the deterministic list order.
+     */
+    suspend fun get(groupId: String, expenseId: String, preferAuthor: String? = null): AuthoredExpense? {
+        val matches = observeWithAuthors(groupId).first().filter { it.expense.id == expenseId }
+        return matches.firstOrNull { preferAuthor != null && it.authorPubkey == preferAuthor } ?: matches.firstOrNull()
+    }
 
     /**
      * Same list as [observe], each entry paired with the pubkey of its original `expense` event. When

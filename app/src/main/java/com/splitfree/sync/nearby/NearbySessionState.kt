@@ -45,13 +45,18 @@ enum class PeerPhase {
     CLOSED
 }
 
-/** Per-record counters for one session. Counts are for the current connection only. */
+/**
+ * Per-record counters for one session. Counts are for the current connection only, except
+ * [deferred], which mirrors the store's durable pending count for the group (work left over from an
+ * earlier session or a restart included) because completion must be derived from durable state.
+ */
 data class TransferStats(
     val sent: Int = 0,
     val received: Int = 0,
     val applied: Int = 0,
     val alreadyApplied: Int = 0,
     val upgraded: Int = 0,
+    /** Rows stored in this group whose effect has not landed yet (durable, not per-session). */
     val deferred: Int = 0,
     val rejected: Int = 0,
     val carried: Int = 0,

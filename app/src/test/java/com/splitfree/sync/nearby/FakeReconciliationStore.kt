@@ -1,5 +1,8 @@
 package com.splitfree.sync.nearby
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+
 /**
  * In-memory [ReconciliationStore] for protocol tests. Events are opaque JSON strings keyed by id;
  * deliveries are opaque envelopes addressed to a recipient. Behaviour can be scripted per id through
@@ -16,8 +19,14 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     val ingested = mutableListOf<String>()
     val outcomes = HashMap<String, RecordOutcome>()
     var controlIds = HashSet<String>()
+
+    /** Durable pending rows: grows on a scripted DEFERRED ingest, shrinks by what [retryDeferred] reports. */
     var deferredPending = 0
     var retryReturns = 0
+    var retryCalls = 0
+
+    /** Stand-in for the store's change stream; tests bump it to simulate a local write. */
+    val changes = MutableStateFlow(StoreVersion(0, 0))
     var loadFailures = HashSet<String>()
     var pruned = 0
     var ownJoin: String? = null
@@ -74,7 +83,10 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         peerPubkey: String
     ): IngestReport {
         ingested += item.id
-        outcomes[item.id]?.let { return IngestReport(it) }
+        outcomes[item.id]?.let {
+            if (it == RecordOutcome.DEFERRED) deferredPending++
+            return IngestReport(it)
+        }
         return when (item.t) {
             NearbyWire.KIND_EVENT -> {
                 val existing = events[item.id]
@@ -116,7 +128,17 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         return admitJoinResult
     }
 
-    override suspend fun retryDeferred(groupId: String): Int = retryReturns.also { retryReturns = 0 }
+    override suspend fun retryDeferred(groupId: String): Int {
+        retryCalls++
+        val n = retryReturns
+        retryReturns = 0
+        deferredPending = (deferredPending - n).coerceAtLeast(0)
+        return n
+    }
+
+    override suspend fun pendingCount(groupId: String): Int = deferredPending
+
+    override fun observeChanges(groupId: String): Flow<StoreVersion> = changes
 
     override suspend fun ownJoinEvent(groupId: String): String? = ownJoin
 

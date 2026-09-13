@@ -66,7 +66,7 @@ class EventPostProcessorTest {
 
     private fun noCreatorWrite() {
         coVerify(exactly = 0) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         }
     }
 
@@ -85,7 +85,7 @@ class EventPostProcessorTest {
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         noMetaWrites()
         coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any()) }
+        coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -110,16 +110,25 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle key_rotation maps REJECTED to FAILED`() = runBlocking {
-        rotationReturns(RotationOutcome.REJECTED)
+    fun `handle key_rotation maps DEFERRED_MEMBERSHIP to DEFERRED`() = runBlocking {
+        rotationReturns(RotationOutcome.DEFERRED_MEMBERSHIP)
         val outcome = processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        assertEquals(PostProcessOutcome.FAILED, outcome)
+        assertEquals(PostProcessOutcome.DEFERRED, outcome)
     }
 
     @Test
-    fun `handle key_revocation delegates to RevokeKeyUseCase and is applied`() = runBlocking {
-        val outcome = processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false)
-        coVerify { revokeKey.handleRevocation("""{"data":"x"}""", pubkey, groupId) }
+    fun `handle key_rotation maps REJECTED to REJECTED, not FAILED`() = runBlocking {
+        rotationReturns(RotationOutcome.REJECTED)
+        val outcome = processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
+        // Permanently rejected: the caller parks the row instead of retrying it forever.
+        assertEquals(PostProcessOutcome.REJECTED, outcome)
+    }
+
+    @Test
+    fun `handle key_revocation delegates to RevokeKeyUseCase with the event clock and is applied`() = runBlocking {
+        val outcome =
+            processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false, eventId = "ev-rev")
+        coVerify { revokeKey.handleRevocation("""{"data":"x"}""", pubkey, groupId, 1000, "ev-rev") }
         assertEquals(PostProcessOutcome.APPLIED, outcome)
     }
 
@@ -132,7 +141,8 @@ class EventPostProcessorTest {
 
     @Test
     fun `handle key_revocation exception is caught and reported as FAILED`() = runBlocking {
-        coEvery { revokeKey.handleRevocation(any(), any(), any()) } throws RuntimeException("revoke failed")
+        coEvery { revokeKey.handleRevocation(any(), any(), any(), any(), any()) } throws
+            RuntimeException("revoke failed")
         val outcome = processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false)
         assertEquals(PostProcessOutcome.FAILED, outcome)
     }
@@ -146,8 +156,9 @@ class EventPostProcessorTest {
 
     @Test
     fun `handle group_meta repository failure is reported as FAILED`() = runBlocking {
-        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any()) } throws
-            IllegalStateException("db closed")
+        coEvery {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } throws IllegalStateException("db closed")
         val meta = """{"name":"New","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
         val outcome = processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
         assertEquals(PostProcessOutcome.FAILED, outcome)
@@ -504,7 +515,75 @@ class EventPostProcessorTest {
             )
         }
         coVerify(exactly = 1) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    // --- roster scope: a creator meta sealed under an older epoch may not touch membership ---
+
+    @Test
+    fun `creator group_meta decrypted under an older epoch does not apply its roster`() = runBlocking {
+        val rotated = group.copy(keyEpoch = 2, members = listOf(pubkey))
+        coEvery { groupRepo.getById(groupId) } returns rotated
+        val meta =
+            """{"name":"Old","created_by":"$pubkey","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
+
+        val outcome =
+            processor.handle("group_meta", meta, pubkey, groupId, 2000, false, eventId = "ev-old", keyEpoch = 1)
+
+        assertEquals(PostProcessOutcome.APPLIED, outcome)
+        coVerify(exactly = 1) {
+            groupRepo.updateFromMeta(
+                groupId,
+                "Old",
+                listOf(pubkey, stranger),
+                listOf("wss://r"),
+                2000,
+                pubkey,
+                emptyMap(),
+                "",
+                "ev-old",
+                applyRoster = false
+            )
+        }
+    }
+
+    @Test
+    fun `creator group_meta decrypted under the current epoch applies its roster`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 2)
+        val meta =
+            """{"name":"Now","created_by":"$pubkey","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false, eventId = "ev-now", keyEpoch = 2)
+        // Callers without an epoch (legacy / tests) default to "current or newer".
+        processor.handle("group_meta", meta, pubkey, groupId, 2001, false, eventId = "ev-default")
+
+        coVerify(exactly = 1) {
+            groupRepo.updateFromMeta(
+                groupId, "Now", any(), any(), 2000, pubkey, any(), any(), "ev-now", applyRoster = true
+            )
+        }
+        coVerify(exactly = 1) {
+            groupRepo.updateFromMeta(
+                groupId, "Now", any(), any(), 2001, pubkey, any(), any(), "ev-default", applyRoster = true
+            )
+        }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), applyRoster = false)
+        }
+    }
+
+    @Test
+    fun `creator group_meta for a group not yet stored applies its roster whatever the epoch`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns null
+        val meta = """{"name":"New","members":["$pubkey"],"relays":["wss://r"]}"""
+
+        processor.handle("group_meta", meta, pubkey, groupId, 2000, false, eventId = "ev-new", keyEpoch = 0)
+
+        coVerify(exactly = 1) {
+            groupRepo.updateFromMeta(
+                groupId, "New", listOf(pubkey), any(), 2000, "", any(), any(), "ev-new", applyRoster = true
+            )
         }
     }
 
@@ -520,8 +599,12 @@ class EventPostProcessorTest {
     private fun persistedTransition(before: Group, after: Group) {
         var current = before
         coEvery { groupRepo.getById(groupId) } answers { current }
-        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers
-            { current = after }
+        coEvery {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } answers {
+            current = after
+            true
+        }
         coEvery { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) } answers {
             current = after
             true

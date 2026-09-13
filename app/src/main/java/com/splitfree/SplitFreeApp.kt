@@ -16,6 +16,7 @@ import androidx.work.Configuration
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
+import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.worker.PowerManager
 import com.splitfree.sync.worker.SyncScheduler
@@ -41,6 +42,8 @@ class SplitFreeApp :
     @Inject lateinit var relayHealthMonitor: RelayHealthMonitor
 
     @Inject lateinit var revokeKeyUseCase: RevokeKeyUseCase
+
+    @Inject lateinit var rotateGroupKeyUseCase: RotateGroupKeyUseCase
 
     @Inject lateinit var identity: IdentityContract
 
@@ -95,6 +98,13 @@ class SplitFreeApp :
             } catch (e: Exception) {
                 // Preserve pending identity state for a later retry, including storage failures.
                 Log.e(TAG, "Could not resume pending key revocation", e)
+            }
+            try {
+                rotateGroupKeyUseCase.resumeIfNeeded()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not resume interrupted key rotation", e)
             }
         }
     }

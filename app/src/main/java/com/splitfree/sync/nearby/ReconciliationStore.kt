@@ -1,5 +1,7 @@
 package com.splitfree.sync.nearby
 
+import kotlinx.coroutines.flow.Flow
+
 /**
  * What the session engine needs from durable storage. Split from the engine so the state machine is
  * unit-testable against an in-memory store and so nearby ingress uses exactly the same application
@@ -42,6 +44,20 @@ interface ReconciliationStore {
     suspend fun retryDeferred(groupId: String): Int
 
     /**
+     * Rows in [groupId] that are stored but whose effect has not landed yet (pending). Durable, so it
+     * includes work left over from earlier sessions and process restarts; a session is not "up to
+     * date" while this is non-zero.
+     */
+    suspend fun pendingCount(groupId: String): Int
+
+    /**
+     * Emits whenever the offerable inventory of [groupId] may have changed: applied ledger rows or
+     * available envelopes (a delivery-only change, such as history re-wrapped for a new member, must
+     * also reach connected peers). The first emission is the current state.
+     */
+    fun observeChanges(groupId: String): Flow<StoreVersion>
+
+    /**
      * Our own signed self-join meta for [groupId], if we joined but the peer may not know yet.
      * Null when we are the creator or have no verifiable join event.
      */
@@ -52,6 +68,9 @@ interface ReconciliationStore {
 }
 
 data class LoadedRecord(val kind: String, val json: String)
+
+/** Coarse version of a group's offerable inventory; any change in either count re-advertises. */
+data class StoreVersion(val appliedEvents: Int, val availableEnvelopes: Int)
 
 /**
  * @property outcome what to report to the sender

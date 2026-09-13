@@ -1,7 +1,6 @@
 package com.splitfree.sync.nearby
 
 import com.splitfree.data.ble.BleEvent
-import com.splitfree.data.local.dao.EventDao
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.util.DebugLog as Log
@@ -34,7 +33,6 @@ class NearbySessionCoordinator(
     private val transport: NearbyTransport,
     private val identity: IdentityContract,
     private val store: ReconciliationStore,
-    private val eventDao: EventDao,
     private val appScope: CoroutineScope,
     private val clock: () -> Long
 ) : PeerSession.Listener {
@@ -43,9 +41,8 @@ class NearbySessionCoordinator(
         transport: NearbyTransport,
         identity: IdentityContract,
         store: ReconciliationStore,
-        eventDao: EventDao,
         @ApplicationScope appScope: CoroutineScope
-    ) : this(transport, identity, store, eventDao, appScope, System::currentTimeMillis)
+    ) : this(transport, identity, store, appScope, System::currentTimeMillis)
 
     private val mutex = Mutex()
     private val sessions = LinkedHashMap<String, PeerSession>()
@@ -68,8 +65,12 @@ class NearbySessionCoordinator(
                 _state.value = NearbySessionsState(active = true, groupId = groupId)
                 try {
                     store.prune()
+                    // Rows left pending by an earlier session or a process restart: their dependency
+                    // may have arrived since (relay pull), so re-drive them before the first peer.
+                    val retried = store.retryDeferred(groupId)
+                    if (retried > 0) Log.i(TAG, "Applied $retried pending record(s) for $groupId at activation")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Delivery prune failed: ${e.message}")
+                    Log.w(TAG, "Activation maintenance failed: ${e.message}")
                 }
                 sessionParent = SupervisorJob(appScope.coroutineContext[Job])
                 collector =
@@ -86,9 +87,10 @@ class NearbySessionCoordinator(
                     }
                 changeObserver =
                     appScope.launch {
-                        // Local data changed (user action, relay, another peer): re-advertise to
-                        // everyone. Only while active; this is not a background mesh.
-                        eventDao.observeEventCount(groupId).distinctUntilChanged().drop(1).collect {
+                        // Local data changed (user action, relay, another peer, an envelope re-wrapped
+                        // for a new member): re-advertise to everyone. Only while active; this is not
+                        // a background mesh.
+                        store.observeChanges(groupId).distinctUntilChanged().drop(1).collect {
                             mutex.withLock { sessions.values.forEach { it.markDirty() } }
                         }
                     }

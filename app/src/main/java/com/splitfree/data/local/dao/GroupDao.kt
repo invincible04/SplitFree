@@ -75,34 +75,42 @@ interface GroupDao {
     ): Int
 
     /**
-     * Unconditional metadata update used for local mutations (rotation, revocation, join).
-     * Always advances `lastMetaTimestamp` to at least [eventTimestamp] so a stale
-     * `group_meta` replayed from a relay cannot revert the local change. `lastMetaEventId`
-     * follows the watermark: it is replaced only when [eventTimestamp] wins (or ties).
-     *
-     * @param description new description, or null to leave the stored one untouched
-     * @param eventId id to record alongside the watermark; `""` for local mutations
+     * Unconditional roster override used for key revocation (an identity swap has no epoch to order
+     * it, so it rides the creator watermark). Raises `lastMetaTimestamp` to at least
+     * [eventTimestamp] so a `group_meta` authored before the revocation cannot resurrect the revoked
+     * key; metas authored after it still apply. `lastMetaEventId` follows the watermark: it is
+     * replaced only when [eventTimestamp] wins (or ties). Name, relays and description are untouched.
      */
     @Query(
-        "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
-            "description = COALESCE(:description, description), " +
+        "UPDATE `groups` SET members = :members, memberNames = :memberNames, " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
             "lastMetaEventId = CASE WHEN :eventTimestamp >= lastMetaTimestamp " +
             "THEN :eventId ELSE lastMetaEventId END, " +
             "lastMetaTimestamp = MAX(lastMetaTimestamp, :eventTimestamp) " +
             "WHERE groupId = :groupId"
     )
-    suspend fun updateMeta(
+    suspend fun overrideMembership(
         groupId: String,
-        name: String,
         members: String,
-        relays: String,
+        memberNames: String,
         createdBy: String,
         eventTimestamp: Long,
-        memberNames: String = "{}",
-        description: String? = null,
-        eventId: String = ""
+        eventId: String
     )
+
+    /**
+     * Apply a key rotation: the epoch advance and the roster it defines land in one statement, so a
+     * crash can never leave the new epoch with the old roster (or vice versa). Guarded by
+     * `keyEpoch < :epoch` so a replay is a no-op. Deliberately leaves the creator watermark alone:
+     * rotations are ordered by epoch, creator metas by `(lastMetaTimestamp, lastMetaEventId)`.
+     *
+     * @return 1 if applied, 0 if the group is already at or past [epoch]
+     */
+    @Query(
+        "UPDATE `groups` SET keyEpoch = :epoch, members = :members, memberNames = :memberNames " +
+            "WHERE groupId = :groupId AND keyEpoch < :epoch"
+    )
+    suspend fun applyKeyRotation(groupId: String, epoch: Int, members: String, memberNames: String): Int
 
     /**
      * Apply a member's own change (self-join / own display name) computed by the repository.

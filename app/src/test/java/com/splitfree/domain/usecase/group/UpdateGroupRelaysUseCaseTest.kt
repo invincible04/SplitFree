@@ -8,6 +8,7 @@ import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -82,15 +83,19 @@ class UpdateGroupRelaysUseCaseTest {
 
         useCase("g1", newRelays)
 
+        // The local write is ordered by the published event's own (created_at, id) clock, with every
+        // other field carried over from the stored group so the LWW update changes only the relays.
         coVerify {
             groupRepo.updateFromMeta(
-                "g1",
-                "Trip",
-                listOf(pubkey),
-                newRelays,
-                0,
-                "",
-                match { it[pubkey] == "Alice" }
+                groupId = "g1",
+                name = "Trip",
+                members = listOf(pubkey),
+                relays = newRelays,
+                eventTimestamp = 1000,
+                createdBy = pubkey,
+                memberNames = match { it[pubkey] == "Alice" },
+                description = "",
+                eventId = "evt1"
             )
         }
         verify { encryption.encrypt(match { it.contains("new.relay") && it.contains("another.relay") }, fakeGroupKey) }
@@ -98,7 +103,20 @@ class UpdateGroupRelaysUseCaseTest {
     }
 
     @Test
-    fun `invoke preserves group name members and memberNames`() = runBlocking {
+    fun `invoke builds and signs the group_meta before writing locally`() = runBlocking {
+        useCase("g1", listOf("wss://x.relay"))
+
+        coVerifyOrder {
+            signer.createSignedEvent("g1", "group_meta", "encrypted", null)
+            groupRepo.updateFromMeta(any(), any(), any(), any(), 1000, any(), any(), any(), "evt1", any())
+            eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta")
+        }
+    }
+
+    @Test
+    fun `invoke preserves group name members creator description and memberNames`() = runBlocking {
+        coEvery { groupRepo.getById("g1") } returns group.copy(description = "Ski week")
+
         useCase("g1", listOf("wss://x.relay"))
 
         coVerify {
@@ -107,9 +125,11 @@ class UpdateGroupRelaysUseCaseTest {
                 "Trip",
                 listOf(pubkey),
                 listOf("wss://x.relay"),
-                0,
-                "",
-                mapOf(pubkey to "Alice")
+                1000,
+                pubkey,
+                mapOf(pubkey to "Alice"),
+                "Ski week",
+                "evt1"
             )
         }
     }
@@ -151,7 +171,18 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", listOf("wss://solo.relay"))
 
         coVerify {
-            groupRepo.updateFromMeta("g1", any(), any(), eq(listOf("wss://solo.relay")), any(), any(), any())
+            groupRepo.updateFromMeta(
+                "g1",
+                any(),
+                any(),
+                eq(listOf("wss://solo.relay")),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
         }
         coVerify { eventPublisher.publishDirect(any(), "g1", any(), "group_meta") }
     }

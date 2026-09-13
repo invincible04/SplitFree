@@ -7,7 +7,6 @@ import io.mockk.unmockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.After
@@ -35,12 +34,14 @@ class NearbySessionCoordinatorTest {
         val pub = identity.pub
         val transport = FakeTransport("p$seed").also { it.router = router }
         val store = FakeReconciliationStore(pub, members, creator)
-        val counter = MutableStateFlow(0)
         val scope = CoroutineScope(SupervisorJob() + dispatcher).also { scopes += it }
         val coordinator =
-            NearbySessionCoordinator(transport, identity.contract, store, countingEventDao(counter), scope) {
-                scheduler.currentTime
-            }
+            NearbySessionCoordinator(transport, identity.contract, store, scope) { scheduler.currentTime }
+
+        /** Simulate a local write the coordinator's change observer would see. */
+        fun touchStore() {
+            store.changes.value = StoreVersion(store.events.size, store.deliveries.size)
+        }
 
         fun progress(endpoint: String): PeerProgress? = coordinator.state.value.peers[endpoint]
 
@@ -498,7 +499,7 @@ class NearbySessionCoordinatorTest {
         a.store.putEvent(ctl)
         b.store.controlIds += ctl
         b.store.retryReturns = 1
-        a.counter.value = 4 // local change observed on A -> re-advertise
+        a.touchStore() // local change observed on A -> re-advertise
         router.pump()
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
         assertEquals(0, b.progress(ep(a))?.stats?.deferred)
@@ -692,6 +693,123 @@ class NearbySessionCoordinatorTest {
         assertEquals(4, a.progress(ep(b))!!.stats.sent)
         assertNotNull(a.progress(ep(b)))
         assertNull(a.progress("nope"))
+    }
+
+    // ------------------------------------------------------------ recovery regressions
+
+    @Test
+    fun `a lost first inventory page is resent after the timeout, never an empty delta`() {
+        val (a, b) = twoMembers()
+        seed(a, "lost", 5)
+        var drops = 1
+        a.transport.dropIf = { m -> m is InventoryPage && drops-- > 0 }
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        // B never saw A's inventory; neither side may claim to be done.
+        assertEquals(0, b.store.events.size)
+        assertEquals(PeerPhase.COMPARING, a.phase(ep(b)))
+        assertEquals(PeerPhase.COMPARING, b.phase(ep(a)))
+        advance(PeerSession.TRANSFER_TIMEOUT_MS + PeerSession.WATCHDOG_INTERVAL_MS)
+        assertEquals(5, b.store.events.size)
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        // The retry carried the records, not an empty snapshot.
+        val resent = a.transport.sentMessages().filterIsInstance<InventoryPage>().last()
+        assertEquals(5, resent.items.size)
+    }
+
+    @Test
+    fun `a lost last page of a multi page inventory is recovered without loss`() {
+        val (a, b) = twoMembers()
+        val n = NearbyWire.MAX_INVENTORY_PAGE_ITEMS + 40
+        seed(a, "pg", n)
+        var drops = 1
+        a.transport.dropIf = { m -> m is InventoryPage && m.last && drops-- > 0 }
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(0, b.store.events.size)
+        assertFalse(a.phase(ep(b)) == PeerPhase.UP_TO_DATE)
+        assertFalse(b.phase(ep(a)) == PeerPhase.UP_TO_DATE)
+        advance(PeerSession.TRANSFER_TIMEOUT_MS + PeerSession.WATCHDOG_INTERVAL_MS)
+        assertEquals(n, b.store.events.size)
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+    }
+
+    @Test
+    fun `a lost page after an acknowledged baseline only resends the unacknowledged delta`() {
+        val (a, b) = twoMembers()
+        seed(a, "base", 3)
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        // New local data whose page is lost on the way.
+        var drops = 1
+        a.transport.dropIf = { m -> m is InventoryPage && drops-- > 0 }
+        seed(a, "more", 2)
+        a.touchStore()
+        router.pump()
+        assertEquals(3, b.store.events.size)
+        assertEquals(PeerPhase.COMPARING, a.phase(ep(b)))
+        advance(PeerSession.TRANSFER_TIMEOUT_MS + PeerSession.WATCHDOG_INTERVAL_MS)
+        assertEquals(5, b.store.events.size)
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        val resent = a.transport.sentMessages().filterIsInstance<InventoryPage>().last()
+        assertEquals("only the two unacknowledged ids are resent", 2, resent.items.size)
+    }
+
+    @Test
+    fun `pending work from an earlier session is retried at activation and keeps both sides waiting`() {
+        val (a, b) = twoMembers()
+        seed(a, "pw", 2)
+        // B restarted with a rotation stored but its effect never applied.
+        b.store.deferredPending = 1
+        a.activate()
+        b.activate()
+        router.pump()
+        assertTrue("activation must re-drive pending rows", b.store.retryCalls >= 1)
+        connect(a, b)
+        router.pump()
+        assertEquals(2, b.store.events.size)
+        assertEquals(PeerPhase.WAITING_DEPENDENCY, b.phase(ep(a)))
+        assertEquals(1, b.progress(ep(a))?.stats?.deferred)
+        assertEquals("A learns from B's report that B is still waiting", PeerPhase.WAITING_DEPENDENCY, a.phase(ep(b)))
+        assertFalse(a.progress(ep(b))?.phase == PeerPhase.UP_TO_DATE)
+        // The dependency arrives; the pending row applies and both sides converge.
+        val ctl = idOf("the-missing-epoch")
+        a.store.putEvent(ctl)
+        b.store.controlIds += ctl
+        b.store.retryReturns = 1
+        a.touchStore()
+        router.pump()
+        assertEquals(0, b.progress(ep(a))?.stats?.deferred)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `a delivery only change is advertised to connected peers`() {
+        val (a, b) = twoMembers()
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        // History re-wrapped for B lands on A as an envelope, with no new ledger row.
+        val env = idOf("rewrapped-for-b")
+        a.store.putDelivery(env, recipient = b.pub)
+        a.touchStore()
+        router.pump()
+        assertTrue("B must receive the envelope without a reconnect", env in b.store.deliveries)
+        assertTrue(b.store.deliveries[env]!!.consumed)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
     }
 
     private fun PeerPhase.isTerminalForTest() = this == PeerPhase.UNSUPPORTED_PEER ||

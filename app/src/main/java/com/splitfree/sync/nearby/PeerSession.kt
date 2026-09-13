@@ -19,7 +19,14 @@ import kotlinx.coroutines.launch
  * After the group is open the protocol is symmetric. Each side is a *provider* of its own inventory
  * snapshots (`outSnap`) and a *consumer* of the peer's (`inSnap`); a snapshot is finished when the
  * consumer has a terminal [RecordOutcome] for every record it wanted and has sent [ReconcileResult].
- * "Up to date" means both directions are finished with nothing rejected, busy or unresolved.
+ *
+ * The provider only treats an inventory item as known to the peer once a [ReconcileResult] for the
+ * snapshot that carried it has arrived (`outAcked`); a later snapshot resends everything not yet
+ * acknowledged, so a lost page can never turn into an empty delta that both sides mistake for done.
+ *
+ * "Up to date" means both directions are finished with nothing rejected, busy or unresolved, and
+ * nothing pending in durable storage on either side (`stats.deferred` mirrors the store, so work left
+ * over from an earlier session or a restart counts too).
  */
 class PeerSession(
     val endpointId: String,
@@ -60,6 +67,12 @@ class PeerSession(
 
     // ---- provider half (my inventory -> peer) ----
     private var outSnap = 0
+
+    /** Ids the peer has confirmed seeing: the union of every snapshot it answered with a ReconcileResult. */
+    private var outAcked: Set<String> = emptySet()
+    private var outBaselineAcked = false
+
+    /** Ids in the snapshot currently in flight (acked ones plus the delta just sent). */
     private var outAdvertised: Set<String> = emptySet()
     private var outItemsById: Map<String, InventoryItem> = emptyMap()
     private var outPeerDone = true
@@ -270,7 +283,28 @@ class PeerSession(
     private suspend fun onGroupOpened() {
         groupOpen = true
         setPhase(PeerPhase.COMPARING)
+        // Work left pending by an earlier session or a restart is this session's business too: try
+        // it now (a dependency may have arrived meanwhile) and carry whatever is still pending into
+        // the completion check.
+        try {
+            store.retryDeferred(groupId)
+        } catch (e: Exception) {
+            Log.w(TAG, "retryDeferred at open failed for $endpointId: ${e.message}")
+        }
+        refreshPending()
         advertise(force = true)
+    }
+
+    /** Mirror the store's durable pending count into [stats]; the phase derives from it. */
+    private suspend fun refreshPending() {
+        val pending =
+            try {
+                store.pendingCount(groupId)
+            } catch (e: Exception) {
+                Log.w(TAG, "pendingCount failed for $endpointId: ${e.message}")
+                stats.deferred
+            }
+        if (pending != stats.deferred) stats = stats.copy(deferred = pending)
     }
 
     // ------------------------------------------------------------- provider half
@@ -284,21 +318,22 @@ class PeerSession(
 
     private suspend fun advertise(force: Boolean) {
         val items = store.inventory(groupId)
-        val delta = outSnap > 0
-        val toSend = if (delta) items.filter { it.id !in outAdvertised } else items
-        if (!force && delta && toSend.isEmpty()) {
+        // Delta against what the peer has ACKNOWLEDGED, not what we once sent: a page lost in
+        // transit is simply sent again in the next snapshot.
+        val toSend = items.filter { it.id !in outAcked }
+        if (!force && outBaselineAcked && toSend.isEmpty()) {
             outDirty = false
             updatePhase()
             return
         }
         outSnap++
-        outAdvertised = items.mapTo(HashSet()) { it.id }
+        outAdvertised = outAcked + items.mapTo(HashSet()) { it.id }
         outItemsById = items.associateBy { it.id }
         outPeerDone = false
         outDirty = false
         peerReport = null
         awaitingResult.clear()
-        NearbyWire.paginate(outSnap, delta, toSend).forEach { send(it) }
+        NearbyWire.paginate(outSnap, delta = outBaselineAcked, toSend).forEach { send(it) }
         updatePhase()
     }
 
@@ -341,6 +376,8 @@ class PeerSession(
         outPeerDone = true
         outReadvertised = 0
         peerReport = report
+        outAcked = outAdvertised
+        outBaselineAcked = true
         awaitingResult.clear()
         if (outDirty) advertise(force = false) else updatePhase()
     }
@@ -351,7 +388,9 @@ class PeerSession(
         if (page.snap < inSnap) return
         if (page.snap > inSnap) beginSnapshot(page.snap)
         if (page.page != inNextPage) {
-            violation("inventory page out of order")
+            // A page went missing (failed send). Not a violation: the provider notices the silence
+            // and re-advertises everything we have not acknowledged.
+            Log.w(TAG, "Inventory page ${page.page} from $endpointId out of order (expected $inNextPage); waiting")
             return
         }
         inNextPage++
@@ -408,13 +447,10 @@ class PeerSession(
         if (controlApplied) {
             val retried = store.retryDeferred(groupId)
             if (retried > 0) {
-                stats =
-                    stats.copy(
-                        applied = stats.applied + retried,
-                        deferred = (stats.deferred - retried).coerceAtLeast(0)
-                    )
+                stats = stats.copy(applied = stats.applied + retried)
                 appliedThisSnapshot += retried
             }
+            refreshPending()
             if (!retriedRejected && rejectedThisSnapshot.isNotEmpty()) {
                 // Records that arrived before the key they need were rejected as undecryptable.
                 // Now that a control record landed, ask for them once more within this snapshot.
@@ -495,6 +531,7 @@ class PeerSession(
         stats = stats.copy(received = stats.received + 1)
         if (report.upgraded) stats = stats.copy(upgraded = stats.upgraded + 1)
         if (report.controlApplied) controlApplied = true
+        if (report.outcome == RecordOutcome.DEFERRED || report.controlApplied) refreshPending()
         if (report.outcome == RecordOutcome.REJECTED && !retriedRejected) rejectedThisSnapshot.add(item)
         if (report.outcome == RecordOutcome.APPLIED || report.outcome == RecordOutcome.CARRIED || report.upgraded) {
             appliedThisSnapshot++
@@ -509,7 +546,8 @@ class PeerSession(
             when (outcome) {
                 RecordOutcome.APPLIED -> stats.copy(applied = stats.applied + 1)
                 RecordOutcome.ALREADY_APPLIED -> stats.copy(alreadyApplied = stats.alreadyApplied + 1)
-                RecordOutcome.DEFERRED -> stats.copy(deferred = stats.deferred + 1)
+                // deferred mirrors the store's pending count (refreshed by the caller), not a tally.
+                RecordOutcome.DEFERRED -> stats
                 RecordOutcome.REJECTED -> stats.copy(rejected = stats.rejected + 1)
                 RecordOutcome.BUSY -> stats.copy(busy = stats.busy + 1)
                 RecordOutcome.CARRIED -> stats.copy(carried = stats.carried + 1)
@@ -554,8 +592,9 @@ class PeerSession(
             return
         }
         if (!outPeerDone && awaitingResult.isEmpty()) {
-            // The peer's ReconcileResult (or our last page) may have been lost. Re-advertising an
-            // empty delta makes the peer answer again; give up after a bounded number of attempts.
+            // The peer's ReconcileResult, or one of our pages, was lost. Re-advertise everything the
+            // peer has not acknowledged (empty if only the result went missing); give up after a
+            // bounded number of attempts.
             if (outReadvertised < MAX_READVERTISE) {
                 outReadvertised++
                 advertise(force = true)
@@ -624,6 +663,7 @@ class PeerSession(
         awaitingResult.clear()
         outItemsById = emptyMap()
         outAdvertised = emptySet()
+        outAcked = emptySet()
         phase = finalPhase
         listener.onClosed(this, reason)
     }
@@ -633,12 +673,15 @@ class PeerSession(
         val transferring = inflight.isNotEmpty() || awaitingResult.isNotEmpty() || wantQueue.isNotEmpty()
         val finished = inDone && outPeerDone && !outDirty && !transferring
         val peerFailed = peerReport?.let { it.rejected + it.busy + it.unresolved > 0 } ?: false
+        // Either side still holding pending work means the pair is not converged: the peer's
+        // deferred count is its durable pending state, reported in its ReconcileResult.
+        val peerWaiting = (peerReport?.deferred ?: 0) > 0
         val next =
             when {
                 transferring -> PeerPhase.TRANSFERRING
                 !finished -> PeerPhase.COMPARING
                 stats.hasFailures || peerFailed -> PeerPhase.INCOMPLETE
-                stats.deferred > 0 -> PeerPhase.WAITING_DEPENDENCY
+                stats.deferred > 0 || peerWaiting -> PeerPhase.WAITING_DEPENDENCY
                 else -> PeerPhase.UP_TO_DATE
             }
         setPhase(next)

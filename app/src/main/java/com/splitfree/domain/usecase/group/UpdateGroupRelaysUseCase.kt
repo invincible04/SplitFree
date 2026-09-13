@@ -51,20 +51,8 @@ constructor(
         require(group.createdBy == identity.getPublicKeyHex()) { "Only the group creator can change relays" }
         val oldRelays = group.relays.toSet()
 
-        // 1. Update local
-        groupRepo.updateFromMeta(
-            groupId = group.id,
-            name = group.name,
-            members = group.members,
-            relays = relays,
-            memberNames = group.memberNames
-        )
-
-        // 2. Reconnect to include new relays
-        val allRelays = (oldRelays + relays).distinct()
-        nostrClient.connect(allRelays)
-
-        // 3. Publish group_meta
+        // 1. Build the group_meta first so the local write is ordered by the same clock every other
+        //    device will use for it, instead of a wall-clock stamp that could block metas in flight.
         val meta = GroupMeta(
             name = group.name,
             description = group.description,
@@ -80,6 +68,23 @@ constructor(
             eventType = "group_meta",
             encryptedContent = encrypted
         )
+
+        // 2. Update local
+        groupRepo.updateFromMeta(
+            groupId = group.id,
+            name = group.name,
+            members = group.members,
+            relays = relays,
+            eventTimestamp = event.createdAt,
+            createdBy = group.createdBy,
+            memberNames = group.memberNames,
+            description = group.description,
+            eventId = event.id
+        )
+
+        // 3. Reconnect to include new relays, then publish
+        val allRelays = (oldRelays + relays).distinct()
+        nostrClient.connect(allRelays)
         eventPublisher.publishDirect(event, group.id, encrypted, "group_meta")
 
         // 4. Re-publish existing events to new relays

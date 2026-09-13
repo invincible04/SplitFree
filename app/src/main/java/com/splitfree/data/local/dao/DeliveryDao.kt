@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.splitfree.data.local.entities.DeliveryEntity
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Data access for recipient-addressed envelopes carried across nearby mesh sessions.
@@ -56,4 +57,8 @@ interface DeliveryDao {
 
     @Query("SELECT COUNT(*) FROM deliveries WHERE groupId = :groupId AND state = 0")
     suspend fun countAvailable(groupId: String): Int
+
+    /** Available-envelope count as a flow; the nearby coordinator re-advertises to open peers when it changes. */
+    @Query("SELECT COUNT(*) FROM deliveries WHERE groupId = :groupId AND state = 0")
+    fun observeAvailableCount(groupId: String): Flow<Int>
 }

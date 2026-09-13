@@ -50,8 +50,11 @@ constructor(
      * @param nonCancellable if true, runs inside [NonCancellable] context
      * @param eventId id of the event being applied; threaded into the metadata watermark and the
      *   per-member clock so equal timestamps are broken identically on every device
-     * @return whether the side effect landed, must be retried later, or failed; exceptions other than
-     *   [kotlinx.coroutines.CancellationException] are logged and reported as [PostProcessOutcome.FAILED]
+     * @param keyEpoch the key epoch the content decrypted under. A creator `group_meta` sealed under an
+     *   epoch older than the group's current one predates a rotation and may not change the roster.
+     * @return whether the side effect landed, must be retried later, failed transiently (retried) or
+     *   was permanently rejected; exceptions other than [kotlinx.coroutines.CancellationException] are
+     *   logged and reported as [PostProcessOutcome.FAILED]
      */
     suspend fun handle(
         eventType: String,
@@ -60,23 +63,26 @@ constructor(
         groupId: String,
         createdAt: Long,
         nonCancellable: Boolean,
-        eventId: String = ""
+        eventId: String = "",
+        keyEpoch: Int = Int.MAX_VALUE
     ): PostProcessOutcome {
         if (decrypted == null) return PostProcessOutcome.FAILED
 
         return when (eventType) {
-            "group_meta" -> handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable, eventId)
+            "group_meta" ->
+                handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable, eventId, keyEpoch)
             "key_rotation" -> runSafe(nonCancellable, "key_rotation", groupId) {
                 when (rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt)) {
                     RotationOutcome.APPLIED -> PostProcessOutcome.APPLIED
-                    RotationOutcome.DEFERRED_EPOCH_GAP -> PostProcessOutcome.DEFERRED
+                    RotationOutcome.DEFERRED_EPOCH_GAP,
+                    RotationOutcome.DEFERRED_MEMBERSHIP -> PostProcessOutcome.DEFERRED
                     // Already at or past this epoch: a harmless replay, nothing left to retry.
                     RotationOutcome.IGNORED -> PostProcessOutcome.APPLIED
-                    RotationOutcome.REJECTED -> PostProcessOutcome.FAILED
+                    RotationOutcome.REJECTED -> PostProcessOutcome.REJECTED
                 }
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
-                revokeKey.handleRevocation(decrypted, authorHex, groupId)
+                revokeKey.handleRevocation(decrypted, authorHex, groupId, createdAt, eventId)
                 PostProcessOutcome.APPLIED
             }
             else -> PostProcessOutcome.APPLIED
@@ -89,7 +95,8 @@ constructor(
         groupId: String,
         createdAt: Long,
         nonCancellable: Boolean,
-        eventId: String
+        eventId: String,
+        keyEpoch: Int
     ): PostProcessOutcome = runSafe(nonCancellable, "group_meta", groupId) {
         val meta = json.decodeFromString<GroupMeta>(decrypted)
         if (meta.members.isEmpty()) return@runSafe PostProcessOutcome.APPLIED
@@ -118,7 +125,8 @@ constructor(
                 eventId,
                 currentGroup,
                 isKnownCreator,
-                bootstrapsCreator
+                bootstrapsCreator,
+                applyRoster = currentGroup == null || keyEpoch >= currentGroup.keyEpoch
             )
         } else {
             applyMemberSelfMeta(meta, authorHex, groupId, createdAt, eventId, checkNotNull(currentGroup))
@@ -152,9 +160,11 @@ constructor(
     }
 
     /**
-     * The creator's (or a bootstrapping / first-seen) meta is authoritative for the whole group: name,
-     * members, relays, names and description all come from the payload, ordered by the LWW watermark
-     * `(createdAt, eventId)` inside [GroupRepositoryContract.updateFromMeta].
+     * The creator's (or a bootstrapping / first-seen) meta is authoritative for the group: name,
+     * relays, names and description come from the payload, ordered by the LWW watermark
+     * `(createdAt, eventId)` inside [GroupRepositoryContract.updateFromMeta]. The roster is taken only
+     * when [applyRoster]: a meta sealed under an older key epoch predates a rotation and must not
+     * re-add whoever that rotation removed (or drop whoever it kept).
      */
     private suspend fun applyCreatorMeta(
         meta: GroupMeta,
@@ -164,7 +174,8 @@ constructor(
         eventId: String,
         currentGroup: Group?,
         isKnownCreator: Boolean,
-        bootstrapsCreator: Boolean
+        bootstrapsCreator: Boolean,
+        applyRoster: Boolean
     ) {
         val trustedCreatedBy =
             when {
@@ -191,7 +202,8 @@ constructor(
             meta.memberNames,
             // Only the creator's meta is authoritative for the description.
             description = meta.description,
-            eventId = eventId
+            eventId = eventId,
+            applyRoster = applyRoster
         )
 
         if (relaysChanged) {

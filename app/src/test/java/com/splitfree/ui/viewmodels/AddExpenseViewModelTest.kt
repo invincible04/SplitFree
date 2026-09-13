@@ -621,7 +621,8 @@ class AddExpenseViewModelTest {
         SavedStateHandle(mapOf("groupId" to "g1", "expenseId" to expenseId))
 
     private fun stored(expense: Expense = storedExpense, author: String = "a") {
-        coEvery { getExpenses.get("g1", expense.id) } returns AuthoredExpense(expense, author)
+        // The edit screen asks for the current user's own entry first (expense identity is (author, uuid)).
+        coEvery { getExpenses.get("g1", expense.id, preferAuthor = "a") } returns AuthoredExpense(expense, author)
     }
 
     @Test
@@ -757,7 +758,7 @@ class AddExpenseViewModelTest {
 
     @Test
     fun `an expense that cannot be loaded shows a loading error and retries`() = runTest {
-        coEvery { getExpenses.get("g1", "exp-1") } returns null
+        coEvery { getExpenses.get("g1", "exp-1", any()) } returns null
         val vm = create(editHandle())
         assertTrue(vm.uiState.value.editing)
         assertFalse(vm.uiState.value.loading)
@@ -782,7 +783,7 @@ class AddExpenseViewModelTest {
 
     @Test
     fun `a failing expense lookup is reported as a loading error`() = runTest {
-        coEvery { getExpenses.get("g1", "exp-1") } throws IOException("decrypt failed")
+        coEvery { getExpenses.get("g1", "exp-1", any()) } throws IOException("decrypt failed")
         val vm = create(editHandle())
         assertEquals(UiMessage.Raw("decrypt failed"), vm.uiState.value.loadingError)
         assertFalse(vm.uiState.value.editable)
@@ -795,7 +796,7 @@ class AddExpenseViewModelTest {
         val first = create(handle)
         first.updateDescription("Changed")
         first.viewModelScope.cancel()
-        coEvery { getExpenses.get("g1", "exp-1") } throws AssertionError("must not reload after restore")
+        coEvery { getExpenses.get("g1", "exp-1", any()) } throws AssertionError("must not reload after restore")
 
         val restored = create(restore(handle))
 

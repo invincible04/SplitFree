@@ -215,7 +215,7 @@ constructor(
     private suspend fun seedFromExpense(pubkey: String) {
         val id = editingExpenseId ?: return
         val authored = try {
-            getExpenses.get(groupId, id)
+            getExpenses.get(groupId, id, preferAuthor = pubkey)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

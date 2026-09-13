@@ -294,7 +294,13 @@ class RealRelayIntegrationTest {
         assertEquals("Group key must match", groupKey, savedKey.captured)
         assertEquals("Relays must match", relays.toSet(), joinedGroup.relays.toSet())
 
-        coVerify { phone2Repo.updateFromMeta(groupId, any(), match { phone2PubKey in it }, any()) }
+        // The local join is a member self-update ordered by the join event's own clock, never a creator meta.
+        coVerify {
+            phone2Repo.applyMemberSelfUpdate(groupId, phone2PubKey, any(), any(), join = true, displayName = any())
+        }
+        coVerify(exactly = 0) {
+            phone2Repo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
 
         println("\n✅ REAL RELAY INTEGRATION TEST PASSED")
         println("   Phone 1 (${phone1PubKey.take(8)}) created group '$groupName'")

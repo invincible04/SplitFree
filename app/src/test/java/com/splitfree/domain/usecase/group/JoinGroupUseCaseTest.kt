@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
@@ -208,20 +209,55 @@ class JoinGroupUseCaseTest {
     }
 
     @Test
-    fun `invoke includes joiner display name in local meta update`() = runBlocking {
+    fun `invoke records the local join as a member self-update carrying the display name`() = runBlocking {
         every { settings.displayName } returns "Bob"
         useCase(buildInviteUri())
-        coVerify {
-            groupRepo.updateFromMeta(
-                groupId,
-                any(),
-                any(),
-                any(),
-                0,
-                "",
-                match { it[pubkey] == "Bob" }
-            )
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, pubkey, any(), any(), join = true, displayName = "Bob")
         }
+        // A join never rides the creator's metadata watermark.
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `invoke with a blank display name joins without touching the name`() = runBlocking {
+        every { settings.displayName } returns "   "
+        useCase(buildInviteUri())
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, pubkey, any(), any(), join = true, displayName = null)
+        }
+    }
+
+    @Test
+    fun `invoke orders the local join by the published announcement's own clock`() = runBlocking {
+        val joinEvent = NostrEvent("join-evt", pubkey, 4242, 30078, emptyList(), "enc", "sig")
+        every { signer.createSignedEvent(any(), any(), any(), any(), any()) } returns joinEvent
+
+        useCase(buildInviteUri())
+
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, pubkey, 4242, "join-evt", join = true, displayName = null)
+        }
+        coVerify { eventPublisher.publishDirect(joinEvent, groupId, any(), "group_meta") }
+    }
+
+    @Test
+    fun `invoke publishes a join announcement listing the joiner alongside the synced roster`() = runBlocking {
+        every { settings.displayName } returns "Bob"
+        val synced = Group(groupId, "TestGroup", "", creatorPubkey, createdAt, listOf(creatorPubkey), listOf("wss://r"))
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, synced, synced)
+        val metaPlaintext = slot<String>()
+        every { encryption.encrypt(capture(metaPlaintext), groupKey) } returns "enc-meta"
+
+        useCase(buildInviteUri())
+
+        val meta = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString<com.splitfree.domain.model.group.GroupMeta>(metaPlaintext.captured)
+        assertEquals(listOf(creatorPubkey, pubkey), meta.members)
+        assertEquals("Bob", meta.memberNames[pubkey])
+        assertEquals(creatorPubkey, meta.createdBy)
     }
 
     @Test

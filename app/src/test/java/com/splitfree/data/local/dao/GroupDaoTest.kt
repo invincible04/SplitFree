@@ -81,35 +81,123 @@ class GroupDaoTest {
         assertEquals("new-creator", dao.getById("g1")!!.createdBy)
     }
 
+    // --- overrideMembership (key revocation) ---
+
     @Test
-    fun `updateMeta always applies and advances the watermark to the given time`() = runBlocking {
-        dao.updateMeta("g1", "Local", """["creator"]""", entity.relays, "", 900, "{}")
+    fun `overrideMembership always applies the roster and raises the watermark to the given time`() = runBlocking {
+        dao.overrideMembership("g1", """["creator","bob2"]""", """{"bob2":"Bob"}""", "", 900, "e-900")
 
         val row = dao.getById("g1")!!
-        assertEquals("Local", row.name)
-        assertEquals("""["creator"]""", row.members)
+        assertEquals("""["creator","bob2"]""", row.members)
+        assertEquals("""{"bob2":"Bob"}""", row.memberNames)
         assertEquals(900L, row.lastMetaTimestamp)
+        assertEquals("e-900", row.lastMetaEventId)
+        // Name, relays, description and creator are untouched.
+        assertEquals("Trip", row.name)
+        assertEquals(entity.relays, row.relays)
+        assertEquals(entity.description, row.description)
+        assertEquals("creator", row.createdBy)
     }
 
     @Test
-    fun `updateMeta never moves the watermark backwards`() = runBlocking {
-        dao.updateMeta("g1", "Local", """["creator"]""", entity.relays, "", 100, "{}")
+    fun `overrideMembership never moves the watermark backwards`() = runBlocking {
+        dao.overrideMembership("g1", """["creator"]""", "{}", "", 100, "e-100")
 
         val row = dao.getById("g1")!!
-        assertEquals("Local", row.name)
+        assertEquals("""["creator"]""", row.members)
         assertEquals(500L, row.lastMetaTimestamp)
     }
 
     @Test
-    fun `a stale meta replayed after a local mutation is rejected`() = runBlocking {
-        // Local removal of bob stamped at 900...
-        dao.updateMeta("g1", "Trip", """["creator"]""", entity.relays, "", 900, "{}")
-        // ...then a relay replays the pre-removal meta.
+    fun `overrideMembership raises the watermark to the max of stored and given`() = runBlocking {
+        dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 800, "{}", null, "e-800")
+
+        // Older than the stored watermark: roster applies, watermark stays at 800.
+        dao.overrideMembership("g1", """["creator"]""", "{}", "", 700, "e-700")
+        var row = dao.getById("g1")!!
+        assertEquals("""["creator"]""", row.members)
+        assertEquals(800L, row.lastMetaTimestamp)
+        assertEquals("e-800", row.lastMetaEventId)
+
+        // Newer than the stored watermark: watermark advances.
+        dao.overrideMembership("g1", """["creator","carol"]""", "{}", "", 950, "e-950")
+        row = dao.getById("g1")!!
+        assertEquals("""["creator","carol"]""", row.members)
+        assertEquals(950L, row.lastMetaTimestamp)
+        assertEquals("e-950", row.lastMetaEventId)
+    }
+
+    @Test
+    fun `overrideMembership only overwrites createdBy when one is supplied`() = runBlocking {
+        dao.overrideMembership("g1", """["creator"]""", "{}", "", 900, "e-900")
+        assertEquals("creator", dao.getById("g1")!!.createdBy)
+
+        dao.overrideMembership("g1", """["new-creator"]""", "{}", "new-creator", 901, "e-901")
+        assertEquals("new-creator", dao.getById("g1")!!.createdBy)
+    }
+
+    @Test
+    fun `a stale meta replayed after a revocation override is rejected`() = runBlocking {
+        // Local revocation override stamped at 900...
+        dao.overrideMembership("g1", """["creator"]""", "{}", "", 900, "e-900")
+        // ...then a relay replays the pre-revocation meta.
         val updated = dao.updateMetaIfNewer("g1", "Trip", """["creator","bob"]""", entity.relays, "", 800, "{}")
 
         assertEquals(0, updated)
         assertEquals("""["creator"]""", dao.getById("g1")!!.members)
     }
+
+    // --- applyKeyRotation ---
+
+    @Test
+    fun `applyKeyRotation installs epoch and roster together without touching the watermark`() = runBlocking {
+        dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 600, "{}", null, "e-600")
+
+        val updated = dao.applyKeyRotation("g1", 1, """["creator"]""", "{}")
+
+        assertEquals(1, updated)
+        val row = dao.getById("g1")!!
+        assertEquals(1, row.keyEpoch)
+        assertEquals("""["creator"]""", row.members)
+        assertEquals("{}", row.memberNames)
+        assertEquals(600L, row.lastMetaTimestamp)
+        assertEquals("e-600", row.lastMetaEventId)
+        assertEquals("Trip", row.name)
+        assertEquals(entity.relays, row.relays)
+    }
+
+    @Test
+    fun `applyKeyRotation is a no-op when the group is already at or past the epoch`() = runBlocking {
+        dao.insert(entity.copy(groupId = "r", keyEpoch = 2, lastMetaTimestamp = 500))
+
+        // Same epoch: replay.
+        assertEquals(0, dao.applyKeyRotation("r", 2, """["mallory"]""", "{}"))
+        // Older epoch: replay.
+        assertEquals(0, dao.applyKeyRotation("r", 1, """["mallory"]""", "{}"))
+
+        val row = dao.getById("r")!!
+        assertEquals(2, row.keyEpoch)
+        assertEquals(entity.members, row.members)
+        assertEquals(entity.memberNames, row.memberNames)
+        assertEquals(500L, row.lastMetaTimestamp)
+    }
+
+    @Test
+    fun `a pre-rotation meta still applies to name after the rotation because rotations do not raise the watermark`() =
+        runBlocking {
+            assertEquals(1, dao.applyKeyRotation("g1", 1, """["creator"]""", "{}"))
+            assertEquals(500L, dao.getById("g1")!!.lastMetaTimestamp)
+
+            // Creator meta at 600 is newer than the watermark (500) and applies; the repository is
+            // responsible for keeping the roster when the meta predates the epoch.
+            assertEquals(
+                1,
+                dao.updateMetaIfNewer("g1", "Renamed", """["creator"]""", entity.relays, "", 600, "{}", null, "e-600")
+            )
+            val row = dao.getById("g1")!!
+            assertEquals("Renamed", row.name)
+            assertEquals(1, row.keyEpoch)
+        }
 
     @Test
     fun `updateCreator sets createdBy and createdAt without moving the watermark`() = runBlocking {
@@ -167,14 +255,14 @@ class GroupDaoTest {
     }
 
     @Test
-    fun `updateMeta sets or preserves the description like updateMetaIfNewer`() = runBlocking {
+    fun `overrideMembership never touches the description`() = runBlocking {
         dao.insert(entity.copy(groupId = "d", description = "keep me"))
 
-        dao.updateMeta("d", "Local", entity.members, entity.relays, "", 900, "{}", null)
+        dao.overrideMembership("d", """["creator"]""", "{}", "", 900, "e-900")
         assertEquals("keep me", dao.getById("d")!!.description)
 
-        dao.updateMeta("d", "Local", entity.members, entity.relays, "", 901, "{}", "replaced")
-        assertEquals("replaced", dao.getById("d")!!.description)
+        dao.overrideMembership("d", """["creator","x"]""", "{}", "", 901, "e-901")
+        assertEquals("keep me", dao.getById("d")!!.description)
     }
 
     @Test
@@ -263,21 +351,21 @@ class GroupDaoTest {
     }
 
     @Test
-    fun `updateMeta records the eventId only when its timestamp wins or ties`() = runBlocking {
-        dao.updateMeta("g1", "Local", entity.members, entity.relays, "", 900, "{}", null, "e-900")
+    fun `overrideMembership records the eventId only when its timestamp wins or ties`() = runBlocking {
+        dao.overrideMembership("g1", entity.members, "{}", "", 900, "e-900")
         var row = dao.getById("g1")!!
         assertEquals(900L, row.lastMetaTimestamp)
         assertEquals("e-900", row.lastMetaEventId)
 
-        // Older timestamp: metadata applies, watermark and eventId stay.
-        dao.updateMeta("g1", "Older", entity.members, entity.relays, "", 100, "{}", null, "e-100")
+        // Older timestamp: roster applies, watermark and eventId stay.
+        dao.overrideMembership("g1", """["creator"]""", "{}", "", 100, "e-100")
         row = dao.getById("g1")!!
-        assertEquals("Older", row.name)
+        assertEquals("""["creator"]""", row.members)
         assertEquals(900L, row.lastMetaTimestamp)
         assertEquals("e-900", row.lastMetaEventId)
 
         // Equal timestamp: eventId is replaced.
-        dao.updateMeta("g1", "Tie", entity.members, entity.relays, "", 900, "{}", null, "e-tie")
+        dao.overrideMembership("g1", entity.members, "{}", "", 900, "e-tie")
         row = dao.getById("g1")!!
         assertEquals(900L, row.lastMetaTimestamp)
         assertEquals("e-tie", row.lastMetaEventId)

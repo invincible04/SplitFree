@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -13,10 +14,14 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -33,6 +38,7 @@ class UpdateDisplayNameUseCaseTest {
     private val pubkey = "aa".repeat(32)
     private val otherPubkey = "bb".repeat(32)
     private val fakeGroupKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    private val json = Json { ignoreUnknownKeys = true }
     private val fakeEvent = NostrEvent(
         id = "evt1",
         pubkey = pubkey,
@@ -59,6 +65,19 @@ class UpdateDisplayNameUseCaseTest {
     @After
     fun teardown() = unmockkStatic(android.util.Log::class)
 
+    /** Decodes the plaintext handed to [encryption] for the given group key. */
+    private fun capturePublishedMeta(): GroupMeta {
+        val plaintext = slot<String>()
+        verify { encryption.encrypt(capture(plaintext), any()) }
+        return json.decodeFromString(GroupMeta.serializer(), plaintext.captured)
+    }
+
+    private fun assertNoCreatorWrite() {
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
     @Test
     fun `invoke saves name locally and broadcasts to all groups`() = runBlocking {
         val group = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
@@ -68,21 +87,30 @@ class UpdateDisplayNameUseCaseTest {
         useCase("Alice")
 
         verify { settings.displayName = "Alice" }
-        coVerify {
-            groupRepo.updateFromMeta(
-                "g1",
-                "Trip",
-                listOf(pubkey),
-                listOf("wss://r"),
-                0,
-                "",
-                match {
-                    it[pubkey] ==
-                        "Alice"
-                }
-            )
+        // The local write is a member self-update ordered by the published event's own clock.
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate("g1", pubkey, 1000, "evt1", join = false, displayName = "Alice")
         }
-        coVerify { eventPublisher.publishDirect(any(), "g1", "encrypted", "group_meta") }
+        assertNoCreatorWrite()
+        coVerify { eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta") }
+        val meta = capturePublishedMeta()
+        assertEquals("Trip", meta.name)
+        assertEquals(listOf(pubkey), meta.members)
+        assertEquals("Alice", meta.memberNames[pubkey])
+    }
+
+    @Test
+    fun `invoke trims the name before applying and publishing it`() = runBlocking {
+        val group = Group("g1", "Trip", "", pubkey, 1000, listOf(pubkey), listOf("wss://r"))
+        coEvery { groupRepo.getAll() } returns listOf(group)
+        coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
+
+        useCase("  Alice  ")
+
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate("g1", pubkey, 1000, "evt1", join = false, displayName = "Alice")
+        }
+        assertEquals("Alice", capturePublishedMeta().memberNames[pubkey])
     }
 
     @Test
@@ -108,8 +136,11 @@ class UpdateDisplayNameUseCaseTest {
         useCase("Alice")
 
         coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
-        // Local update should still happen
-        coVerify { groupRepo.updateFromMeta("g1", any(), any(), any(), any(), any(), any()) }
+        // Without the current key there is no event to order the change by, so nothing is written for
+        // that group either; the name itself is still saved in settings.
+        verify { settings.displayName = "Alice" }
+        coVerify(exactly = 0) { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) }
+        assertNoCreatorWrite()
     }
 
     @Test
@@ -129,17 +160,15 @@ class UpdateDisplayNameUseCaseTest {
 
         useCase("  ")
 
-        coVerify {
-            groupRepo.updateFromMeta(
-                "g1",
-                "Trip",
-                listOf(pubkey),
-                listOf("wss://r"),
-                0,
-                "",
-                match { pubkey !in it }
-            )
+        // Clearing is applied as an explicit empty name, not a missing one: the member path leaves an
+        // absent entry alone, so only "" reaches every receiver.
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate("g1", pubkey, 1000, "evt1", join = false, displayName = "")
         }
+        val meta = capturePublishedMeta()
+        assertTrue("published meta must carry an explicit entry for me", pubkey in meta.memberNames)
+        assertEquals("", meta.memberNames[pubkey])
+        assertNoCreatorWrite()
     }
 
     @Test
@@ -159,16 +188,11 @@ class UpdateDisplayNameUseCaseTest {
 
         useCase("Alice")
 
-        coVerify {
-            groupRepo.updateFromMeta(
-                "g1",
-                "Trip",
-                any(),
-                any(),
-                0,
-                "",
-                match { it[pubkey] == "Alice" && it[otherPubkey] == "Bob" }
-            )
+        val meta = capturePublishedMeta()
+        assertEquals(mapOf(otherPubkey to "Bob", pubkey to "Alice"), meta.memberNames)
+        // Only my own entry is written locally; the repository carries the others over.
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate("g1", pubkey, 1000, "evt1", join = false, displayName = "Alice")
         }
     }
 

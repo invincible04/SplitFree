@@ -82,8 +82,12 @@ interface EventDao {
     @Query("SELECT * FROM events WHERE groupId = :groupId AND eventType = :type ORDER BY createdAt ASC, eventId ASC")
     suspend fun getEventsByType(groupId: String, type: String): List<EventEntity>
 
-    /** `(eventId, sig)` for every applied row in [groupId]; pending rows are not advertised. */
-    @Query("SELECT eventId, sig FROM events WHERE groupId = :groupId AND applyState = 0")
+    /**
+     * `(eventId, sig)` for every applied or pending row in [groupId]. A pending row (say a rotation
+     * waiting for an earlier epoch) is still a signed record a peer may need; only rows whose effect
+     * was permanently rejected here are withheld.
+     */
+    @Query("SELECT eventId, sig FROM events WHERE groupId = :groupId AND applyState != 2")
     suspend fun getEventEvidence(groupId: String): List<EventEvidence>
 
     /**
@@ -104,6 +108,10 @@ interface EventDao {
     /** Rows whose side effects were deferred, oldest first, so `EventProcessor.retryDeferred` can re-run them. */
     @Query("SELECT * FROM events WHERE groupId = :groupId AND applyState = 1 ORDER BY createdAt ASC, eventId ASC")
     suspend fun getPendingEvents(groupId: String): List<EventEntity>
+
+    /** Number of rows in [groupId] still waiting for their side effect. */
+    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND applyState = 1")
+    suspend fun countPending(groupId: String): Int
 
     /** Atomic insert; returns true only if the row was actually inserted (not a duplicate). */
     suspend fun insertIfNew(event: EventEntity): Boolean = insert(event) != -1L

@@ -103,7 +103,15 @@ constructor(
                     } catch (_: Exception) {
                         continue
                     }
-                    groupRepo.saveGroupKeyForEpoch(groupId, epoch, key)
+                    try {
+                        groupRepo.saveGroupKeyForEpoch(groupId, epoch, key)
+                    } catch (e: IllegalStateException) {
+                        // The device already holds different material for this epoch; keep it.
+                        Log.w(
+                            TAG,
+                            "Backup carries a conflicting key for epoch $epoch of ${groupId.take(8)}, kept local"
+                        )
+                    }
                 }
             } finally {
                 privKey.fill(0)

@@ -46,6 +46,7 @@ class GroupRepositoryTest {
     @Before
     fun setup() {
         mockkStatic(android.util.Log::class)
+        every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
 
@@ -243,8 +244,8 @@ class GroupRepositoryTest {
     fun `updateCreator delegates to dao without touching the metadata watermark`() = runBlocking {
         repo.updateCreator("g1", "creator", 1234)
         coVerify { groupDao.updateCreator("g1", "creator", 1234) }
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
+        assertNoMetaWrite()
+        coVerify(exactly = 0) { groupDao.overrideMembership(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -252,99 +253,380 @@ class GroupRepositoryTest {
         repo.updateCreator("g1", "", 1234)
     }
 
+    // --- updateFromMeta ---
+
+    private fun assertNoMetaWrite() {
+        coVerify(exactly = 0) {
+            groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    private fun stubMetaWrite(rows: Int = 1) {
+        coEvery {
+            groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns rows
+    }
+
+    @Test
+    fun `updateFromMeta requires a positive event timestamp`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        val zero = runCatching { repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 0) }
+        val negative = runCatching { repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), -5) }
+        assertTrue(zero.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(negative.exceptionOrNull() is IllegalArgumentException)
+        assertNoMetaWrite()
+    }
+
     @Test
     fun `updateFromMeta rejects too many members`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
         val bigList = (1..51).map { "pub$it" }
-        repo.updateFromMeta("g1", "name", bigList, emptyList())
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
+        assertFalse(repo.updateFromMeta("g1", "name", bigList, emptyList(), eventTimestamp = 500))
+        assertNoMetaWrite()
     }
 
     @Test
-    fun `updateFromMeta with timestamp uses the single-statement LWW update`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) } returns 1
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any()) }
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
+    fun `updateFromMeta returns false for an unknown group`() = runBlocking {
+        coEvery { groupDao.getById("missing") } returns null
+        assertFalse(repo.updateFromMeta("missing", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500))
+        assertNoMetaWrite()
     }
 
     @Test
-    fun `updateFromMeta without timestamp uses the unconditional update with a positive watermark`() = runBlocking {
-        val before = System.currentTimeMillis() / 1000
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"))
+    fun `updateFromMeta with a newer timestamp uses the single-statement LWW update`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        assertTrue(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500))
         coVerify {
-            groupDao.updateMeta(
-                "g1",
-                "name",
-                any(),
-                any(),
-                "",
-                match { it >= before && it <= System.currentTimeMillis() / 1000 },
-                any()
-            )
+            groupDao.updateMetaIfNewer("g1", "name", """["pub1"]""", """["wss://r"]""", "", 500, any(), null, "")
         }
-        coVerify(exactly = 0) { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `updateFromMeta with a stale timestamp does not fall back to the unconditional update`() = runBlocking {
-        coEvery { groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any()) } returns 0
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any()) }
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any()) }
+    fun `updateFromMeta is a no-op when the clock is not newer`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(lastMetaTimestamp = 3000, lastMetaEventId = "e-3000")
+
+        // Older timestamp.
+        assertFalse(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 2500, eventId = "zzz"))
+        // Exact replay of the stored clock.
+        assertFalse(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 3000, eventId = "e-3000"))
+        // Same timestamp, lower eventId.
+        assertFalse(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 3000, eventId = "e-2999"))
+
+        assertNoMetaWrite()
+    }
+
+    @Test
+    fun `updateFromMeta applies the same timestamp with a greater eventId`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity.copy(lastMetaTimestamp = 3000, lastMetaEventId = "aaa")
+        stubMetaWrite(1)
+        assertTrue(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 3000, eventId = "bbb"))
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 3000, any(), null, "bbb") }
+    }
+
+    @Test
+    fun `updateFromMeta reports false when the dao's final guard rejects the write`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(0)
+        assertFalse(repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500))
+        coVerify(exactly = 1) { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "") }
     }
 
     @Test
     fun `updateFromMeta passes createdBy when provided`() = runBlocking {
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), createdBy = "creator")
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "creator", any(), any()) }
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 500, createdBy = "creator")
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "creator", 500, any(), null, "") }
     }
 
     @Test
     fun `updateFromMeta sanitizes member names`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
         val namesJson = slot<String>()
         repo.updateFromMeta(
             "g1",
             "name",
             listOf("pub1"),
             listOf("wss://r"),
+            eventTimestamp = 500,
             memberNames = mapOf("pub1" to "  Alice  ", "pub2" to "Ignored")
         )
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), capture(namesJson)) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, capture(namesJson), null, "") }
         assertEquals("""{"pub1":"Alice"}""", namesJson.captured)
     }
 
     @Test
+    fun `updateFromMeta drops relays that are not wss`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        val relaysJson = slot<String>()
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://ok", "ws://plain", "http://x"), 500)
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), capture(relaysJson), "", 500, any(), null, "") }
+        assertEquals("""["wss://ok"]""", relaysJson.captured)
+    }
+
+    @Test
     fun `updateFromMeta passes a null description through so the dao preserves the stored one`() = runBlocking {
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"))
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), null) }
-
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null) }
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "") }
     }
 
     @Test
-    fun `updateFromMeta forwards an explicit description on both update paths`() = runBlocking {
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), description = "Ski trip")
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), "Ski trip") }
+    fun `updateFromMeta forwards an explicit description`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 500, description = "Ski trip")
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), "Ski trip", "") }
 
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500, description = "")
-        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), "") }
+        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), 600, description = "")
+        coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 600, any(), "", "") }
     }
 
     @Test
-    fun `updateFromMeta threads the eventId into both dao updates`() = runBlocking {
+    fun `updateFromMeta threads the eventId into the dao update`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500, eventId = "e-500")
         coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "e-500") }
-
-        repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventId = "e-local")
-        coVerify { groupDao.updateMeta("g1", "name", any(), any(), "", any(), any(), null, "e-local") }
     }
 
     @Test
     fun `updateFromMeta defaults the eventId to empty so existing callers are unchanged`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
         repo.updateFromMeta("g1", "name", listOf("pub1"), listOf("wss://r"), eventTimestamp = 500)
         coVerify { groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 500, any(), null, "") }
+    }
+
+    @Test
+    fun `updateFromMeta keeps the stored roster when applyRoster is false but still updates the name`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(members = """["pub1","pub2"]""", memberNames = """{"pub1":"Alice","pub2":"Bob"}""")
+        stubMetaWrite(1)
+        val membersJson = slot<String>()
+        val namesJson = slot<String>()
+
+        assertTrue(
+            repo.updateFromMeta(
+                "g1",
+                "Renamed",
+                members = listOf("pub1", "pub3"),
+                relays = listOf("wss://new"),
+                eventTimestamp = 500,
+                memberNames = mapOf("pub1" to "Al", "pub2" to "Bobby", "pub3" to "Carol"),
+                description = "fresh",
+                eventId = "e-500",
+                applyRoster = false
+            )
+        )
+
+        coVerify {
+            groupDao.updateMetaIfNewer(
+                "g1",
+                "Renamed",
+                capture(membersJson),
+                """["wss://new"]""",
+                "",
+                500,
+                capture(namesJson),
+                "fresh",
+                "e-500"
+            )
+        }
+        // Roster is the stored one, not the meta's; names follow the stored roster.
+        assertEquals("""["pub1","pub2"]""", membersJson.captured)
+        assertEquals("""{"pub1":"Al","pub2":"Bobby"}""", namesJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta applies the meta's roster when applyRoster is true`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(members = """["pub1","pub2"]""", memberNames = """{"pub1":"Alice","pub2":"Bob"}""")
+        stubMetaWrite(1)
+        val membersJson = slot<String>()
+        val namesJson = slot<String>()
+
+        repo.updateFromMeta(
+            "g1",
+            "name",
+            listOf("pub1", "pub3"),
+            listOf("wss://r"),
+            500,
+            memberNames = mapOf("pub1" to "Al", "pub2" to "Bobby", "pub3" to "Carol")
+        )
+
+        coVerify {
+            groupDao.updateMetaIfNewer("g1", "name", capture(membersJson), any(), "", 500, capture(namesJson), null, "")
+        }
+        assertEquals("""["pub1","pub3"]""", membersJson.captured)
+        assertEquals("""{"pub1":"Al","pub3":"Carol"}""", namesJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta keeps a member's own newer display name over the creator's map`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(
+                members = """["pub1","pub2"]""",
+                memberNames = """{"pub1":"Alice","pub2":"Bob"}""",
+                memberClocks = """{"pub2":"2000:ffff"}"""
+            )
+        stubMetaWrite(1)
+        val namesJson = slot<String>()
+
+        // Creator meta older than pub2's own rename: pub2 keeps their stored name.
+        repo.updateFromMeta(
+            "g1",
+            "name",
+            listOf("pub1", "pub2"),
+            listOf("wss://r"),
+            1500,
+            memberNames = mapOf("pub1" to "Al", "pub2" to "Robert"),
+            eventId = "e-1500"
+        )
+        coVerify {
+            groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 1500, capture(namesJson), null, "e-1500")
+        }
+        assertEquals("""{"pub1":"Al","pub2":"Bob"}""", namesJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta lets the creator's map win over an older member rename`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(
+                members = """["pub1","pub2"]""",
+                memberNames = """{"pub1":"Alice","pub2":"Bob"}""",
+                memberClocks = """{"pub2":"2000:ffff"}"""
+            )
+        stubMetaWrite(1)
+        val namesJson = slot<String>()
+
+        repo.updateFromMeta(
+            "g1",
+            "name",
+            listOf("pub1", "pub2"),
+            listOf("wss://r"),
+            2500,
+            memberNames = mapOf("pub1" to "Al", "pub2" to "Robert"),
+            eventId = "e-2500"
+        )
+        coVerify {
+            groupDao.updateMetaIfNewer("g1", "name", any(), any(), "", 2500, capture(namesJson), null, "e-2500")
+        }
+        assertEquals("""{"pub1":"Al","pub2":"Robert"}""", namesJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta with a member clock at the same instant breaks the tie on eventId`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns
+            groupEntity.copy(
+                members = """["pub1","pub2"]""",
+                memberNames = """{"pub2":"Bob"}""",
+                memberClocks = """{"pub2":"2000:bbb"}"""
+            )
+        stubMetaWrite(1)
+        val namesJson = slot<String>()
+
+        // Member clock (2000, bbb) > meta clock (2000, aaa): member's name is newer and kept.
+        repo.updateFromMeta(
+            "g1",
+            "n",
+            listOf("pub2"),
+            listOf("wss://r"),
+            2000,
+            memberNames = mapOf("pub2" to "R"),
+            eventId = "aaa"
+        )
+        coVerify { groupDao.updateMetaIfNewer("g1", "n", any(), any(), "", 2000, capture(namesJson), null, "aaa") }
+        assertEquals("""{"pub2":"Bob"}""", namesJson.captured)
+
+        // Member clock (2000, bbb) < meta clock (2000, ccc): the creator's map wins.
+        repo.updateFromMeta(
+            "g1",
+            "n",
+            listOf("pub2"),
+            listOf("wss://r"),
+            2000,
+            memberNames = mapOf("pub2" to "R"),
+            eventId = "ccc"
+        )
+        coVerify { groupDao.updateMetaIfNewer("g1", "n", any(), any(), "", 2000, capture(namesJson), null, "ccc") }
+        assertEquals("""{"pub2":"R"}""", namesJson.captured)
+    }
+
+    // --- saveGroupKeyForEpoch immutability ---
+
+    @Test
+    fun `saveGroupKeyForEpoch is a no-op for identical material and throws for conflicting material`() = runBlocking {
+        repo.saveGroupKeyForEpoch("g1", 1, "K1")
+        assertEquals("K1", keyStore.getString("g1:1", null))
+
+        // Same key again: no write at all (a write would trip failNextPut).
+        keyStore.failNextPut = true
+        repo.saveGroupKeyForEpoch("g1", 1, "K1")
+        assertTrue("identical key must not be re-written", keyStore.failNextPut)
+        keyStore.failNextPut = false
+        assertEquals("K1", keyStore.getString("g1:1", null))
+
+        // Different key for the same epoch: refused, stored material untouched.
+        val failure = runCatching { repo.saveGroupKeyForEpoch("g1", 1, "K2") }.exceptionOrNull()
+        assertTrue("expected IllegalStateException, got $failure", failure is IllegalStateException)
+        assertEquals("K1", keyStore.getString("g1:1", null))
+
+        // Another epoch is independent.
+        repo.saveGroupKeyForEpoch("g1", 2, "K2")
+        assertEquals("K2", keyStore.getString("g1:2", null))
+    }
+
+    // --- applyKeyRotation / overrideMembership ---
+
+    @Test
+    fun `applyKeyRotation delegates to the dao with the sanitized roster and reports whether the epoch advanced`() =
+        runBlocking {
+            coEvery { groupDao.applyKeyRotation("g1", 1, any(), any()) } returns 1 andThen 0
+
+            assertTrue(repo.applyKeyRotation("g1", 1, listOf("pub1"), mapOf("pub1" to "  Alice ", "pub2" to "Gone")))
+            coVerify(exactly = 1) { groupDao.applyKeyRotation("g1", 1, """["pub1"]""", """{"pub1":"Alice"}""") }
+
+            // Replay: the dao's epoch guard reports no row.
+            assertFalse(repo.applyKeyRotation("g1", 1, listOf("pub1"), emptyMap()))
+
+            assertNoMetaWrite()
+            coVerify(exactly = 0) { groupDao.updateKeyEpoch(any(), any()) }
+        }
+
+    @Test
+    fun `applyKeyRotation rejects too many members without touching the dao`() = runBlocking {
+        val bigList = (1..51).map { "pub$it" }
+        assertFalse(repo.applyKeyRotation("g1", 1, bigList, emptyMap()))
+        coVerify(exactly = 0) { groupDao.applyKeyRotation(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `overrideMembership delegates to the dao with the sanitized roster and the event clock`() = runBlocking {
+        repo.overrideMembership(
+            "g1",
+            listOf("pub1", "pub3"),
+            mapOf("pub1" to " Alice ", "pub2" to "Gone"),
+            "pub3",
+            900,
+            "e-900"
+        )
+        coVerify {
+            groupDao.overrideMembership("g1", """["pub1","pub3"]""", """{"pub1":"Alice"}""", "pub3", 900, "e-900")
+        }
+        assertNoMetaWrite()
+    }
+
+    @Test
+    fun `overrideMembership rejects too many members without touching the dao`() = runBlocking {
+        val bigList = (1..51).map { "pub$it" }
+        repo.overrideMembership("g1", bigList, emptyMap(), "", 900, "e-900")
+        coVerify(exactly = 0) { groupDao.overrideMembership(any(), any(), any(), any(), any(), any()) }
     }
 
     // --- applyMemberSelfUpdate ---
@@ -507,10 +789,9 @@ class GroupRepositoryTest {
 
         repo.applyMemberSelfUpdate("g1", "pub3", 700, "e7", join = true, displayName = "Carol")
 
-        coVerify(exactly = 0) { groupDao.updateMeta(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) {
-            groupDao.updateMetaIfNewer(any(), any(), any(), any(), any(), any(), any(), any(), any())
-        }
+        assertNoMetaWrite()
+        coVerify(exactly = 0) { groupDao.overrideMembership(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupDao.applyKeyRotation(any(), any(), any(), any()) }
         coVerify(exactly = 0) { groupDao.update(any()) }
         coVerify(exactly = 0) { groupDao.insert(any()) }
     }

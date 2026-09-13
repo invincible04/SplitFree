@@ -680,7 +680,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKeyForEpoch(boundGroupId, any()) } returns groupKey
         coEvery { groupRepo.getById(boundGroupId) } returns legacyGroup
         coEvery { groupRepo.updateCreator(any(), any(), any()) } just Runs
-        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } just Runs
+        coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
         coEvery { eventRepo.getEventIds(boundGroupId) } returns emptyList()
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
         coEvery { eventRepo.getEventsByGroup(boundGroupId) } returns snapshots
@@ -976,6 +976,7 @@ class ExportImportUseCaseTest {
                 createdBy = createdBy.ifEmpty { store.group!!.createdBy },
                 memberNames = arg(6)
             )
+            true
         }
     }
 
@@ -1099,6 +1100,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.updateFromMeta(gid, any(), any(), any(), any(), any(), any()) } answers {
             assertTrue("membership replay must run inside the import transaction", inTransaction)
             store.group = store.group?.copy(name = secondArg(), members = thirdArg())
+            true
         }
 
         val meta = buildSignedExportedEvent(

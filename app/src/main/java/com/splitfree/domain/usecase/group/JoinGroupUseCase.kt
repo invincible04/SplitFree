@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
@@ -124,29 +125,38 @@ constructor(
         val myName = settings.displayName
         val updatedNames = currentGroup.memberNames.toMutableMap()
         if (myName.isNotBlank()) updatedNames[pubkey] = myName
-        groupRepo.updateFromMeta(
+
+        // Build the announcement first: the local join is recorded under the same (created_at, id)
+        // clock every other device will order it by, and never touches the creator's watermark, so a
+        // creator meta that is still in flight cannot be blocked by our own join.
+        val joinEvent =
+            buildGroupMeta(
+                group.id,
+                currentGroup.name,
+                currentGroup.createdBy,
+                currentGroup.createdAt,
+                updatedMembers,
+                currentGroup.relays,
+                groupKey,
+                updatedNames
+            )
+        groupRepo.applyMemberSelfUpdate(
             group.id,
-            currentGroup.name,
-            updatedMembers,
-            currentGroup.relays,
-            memberNames = updatedNames
+            pubkey,
+            joinEvent.event.createdAt,
+            joinEvent.event.id,
+            join = true,
+            displayName = myName.takeIf { it.isNotBlank() }
         )
         Log.i(TAG, "Local members after join: ${updatedMembers.map { it.take(8) }}")
 
         // Publish join announcement while still connected
-        publishGroupMeta(
-            group.id,
-            currentGroup.name,
-            currentGroup.createdBy,
-            currentGroup.createdAt,
-            updatedMembers,
-            currentGroup.relays,
-            groupKey,
-            updatedNames
-        )
+        publishGroupMeta(group.id, joinEvent)
 
         return groupRepo.getById(group.id) ?: group
     }
+
+    private class SignedMeta(val event: NostrEvent, val encrypted: String, val memberCount: Int)
 
     /** Connects to the given relays if not already connected, setting up auth signing. */
     private suspend fun ensureConnected(relays: List<String>) {
@@ -169,8 +179,8 @@ constructor(
         }
     }
 
-    /** Publishes an encrypted group_meta event announcing the updated member list to relays. */
-    private suspend fun publishGroupMeta(
+    /** Builds an encrypted, signed group_meta announcing the updated member list. */
+    private fun buildGroupMeta(
         groupId: String,
         name: String,
         createdBy: String,
@@ -179,27 +189,32 @@ constructor(
         relays: List<String>,
         groupKey: String,
         memberNames: Map<String, String> = emptyMap()
-    ) {
-        try {
-            val meta = GroupMeta(
-                name = name,
-                description = "",
-                createdBy = createdBy,
-                createdAt = createdAt,
-                members = members,
-                relays = relays,
-                memberNames = memberNames
+    ): SignedMeta {
+        val meta = GroupMeta(
+            name = name,
+            description = "",
+            createdBy = createdBy,
+            createdAt = createdAt,
+            members = members,
+            relays = relays,
+            memberNames = memberNames
+        )
+        val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
+        val encrypted = encryption.encrypt(metaJson, groupKey)
+        val event =
+            signer.createSignedEvent(
+                groupId = groupId,
+                eventType = "group_meta",
+                encryptedContent = encrypted
             )
-            val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
-            val encrypted = encryption.encrypt(metaJson, groupKey)
-            val event =
-                signer.createSignedEvent(
-                    groupId = groupId,
-                    eventType = "group_meta",
-                    encryptedContent = encrypted
-                )
-            eventPublisher.publishDirect(event, groupId, encrypted, "group_meta")
-            Log.i(TAG, "Published group_meta with ${members.size} members for group $groupId")
+        return SignedMeta(event, encrypted, members.size)
+    }
+
+    /** Publishes a prepared group_meta to relays; failures are logged, the local join already landed. */
+    private suspend fun publishGroupMeta(groupId: String, meta: SignedMeta) {
+        try {
+            eventPublisher.publishDirect(meta.event, groupId, meta.encrypted, "group_meta")
+            Log.i(TAG, "Published group_meta with ${meta.memberCount} members for group $groupId")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -42,16 +42,10 @@ constructor(
 
         for (group in groups) {
             try {
+                // An explicit empty value clears the name on every receiver: the member path leaves an
+                // absent entry alone, and the creator path drops empties when sanitising.
                 val updatedNames = group.memberNames.toMutableMap()
-                if (name.isBlank()) updatedNames.remove(pubkey) else updatedNames[pubkey] = name
-
-                groupRepo.updateFromMeta(
-                    group.id,
-                    group.name,
-                    group.members,
-                    group.relays,
-                    memberNames = updatedNames
-                )
+                updatedNames[pubkey] = name.trim()
 
                 val groupKey = groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch) ?: continue
                 val meta = GroupMeta(
@@ -69,6 +63,16 @@ constructor(
                     groupId = group.id,
                     eventType = "group_meta",
                     encryptedContent = encrypted
+                )
+                // My own name is ordered by my own clock, never by the creator's watermark: renaming
+                // myself must not block a creator meta that is still in flight.
+                groupRepo.applyMemberSelfUpdate(
+                    group.id,
+                    pubkey,
+                    event.createdAt,
+                    event.id,
+                    join = false,
+                    displayName = name.trim()
                 )
                 eventPublisher.publishDirect(event, group.id, encrypted, "group_meta")
                 Log.i(TAG, "Broadcast name update to group ${group.id}")
