@@ -130,7 +130,7 @@ constructor(
             UiMessage.Plural(R.plurals.nearby_waiting_dependency, p.stats.deferred, p.stats.deferred)
         PeerPhase.UP_TO_DATE -> UiMessage.Res(R.string.nearby_up_to_date, p.stats.applied, p.stats.sent)
         PeerPhase.INCOMPLETE -> {
-            val failed = p.stats.rejected + p.stats.busy + p.stats.unresolved
+            val failed = p.stats.rejected + p.stats.busy + p.stats.unresolved + p.stats.held
             UiMessage.Plural(R.plurals.nearby_incomplete, failed, failed)
         }
         PeerPhase.UNSUPPORTED_PEER -> UiMessage.Res(R.string.nearby_unsupported_peer)

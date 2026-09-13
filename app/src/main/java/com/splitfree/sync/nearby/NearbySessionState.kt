@@ -58,9 +58,11 @@ data class TransferStats(
     val carried: Int = 0,
     val busy: Int = 0,
     /** Unresolved requests and snapshot timeouts; a snapshot timeout contributes at least one. */
-    val unresolved: Int = 0
+    val unresolved: Int = 0,
+    /** Applied records the peer holds as rumors only, which it cannot forward and this phone lacks. */
+    val held: Int = 0
 ) {
-    val hasFailures: Boolean get() = rejected > 0 || busy > 0 || unresolved > 0
+    val hasFailures: Boolean get() = rejected > 0 || busy > 0 || unresolved > 0 || held > 0
 }
 
 /** Snapshot of one peer session for observers. */

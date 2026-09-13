@@ -10,9 +10,14 @@ import kotlinx.coroutines.flow.Flow
 interface ReconciliationStore {
     /**
      * Lists offerable signed events, including pending records, and available recipient-encrypted envelopes.
-     * Failed events and rumor-only rows with `seal:` signatures are excluded; recipients verify event evidence.
+     * Failed events are excluded. Applied rumor-only rows (`seal:` signatures) cannot be offered, since a peer
+     * could not verify them; they are listed as [NearbyWire.KIND_HELD] so a peer that lacks them knows the two
+     * ledgers differ.
      */
     suspend fun inventory(groupId: String): List<InventoryItem>
+
+    /** How many of [ids] this device does not hold as an event row in [groupId], in any apply state. */
+    suspend fun countMissing(groupId: String, ids: Collection<String>): Int
 
     /**
      * Loads an advertised record in [groupId], or null if unavailable or out of scope.

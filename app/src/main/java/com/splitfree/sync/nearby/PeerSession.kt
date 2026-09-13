@@ -16,8 +16,10 @@ import kotlinx.coroutines.launch
  * This session owns [scope] and cancels it on close, isolating its timers from replacement sessions.
  * Each side provides local inventory and consumes peer inventory independently; only [ReconcileResult]
  * acknowledges a snapshot, and subsequent snapshots include every unacknowledged item.
- * [PeerPhase.UP_TO_DATE] requires both directions finished without failures and no durable pending
- * work reported by either side. An unreadable local pending count prevents that phase.
+ * [PeerPhase.UP_TO_DATE] requires both directions finished without failures, no durable pending work
+ * reported by either side, and no applied history on either side that the other lacks and cannot be
+ * given (rumor-only rows, advertised as [NearbyWire.KIND_HELD]). An unreadable local pending count
+ * prevents that phase.
  */
 class PeerSession(
     val endpointId: String,
@@ -62,11 +64,15 @@ class PeerSession(
     // ---------------------------------- provider state (local inventory -> peer)
     private var outSnap = 0
 
-    /** Ids the peer has confirmed seeing: the union of every snapshot it answered with a [ReconcileResult]. */
+    /**
+     * Entries the peer has confirmed seeing, keyed by kind and id: the union of every snapshot it answered
+     * with a [ReconcileResult]. Keyed by kind so a record that changes kind (a rumor upgraded to a signed
+     * event) is offered again under its new kind.
+     */
     private var outAcked: Set<String> = emptySet()
     private var outBaselineAcked = false
 
-    /** Ids in the snapshot currently in flight (acked ones plus the delta just sent). */
+    /** Entries in the snapshot currently in flight (acked ones plus the delta just sent). */
     private var outAdvertised: Set<String> = emptySet()
     private var outItemsById: Map<String, InventoryItem> = emptyMap()
     private var outPeerDone = true
@@ -99,6 +105,9 @@ class PeerSession(
      */
     private val dependencyRetry = LinkedHashMap<String, InventoryItem>()
     private var retriedDependencies = false
+
+    /** [NearbyWire.KIND_HELD] ids the peer has advertised this session; [TransferStats.held] counts those missing here. */
+    private val inHeld = HashSet<String>()
 
     // ----------------------------------------------------------- lifecycle state
     var phase: PeerPhase = PeerPhase.AUTHENTICATING
@@ -337,7 +346,8 @@ class PeerSession(
     suspend fun markDirty() {
         if (closed || !groupOpen || !requireGroupOpen()) return
         refreshPending()
-        if (inDone && outStateDirty) sendReconcileResult()
+        val heldChanged = refreshHeld()
+        if (inDone && (outStateDirty || heldChanged)) sendReconcileResult()
         outDirty = true
         if (outPeerDone) advertise(force = false)
         if (inDone && dependencyRetry.isNotEmpty()) {
@@ -351,14 +361,14 @@ class PeerSession(
         val items = store.inventory(groupId)
         // The delta is against what the peer has acknowledged, so a page lost in transit is
         // resent by the next snapshot.
-        val toSend = items.filter { it.id !in outAcked }
+        val toSend = items.filter { it.key() !in outAcked }
         if (!force && !outStateDirty && outBaselineAcked && toSend.isEmpty()) {
             outDirty = false
             updatePhase()
             return
         }
         outSnap++
-        outAdvertised = outAcked + items.mapTo(HashSet()) { it.id }
+        outAdvertised = outAcked + items.mapTo(HashSet()) { it.key() }
         outItemsById = items.associateBy { it.id }
         outPeerDone = false
         outDirty = false
@@ -436,11 +446,16 @@ class PeerSession(
             violation("inventory too large")
             return
         }
-        inItems += page.items.filter { it.isWellFormed() }
+        // A full (non-delta) snapshot replaces everything the peer advertised before.
+        if (page.page == 0 && !page.delta) inHeld.clear()
+        val wellFormed = page.items.filter { it.isWellFormed() }
+        inItems += wellFormed
+        wellFormed.filter { it.t == NearbyWire.KIND_HELD }.mapTo(inHeld) { it.id }
         if (page.last) {
             peerPending = page.pending.coerceAtLeast(0)
             inComplete = true
             val wanted = store.selectWanted(groupId, inItems, checkNotNull(peerPubkey))
+            refreshHeld()
             inItems.clear()
             inItems.trimToSize()
             wantQueue.addAll(wanted)
@@ -505,6 +520,20 @@ class PeerSession(
         if (appliedThisSnapshot > 0) listener.onDataChanged(this)
     }
 
+    /**
+     * Money records the peer applied but cannot hand over: if any is missing here the two ledgers differ
+     * and neither side may call itself up to date. Recounted when the peer advertises and when the local
+     * store changes, since the record may arrive from its author meanwhile.
+     *
+     * @return true when the count changed
+     */
+    private suspend fun refreshHeld(): Boolean {
+        val held = if (inHeld.isEmpty()) 0 else store.countMissing(groupId, inHeld)
+        if (held == stats.held) return false
+        stats = stats.copy(held = held)
+        return true
+    }
+
     /** Asks for every retained record again; their rejections are uncounted until they resolve. */
     private suspend fun requeueDependencies() {
         val again = dependencyRetry.values.toList()
@@ -525,7 +554,8 @@ class PeerSession(
                 busy = stats.busy,
                 // An unreadable pending count fails closed on the peer too. The sentinel is per
                 // report; the local counter is not incremented.
-                unresolved = if (pendingReadable) stats.unresolved else stats.unresolved.coerceAtLeast(1)
+                unresolved = if (pendingReadable) stats.unresolved else stats.unresolved.coerceAtLeast(1),
+                held = stats.held
             )
         )
     }
@@ -717,6 +747,7 @@ class PeerSession(
         partials.clear()
         wantQueue.clear()
         inItems.clear()
+        inHeld.clear()
         dependencyRetry.clear()
         awaitingResult.clear()
         outItemsById = emptyMap()
@@ -730,7 +761,7 @@ class PeerSession(
         if (closed || !groupOpen) return
         val transferring = inflight.isNotEmpty() || awaitingResult.isNotEmpty() || wantQueue.isNotEmpty()
         val finished = inDone && outPeerDone && !outDirty && !transferring
-        val peerFailed = peerReport?.let { it.rejected > 0 || it.busy > 0 || it.unresolved > 0 } ?: false
+        val peerFailed = peerReport?.let { it.rejected > 0 || it.busy > 0 || it.unresolved > 0 || it.held > 0 } ?: false
         // Pending work on either side means the pair is not converged. The peer's count is its
         // durable pending state, carried on its last inventory page and its ReconcileResult.
         val peerWaiting = peerPending > 0
@@ -754,9 +785,13 @@ class PeerSession(
         transport.sendPayload(endpointId, NearbyWire.encode(message))
     }
 
+    /** Acknowledgement key: an entry is the pair (kind, id), so a kind change is a new entry to offer. */
+    private fun InventoryItem.key(): String = "$t:$id"
+
     private fun InventoryItem.isWellFormed(): Boolean = NearbyAuth.isHex32(id) &&
         (
             t == NearbyWire.KIND_EVENT ||
+                t == NearbyWire.KIND_HELD ||
                 (
                     t == NearbyWire.KIND_DELIVERY &&
                         r != null &&

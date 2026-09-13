@@ -48,8 +48,18 @@ constructor(
             deliveryDao.getAvailable(groupId)
                 .map { InventoryItem(it.envelopeId, NearbyWire.KIND_DELIVERY, r = it.recipient, e = it.eventId) to it }
                 .partition { (_, row) -> row.eventType == DeliveryEntity.TYPE_KEY_ROTATION }
+        // Applied money records this phone cannot vouch for to anyone else; listed so the peer can tell
+        // its ledger differs. Control records are not listed: a peer missing one is already visible
+        // through its epoch or roster.
+        val held = eventDao.getHeldEventIds(groupId).map { InventoryItem(it, NearbyWire.KIND_HELD) }
         // Prioritize key and membership records so consumers can resolve dependencies early.
-        return control + keyEnvelopes.map { it.first } + ledger + otherEnvelopes.map { it.first }
+        return control + keyEnvelopes.map { it.first } + ledger + otherEnvelopes.map { it.first } + held
+    }
+
+    override suspend fun countMissing(groupId: String, ids: Collection<String>): Int {
+        if (ids.isEmpty()) return 0
+        val known = eventDao.getEventIds(groupId).toHashSet()
+        return ids.count { it !in known }
     }
 
     override suspend fun loadRecord(groupId: String, item: InventoryItem): LoadedRecord? = when (item.t) {
@@ -95,6 +105,7 @@ constructor(
                     }
                 }
 
+                // KIND_HELD is never wanted: the advertiser cannot serve it. Its count is taken separately.
                 NearbyWire.KIND_DELIVERY -> {
                     val recipient = item.r ?: continue
                     if (item.id in envelopes || item.id in knownIds) continue

@@ -1287,6 +1287,73 @@ class RoomReconciliationStoreTest {
     }
 
     @Test
+    fun `a rumor-only expense on one phone keeps a divergent pair from reporting up to date`() {
+        val author = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val members = listOf(author.pub, b.pub, c.pub)
+        listOf(author, b, c).forEach { it.join(members, creator = author.pub) }
+        // B learns of the expense only through its gift wrap: applied, readable, but not forwardable.
+        val event = signedExpense(author, amount = 100, description = "wrapped")
+        assertEquals(IngestOutcome.APPLIED, ingest(author, event))
+        val wrap = author.giftWrap.wrapIfEnabled(event, b.pub)
+        assertEquals(IngestOutcome.APPLIED, ingest(b, wrap))
+        assertFalse(EventSnapshot.isThirdPartyVerifiable(checkNotNull(b.row(event.id)).sig))
+        assertNull(c.row(event.id))
+        val offered = runBlocking { b.store.inventory(groupId) }
+        assertTrue(offered.none { it.id == event.id && it.t == NearbyWire.KIND_EVENT })
+        assertTrue(offered.any { it.id == event.id && it.t == NearbyWire.KIND_HELD })
+
+        b.activate()
+        c.activate()
+        connect(b, c)
+        router.pump()
+
+        assertNull("a rumor must not be forwarded", c.row(event.id))
+        assertEquals(PeerPhase.INCOMPLETE, c.phase(ep(b)))
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(c)))
+        assertEquals(1, c.stats(ep(b)).held)
+        assertTrue(c.transport.sentMessages().filterIsInstance<Want>().none { event.id in it.ids })
+
+        // The author's signed original resolves it: C receives it, and B's rumor is upgraded in place.
+        author.activate()
+        connect(author, c)
+        connect(author, b)
+        router.pump()
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, c.row(event.id)?.applyState)
+        assertTrue(EventSnapshot.isThirdPartyVerifiable(checkNotNull(b.row(event.id)).sig))
+        assertTrue(runBlocking { b.store.inventory(groupId) }.none { it.t == NearbyWire.KIND_HELD })
+        b.coordinator.notifyGroupChanged(groupId)
+        c.coordinator.notifyGroupChanged(groupId)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, c.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(c)))
+    }
+
+    @Test
+    fun `a phone that already holds the record is not marked incomplete by a peer's rumor-only copy`() {
+        val author = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val members = listOf(author.pub, b.pub, c.pub)
+        listOf(author, b, c).forEach { it.join(members, creator = author.pub) }
+        val event = signedExpense(author, amount = 100, description = "wrapped")
+        assertEquals(IngestOutcome.APPLIED, ingest(b, author.giftWrap.wrapIfEnabled(event, b.pub)))
+        assertEquals(IngestOutcome.APPLIED, ingest(c, event))
+
+        b.activate()
+        c.activate()
+        connect(b, c)
+        router.pump()
+
+        assertEquals(0, c.stats(ep(b)).held)
+        assertEquals(PeerPhase.UP_TO_DATE, c.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(c)))
+        // C's signed copy upgraded B's rumor on the way.
+        assertTrue(EventSnapshot.isThirdPartyVerifiable(checkNotNull(b.row(event.id)).sig))
+    }
+
+    @Test
     fun `a full courier cache evicts the oldest carried envelope rather than refusing a new key or gift`() {
         val a = Device(1)
         val b = Device(2)
@@ -1374,10 +1441,14 @@ class RoomReconciliationStoreTest {
         assertEquals("gift only", decryptExpense(c, atC, groupKey).description)
         assertEquals(DeliveryEntity.STATE_CONSUMED, c.delivery(envForC.envelopeId)?.state)
         assertNull("the courier still never learns the inner event", b.row(e.id))
-        assertEquals(PeerPhase.UP_TO_DATE, c.phase(ep(b)))
-        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(c)))
+        // C now holds an expense B lacks and cannot be given by anyone but the author: the pair is not
+        // up to date, and both sides say so.
+        assertEquals(PeerPhase.INCOMPLETE, c.phase(ep(b)))
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(c)))
+        assertEquals(1, b.stats(ep(c)).held)
+        assertTrue(runBlocking { c.store.inventory(groupId) }.any { it.id == e.id && it.t == NearbyWire.KIND_HELD })
         // C's rumor row is not offered onward (a peer could not verify it).
-        assertTrue(runBlocking { c.store.inventory(groupId) }.none { it.id == e.id })
+        assertTrue(runBlocking { c.store.inventory(groupId) }.none { it.id == e.id && it.t == NearbyWire.KIND_EVENT })
     }
 
     @Test

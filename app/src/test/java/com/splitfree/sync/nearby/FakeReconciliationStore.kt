@@ -49,7 +49,10 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         events.filter { it.value.verifiable && it.value.applied }.map { InventoryItem(it.key, NearbyWire.KIND_EVENT) } +
             deliveries.filter { !it.value.consumed }.map {
                 InventoryItem(it.key, NearbyWire.KIND_DELIVERY, r = it.value.recipient, e = it.value.eventHint)
-            }
+            } +
+            events.filter {
+                !it.value.verifiable && it.value.applied
+            }.map { InventoryItem(it.key, NearbyWire.KIND_HELD) }
 
     override suspend fun loadRecord(groupId: String, item: InventoryItem): LoadedRecord? {
         if (item.id in loadFailures) return null
@@ -140,6 +143,8 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         deferredPending = (deferredPending - n).coerceAtLeast(0)
         return n
     }
+
+    override suspend fun countMissing(groupId: String, ids: Collection<String>): Int = ids.count { it !in events }
 
     override suspend fun pendingCount(groupId: String): Int {
         check(!pendingReadFails) { "pending state unavailable" }

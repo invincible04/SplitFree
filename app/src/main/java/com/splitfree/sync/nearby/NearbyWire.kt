@@ -7,12 +7,12 @@ import kotlinx.serialization.json.Json
 /**
  * Version 2 framing: `[0x7F][type byte][UTF-8 JSON body]`, with type bytes defined by the `TYPE_*` constants.
  *
- * [decode] limits version 2 frames to [MAX_FRAME_BYTES] and classifies v1 type prefixes `0x01..0x04`
+ * [decode] limits version 2+ frames to [MAX_FRAME_BYTES] and classifies v1 type prefixes `0x01..0x04`
  * as incompatible. Decoding validates serialization only; [PeerSession] enforces protocol state and fields.
  * [encode] and [chunk] do not enforce encoded byte size; callers must respect the frame limit.
  */
 object NearbyWire {
-    const val PROTOCOL_VERSION = 2
+    const val PROTOCOL_VERSION = 3
     const val FRAME_MAGIC: Byte = 0x7F
 
     const val TYPE_HELLO: Byte = 0x01
@@ -50,6 +50,13 @@ object NearbyWire {
     // Inventory item kinds (InventoryItem.t).
     const val KIND_EVENT = "e"
     const val KIND_DELIVERY = "d"
+
+    /**
+     * An applied money record this phone holds only as a gift-wrap rumor: authenticated by the seal for
+     * this phone alone, so it cannot be forwarded, but a peer that lacks it is not up to date with this
+     * one. Advertised for accounting, never wanted or served.
+     */
+    const val KIND_HELD = "h"
 
     // Capabilities negotiated in Hello; the agreed set is bound into the auth transcript.
     const val CAP_RECONCILE_V2 = "reconcile-v2"
@@ -223,7 +230,8 @@ data class OpenGroupResult(val groupId: String, val ok: Boolean, val reason: Str
  *
  * @property id event id (for `t = "e"`) or envelope id (for `t = "d"`)
  * @property t [NearbyWire.KIND_EVENT] for a third-party-verifiable ledger event, [NearbyWire.KIND_DELIVERY]
- *   for a recipient-encrypted envelope the advertiser holds
+ *   for a recipient-encrypted envelope the advertiser holds, [NearbyWire.KIND_HELD] for an applied event the
+ *   advertiser cannot forward (rumor-only evidence)
  * @property r recipient pubkey of a delivery
  * @property e untrusted inner event id hint; a recipient can skip an envelope when that id is stored locally
  */
@@ -264,7 +272,8 @@ data class Result(val snap: Int, val id: String, val outcome: RecordOutcome) : N
 /**
  * Acknowledges consumption of [snap]; failures and deferred work can remain after this message.
  * Counts describe the connection, except [deferred], which is the group's last readable durable pending count.
- * An unreadable pending count is signaled by a nonzero [unresolved] value.
+ * An unreadable pending count is signaled by a nonzero [unresolved] value. [held] counts the provider's
+ * [NearbyWire.KIND_HELD] entries the consumer lacks: history that exists on one side and cannot cross.
  */
 @Serializable
 data class ReconcileResult(
@@ -275,7 +284,8 @@ data class ReconcileResult(
     val rejected: Int = 0,
     val carried: Int = 0,
     val busy: Int = 0,
-    val unresolved: Int = 0
+    val unresolved: Int = 0,
+    val held: Int = 0
 ) : NearbyMessage()
 
 /** Terminates the session with a [NearbyWire] `CLOSE_*` reason. */

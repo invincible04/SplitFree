@@ -134,6 +134,16 @@ interface EventDao {
     @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND applyState = 1")
     suspend fun countPending(groupId: String): Int
 
+    /**
+     * Applied money records whose only evidence is a gift-wrap seal (`seal:` signature): readable here, not
+     * forwardable. Control records are left out; a peer missing one shows up through its epoch or roster.
+     */
+    @Query(
+        "SELECT eventId FROM events WHERE groupId = :groupId AND applyState = 0 AND sig LIKE 'seal:%' " +
+            "AND eventType IN ('expense', 'settlement', 'expense_correction', 'expense_delete')"
+    )
+    suspend fun getHeldEventIds(groupId: String): List<String>
+
     /** Rows by [pubkey] in [groupId] still awaiting a dependency; bounds what one author may hold pending. */
     @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND pubkey = :pubkey AND applyState = 1")
     suspend fun countPendingByAuthor(groupId: String, pubkey: String): Int

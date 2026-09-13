@@ -1,4 +1,4 @@
-# Nearby sync protocol (v2)
+# Nearby sync protocol (v3)
 
 This describes what two SplitFree phones do when they meet over Google Nearby Connections, what
 "up to date" means, and what the design deliberately does not promise. The implementation lives in
@@ -41,11 +41,11 @@ at most 16 KiB; inventories are paged (≤ 256 entries and ≤ 16 KiB per page);
 | 0x02 | `Auth` | Schnorr signature over the channel-bound transcript |
 | 0x03 | `OpenGroup` | the one group this session may sync (+ optional signed self-join) |
 | 0x04 | `OpenGroupResult` | ok, or `unauthorized` (unknown and unauthorized are indistinguishable) |
-| 0x05 | `InventoryPage` | one page of a snapshot: event ids and envelope ids with recipients |
+| 0x05 | `InventoryPage` | one page of a snapshot: event ids, envelope ids with recipients, held ids |
 | 0x06 | `Want` | ids the consumer wants from that snapshot (≤ 16 outstanding) |
 | 0x07 | `Record` | one chunk of a record; `parts = 0` means "no longer available" |
 | 0x08 | `Result` | `APPLIED`, `ALREADY_APPLIED`, `DEFERRED`, `REJECTED`, `BUSY`, `CARRIED` |
-| 0x09 | `ReconcileResult` | consumer finished the snapshot; counts and unresolved |
+| 0x09 | `ReconcileResult` | consumer finished the snapshot; counts, unresolved and held |
 | 0x0A | `Close` | explicit terminal reason |
 
 ## Authentication
@@ -80,6 +80,10 @@ sends `ReconcileResult`. Inventories list:
   could not verify them; rows whose effect was permanently rejected here are not offered either.
 - `d` entries: recipient-encrypted envelopes (gift wraps, per-member key rotations) this phone holds,
   with the recipient pubkey and, when known, the inner event id.
+- `h` entries: applied money records this phone holds only as a gift-wrap rumor. They cannot be
+  offered (a peer could not verify them) and are never wanted; they are listed so a peer that lacks
+  one knows the two ledgers differ. Control records are not listed this way; a peer missing one shows
+  up through its epoch or roster.
 
 Key rotations and other control records are advertised first. A record refused for want of another
 record (undecryptable under any known epoch, or by an author whose join has not landed) is kept for the
@@ -95,15 +99,18 @@ other current members. Courier storage is bounded (512 envelopes / 4 MiB per gro
 for carried, 90 for authored) by evicting the oldest carried envelope when a new one arrives, never by
 refusing it: a full cache must not stop a key from propagating.
 
-Acknowledged baseline: the provider only treats an id as known to the peer once a `ReconcileResult`
-for a snapshot that carried it has come back. Every later snapshot resends whatever is still
+Acknowledged baseline: the provider only treats an entry (kind and id) as known to the peer once a
+`ReconcileResult` for a snapshot that carried it has come back; a rumor upgraded to a signed event is
+a new entry and is offered again. Every later snapshot resends whatever is still
 unacknowledged, so a page lost in transit (a failed send) is simply sent again after the 30 s
 silence; it can never turn into an empty delta that both sides mistake for "done". A page that
 arrives out of order is ignored, not treated as a violation, for the same reason.
 
 Completion: a session is **up to date** only when both snapshots are consumed, every wanted record
-has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, and **neither side holds
-pending rows**. The pending count is read from durable storage (`applyState = PENDING`), so work left
+has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, **neither side holds pending
+rows**, and neither side lacks a money record the other holds as a rumor (`h` entries missing here are
+counted as `held`, reported back, and recounted when the local store changes). Such a record can only
+come from its author or a surviving signed copy; until then both phones show the round as incomplete. The pending count is read from durable storage (`applyState = PENDING`), so work left
 over from an earlier session or a process restart counts, and is re-driven when the screen opens and
 when a group opens, as well as during app startup recovery. The peer's count travels in its
 `InventoryPage` and `ReconcileResult`. Either side pending gives
@@ -207,7 +214,8 @@ and delivery-only writes all advance it; no-op writes and sync timestamps do not
 ## Known limits
 
 - A phone holding only an unsigned rumor cannot manufacture the envelope another member is missing;
-  recovery needs the author or a surviving original envelope. Such records stay visibly unresolved.
+  recovery needs the author or a surviving original envelope. Such records are advertised as held and
+  keep both phones out of "up to date" until the record arrives.
 - A removed member holding an old key could backdate an event under that key. Admission of
   pre-removal history relies on the epoch, not on a creator-signed checkpoint; that checkpoint is the
   documented follow-up before any claim of tamper-proof historical membership.
