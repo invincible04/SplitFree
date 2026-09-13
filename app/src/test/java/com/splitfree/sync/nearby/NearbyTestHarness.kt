@@ -106,6 +106,7 @@ class TestIdentity(seed: Int) {
     val contract: IdentityContract =
         mockk<IdentityContract>().also {
             every { it.getPublicKeyHex() } returns pub
+            every { it.hasPendingKeyPair() } returns false
             every { it.getPrivateKeyBytes() } answers { priv.copyOf() }
         }
 }

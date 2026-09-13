@@ -55,7 +55,8 @@ interface GroupRepositoryContract {
      *
      * Callers must only pass a `(createdBy, createdAt)` pair for which
      * [com.splitfree.domain.model.group.GroupIdentity.matches] holds for [groupId]. Unlike
-     * [updateFromMeta] this does not touch the metadata watermark.
+     * [updateFromMeta] this does not touch the metadata watermark. Only fills an empty creator and
+     * never restores a permanently revoked identity.
      */
     suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long)
 
@@ -79,11 +80,15 @@ interface GroupRepositoryContract {
      * @param relays updated relay URL list
      * @param eventTimestamp the meta event's `created_at`; must be positive
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
-     * @param memberNames map of member pubkey -> display name; an empty value clears a name
+     * @param memberNames full snapshot of member display names; absent or empty entries clear a name
      * @param description new description, or null to preserve the existing value
      * @param eventId id of the `group_meta` event being applied; breaks ties between metas that share
      *   an [eventTimestamp] so all devices converge on the same one
-     * @param applyRoster false when the meta decrypted under an epoch older than the group's current one
+     * @param applyRoster false to preserve membership regardless of the source epoch
+     * @param expectedKeyEpoch actual decryption epoch; a mismatch against the live row preserves its
+     *   roster. Null is reserved for trusted local callers without an encrypted source event.
+     * @param expectedCreator authenticated creator from the caller's snapshot; rejects the write if
+     *   creator authority changed meanwhile. Null is reserved for trusted local callers.
      * @return true if the meta was newer and applied
      */
     suspend fun updateFromMeta(
@@ -96,7 +101,9 @@ interface GroupRepositoryContract {
         memberNames: Map<String, String> = emptyMap(),
         description: String? = null,
         eventId: String = "",
-        applyRoster: Boolean = true
+        applyRoster: Boolean = true,
+        expectedKeyEpoch: Int? = null,
+        expectedCreator: String? = null
     ): Boolean
 
     /**
@@ -104,13 +111,18 @@ interface GroupRepositoryContract {
      * atomically. Ordered by epoch only: a replay (group already at or past [epoch]) is a no-op and
      * the creator's metadata watermark is not touched.
      *
-     * @return true if the group advanced to [epoch]
+     * [expectedMembers] guards a locally prepared rotation against a concurrent membership change.
+     * Receivers omit it because the creator's rotation defines the authoritative roster. An identity
+     * this device has tombstoned is resolved through [resolveRoster] first: the creator may not have
+     * seen the revocation yet, and refusing its rotation would strand this device at the old epoch.
+     * @return true if the group advanced to [epoch] and the optional roster guard matched
      */
     suspend fun applyKeyRotation(
         groupId: String,
         epoch: Int,
         members: List<String>,
-        memberNames: Map<String, String>
+        memberNames: Map<String, String>,
+        expectedMembers: List<String>? = null
     ): Boolean
 
     /**
@@ -128,9 +140,41 @@ interface GroupRepositoryContract {
     )
 
     /**
+     * Atomically replaces or removes an identity and records its permanent revocation tombstone.
+     * Only the already-authenticated old identity may request this operation. Empty [newPubkey]
+     * removes it without replacement. Replaying an already tombstoned identity is a successful no-op.
+     *
+     * When neither identity is in the roster the request is refused, unless [allowAbsent]: the
+     * author-side projection of this device's own journaled revocation then records the tombstone
+     * alone (no roster change, nobody re-added) so the revocation can complete against a roster that
+     * dropped the user meanwhile. Remote revocations never pass it.
+     */
+    suspend fun applyIdentityRevocation(
+        groupId: String,
+        oldPubkey: String,
+        newPubkey: String,
+        eventTimestamp: Long,
+        eventId: String,
+        allowAbsent: Boolean = false
+    ): Boolean
+
+    /**
+     * Applies this device's revocation tombstones to a roster another device authored: a tombstoned
+     * identity becomes the replacement recorded with its revocation, or drops out when it has none.
+     * Order and the remaining identities are preserved; duplicates collapse. The result is what
+     * [applyKeyRotation] and [updateFromMeta] would install for [members].
+     */
+    suspend fun resolveRoster(groupId: String, members: List<String>): List<String>
+
+    /**
      * Apply a member's own change (self-join / own display name) without touching the creator watermark.
-     * Ordered per member by (eventTimestamp, eventId); returns true if applied, false if stale/no-op.
-     * displayName == null leaves the name unchanged; "" clears it. join adds author to members.
+     * Explicit display names compete with creator snapshots by (eventTimestamp, eventId); creator
+     * wins an exact tie. Missing creator entries and empty names clear the name. A null self name
+     * does not advance its name clock. Self-join ordering is independent of name ordering.
+     *
+     * [expectedKeyEpoch] is the actual decryption epoch. An absent author may only join at the live
+     * epoch; existing members may still apply historical names. Null is for trusted local callers.
+     * Returns true if a name or join clock was applied, false if stale, unauthorized, or a no-op.
      */
     suspend fun applyMemberSelfUpdate(
         groupId: String,
@@ -138,6 +182,7 @@ interface GroupRepositoryContract {
         eventTimestamp: Long,
         eventId: String,
         join: Boolean,
-        displayName: String?
+        displayName: String?,
+        expectedKeyEpoch: Int? = null
     ): Boolean
 }

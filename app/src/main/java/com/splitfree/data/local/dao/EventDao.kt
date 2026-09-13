@@ -102,7 +102,7 @@ interface EventDao {
     )
     suspend fun upgradeEvidence(eventId: String, sig: String, originalJson: String): Int
 
-    @Query("UPDATE events SET applyState = :state WHERE eventId = :eventId")
+    @Query("UPDATE events SET applyState = :state WHERE eventId = :eventId AND applyState != :state")
     suspend fun setApplyState(eventId: String, state: Int)
 
     /** Rows whose side effects were deferred, oldest first, so `EventProcessor.retryDeferred` can re-run them. */

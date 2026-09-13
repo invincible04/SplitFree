@@ -24,7 +24,8 @@ class CorrectExpenseUseCaseTest {
         currency: String = "inr ",
         splitAmong: List<SplitEntry> = listOf(SplitEntry("alice", 4_000), SplitEntry("bob", 6_000)),
         originalId: String = "exp-1",
-        timestamp: Long = 1_234
+        timestamp: Long = 1_234,
+        author: String = "alice"
     ) = useCase(
         groupId = "g1",
         originalId = originalId,
@@ -35,13 +36,14 @@ class CorrectExpenseUseCaseTest {
         splitType = SplitType.EXACT,
         splitAmong = splitAmong,
         timestamp = timestamp,
-        category = "food"
+        category = "food",
+        expectedAuthorPubkey = author
     )
 
     @Test
     fun `publishes a correction that keeps the original id and timestamp`() = runTest {
         val corrected = slot<Expense>()
-        coEvery { repo.correctExpense("exp-1", capture(corrected), "g1") } just Runs
+        coEvery { repo.correctExpense("exp-1", capture(corrected), "g1", "alice") } just Runs
 
         correct()
 
@@ -66,7 +68,8 @@ class CorrectExpenseUseCaseTest {
                 { correct(splitAmong = emptyList()) },
                 { correct(currency = "IN") },
                 { correct(originalId = " ") },
-                { correct(timestamp = -1) }
+                { correct(timestamp = -1) },
+                { correct(author = " ") }
             )
         attempts.forEach { attempt ->
             try {
@@ -76,12 +79,12 @@ class CorrectExpenseUseCaseTest {
             }
         }
 
-        coVerify(exactly = 0) { repo.correctExpense(any(), any(), any()) }
+        coVerify(exactly = 0) { repo.correctExpense(any(), any(), any(), any()) }
     }
 
     @Test
     fun `repository refusal propagates`() = runTest {
-        coEvery { repo.correctExpense(any(), any(), any()) } throws
+        coEvery { repo.correctExpense(any(), any(), any(), any()) } throws
             IllegalStateException("Only the creator can correct")
 
         try {

@@ -28,6 +28,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.CategoryIcon
 import com.splitfree.ui.components.EmptyState
 import com.splitfree.ui.components.MoneyText
@@ -44,9 +46,10 @@ private const val SECONDS_TO_MILLIS = 1000L
 
 /** Expenses tab: every expense in [currency], newest first. */
 @Composable
-internal fun ExpensesPane(state: GroupDetailUiState, currency: String?, onOpenExpense: (String) -> Unit) {
+internal fun ExpensesPane(state: GroupDetailUiState, currency: String?, onOpenExpense: (ExpenseIdentity) -> Unit) {
     val expenses = remember(state.expenses, currency) {
-        state.expenses.filter { it.currency == currency }.distinctBy { it.id }.sortedByDescending { it.timestamp }
+        state.expenses.filter { it.expense.currency == currency }
+            .distinctBy { it.identity }.sortedByDescending { it.expense.timestamp }
     }
     Column(Modifier.fillMaxWidth().testTag("group_pane_expenses")) {
         SectionHead(title = stringResource(R.string.group_expense_history)) {
@@ -70,7 +73,7 @@ internal fun ExpensesPane(state: GroupDetailUiState, currency: String?, onOpenEx
                 SfListCard {
                     rows.forEachIndexed { index, row ->
                         if (index > 0) SfDivider()
-                        ExpenseRow(row = row, onClick = { onOpenExpense(row.expense.id) })
+                        ExpenseRow(row = row, onClick = { onOpenExpense(row.identity) })
                     }
                 }
             }
@@ -84,6 +87,7 @@ internal fun ExpensesPane(state: GroupDetailUiState, currency: String?, onOpenEx
  */
 internal data class ExpenseRowModel(
     val expense: Expense,
+    val identity: ExpenseIdentity,
     val payer: String,
     val relativeTime: String,
     val delta: PersonalDelta,
@@ -92,14 +96,16 @@ internal data class ExpenseRowModel(
 
 /** Builds [ExpenseRowModel]s for [expenses], keyed on everything the strings depend on. */
 @Composable
-internal fun rememberExpenseRows(expenses: List<Expense>, state: GroupDetailUiState): List<ExpenseRowModel> {
+internal fun rememberExpenseRows(expenses: List<AuthoredExpense>, state: GroupDetailUiState): List<ExpenseRowModel> {
     val you = stringResource(R.string.you)
     return remember(expenses, state.myPubkey, state.memberNames, state.members, you) {
         val now = System.currentTimeMillis()
-        expenses.map { expense ->
+        expenses.map { authored ->
+            val expense = authored.expense
             val delta = expense.personalDelta(state.myPubkey)
             ExpenseRowModel(
                 expense = expense,
+                identity = authored.identity,
                 payer =
                 if (expense.paidBy == state.myPubkey) {
                     you
@@ -139,7 +145,7 @@ internal fun ExpenseRow(row: ExpenseRowModel, onClick: () -> Unit) {
             .clickable(role = Role.Button, onClick = onClick)
             .heightIn(min = ExpenseRowMinHeight)
             .padding(horizontal = 14.dp, vertical = 10.dp)
-            .testTag("group_expense_${expense.id}"),
+            .testTag("group_expense_${row.identity.authorPubkey}_${expense.id}"),
         verticalAlignment = Alignment.CenterVertically
     ) {
         CategoryIcon(category = expense.category)

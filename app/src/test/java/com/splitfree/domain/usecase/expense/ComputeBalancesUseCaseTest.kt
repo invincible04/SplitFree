@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.expense
 
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.balance.BalanceResult
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -171,7 +172,7 @@ class ComputeBalancesUseCaseTest {
         val result = useCase.computeWithExclusions("g1")
 
         assertTrue(result.balances.all { it.net == 0L } || result.balances.isEmpty())
-        assertTrue("u1" in result.excludedExpenseUuids)
+        assertTrue(ExpenseIdentity("alice", "u1") in result.excludedExpenses)
     }
 
     @Test
@@ -1208,7 +1209,7 @@ class ComputeBalancesUseCaseTest {
         val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
 
         assertTrue("Reversal must zero the covered expense", result.balances.all { it.net == 0L })
-        assertTrue("u1" in result.excludedExpenseUuids)
+        assertTrue(ExpenseIdentity("alice", "u1") in result.excludedExpenses)
     }
 
     @Test
@@ -1245,7 +1246,7 @@ class ComputeBalancesUseCaseTest {
         assertEquals(100L, result.balances.find { it.pubkey == "alice" }?.net)
         assertEquals(-100L, result.balances.find { it.pubkey == "bob" }?.net)
         // Corrected expenses are shown (with the corrected payload), so they are not excluded.
-        assertTrue("u1" !in result.excludedExpenseUuids)
+        assertTrue(ExpenseIdentity("alice", "u1") !in result.excludedExpenses)
     }
 
     @Test
@@ -1652,7 +1653,7 @@ class ComputeBalancesUseCaseTest {
         val first = results.first()
         for (r in results) {
             assertEquals("balances must not depend on arrival order", nets(first), nets(r))
-            assertEquals("exclusions must not depend on order", first.excludedExpenseUuids, r.excludedExpenseUuids)
+            assertEquals("exclusions must not depend on order", first.excludedExpenses, r.excludedExpenses)
         }
         return first
     }
@@ -1669,7 +1670,7 @@ class ComputeBalancesUseCaseTest {
         // Mallory's record is its own expense and her correction applies to it alone.
         assertEquals(200L, n["mallory"])
         assertEquals(-200L, n["carol"])
-        assertTrue(result.excludedExpenseUuids.isEmpty())
+        assertTrue(result.excludedExpenses.isEmpty())
         verify(atLeast = 1) { android.util.Log.w("ComputeBalances", match<String> { "U" in it && "2 authors" in it }) }
         unmockkStatic(android.util.Log::class)
     }
@@ -1684,7 +1685,7 @@ class ComputeBalancesUseCaseTest {
         assertEquals(-50L, n["bob"])
         assertTrue("Mallory's own record is gone", "mallory" !in n && "carol" !in n)
         // Alice's record is still live, so the uuid must stay visible in the UI.
-        assertTrue("U" !in result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
 
@@ -1695,7 +1696,7 @@ class ComputeBalancesUseCaseTest {
 
         val n = nets(result)
         assertEquals(mapOf("alice" to 50L, "bob" to -50L), n)
-        assertTrue("U" !in result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
 
@@ -1704,7 +1705,7 @@ class ComputeBalancesUseCaseTest {
         val result = computeForEveryOrder(listOf(aliceExpense, malloryCorrection, malloryDelete))
 
         assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(result))
-        assertTrue("U" !in result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
     }
 
     @Test
@@ -1717,17 +1718,17 @@ class ComputeBalancesUseCaseTest {
         assertEquals(100L, n["mallory"])
         assertEquals(-100L, n["carol"])
         // Mallory's record is live under the same uuid, so it must not be filtered from the list.
-        assertTrue("U" !in result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("alice", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
 
     @Test
-    fun `shared uuid is excluded only once every author has deleted their own record`() = runTest {
+    fun `each author-bound identity is excluded when both records are deleted`() = runTest {
         mockLogW()
         val result = computeForEveryOrder(listOf(aliceExpense, aliceDelete, malloryExpense, malloryDelete))
 
         assertTrue(result.balances.all { it.net == 0L })
-        assertEquals(setOf("U"), result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("alice", "U"), ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
 
@@ -1736,7 +1737,7 @@ class ComputeBalancesUseCaseTest {
         val result = computeForEveryOrder(listOf(aliceExpense, aliceCorrection))
 
         assertEquals(mapOf("alice" to 150L, "bob" to -150L), nets(result))
-        assertTrue(result.excludedExpenseUuids.isEmpty())
+        assertTrue(result.excludedExpenses.isEmpty())
     }
 
     @Test
@@ -1744,7 +1745,7 @@ class ComputeBalancesUseCaseTest {
         val result = computeForEveryOrder(listOf(aliceExpense, aliceCorrection, aliceDelete))
 
         assertTrue(result.balances.all { it.net == 0L })
-        assertEquals(setOf("U"), result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("alice", "U")), result.excludedExpenses)
     }
 
     @Test
@@ -1783,7 +1784,7 @@ class ComputeBalancesUseCaseTest {
 
         // Alice's covered payload stays; Mallory's uncovered record is deleted before it is ever applied.
         assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(result))
-        assertTrue("U" !in result.excludedExpenseUuids)
+        assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
 }

@@ -22,11 +22,12 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
 
     /** Durable pending rows: grows on a scripted DEFERRED ingest, shrinks by what [retryDeferred] reports. */
     var deferredPending = 0
+    var pendingReadFails = false
     var retryReturns = 0
     var retryCalls = 0
 
     /** Stand-in for the store's change stream; tests bump it to simulate a local write. */
-    val changes = MutableStateFlow(StoreVersion(0, 0))
+    val changes = MutableStateFlow(StoreVersion(0))
     var loadFailures = HashSet<String>()
     var pruned = 0
     var ownJoin: String? = null
@@ -136,7 +137,10 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
         return n
     }
 
-    override suspend fun pendingCount(groupId: String): Int = deferredPending
+    override suspend fun pendingCount(groupId: String): Int {
+        check(!pendingReadFails) { "pending state unavailable" }
+        return deferredPending
+    }
 
     override fun observeChanges(groupId: String): Flow<StoreVersion> = changes
 

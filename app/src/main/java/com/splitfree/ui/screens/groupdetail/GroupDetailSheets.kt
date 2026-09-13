@@ -50,7 +50,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
-import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.DetailRow
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MoneyText
@@ -142,21 +142,21 @@ internal fun GroupDetailSheetHost(
                 onDismiss = dismiss
             )
         is GroupSheet.ExpenseDetail -> {
-            val expense = state.expenses.firstOrNull { it.id == sheet.expenseId }
+            val expense = state.expenses.firstOrNull { it.identity == sheet.identity }
             if (expense == null) {
                 // The expense left the ledger (excluded or the group refreshed) while the sheet was open.
                 LaunchedEffect(sheet) { dismiss() }
             } else {
                 ExpenseDetailSheet(
-                    expense = expense,
+                    authored = expense,
                     state = state,
                     onEdit = {
                         dismiss()
-                        actions.editExpense(expense.id)
+                        actions.editExpense(expense.identity)
                     },
                     onDelete = {
                         dismiss()
-                        actions.deleteExpense(expense.id)
+                        actions.deleteExpense(expense.identity)
                     },
                     onDismiss = dismiss
                 )
@@ -390,13 +390,14 @@ private fun SettleSheet(
  */
 @Composable
 private fun ExpenseDetailSheet(
-    expense: Expense,
+    authored: AuthoredExpense,
     state: GroupDetailUiState,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var confirmingDelete by rememberSaveable(expense.id) { mutableStateOf(false) }
+    val expense = authored.expense
+    var confirmingDelete by rememberSaveable(authored.identity) { mutableStateOf(false) }
     if (confirmingDelete) {
         DeleteExpenseConfirmation(onConfirm = onDelete, onCancel = { confirmingDelete = false }, onDismiss = onDismiss)
         return
@@ -410,8 +411,8 @@ private fun ExpenseDetailSheet(
             )
         )
     }
-    val mine = state.authoredByMe(expense.id)
-    val author = state.expenseAuthors[expense.id]
+    val mine = state.authoredByMe(authored.identity)
+    val author = authored.authorPubkey
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.group_expense_details),
@@ -447,7 +448,7 @@ private fun ExpenseDetailSheet(
                     }
                 }
             }
-            if (!mine && author != null) {
+            if (!mine && author.isNotBlank()) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     stringResource(

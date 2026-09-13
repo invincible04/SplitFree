@@ -6,29 +6,10 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * Channel-bound mutual authentication for one nearby session.
- *
- * Both peers send a [Hello] carrying a fresh nonce, then each signs the same canonical transcript
- * with its long-term Nostr key and sends an [Auth]. The transcript covers:
- *
- * ```
- * SHA-256( "splitfree-nearby-auth-v2" || 0x00
- *        || version (1 byte)
- *        || role byte of the signer (0x01 initiator, 0x02 responder)
- *        || initiator pubkey (32) || responder pubkey (32)
- *        || initiator nonce (32)  || responder nonce (32)
- *        || SHA-256(channel token bytes)
- *        || SHA-256(canonical capabilities) )
- * ```
- *
- * The channel token is Nearby's raw authentication token for this connection; it is identical on both
- * ends and different for every other connection, so a signature copied from one connection cannot
- * complete authentication on another. Domain separation and fixed-size inputs keep this from acting
- * as a Nostr signing oracle. Only existing SHA-256 and BIP-340 primitives are used.
- *
- * Roles are chosen deterministically from the two Hellos so both sides agree without a third
- * message: the outgoing side of the Nearby connection initiates; if both sides report the same
- * role (simultaneous connection attempts), the lexically smaller pubkey initiates.
+ * BIP-340 mutual authentication over domain-separated, signer-specific session transcripts.
+ * Each signature covers both identities and fresh nonces, the protocol version, negotiated capabilities,
+ * and the channel token when available. A null token provides no transport channel binding.
+ * Both peers must agree on initiator ordering before signing or verifying.
  */
 object NearbyAuth {
     private const val TAG = "splitfree-nearby-auth-v2"
@@ -36,17 +17,23 @@ object NearbyAuth {
     private const val ROLE_RESPONDER: Byte = 0x02
     private val secureRandom = SecureRandom()
 
+    /** Generates a fresh 32-byte cryptographic challenge encoded as lowercase hex. */
     fun newNonce(): String = ByteArray(32).also { secureRandom.nextBytes(it) }.toHexLower()
 
+    /** Checks the lowercase hex encoding of exactly 32 bytes. */
     fun isHex32(s: String): Boolean = s.length == 64 && s.all { it in "0123456789abcdef" }
 
+    /** Checks the lowercase hex encoding of exactly 64 bytes. */
     fun isHex64(s: String): Boolean = s.length == 128 && s.all { it in "0123456789abcdef" }
 
-    /** True when the local side initiates, given both Hellos. Both peers compute the same answer. */
+    /** Selects the outgoing side as initiator; matching roles use the lexically smaller public key. */
     fun localIsInitiator(myPubkey: String, myIncoming: Boolean, peerPubkey: String, peerIncoming: Boolean): Boolean =
         if (myIncoming != peerIncoming) !myIncoming else myPubkey < peerPubkey
 
-    /** Everything both sides must agree on before signing. */
+    /**
+     * Shared handshake inputs in initiator/responder order; keys and nonces must be 32-byte lowercase hex.
+     * [channelToken] is hashed as empty bytes when null. Callers must keep its bytes stable during authentication.
+     */
     data class Transcript(
         val initiatorPubkey: String,
         val responderPubkey: String,
@@ -61,6 +48,18 @@ object NearbyAuth {
         }
     }
 
+    /**
+     * Hashes the canonical transcript for the selected signer role; all lengths below are in bytes.
+     *
+     * ```
+     * SHA-256("splitfree-nearby-auth-v2" || 0x00
+     *     || version (1) || signer role (1: 0x01 initiator, 0x02 responder)
+     *     || initiator pubkey (32) || responder pubkey (32)
+     *     || initiator nonce (32) || responder nonce (32)
+     *     || SHA-256(channel token or empty bytes)
+     *     || SHA-256(sorted capabilities joined by commas, UTF-8))
+     * ```
+     */
     fun transcriptHash(t: Transcript, signerIsInitiator: Boolean): ByteArray {
         val md = MessageDigest.getInstance("SHA-256")
         md.update(TAG.toByteArray(Charsets.UTF_8))
@@ -76,13 +75,17 @@ object NearbyAuth {
         return md.digest()
     }
 
-    /** Sign the transcript with [privateKey]; the caller zeroes the key. */
+    /** Signs the role-specific transcript with BIP-340; the caller must zero [privateKey] after use. */
     fun sign(t: Transcript, signerIsInitiator: Boolean, privateKey: ByteArray): String {
         val hash = transcriptHash(t, signerIsInitiator)
         val aux = ByteArray(32).also { secureRandom.nextBytes(it) }
         return Secp256k1.signSchnorr(hash, privateKey, aux).toHexLower()
     }
 
+    /**
+     * Verifies the role-specific signature, returning false for malformed keys or signatures.
+     * The caller must select the transcript key corresponding to [signerIsInitiator].
+     */
     fun verify(t: Transcript, signerIsInitiator: Boolean, signerPubkey: String, sigHex: String): Boolean {
         if (!isHex64(sigHex) || !isHex32(signerPubkey)) return false
         return try {

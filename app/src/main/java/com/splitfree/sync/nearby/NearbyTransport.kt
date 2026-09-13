@@ -4,21 +4,16 @@ import com.splitfree.data.ble.BleEvent
 import kotlinx.coroutines.flow.SharedFlow
 
 /**
- * The transport the nearby session engine runs on. Google Nearby Connections implements it in
- * production ([com.splitfree.data.ble.NearbySync]); tests use an in-memory pair.
- *
- * The engine only needs three things from a transport: connection lifecycle and payload events,
- * a way to send bytes to an endpoint, and a way to drop an endpoint. Discovery and advertising stay
- * on the concrete transport because they are UI-driven.
+ * Endpoint lifecycle and byte transport for nearby sessions; discovery and advertising are caller-controlled.
+ * Transport connection does not establish application identity or group authorization.
+ * Sessions use application-level receipts to track processing independently of transport delivery.
  */
 interface NearbyTransport {
     val events: SharedFlow<BleEvent>
 
-    /**
-     * Hand [data] to the endpoint. Delivery is asynchronous; the engine relies on application-level
-     * receipts, never on the return of this call, to learn what was applied.
-     */
+    /** Submits bytes asynchronously; return does not confirm delivery or peer application. */
     fun sendPayload(endpointId: String, data: ByteArray)
 
+    /** Requests endpoint disconnection; the session owner remains responsible for protocol cleanup. */
     fun disconnect(endpointId: String)
 }

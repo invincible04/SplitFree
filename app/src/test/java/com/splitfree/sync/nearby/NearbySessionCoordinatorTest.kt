@@ -40,7 +40,7 @@ class NearbySessionCoordinatorTest {
 
         /** Simulate a local write the coordinator's change observer would see. */
         fun touchStore() {
-            store.changes.value = StoreVersion(store.events.size, store.deliveries.size)
+            store.changes.value = StoreVersion(store.changes.value.revision + 1)
         }
 
         fun progress(endpoint: String): PeerProgress? = coordinator.state.value.peers[endpoint]
@@ -810,6 +810,81 @@ class NearbySessionCoordinatorTest {
         assertTrue(b.store.deliveries[env]!!.consumed)
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
         assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `pending-only changes refresh both connected peers without new inventory`() {
+        val (a, b) = twoMembers()
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        b.store.deferredPending = 1
+        b.touchStore()
+        router.pump()
+        assertEquals(PeerPhase.WAITING_DEPENDENCY, b.phase(ep(a)))
+        assertEquals(PeerPhase.WAITING_DEPENDENCY, a.phase(ep(b)))
+        b.store.retryReturns = 1
+        b.touchStore()
+        router.pump()
+        assertEquals(0, b.store.deferredPending)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `unreadable durable pending state fails closed on both peers and recovers`() {
+        val (a, b) = twoMembers()
+        b.store.pendingReadFails = true
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+        assertEquals(PeerPhase.INCOMPLETE, a.phase(ep(b)))
+        assertTrue(b.transport.sentMessages().filterIsInstance<ReconcileResult>().last().unresolved > 0)
+        assertTrue(b.transport.sentMessages().filterIsInstance<InventoryPage>().last().pending > 0)
+        b.store.pendingReadFails = false
+        b.touchStore()
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        assertEquals(0, b.progress(ep(a))?.stats?.unresolved)
+    }
+
+    @Test
+    fun `pending readability changes invalidate a clean pair even when count stays zero`() {
+        val (a, b) = twoMembers()
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        b.store.pendingReadFails = true
+        b.touchStore()
+        router.pump()
+        assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(a)))
+        assertEquals(PeerPhase.INCOMPLETE, a.phase(ep(b)))
+        b.store.pendingReadFails = false
+        b.touchStore()
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+    }
+
+    @Test
+    fun `lost record receipts and round receipt terminate after bounded retry`() {
+        val (a, b) = twoMembers()
+        seed(a, "lost-all-receipts", 2)
+        b.transport.dropIf = { it is Result || it is ReconcileResult }
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        repeat(4) { advance(PeerSession.TRANSFER_TIMEOUT_MS + PeerSession.WATCHDOG_INTERVAL_MS) }
+        assertEquals(PeerPhase.INTERRUPTED, a.phase(ep(b)))
+        assertEquals(2, b.store.events.size)
     }
 
     private fun PeerPhase.isTerminalForTest() = this == PeerPhase.UNSUPPORTED_PEER ||

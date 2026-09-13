@@ -2,33 +2,27 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
-import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRevocation
+import com.splitfree.domain.repository.ControlOperation
+import com.splitfree.domain.repository.ControlOperationJournalContract
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * Key revocation: publish a signed "key_revocation" event to all groups,
- * then generate a new identity and re-join all groups with the new pubkey.
+ * A durable intent owns its pending identity and every old-key-signed event until projection and promotion finish.
  *
- * Flow:
- * 1. Generate new keypair (pending, alongside the old one) and record the start time
- * 2. Build a `key_revocation` and an updated `group_meta` for every group, signed with the OLD key
- * 3. Publish everything
- * 4. Only then swap old -> new pubkey in local membership, record the event IDs, and commit the new key
- *
- * Receivers: when they see a key_revocation event, they update the member list
- * to replace oldPubkey with newPubkey.
+ * Everything that can refuse a revocation is checked before the intent is journaled; once journaled it
+ * can always complete: the local projection tolerates a roster that dropped this user meanwhile (the
+ * tombstone is still recorded, nobody is re-added) and a group deleted locally.
  */
 class RevokeKeyUseCase
 @Inject
@@ -37,224 +31,127 @@ constructor(
     private val groupRepo: GroupRepositoryContract,
     private val encryption: GroupEncryption,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisherContract
+    private val eventPublisher: EventPublisherContract,
+    private val journal: ControlOperationJournalContract,
+    private val operationLock: ControlOperationLock
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /**
-     * [resumeIfNeeded] is called from both application start-up and the settings screen, and
-     * [invoke] may overlap either of them. Pending-key state must only be inspected/mutated by
-     * one of them at a time.
-     */
-    private val mutex = Mutex()
-
-    /** Everything needed to publish and then locally apply the revocation for one group. */
-    private class GroupRevocation(
-        val group: Group,
-        val updatedMembers: List<String>,
-        val updatedCreatedBy: String,
-        val updatedNames: Map<String, String>,
-        val revocationEvent: NostrEvent,
-        val revocationEncrypted: String,
-        val metaEvent: NostrEvent,
-        val metaEncrypted: String
-    )
-
-    /**
-     * Revoke the current key and create a new identity.
-     * Atomic: new key is stored alongside old key, only promoted after all publishes succeed.
-     * On app startup, call [resumeIfNeeded] to complete any interrupted revocation.
-     * @return the new public key hex
-     */
-    suspend operator fun invoke(): String {
-        // NonCancellable: key revocation must complete atomically even if the
-        // calling coroutine scope is cancelled (screen rotation, back press)
-        return withContext(NonCancellable) {
-            mutex.withLock { revoke() }
-        }
-    }
-
-    private suspend fun revoke(): String {
-        val oldPubkey = identity.getPublicKeyHex()
-        val groups = groupRepo.getAll()
-
-        // 1. Generate new keypair alongside old (does NOT overwrite) and stamp the start time
-        //    straight away so resumeIfNeeded can recognise an interrupted attempt.
-        val newPubkey = identity.generatePendingKeyPair()
-        try {
-            identity.markRevocationStarted()
-
-            // 2. Build every payload and signed event up-front. Nothing has left the device yet,
-            //    so a failure here (missing key, signer error) leaves no partial state behind.
-            val skippedGroupIds = mutableListOf<String>()
-            val plans = mutableListOf<GroupRevocation>()
-            for (group in groups) {
-                val groupKey = groupRepo.getGroupKey(group.id)
-                if (groupKey == null) {
-                    skippedGroupIds += group.id
-                    continue
+    suspend operator fun invoke(): String = withContext(NonCancellable) {
+        operationLock.withLock {
+            val existing = journal.get(RotateGroupKeyUseCase.REVOCATION_ID)
+            if (existing != null) return@withLock finish(existing)
+            check(!identity.hasPendingKeyPair()) {
+                "Legacy pending identity has ambiguous publication state; preserve it for recovery"
+            }
+            check(journal.getAll(RotateGroupKeyUseCase.ROTATION_KIND).isEmpty()) {
+                "Finish pending group rotations before revoking the identity"
+            }
+            val me = identity.getPublicKeyHex()
+            val intent = RevocationIntent(me, groupRepo.getAll().filter { me in it.members })
+            // Fail closed BEFORE the intent lands: a group whose current key is missing could not be
+            // told about the new identity, and promoting anyway would lock this user out of it. A
+            // journaled intent that can never prepare would also block every rotation.
+            for (group in intent.groups) {
+                checkNotNull(groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch)) {
+                    "Current-epoch key unavailable for group ${group.id}; revocation not started"
                 }
-                plans += buildRevocation(group, groupKey, oldPubkey, newPubkey)
             }
-            if (skippedGroupIds.isNotEmpty()) {
-                Log.w(
-                    TAG,
-                    "No current-epoch key for ${skippedGroupIds.size} group(s); revocation not published to: " +
-                        skippedGroupIds.joinToString { it.take(8) }
-                )
-            }
-
-            // 3. Publish revocations (signed by the OLD key), then the updated group_meta events.
-            val revocationEventIds = mutableListOf<String>()
-            for (plan in plans) {
-                eventPublisher.publishDirect(
-                    plan.revocationEvent,
-                    plan.group.id,
-                    plan.revocationEncrypted,
-                    "key_revocation"
-                )
-                revocationEventIds += plan.revocationEvent.id
-            }
-            for (plan in plans) {
-                eventPublisher.publishDirect(plan.metaEvent, plan.group.id, plan.metaEncrypted, "group_meta")
-                revocationEventIds += plan.metaEvent.id
-            }
-
-            // 4. Every publish succeeded; only now swap old -> new in local membership. Until this
-            //    point local state still names the OLD pubkey, so a failure above leaves a
-            //    consistent (unrevoked) device.
-            //    The watermark is raised to the published meta's clock, not "now": metas authored
-            //    after the revocation must still apply, metas authored before it must not resurrect
-            //    the old key.
-            for (plan in plans) {
-                groupRepo.overrideMembership(
-                    plan.group.id,
-                    plan.updatedMembers,
-                    plan.updatedNames,
-                    plan.updatedCreatedBy,
-                    plan.metaEvent.createdAt,
-                    plan.metaEvent.id
-                )
-            }
-
-            // 5. Store event IDs so resumeIfNeeded can track them
-            identity.setRevocationEventIds(revocationEventIds)
-
-            // 6. Promote the pending key
-            identity.commitPendingKeyPair()
-        } catch (e: Exception) {
-            // Revocation failed: discard pending key, old key is still active
-            identity.discardPendingKeyPair()
-            throw e
+            val operation = ControlOperation(
+                RotateGroupKeyUseCase.REVOCATION_ID,
+                "revocation",
+                json.encodeToString(intent)
+            )
+            // Room is written first. After a crash even a missing pending key is unambiguously pre-publication.
+            journal.insert(operation)
+            finish(operation)
         }
-
-        Log.i(TAG, "Key revoked. Old: ${oldPubkey.take(8)}… New: ${newPubkey.take(8)}…")
-        return newPubkey
     }
 
-    private fun buildRevocation(group: Group, groupKey: String, oldPubkey: String, newPubkey: String): GroupRevocation {
-        val revocationPayload =
-            json.encodeToString(
-                KeyRevocation.serializer(),
-                KeyRevocation(oldPubkey = oldPubkey, newPubkey = newPubkey, reason = "Key compromised")
-            )
-        val revocationEncrypted = encryption.encrypt(revocationPayload, groupKey)
-        val revocationEvent =
-            signer.createSignedEvent(
-                groupId = group.id,
-                eventType = "key_revocation",
-                encryptedContent = revocationEncrypted
-            )
-
-        val updatedMembers = group.members.map { if (it == oldPubkey) newPubkey else it }
-        val updatedCreatedBy = if (group.createdBy == oldPubkey) newPubkey else group.createdBy
-        val updatedNames = group.memberNames.toMutableMap().apply {
-            remove(oldPubkey)?.let { put(newPubkey, it) }
-        }
-        val metaPayload =
-            json.encodeToString(
-                GroupMeta.serializer(),
-                GroupMeta(
-                    name = group.name,
-                    description = group.description,
-                    createdBy = updatedCreatedBy,
-                    createdAt = group.createdAt,
-                    members = updatedMembers,
-                    relays = group.relays,
-                    memberNames = updatedNames
-                )
-            )
-        val metaEncrypted = encryption.encrypt(metaPayload, groupKey)
-        val metaEvent =
-            signer.createSignedEvent(
-                groupId = group.id,
-                eventType = "group_meta",
-                encryptedContent = metaEncrypted
-            )
-
-        return GroupRevocation(
-            group = group,
-            updatedMembers = updatedMembers,
-            updatedCreatedBy = updatedCreatedBy,
-            updatedNames = updatedNames,
-            revocationEvent = revocationEvent,
-            revocationEncrypted = revocationEncrypted,
-            metaEvent = metaEvent,
-            metaEncrypted = metaEncrypted
-        )
-    }
-
-    /**
-     * Resume an incomplete revocation on app startup.
-     *
-     * - No recorded start time (pending key from an older build) or no recorded event IDs
-     *   (crashed before anything was published): discard the pending key; the old key was
-     *   never revoked anywhere.
-     * - More than [MAX_REVOCATION_AGE_SECS] elapsed: commit anyway (timeout safety net).
-     * - Tracked events still in the outbox: keep waiting.
-     * - Otherwise the events have been published: commit.
-     */
     suspend fun resumeIfNeeded() {
-        mutex.withLock { resume() }
+        withContext(NonCancellable) {
+            operationLock.withLock {
+                val operation = journal.get(RotateGroupKeyUseCase.REVOCATION_ID)
+                if (operation != null) {
+                    finish(operation)
+                } else if (identity.hasPendingKeyPair()) {
+                    // Old builds wrote IDs only AFTER publishing: empty IDs/age/outbox absence prove nothing.
+                    Log.w(TAG, "Preserving legacy pending identity with ambiguous publication state")
+                }
+            }
+        }
     }
 
-    private suspend fun resume() {
-        if (!identity.hasPendingKeyPair()) return
-        val newPubkey = identity.getPendingPublicKeyHex() ?: return
-
-        val eventIds = identity.getRevocationEventIds()
-        val startTime = identity.getRevocationStartTime()
-        val nowSecs = System.currentTimeMillis() / 1000
-
-        if (startTime == 0L) {
-            Log.w(TAG, "Pending key ${newPubkey.take(8)}… has no recorded revocation start, discarding")
-            identity.discardPendingKeyPair()
-            return
+    private suspend fun finish(operation: ControlOperation): String {
+        val intent = json.decodeFromString<RevocationIntent>(operation.intentJson)
+        val preparedJson = operation.preparedJson ?: run {
+            check(identity.getPublicKeyHex() == intent.oldPubkey) { "Revocation belongs to a different identity" }
+            val newPubkey = identity.getPendingPublicKeyHex() ?: identity.generatePendingKeyPair()
+            identity.markRevocationStarted()
+            val events = intent.groups.flatMap { group ->
+                val key = checkNotNull(groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch)) {
+                    "Current-epoch key unavailable for group ${group.id}; revocation not published"
+                }
+                prepareRevocation(group, key, intent.oldPubkey, newPubkey)
+            }
+            json.encodeToString(PreparedRevocation(newPubkey, events)).also { journal.prepare(operation.id, it) }
         }
-        if (eventIds.isEmpty()) {
-            Log.w(TAG, "Pending key ${newPubkey.take(8)}… was never published to any group, discarding")
-            identity.discardPendingKeyPair()
-            return
+        val prepared = json.decodeFromString<PreparedRevocation>(preparedJson)
+        check(identity.getPublicKeyHex() == intent.oldPubkey || identity.getPublicKeyHex() == prepared.newPubkey) {
+            "Revocation belongs to a different identity"
         }
-
-        // Timeout: commit anyway after 24h to avoid permanent limbo
-        if (nowSecs - startTime > MAX_REVOCATION_AGE_SECS) {
-            Log.w(
-                TAG,
-                "Revocation timeout (${MAX_REVOCATION_AGE_SECS}s), committing pending key ${newPubkey.take(8)}…"
-            )
-            identity.commitPendingKeyPair()
-            return
+        check(
+            identity.getPublicKeyHex() == prepared.newPubkey || identity.getPendingPublicKeyHex() == prepared.newPubkey
+        ) {
+            "Journaled replacement identity unavailable"
         }
-
-        // Check if tracked revocation events are still in the outbox
-        if (eventPublisher.hasOutboxEventsById(eventIds)) {
-            Log.i(TAG, "Pending key ${newPubkey.take(8)}… waiting, revocation events still in outbox")
-            return
+        // Tracking IDs are compatibility state, not proof of publication or authorization to discard a key.
+        identity.setRevocationEventIds(prepared.events.map { it.event().id })
+        prepared.events.filter { it.eventType == "key_revocation" }.forEach { it.publish(eventPublisher) }
+        prepared.events.filter { it.eventType == "group_meta" }.forEach { it.publish(eventPublisher) }
+        val payload = json.encodeToString(KeyRevocation(intent.oldPubkey, prepared.newPubkey, "Key compromised"))
+        for (revocation in prepared.events.filter { it.eventType == "key_revocation" }) {
+            // Ordered by the revocation event's own clock, exactly as every receiver orders it.
+            val event = revocation.event()
+            val projected =
+                applyRevocation(payload, intent.oldPubkey, revocation.groupId, event.createdAt, event.id, own = true)
+            check(projected || groupRepo.getById(revocation.groupId) == null) {
+                "Could not project revocation for group ${revocation.groupId}"
+            }
         }
+        identity.finishPendingKeyPair(prepared.newPubkey)
+        journal.complete(operation.id)
+        return prepared.newPubkey
+    }
 
-        Log.i(TAG, "Resuming incomplete key revocation → committing pending key ${newPubkey.take(8)}…")
-        identity.commitPendingKeyPair()
+    private fun prepareRevocation(
+        group: Group,
+        groupKey: String,
+        oldPubkey: String,
+        newPubkey: String
+    ): List<PreparedControlEvent> {
+        val names = group.memberNames.toMutableMap().apply {
+            val oldName = remove(oldPubkey)
+            if (oldName != null && newPubkey !in this) put(newPubkey, oldName)
+        }
+        val meta = GroupMeta(
+            group.name,
+            group.description,
+            if (group.createdBy == oldPubkey) newPubkey else group.createdBy,
+            group.createdAt,
+            group.members.map { if (it == oldPubkey) newPubkey else it }.distinct(),
+            group.relays,
+            names,
+            keyEpoch = group.keyEpoch
+        )
+        val payloads = listOf(
+            "key_revocation" to json.encodeToString(KeyRevocation(oldPubkey, newPubkey, "Key compromised")),
+            "group_meta" to json.encodeToString(meta)
+        )
+        return payloads.map { (type, payload) ->
+            val encrypted = encryption.encrypt(payload, groupKey)
+            PreparedControlEvent(group.id, type, signer.createSignedEvent(group.id, type, encrypted).toJson())
+        }
     }
 
     /**
@@ -271,66 +168,59 @@ constructor(
         groupId: String,
         createdAt: Long,
         eventId: String
-    ) {
+    ): Boolean = operationLock.withLock {
+        applyRevocation(decryptedContent, authorPubkey, groupId, createdAt, eventId, own = false)
+    }
+
+    /**
+     * @param own true only for this device's journaled revocation: its tombstone is recorded even when
+     *   the roster no longer holds either identity. A remote author must still be (or have been) a
+     *   member, which ingestion already checks before the effect runs.
+     */
+    private suspend fun applyRevocation(
+        decryptedContent: String,
+        authorPubkey: String,
+        groupId: String,
+        createdAt: Long,
+        eventId: String,
+        own: Boolean
+    ): Boolean {
         val revocation =
             try {
                 json.decodeFromString<KeyRevocation>(decryptedContent)
             } catch (e: Exception) {
                 Log.w(TAG, "Invalid key_revocation payload: ${e.message}")
-                return
+                return false
             }
 
         // The event must be signed by the old key being revoked
         if (authorPubkey != revocation.oldPubkey) {
             Log.w(TAG, "key_revocation signed by $authorPubkey but claims to revoke ${revocation.oldPubkey}")
-            return
+            return false
         }
 
         val newPubkey = revocation.newPubkey
         if (newPubkey.isNotEmpty() && !PUBKEY_HEX.matches(newPubkey)) {
             Log.w(TAG, "key_revocation from ${authorPubkey.take(8)} carries a malformed new pubkey, rejecting")
-            return
+            return false
         }
         if (newPubkey == revocation.oldPubkey) {
             Log.w(TAG, "key_revocation from ${authorPubkey.take(8)} names itself as the new key, rejecting")
-            return
+            return false
         }
 
-        // Remove revoked pubkey from local member list immediately
-        val group = groupRepo.getById(groupId) ?: return
-        if (revocation.oldPubkey !in group.members) return
-
-        val replace = newPubkey.isNotEmpty() && newPubkey !in group.members
-        val updated =
-            if (replace) {
-                // Replace old pubkey with new one (fallback if group_meta arrives late)
-                group.members.map { if (it == revocation.oldPubkey) newPubkey else it }
-            } else {
-                // No new key, or the new key already joined: just drop the old one, never duplicate.
-                group.members - revocation.oldPubkey
-            }
-        val updatedNames = group.memberNames.toMutableMap().apply {
-            val oldName = remove(revocation.oldPubkey)
-            // Carry the display name over, but never clobber a name the new key already announced.
-            if (newPubkey.isNotEmpty() && oldName != null && newPubkey !in this) put(newPubkey, oldName)
-        }
-        // A creator revoking their own key hands the creator role to the new key; the revocation is
-        // signed by the old creator key, which is the only proof that could authorise that.
-        val createdBy = if (replace && group.createdBy == revocation.oldPubkey) newPubkey else ""
-        groupRepo.overrideMembership(groupId, updated, updatedNames, createdBy, createdAt, eventId)
-        Log.i(
-            TAG,
-            "Processed key revocation ${revocation.oldPubkey.take(8)}… → ${newPubkey.take(8)}… in group $groupId"
+        return groupRepo.applyIdentityRevocation(
+            groupId,
+            revocation.oldPubkey,
+            newPubkey,
+            createdAt,
+            eventId,
+            allowAbsent = own
         )
     }
 
     companion object {
         private const val TAG = "RevokeKeyUseCase"
-
-        /** 24 hours: commit pending key even if outbox events haven't published */
-        private const val MAX_REVOCATION_AGE_SECS = 24 * 60 * 60L
-
-        /** A Nostr public key: exactly 64 lowercase hex characters. */
         private val PUBKEY_HEX = Regex("^[0-9a-f]{64}$")
     }
 }

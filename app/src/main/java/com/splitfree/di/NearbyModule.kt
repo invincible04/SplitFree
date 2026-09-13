@@ -10,7 +10,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
-/** Nearby session engine bindings: Google Nearby Connections as the transport, Room as the store. */
+/** Singleton bindings for the Nearby transport and Room-backed reconciliation store. */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class NearbyModule {

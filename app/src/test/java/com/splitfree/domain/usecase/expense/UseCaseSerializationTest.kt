@@ -4,6 +4,7 @@ import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.balance.SnapshotBalance
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.model.group.KeyRotation
 import kotlinx.serialization.json.Json
@@ -128,10 +129,10 @@ class UseCaseSerializationTest {
                 listOf(
                     Balance("a", 100, "INR")
                 ),
-                excludedExpenseUuids = setOf("uuid-1", "uuid-2")
+                excludedExpenses = setOf(ExpenseIdentity("alice", "uuid-1"), ExpenseIdentity("bob", "uuid-2"))
             )
         assertEquals(1, br.balances.size)
-        assertEquals(2, br.excludedExpenseUuids.size)
-        assertTrue("uuid-1" in br.excludedExpenseUuids)
+        assertEquals(2, br.excludedExpenses.size)
+        assertTrue(ExpenseIdentity("alice", "uuid-1") in br.excludedExpenses)
     }
 }

@@ -5,31 +5,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * Nearby wire protocol, version 2.
+ * Version 2 framing: `[0x7F][type byte][UTF-8 JSON body]`, with type bytes defined by the `TYPE_*` constants.
  *
- * Every frame is `[0x7F][type byte][UTF-8 JSON body]`. The leading magic byte is deliberately
- * outside the legacy `0x01..0x04` discriminator range so a v1 peer ignores our frames and we can
- * recognise theirs and close with an explicit "unsupported peer" reason instead of silently
- * degrading.
- *
- * Message vocabulary (see `docs/nearby-sync-protocol.md`):
- *
- * | Type | Message | Purpose |
- * |---|---|---|
- * | 0x01 | [Hello] | version, capabilities, identity, nonce, connection role |
- * | 0x02 | [Auth] | Schnorr signature over the channel-bound transcript |
- * | 0x03 | [OpenGroup] | authorise the intended group scope |
- * | 0x04 | [OpenGroupResult] | accept or refuse the scope (one reason for every refusal) |
- * | 0x05 | [InventoryPage] | bounded page of record/evidence availability for one snapshot |
- * | 0x06 | [Want] | request missing records or delivery forms from a snapshot |
- * | 0x07 | [Record] | bounded chunk of one record |
- * | 0x08 | [Result] | applied / duplicate / deferred / rejected / busy / carried receipt |
- * | 0x09 | [ReconcileResult] | the consumer is done with a snapshot; counts and unresolved |
- * | 0x0A | [Close] | explicit terminal reason |
- *
- * Framing limits are implementation defaults chosen well inside the pinned
- * `ConnectionsClient.MAX_BYTES_DATA_SIZE` (1,047,552 bytes); they are validated by tests, not
- * inherited from the obsolete 32 KiB `Connections` constant.
+ * [decode] limits version 2 frames to [MAX_FRAME_BYTES] and classifies v1 type prefixes `0x01..0x04`
+ * as incompatible. Decoding validates serialization only; [PeerSession] enforces protocol state and fields.
+ * [encode] and [chunk] do not enforce encoded byte size; callers must respect the frame limit.
  */
 object NearbyWire {
     const val PROTOCOL_VERSION = 2
@@ -55,25 +35,27 @@ object NearbyWire {
     /** Record JSON is split into chunks of at most this many characters. */
     const val MAX_RECORD_CHUNK_CHARS = 12_000
 
-    /** Largest record we will reassemble: MAX_RECORD_PARTS * MAX_RECORD_CHUNK_CHARS chars. */
+    /** Upper bound on chunks per record; the provider reports larger records as unavailable. */
     const val MAX_RECORD_PARTS = 64
 
-    /** Records requested but not yet resolved, per peer. This is the receiver's transfer credit. */
+    /** Upper bound on records requested but not yet resolved, per peer; also the largest [Want] a provider accepts. */
     const val MAX_INFLIGHT_RECORDS = 16
 
-    /** Records with partially received chunks, per peer. */
+    /** Per-peer partial-record limit; starting another record at capacity produces [RecordOutcome.BUSY]. */
     const val MAX_PARTIAL_RECORDS = 4
 
-    /** Total inventory entries we accept from one peer snapshot. */
+    /** Upper bound on inventory entries accepted from one peer snapshot. */
     const val MAX_INVENTORY_ITEMS = 200_000
 
+    // Inventory item kinds (InventoryItem.t).
     const val KIND_EVENT = "e"
     const val KIND_DELIVERY = "d"
 
+    // Capabilities negotiated in Hello; the agreed set is bound into the auth transcript.
     const val CAP_RECONCILE_V2 = "reconcile-v2"
     const val CAP_DELIVERIES = "deliveries"
 
-    /** Close reasons. Kept short; they are protocol constants, not user-facing text. */
+    // Close reasons: protocol constants, not user-facing text.
     const val CLOSE_UNSUPPORTED_VERSION = "unsupported_version"
     const val CLOSE_AUTH_FAILED = "auth_failed"
     const val CLOSE_PROTOCOL_VIOLATION = "protocol_violation"
@@ -92,6 +74,7 @@ object NearbyWire {
         explicitNulls = false
     }
 
+    /** Encodes a frame without checking [MAX_FRAME_BYTES]; the caller is responsible for its size. */
     fun encode(message: NearbyMessage): ByteArray {
         val (type, body) =
             when (message) {
@@ -116,16 +99,19 @@ object NearbyWire {
         }
     }
 
-    /** Result of [decode]: a message, a recognisable legacy frame, or garbage. */
+    /** Classifies input as a parsed message, an incompatible v1 prefix, or an invalid version 2 frame. */
     sealed class Decoded {
+        /** Parsed message whose protocol fields and session ordering still require validation. */
         data class Message(val message: NearbyMessage) : Decoded()
 
-        /** A v1 `BleTransfer` frame (type bytes 0x01..0x04): an incompatible peer. */
+        /** Input beginning with a v1 type byte (0x01..0x04), classified as incompatible. */
         object LegacyPeer : Decoded()
 
+        /** Input that cannot be decoded as a supported frame and has no recognized v1 prefix. */
         object Invalid : Decoded()
     }
 
+    /** Classifies a frame without throwing for malformed JSON; unknown JSON fields are ignored. */
     fun decode(frame: ByteArray): Decoded {
         if (frame.isEmpty()) return Decoded.Invalid
         if (frame[0] != FRAME_MAGIC) {
@@ -155,26 +141,37 @@ object NearbyWire {
     }
 
     /**
-     * Split [pageItems] into pages that respect both [MAX_INVENTORY_PAGE_ITEMS] and
-     * [MAX_FRAME_BYTES]. Pure so it can be unit-tested against the SDK contract.
+     * Paginates [items] using entry-count and encoded-byte limits; empty inventory produces one final page.
+     * Each item must fit in a page by itself. [pending] carries the provider's durable pending count.
      */
-    fun paginate(snap: Int, delta: Boolean, items: List<InventoryItem>): List<InventoryPage> {
-        if (items.isEmpty()) return listOf(InventoryPage(snap, 0, last = true, delta = delta, items = emptyList()))
+    fun paginate(snap: Int, delta: Boolean, items: List<InventoryItem>, pending: Int = 0): List<InventoryPage> {
+        if (items.isEmpty()) {
+            return listOf(
+                InventoryPage(snap, 0, last = true, delta = delta, items = emptyList(), pending = pending)
+            )
+        }
         val pages = mutableListOf<MutableList<InventoryItem>>(mutableListOf())
         for (item in items) {
             val current = pages.last()
             current.add(item)
-            if (current.size > MAX_INVENTORY_PAGE_ITEMS || !fits(InventoryPage(snap, 0, false, delta, current))) {
+            if (current.size > MAX_INVENTORY_PAGE_ITEMS ||
+                !fits(InventoryPage(snap, MAX_INVENTORY_ITEMS, false, delta, current, pending))
+            ) {
                 current.removeAt(current.size - 1)
                 pages.add(mutableListOf(item))
             }
         }
         return pages.mapIndexed { index, page ->
-            InventoryPage(snap, index, last = index == pages.lastIndex, delta = delta, items = page)
+            InventoryPage(snap, index, last = index == pages.lastIndex, delta = delta, items = page, pending = pending)
         }
     }
 
-    /** Split one record's JSON into [Record] frames. */
+    /**
+     * Splits record JSON by character count; UTF-8 encoding and JSON escaping can increase frame size.
+     * Empty input produces no frames.
+     *
+     * @throws IllegalArgumentException if the record exceeds [MAX_RECORD_PARTS] chunks
+     */
     fun chunk(snap: Int, id: String, kind: String, recordJson: String): List<Record> {
         val parts = recordJson.chunked(MAX_RECORD_CHUNK_CHARS)
         require(parts.size <= MAX_RECORD_PARTS) { "record too large: ${parts.size} parts" }
@@ -184,15 +181,17 @@ object NearbyWire {
     private fun fits(message: NearbyMessage): Boolean = encode(message).size <= MAX_FRAME_BYTES
 }
 
+/** Version 2 message body; [NearbyWire] supplies the type discriminator outside the JSON. */
 @Serializable
 sealed class NearbyMessage
 
 /**
- * @property v protocol version
- * @property pubkey 64-char hex Nostr public key
- * @property nonce 64-char hex random challenge, generated once per session
- * @property incoming the Nearby connection role as this side sees it ([ConnectionInfo.isIncomingConnection])
- * @property caps capabilities; unknown ones are ignored
+ * Announces an unverified identity and handshake inputs before authentication.
+ *
+ * @property pubkey 64-character lowercase hex Nostr public key
+ * @property nonce 64-character lowercase hex random challenge, fresh for each session
+ * @property incoming whether the sender sees this connection as incoming
+ * @property caps supported capabilities; only the intersection is included in the authentication transcript
  */
 @Serializable
 data class Hello(
@@ -203,18 +202,19 @@ data class Hello(
     val caps: List<String> = emptyList()
 ) : NearbyMessage()
 
-/** @property sig 128-char hex BIP-340 signature over [NearbyAuth.transcriptHash]. */
+/** Proves identity with a 128-character lowercase hex BIP-340 signature over [NearbyAuth.transcriptHash]. */
 @Serializable
 data class Auth(val sig: String) : NearbyMessage()
 
 /**
- * @property groupId the one group this session may sync
- * @property joinEvent optional signed self-join `group_meta` event JSON so a freshly invited member
- *   is not blocked merely because this phone has not yet applied its join
+ * Requests the session's single group scope after authentication.
+ *
+ * @property joinEvent optional signed self-join `group_meta` JSON used to establish the sender's membership
  */
 @Serializable
 data class OpenGroup(val groupId: String, val joinEvent: String? = null) : NearbyMessage()
 
+/** Accepts a group scope or refuses with [NearbyWire.OPEN_REFUSED] without revealing whether the group exists. */
 @Serializable
 data class OpenGroupResult(val groupId: String, val ok: Boolean, val reason: String? = null) : NearbyMessage()
 
@@ -225,31 +225,47 @@ data class OpenGroupResult(val groupId: String, val ok: Boolean, val reason: Str
  * @property t [NearbyWire.KIND_EVENT] for a third-party-verifiable ledger event, [NearbyWire.KIND_DELIVERY]
  *   for a recipient-encrypted envelope the advertiser holds
  * @property r recipient pubkey of a delivery
- * @property e inner event id hint for a delivery, known to the author; a courier passes it on
- *   untrusted so the recipient can skip an envelope for an event it already applied
+ * @property e untrusted inner event id hint; a recipient can skip an envelope when that id is stored locally
  */
 @Serializable
 data class InventoryItem(val id: String, val t: String, val r: String? = null, val e: String? = null)
 
+/**
+ * Advertises record availability with zero-based, contiguous page numbers within a provider snapshot.
+ * [delta] marks additions to acknowledged inventory; [last] completes the snapshot's pages.
+ * [pending] reports the provider's durable pending count on the final page; unreadable counts report at least one.
+ */
 @Serializable
 data class InventoryPage(
     val snap: Int,
     val page: Int,
     val last: Boolean,
     val delta: Boolean,
-    val items: List<InventoryItem>
+    val items: List<InventoryItem>,
+    val pending: Int = 0
 ) : NearbyMessage()
 
+/** Requests advertised ids from [snap], with at most [NearbyWire.MAX_INFLIGHT_RECORDS] ids per message. */
 @Serializable
 data class Want(val snap: Int, val ids: List<String>) : NearbyMessage()
 
+/**
+ * Transfers one JSON chunk for a requested id; [part] is zero-based within [parts].
+ * A zero [parts] value reports an unavailable record. Receivers enforce chunk-count and character limits.
+ */
 @Serializable
 data class Record(val snap: Int, val id: String, val kind: String, val part: Int, val parts: Int, val data: String) :
     NearbyMessage()
 
+/** Reports a record's processing outcome within [snap]; this receipt does not acknowledge the whole snapshot. */
 @Serializable
 data class Result(val snap: Int, val id: String, val outcome: RecordOutcome) : NearbyMessage()
 
+/**
+ * Acknowledges consumption of [snap]; failures and deferred work can remain after this message.
+ * Counts describe the connection, except [deferred], which is the group's last readable durable pending count.
+ * An unreadable pending count is signaled by a nonzero [unresolved] value.
+ */
 @Serializable
 data class ReconcileResult(
     val snap: Int,
@@ -262,13 +278,13 @@ data class ReconcileResult(
     val unresolved: Int = 0
 ) : NearbyMessage()
 
+/** Terminates the session with a [NearbyWire] `CLOSE_*` reason. */
 @Serializable
 data class Close(val reason: String) : NearbyMessage()
 
 /**
- * Terminal result of one transferred record, reported back to the sender.
- * [CARRIED] means an opaque envelope for another recipient is durably retained; it must never be
- * shown as recipient delivery.
+ * Processing receipt for one transferred record; [DEFERRED] still requires local application.
+ * [CARRIED] acknowledges local retention of an envelope for another recipient, never recipient delivery.
  */
 @Serializable
 enum class RecordOutcome {

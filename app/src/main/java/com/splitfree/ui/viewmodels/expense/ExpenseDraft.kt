@@ -32,7 +32,7 @@ internal class ExpenseDraftStore(private val handle: SavedStateHandle) {
 
     private val json = Json { encodeDefaults = true }
 
-    fun read(): ExpenseDraft {
+    fun read(editingExpenseId: String? = null): ExpenseDraft {
         if (!restored) {
             return ExpenseDraft(
                 UUID.randomUUID().toString(),
@@ -43,7 +43,12 @@ internal class ExpenseDraftStore(private val handle: SavedStateHandle) {
         val value = handle.get<Any?>(KEY)
         require(value is String) { "Invalid draft state" }
         return json.decodeFromString<ExpenseDraft>(value).also {
-            require(UUID.fromString(it.expenseId).toString() == it.expenseId && it.createdAt >= 0) {
+            val validExpenseId = if (it.initialized && editingExpenseId != null) {
+                it.expenseId == editingExpenseId
+            } else {
+                UUID.fromString(it.expenseId).toString() == it.expenseId
+            }
+            require(validExpenseId && it.createdAt >= 0) {
                 "Invalid draft identity"
             }
             require(it.localeTag.isNotBlank()) { "Invalid draft locale" }

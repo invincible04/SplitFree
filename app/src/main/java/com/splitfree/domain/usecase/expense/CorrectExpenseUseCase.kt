@@ -37,8 +37,10 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
         splitType: SplitType,
         splitAmong: List<SplitEntry>,
         timestamp: Long,
-        category: String = ""
+        category: String = "",
+        expectedAuthorPubkey: String
     ) {
+        require(expectedAuthorPubkey.isNotBlank()) { "Expense author must not be blank" }
         require(originalId.isNotBlank()) { "Expense ID must not be blank" }
         require(timestamp >= 0) { "Expense timestamp must not be negative" }
         require(amount > 0) { "Amount must be positive" }
@@ -65,7 +67,7 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
                 timestamp = timestamp,
                 category = category
             )
-        expenseRepo.correctExpense(originalId, corrected, groupId)
+        expenseRepo.correctExpense(originalId, corrected, groupId, expectedAuthorPubkey)
     }
 
     private companion object {

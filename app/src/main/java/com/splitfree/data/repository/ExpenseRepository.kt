@@ -158,8 +158,13 @@ constructor(
         eventPublisher.publishToGroup(event, groupId, encrypted, "settlement", settlement.id)
     }
 
-    override suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String) {
-        val author = identity.getPublicKeyHex()
+    override suspend fun deleteExpense(
+        expenseUuid: String,
+        groupId: String,
+        reason: String,
+        expectedAuthorPubkey: String
+    ) {
+        val author = checkedAuthor(expectedAuthorPubkey)
         // Author-bound identity: only my own record under this UUID can be deleted. Another member's
         // expense reusing the UUID is a separate record and is neither found here nor affected.
         eventDao.getExpenseByAuthor(expenseUuid, groupId, author) ?: error("Expense not found or not yours")
@@ -182,11 +187,18 @@ constructor(
                 encryptedContent = encrypted,
                 expenseUuid = expenseUuid
             )
+        checkedAuthor(author)
+        check(event.pubkey == author) { "Identity changed while deleting" }
         eventPublisher.publishToGroup(event, groupId, encrypted, "expense_delete", expenseUuid)
     }
 
-    override suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String) {
-        val author = identity.getPublicKeyHex()
+    override suspend fun correctExpense(
+        originalUuid: String,
+        corrected: Expense,
+        groupId: String,
+        expectedAuthorPubkey: String
+    ) {
+        val author = checkedAuthor(expectedAuthorPubkey)
         // Author-bound identity: a correction is bound to my own record under this UUID (see deleteExpense).
         eventDao.getExpenseByAuthor(originalUuid, groupId, author) ?: error("Expense not found or not yours")
 
@@ -205,6 +217,8 @@ constructor(
                 encryptedContent = encrypted,
                 expenseUuid = originalUuid
             )
+        checkedAuthor(author)
+        check(event.pubkey == author) { "Identity changed while correcting" }
         eventPublisher.publishToGroup(event, groupId, encrypted, "expense_correction", originalUuid)
     }
 }

@@ -46,9 +46,18 @@ class EventPostProcessorTest {
         every { android.util.Log.e(any(), any(), any()) } returns 0
         coEvery { groupRepo.getById(groupId) } returns group
         rotationReturns(RotationOutcome.APPLIED)
+        coEvery { revokeKey.handleRevocation(any(), any(), any(), any(), any()) } returns true
         every { identity.getPublicKeyHex() } returns pubkey
         processor =
-            EventPostProcessor(groupRepo, rotateGroupKey, revokeKey, selfHeal, eventPublisher, identity, appScope)
+            EventPostProcessor(
+                groupRepo,
+                rotateGroupKey,
+                revokeKey,
+                selfHeal,
+                eventPublisher,
+                identity,
+                appScope
+            )
     }
 
     @After
@@ -61,12 +70,35 @@ class EventPostProcessorTest {
 
     private fun noMetaWrites() {
         noCreatorWrite()
-        coVerify(exactly = 0) { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.applyMemberSelfUpdate(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        }
     }
 
     private fun noCreatorWrite() {
         coVerify(exactly = 0) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                expectedKeyEpoch = any(),
+                expectedCreator = any()
+            )
         }
     }
 
@@ -127,14 +159,29 @@ class EventPostProcessorTest {
     @Test
     fun `handle key_revocation delegates to RevokeKeyUseCase with the event clock and is applied`() = runBlocking {
         val outcome =
-            processor.handle("key_revocation", """{"data":"x"}""", pubkey, groupId, 1000, false, eventId = "ev-rev")
+            processor.handle(
+                "key_revocation",
+                """{"data":"x"}""",
+                pubkey,
+                groupId,
+                1000,
+                false,
+                eventId = "ev-rev"
+            )
         coVerify { revokeKey.handleRevocation("""{"data":"x"}""", pubkey, groupId, 1000, "ev-rev") }
         assertEquals(PostProcessOutcome.APPLIED, outcome)
     }
 
     @Test
     fun `handle exception from rotateGroupKey is caught and reported as FAILED`() = runBlocking {
-        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } throws RuntimeException("boom")
+        coEvery {
+            rotateGroupKey.handleKeyRotation(
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        } throws RuntimeException("boom")
         val outcome = processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false)
         assertEquals(PostProcessOutcome.FAILED, outcome)
     }
@@ -148,16 +195,29 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle group_meta with malformed JSON is reported as FAILED`() = runBlocking {
+    fun `handle group_meta with malformed JSON is permanently REJECTED`() = runBlocking {
         val outcome = processor.handle("group_meta", "not json", pubkey, groupId, 1000, false)
-        assertEquals(PostProcessOutcome.FAILED, outcome)
+        assertEquals(PostProcessOutcome.REJECTED, outcome)
         noMetaWrites()
     }
 
     @Test
     fun `handle group_meta repository failure is reported as FAILED`() = runBlocking {
         coEvery {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                expectedKeyEpoch = any(),
+                expectedCreator = any()
+            )
         } throws IllegalStateException("db closed")
         val meta = """{"name":"New","created_by":"$pubkey","members":["$pubkey"],"relays":["wss://r"]}"""
         val outcome = processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
@@ -184,7 +244,17 @@ class EventPostProcessorTest {
         val outcome = processor.handle("group_meta", meta, pubkey, groupId, 2000, false)
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         coVerify {
-            groupRepo.updateFromMeta(groupId, "New", listOf(pubkey), listOf("wss://r"), 2000, pubkey, emptyMap(), "")
+            groupRepo.updateFromMeta(
+                groupId,
+                "New",
+                listOf(pubkey),
+                listOf("wss://r"),
+                2000,
+                pubkey,
+                emptyMap(),
+                "",
+                expectedCreator = pubkey
+            )
         }
     }
 
@@ -204,10 +274,20 @@ class EventPostProcessorTest {
                 pubkey,
                 emptyMap(),
                 "",
-                eventId = "ev-42"
+                eventId = "ev-42", expectedCreator = pubkey
             )
         }
-        coVerify(exactly = 0) { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.applyMemberSelfUpdate(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        }
     }
 
     @Test
@@ -225,7 +305,7 @@ class EventPostProcessorTest {
                 2000,
                 pubkey,
                 any(),
-                "Ski week"
+                "Ski week", expectedCreator = pubkey
             )
         }
     }
@@ -234,7 +314,7 @@ class EventPostProcessorTest {
     fun `handle group_meta with empty members skips update`() = runBlocking {
         val meta = """{"name":"X","members":[],"relays":["wss://r"]}"""
         val outcome = processor.handle("group_meta", meta, pubkey, groupId, 1000, false)
-        assertEquals(PostProcessOutcome.APPLIED, outcome)
+        assertEquals(PostProcessOutcome.REJECTED, outcome)
         noMetaWrites()
     }
 
@@ -255,7 +335,7 @@ class EventPostProcessorTest {
                 2000,
                 pubkey,
                 emptyMap(),
-                ""
+                "", expectedCreator = pubkey
             )
         }
     }
@@ -277,7 +357,17 @@ class EventPostProcessorTest {
         val outcome = processor.handle("group_meta", meta, pubkey, groupId, 2000, true)
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         coVerify {
-            groupRepo.updateFromMeta(groupId, "NC", listOf(pubkey), listOf("wss://r"), 2000, pubkey, emptyMap(), "")
+            groupRepo.updateFromMeta(
+                groupId,
+                "NC",
+                listOf(pubkey),
+                listOf("wss://r"),
+                2000,
+                pubkey,
+                emptyMap(),
+                "",
+                expectedCreator = pubkey
+            )
         }
     }
 
@@ -289,9 +379,29 @@ class EventPostProcessorTest {
         // When currentGroup is null, isCreator is true regardless of author
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
         coVerify {
-            groupRepo.updateFromMeta(groupId, "New", listOf(stranger), listOf("wss://r2"), 2000, "", emptyMap(), "")
+            groupRepo.updateFromMeta(
+                groupId,
+                "New",
+                listOf(stranger),
+                listOf("wss://r2"),
+                2000,
+                "",
+                emptyMap(),
+                "",
+                expectedCreator = null
+            )
         }
-        coVerify(exactly = 0) { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.applyMemberSelfUpdate(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        }
     }
 
     @Test
@@ -319,7 +429,7 @@ class EventPostProcessorTest {
                 pubkey,
                 mapOf(pubkey to "Alice"),
                 "",
-                "ev-bootstrap"
+                "ev-bootstrap", expectedCreator = pubkey
             )
         }
     }
@@ -371,13 +481,26 @@ class EventPostProcessorTest {
         processor.handle("group_meta", meta, stranger, groupId, 2000, false, eventId = "ev-join")
         noCreatorWrite()
         coVerify(exactly = 1) {
-            groupRepo.applyMemberSelfUpdate(groupId, stranger, 2000, "ev-join", join = true, displayName = "Joiner")
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                stranger,
+                2000,
+                "ev-join",
+                join = true,
+                displayName = "Joiner"
+            )
         }
     }
 
     @Test
     fun `handle group_meta from an existing member is a rename, not a join`() = runBlocking {
-        val memberGroup = group.copy(members = listOf(pubkey, stranger), memberNames = mapOf(stranger to "OldName"))
+        val memberGroup = group.copy(
+            members = listOf(
+                pubkey,
+                stranger
+            ),
+            memberNames = mapOf(stranger to "OldName")
+        )
         coEvery { groupRepo.getById(groupId) } returns memberGroup
         val meta =
             """{"name":"Test","members":["$pubkey","$stranger"],""" +
@@ -385,37 +508,80 @@ class EventPostProcessorTest {
         processor.handle("group_meta", meta, stranger, groupId, 3000, false, eventId = "ev-rename")
         noCreatorWrite()
         coVerify(exactly = 1) {
-            groupRepo.applyMemberSelfUpdate(groupId, stranger, 3000, "ev-rename", join = false, displayName = "NewName")
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                stranger,
+                3000,
+                "ev-rename",
+                join = false,
+                displayName = "NewName"
+            )
         }
     }
 
     @Test
     fun `handle group_meta non-creator with an empty own name clears it`() = runBlocking {
-        val memberGroup = group.copy(members = listOf(pubkey, stranger), memberNames = mapOf(stranger to "OldName"))
+        val memberGroup = group.copy(
+            members = listOf(
+                pubkey,
+                stranger
+            ),
+            memberNames = mapOf(stranger to "OldName")
+        )
         coEvery { groupRepo.getById(groupId) } returns memberGroup
         val meta =
             """{"name":"Test","members":["$pubkey","$stranger"],""" +
                 """"relays":["wss://r"],"member_names":{"$stranger":""}}"""
         processor.handle("group_meta", meta, stranger, groupId, 3000, false, eventId = "ev-clear")
         coVerify(exactly = 1) {
-            groupRepo.applyMemberSelfUpdate(groupId, stranger, 3000, "ev-clear", join = false, displayName = "")
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                stranger,
+                3000,
+                "ev-clear",
+                join = false,
+                displayName = ""
+            )
         }
     }
 
     @Test
     fun `handle group_meta non-creator without an own name entry leaves the name unchanged`() = runBlocking {
-        val memberGroup = group.copy(members = listOf(pubkey, stranger), memberNames = mapOf(stranger to "OldName"))
+        val memberGroup = group.copy(
+            members = listOf(
+                pubkey,
+                stranger
+            ),
+            memberNames = mapOf(stranger to "OldName")
+        )
         coEvery { groupRepo.getById(groupId) } returns memberGroup
         val meta = """{"name":"Test","members":["$pubkey","$stranger"],"relays":["wss://r"],"member_names":{}}"""
         processor.handle("group_meta", meta, stranger, groupId, 3000, false, eventId = "ev-nochange")
         coVerify(exactly = 1) {
-            groupRepo.applyMemberSelfUpdate(groupId, stranger, 3000, "ev-nochange", join = false, displayName = null)
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                stranger,
+                3000,
+                "ev-nochange",
+                join = false,
+                displayName = null
+            )
         }
     }
 
     @Test
     fun `handle group_meta stale member self-update is still reported as APPLIED`() = runBlocking {
-        coEvery { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) } returns false
+        coEvery {
+            groupRepo.applyMemberSelfUpdate(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        } returns false
         val meta = """{"name":"Test","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
         val outcome = processor.handle("group_meta", meta, stranger, groupId, 500, false, eventId = "ev-old")
         // A replay older than the member's own clock has nothing left to retry.
@@ -488,17 +654,40 @@ class EventPostProcessorTest {
         val rename =
             """{"name":"Test","members":["$creator","$pubkey","$stranger"],"relays":["wss://r"],""" +
                 """"member_names":{"$stranger":"Future Me"}}"""
-        processor.handle("group_meta", rename, stranger, groupId, 9_999_999_999L, false, eventId = "ev-future")
+        processor.handle(
+            "group_meta",
+            rename,
+            stranger,
+            groupId,
+            9_999_999_999L,
+            false,
+            eventId = "ev-future"
+        )
 
         // 2. The creator removes that member with an honest, older timestamp.
         val removal =
             """{"name":"Test","created_by":"$creator","members":["$creator","$pubkey"],"relays":["wss://r"]}"""
-        val outcome = processor.handle("group_meta", removal, creator, groupId, 5000, false, eventId = "ev-remove")
+        val outcome = processor.handle(
+            "group_meta",
+            removal,
+            creator,
+            groupId,
+            5000,
+            false,
+            eventId = "ev-remove"
+        )
 
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         // The rename never touched the creator watermark...
         coVerify(exactly = 1) {
-            groupRepo.applyMemberSelfUpdate(groupId, stranger, 9_999_999_999L, "ev-future", false, "Future Me")
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                stranger,
+                9_999_999_999L,
+                "ev-future",
+                false,
+                "Future Me"
+            )
         }
         // ...so the creator's older meta still reaches updateFromMeta with its own (createdAt, eventId).
         coVerify(exactly = 1) {
@@ -511,11 +700,24 @@ class EventPostProcessorTest {
                 creator,
                 emptyMap(),
                 "",
-                "ev-remove"
+                "ev-remove", expectedCreator = creator
             )
         }
         coVerify(exactly = 1) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                expectedKeyEpoch = any(),
+                expectedCreator = any()
+            )
         }
     }
 
@@ -529,7 +731,16 @@ class EventPostProcessorTest {
             """{"name":"Old","created_by":"$pubkey","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
 
         val outcome =
-            processor.handle("group_meta", meta, pubkey, groupId, 2000, false, eventId = "ev-old", keyEpoch = 1)
+            processor.handle(
+                "group_meta",
+                meta,
+                pubkey,
+                groupId,
+                2000,
+                false,
+                eventId = "ev-old",
+                keyEpoch = 1
+            )
 
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         coVerify(exactly = 1) {
@@ -543,7 +754,8 @@ class EventPostProcessorTest {
                 emptyMap(),
                 "",
                 "ev-old",
-                applyRoster = false
+                applyRoster = false,
+                expectedKeyEpoch = 1, expectedCreator = pubkey
             )
         }
     }
@@ -560,16 +772,50 @@ class EventPostProcessorTest {
 
         coVerify(exactly = 1) {
             groupRepo.updateFromMeta(
-                groupId, "Now", any(), any(), 2000, pubkey, any(), any(), "ev-now", applyRoster = true
+                groupId,
+                "Now",
+                any(),
+                any(),
+                2000,
+                pubkey,
+                any(),
+                any(),
+                "ev-now",
+                applyRoster = true,
+                expectedKeyEpoch = 2,
+                expectedCreator = pubkey
             )
         }
         coVerify(exactly = 1) {
             groupRepo.updateFromMeta(
-                groupId, "Now", any(), any(), 2001, pubkey, any(), any(), "ev-default", applyRoster = true
+                groupId,
+                "Now",
+                any(),
+                any(),
+                2001,
+                pubkey,
+                any(),
+                any(),
+                "ev-default",
+                applyRoster = true,
+                expectedCreator = pubkey
             )
         }
         coVerify(exactly = 0) {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), applyRoster = false)
+            groupRepo.updateFromMeta(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                applyRoster = false,
+                expectedKeyEpoch = any(),
+                expectedCreator = any()
+            )
         }
     }
 
@@ -582,7 +828,18 @@ class EventPostProcessorTest {
 
         coVerify(exactly = 1) {
             groupRepo.updateFromMeta(
-                groupId, "New", listOf(pubkey), any(), 2000, "", any(), any(), "ev-new", applyRoster = true
+                groupId,
+                "New",
+                listOf(pubkey),
+                any(),
+                2000,
+                "",
+                any(),
+                any(),
+                "ev-new",
+                applyRoster = true,
+                expectedKeyEpoch = 0,
+                expectedCreator = null
             )
         }
     }
@@ -600,12 +857,25 @@ class EventPostProcessorTest {
         var current = before
         coEvery { groupRepo.getById(groupId) } answers { current }
         coEvery {
-            groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            groupRepo.updateFromMeta(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                expectedKeyEpoch = any(),
+                expectedCreator = any()
+            )
         } answers {
             current = after
             true
         }
-        coEvery { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) } answers {
+        coEvery { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any(), any()) } answers {
             current = after
             true
         }
@@ -692,7 +962,17 @@ class EventPostProcessorTest {
     fun `handle group_meta stale self-join rejected by the member clock does not redeliver`() = runBlocking {
         val creatorGroup = group.copy(createdBy = pubkey, members = listOf(pubkey))
         persistedTransition(creatorGroup, creatorGroup)
-        coEvery { groupRepo.applyMemberSelfUpdate(any(), any(), any(), any(), any(), any()) } returns false
+        coEvery {
+            groupRepo.applyMemberSelfUpdate(
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+            )
+        } returns false
         val meta = """{"name":"Test","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""
 
         processor.handle("group_meta", meta, joiner, groupId, 500, false)
@@ -702,7 +982,12 @@ class EventPostProcessorTest {
 
     @Test
     fun `handle group_meta redelivery failure is caught`() = runBlocking {
-        coEvery { eventPublisher.redeliverAuthoredEvents(any(), any()) } throws RuntimeException("outbox exploded")
+        coEvery {
+            eventPublisher.redeliverAuthoredEvents(
+                any(),
+                any()
+            )
+        } throws RuntimeException("outbox exploded")
         val creatorGroup = group.copy(createdBy = pubkey)
         persistedTransition(creatorGroup, creatorGroup.copy(members = listOf(pubkey, joiner)))
         val meta = """{"name":"Test","members":["$pubkey","$joiner"],"relays":["wss://r"]}"""

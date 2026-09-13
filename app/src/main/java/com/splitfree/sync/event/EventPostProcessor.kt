@@ -82,8 +82,11 @@ constructor(
                 }
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
-                revokeKey.handleRevocation(decrypted, authorHex, groupId, createdAt, eventId)
-                PostProcessOutcome.APPLIED
+                if (revokeKey.handleRevocation(decrypted, authorHex, groupId, createdAt, eventId)) {
+                    PostProcessOutcome.APPLIED
+                } else {
+                    PostProcessOutcome.REJECTED
+                }
             }
             else -> PostProcessOutcome.APPLIED
         }
@@ -98,8 +101,14 @@ constructor(
         eventId: String,
         keyEpoch: Int
     ): PostProcessOutcome = runSafe(nonCancellable, "group_meta", groupId) {
-        val meta = json.decodeFromString<GroupMeta>(decrypted)
-        if (meta.members.isEmpty()) return@runSafe PostProcessOutcome.APPLIED
+        val meta = try {
+            json.decodeFromString<GroupMeta>(decrypted)
+        } catch (_: kotlinx.serialization.SerializationException) {
+            return@runSafe PostProcessOutcome.REJECTED
+        } catch (_: IllegalArgumentException) {
+            return@runSafe PostProcessOutcome.REJECTED
+        }
+        if (meta.members.isEmpty()) return@runSafe PostProcessOutcome.REJECTED
 
         val currentGroup = groupRepo.getById(groupId)
         val isKnownCreator =
@@ -126,10 +135,32 @@ constructor(
                 currentGroup,
                 isKnownCreator,
                 bootstrapsCreator,
-                applyRoster = currentGroup == null || keyEpoch >= currentGroup.keyEpoch
+                applyRoster = currentGroup == null || keyEpoch >= currentGroup.keyEpoch,
+                expectedKeyEpoch = keyEpoch.takeUnless { it == Int.MAX_VALUE }
             )
         } else {
-            applyMemberSelfMeta(meta, authorHex, groupId, createdAt, eventId, checkNotNull(currentGroup))
+            val group = checkNotNull(currentGroup)
+            // A previously valid rename may be retried after removal. Its original epoch is proof
+            // of history, never permission to join the current roster. Recheck on every apply path.
+            if (authorHex !in group.members &&
+                (
+                    keyEpoch != Int.MAX_VALUE &&
+                        keyEpoch != group.keyEpoch ||
+                        authorHex !in meta.members ||
+                        (meta.members.toSet() - group.members.toSet() - authorHex).isNotEmpty()
+                    )
+            ) {
+                return@runSafe PostProcessOutcome.REJECTED
+            }
+            applyMemberSelfMeta(
+                meta,
+                authorHex,
+                groupId,
+                createdAt,
+                eventId,
+                group,
+                keyEpoch.takeUnless { it == Int.MAX_VALUE }
+            )
         }
 
         // Members that just appeared could not decrypt any gift wrap I published before now,
@@ -175,7 +206,8 @@ constructor(
         currentGroup: Group?,
         isKnownCreator: Boolean,
         bootstrapsCreator: Boolean,
-        applyRoster: Boolean
+        applyRoster: Boolean,
+        expectedKeyEpoch: Int?
     ) {
         val trustedCreatedBy =
             when {
@@ -203,7 +235,9 @@ constructor(
             // Only the creator's meta is authoritative for the description.
             description = meta.description,
             eventId = eventId,
-            applyRoster = applyRoster
+            applyRoster = applyRoster,
+            expectedKeyEpoch = expectedKeyEpoch,
+            expectedCreator = if (isKnownCreator || bootstrapsCreator) authorHex else currentGroup?.createdBy
         )
 
         if (relaysChanged) {
@@ -235,7 +269,8 @@ constructor(
         groupId: String,
         createdAt: Long,
         eventId: String,
-        currentGroup: Group
+        currentGroup: Group,
+        expectedKeyEpoch: Int?
     ) {
         val join = authorHex !in currentGroup.members
         Log.i(TAG, "Applying member self-update from ${authorHex.take(8)} for $groupId (join=$join)")
@@ -245,7 +280,8 @@ constructor(
             createdAt,
             eventId,
             join = join,
-            displayName = meta.memberNames[authorHex]
+            displayName = meta.memberNames[authorHex],
+            expectedKeyEpoch = expectedKeyEpoch
         )
         if (!applied) Log.i(TAG, "Member self-update from ${authorHex.take(8)} for $groupId was stale, ignored")
     }

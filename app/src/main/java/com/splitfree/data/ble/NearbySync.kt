@@ -25,42 +25,41 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-/**
- * Discovered BLE peer with its Nearby Connections endpoint ID and pubkey prefix.
- */
+/** Discovered Nearby endpoint with an unverified, self-reported name. */
 data class NearbyPeer(val endpointId: String, val name: String)
 
-/**
- * Events emitted by [NearbySync] for peer discovery, connection, and data transfer.
- */
+/** Transport events from [NearbySync]; a connection event does not imply application authentication. */
 sealed class BleEvent {
+    /** Endpoint discovered under the application's service id; its name is unverified. */
     data class PeerFound(val peer: NearbyPeer) : BleEvent()
 
+    /** Endpoint disappears from discovery; an existing connection can remain open. */
     data class PeerLost(val endpointId: String) : BleEvent()
 
     /**
-     * @property isIncoming the Nearby connection role for this endpoint ([ConnectionInfo.isIncomingConnection]);
-     *   the session engine derives the protocol initiator from it
-     * @property authToken Nearby's raw authentication token for this connection, identical on both ends
-     *   and different per connection; bound into the authentication transcript
+     * Successful transport connection ready for the session handshake.
+     *
+     * @property isIncoming local Nearby connection role used to select the protocol initiator
+     * @property authToken raw Nearby authentication token captured at initiation, or null when unavailable
      */
     data class Connected(val endpointId: String, val isIncoming: Boolean = false, val authToken: ByteArray? = null) :
         BleEvent()
 
+    /** Transport disconnection requiring cleanup of the endpoint's session. */
     data class Disconnected(val endpointId: String) : BleEvent()
 
+    /** Raw byte payload awaiting protocol decoding and validation. */
     data class PayloadReceived(val endpointId: String, val data: ByteArray) : BleEvent()
 
+    /** Operation failure with diagnostic text; no endpoint identity is attached. */
     data class Error(val operation: String, val reason: String) : BleEvent()
 }
 
 /**
- * Google Nearby Connections wrapper for peer-to-peer BLE sync.
- *
- * Advertises and discovers peers using P2P_CLUSTER strategy. Connections are accepted
- * only if the endpoint name is a valid 8-char hex pubkey prefix. Actual authentication
- * happens in [com.splitfree.sync.nearby.PeerSession] after connection, bound to the connection's
- * raw authentication token which this class captures at [ConnectionLifecycleCallback.onConnectionInitiated].
+ * Google Nearby Connections transport using the P2P_CLUSTER strategy.
+ * Connection acceptance requires an eight-character lowercase hex name, which is unverified.
+ * [com.splitfree.sync.nearby.PeerSession] authenticates identity and authorizes the group after connection.
+ * Events are best-effort with no replay: subscribe before starting operations and handle missing progress.
  */
 @Singleton
 class NearbySync
@@ -73,10 +72,7 @@ constructor(
     private val _events = MutableSharedFlow<BleEvent>(extraBufferCapacity = EVENT_BUFFER_CAPACITY)
     override val events: SharedFlow<BleEvent> = _events
 
-    /**
-     * Events that could not be handed to [events] because the buffer was full: a burst of
-     * payloads arrived faster than the collector processed them. Diagnostics only.
-     */
+    /** Counts full-buffer drops only; events emitted without subscribers are not counted. */
     val droppedEvents = AtomicLong(0)
 
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
@@ -86,11 +82,7 @@ constructor(
 
     private val pendingConnections = ConcurrentHashMap<String, PendingConnection>()
 
-    /**
-     * Hand [event] to [events]. Nearby callbacks run on a binder thread and must not block, so a
-     * full buffer means the event is dropped; count it and log at most once per
-     * [DROP_LOG_INTERVAL] drops so a burst cannot flood logcat.
-     */
+    /** Keeps callbacks nonblocking; full-buffer drops are counted with rate-limited diagnostics. */
     private fun emitOrDrop(event: BleEvent) {
         if (_events.tryEmit(event)) return
         val dropped = droppedEvents.incrementAndGet()
@@ -99,6 +91,7 @@ constructor(
         }
     }
 
+    /** Starts asynchronous advertising under the local key prefix; startup failures are emitted as [BleEvent.Error]. */
     fun startAdvertising() {
         try {
             val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
@@ -114,6 +107,7 @@ constructor(
         }
     }
 
+    /** Starts asynchronous discovery for this application's service; failures are emitted as [BleEvent.Error]. */
     fun startDiscovery() {
         try {
             val options = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
@@ -125,6 +119,7 @@ constructor(
         }
     }
 
+    /** Requests a transport connection asynchronously; successful connections still require session authentication. */
     fun requestConnection(endpointId: String) {
         try {
             client
@@ -145,6 +140,7 @@ constructor(
         }
     }
 
+    /** Stops discovery while leaving advertising and connected endpoints active. */
     fun stopDiscovery() {
         guarded("stop_discovery") { client.stopDiscovery() }
     }
@@ -156,9 +152,8 @@ constructor(
     }
 
     /**
-     * Tear down advertising, discovery and all endpoints. Each call is guarded separately so
-     * that one refusal (permissions revoked while connected) cannot skip the remaining
-     * teardown, and local state is cleared either way.
+     * Stops advertising, discovery and endpoints, then clears local connection state.
+     * Permission failures are reported independently so the remaining cleanup can proceed.
      */
     fun stop() {
         guarded("stop_advertising") { client.stopAdvertising() }
@@ -168,7 +163,7 @@ constructor(
         pendingConnections.clear()
     }
 
-    /** Run one Nearby call, reporting a revoked-permission refusal instead of propagating it. */
+    /** Converts permission failures into [BleEvent.Error] events. */
     private inline fun guarded(operation: String, block: () -> Unit) {
         try {
             block()
@@ -192,20 +187,9 @@ constructor(
 
     private val connectionLifecycleCallback =
         object : ConnectionLifecycleCallback() {
-            /**
-             * Auto-accepts any endpoint whose advertised name is an 8-char hex pubkey prefix.
-             *
-             * This is a UX decision, not an authentication step: the prefix is self-reported and
-             * an attacker can advertise any prefix. Accepting here only opens a transport so the
-             * channel-bound Schnorr handshake in [com.splitfree.sync.nearby.PeerSession] can run;
-             * nothing is disclosed until mutual authentication and group authorization complete.
-             * The connection role and raw authentication token are captured here so the session
-             * can bind its signatures to this specific channel.
-             */
             override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
                 val name = info.endpointName
-                // This runs on a Nearby callback thread; an escaping SecurityException
-                // (permission revoked while connected) would kill the process.
+                // Permission revocation must remain contained within the transport callback.
                 try {
                     if (name.length == 8 && name.all { it in "0123456789abcdef" }) {
                         pendingConnections[endpointId] =
@@ -254,10 +238,10 @@ constructor(
         private const val TAG = "NearbySync"
         private const val SERVICE_ID = "com.splitfree.ble"
 
-        /** Buffered events before [MutableSharedFlow.tryEmit] starts failing; MSG_EVENT bursts can be large. */
+        /** Buffer capacity for slow subscribers; events have no replay when no subscriber is present. */
         const val EVENT_BUFFER_CAPACITY = 1024
 
-        /** Log every Nth drop rather than every drop. */
+        /** Number of drops between diagnostics, starting with the first drop. */
         private const val DROP_LOG_INTERVAL = 100L
     }
 

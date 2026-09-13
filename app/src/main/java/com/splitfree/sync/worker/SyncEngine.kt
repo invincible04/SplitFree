@@ -5,11 +5,13 @@ import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.ExpenseNotifier
+import com.splitfree.sync.event.IngestOutcome
 import com.splitfree.sync.event.IngestionContext
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -56,24 +58,32 @@ constructor(
     ): Int {
         // Relays return newest-first. key_rotation must be applied strictly in epoch order and
         // group_meta is last-writer-wins on created_at, so process a catch-up batch oldest-first.
-        val events = nostrClient.fetchEvents(groupId, since, identity.getPublicKeyHex()).sortedBy { it.createdAt }
+        eventProcessor.retryDeferred(groupId)
+        val events = nostrClient.fetchEvents(groupId, since, identity.getPublicKeyHex())
+            .sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
         val existingIds = eventDao.getEventIds(groupId).toSet()
+        val pendingIds = eventDao.getPendingEvents(groupId).mapTo(HashSet()) { it.eventId }
+        val retryable = mutableListOf<NostrEvent>()
         // A full/initial pull is an explicit history catch-up: historical timestamps are expected and
         // the in-memory rate counters must not throttle it.
         val context = if (lenientTimestamp) IngestionContext.RECONCILIATION else IngestionContext.LIVE
         var count = 0
         for (event in events) {
-            if (event.id in existingIds) continue
+            if (event.id in existingIds && event.id !in pendingIds) continue
             val result =
                 eventProcessor.process(
                     rawEvent = event,
                     knownGroupId = groupId,
-                    knownGroupKey = groupKey,
                     lenientTimestamp = lenientTimestamp,
                     context = context
                 )
-            if (result.stored) {
-                if (notifyContext != null) {
+            if (result.outcome == IngestOutcome.REJECTED &&
+                result.reason in setOf("undecryptable", "not a member")
+            ) {
+                retryable += event
+            }
+            if (result.stored && event.id !in existingIds) {
+                if (notifyContext != null && result.outcome == IngestOutcome.APPLIED) {
                     ExpenseNotifier.notifyIfNeeded(
                         notifyContext,
                         result.eventType!!,
@@ -85,6 +95,30 @@ constructor(
                 }
                 count++
             }
+        }
+        // Dependencies may arrive later in the same fetch, including gift-wrapped controls whose
+        // randomized outer timestamp is not their inner event order. Retry bounded by progress.
+        eventProcessor.retryDeferred(groupId)
+        repeat(MAX_DEPENDENCY_PASSES) {
+            if (retryable.isEmpty()) return@repeat
+            var progressed = false
+            val iterator = retryable.iterator()
+            while (iterator.hasNext()) {
+                val event = iterator.next()
+                val result = eventProcessor.process(
+                    event,
+                    knownGroupId = groupId,
+                    lenientTimestamp = lenientTimestamp,
+                    context = context
+                )
+                if (result.outcome != IngestOutcome.REJECTED) {
+                    iterator.remove()
+                    progressed = true
+                    if (result.stored) count++
+                }
+            }
+            eventProcessor.retryDeferred(groupId)
+            if (!progressed) retryable.clear()
         }
         if (count > 0) {
             groupRepo.updateLastSync(groupId, System.currentTimeMillis() / 1000)
@@ -139,6 +173,7 @@ constructor(
 
     companion object {
         private const val TAG = "SyncEngine"
+        private const val MAX_DEPENDENCY_PASSES = 8
         private const val WARN_RETRY_THRESHOLD = 10
 
         /** Failed attempts after which a non-critical row is considered stuck and backed off. */

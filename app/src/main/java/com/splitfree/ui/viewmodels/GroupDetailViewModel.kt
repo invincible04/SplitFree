@@ -8,12 +8,13 @@ import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.model.expense.DebtTransaction
-import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.ExpenseRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.expense.DeleteExpenseUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
@@ -46,8 +47,6 @@ import kotlinx.coroutines.launch
  * @property draftRelays the relay list being edited in the relay dialog, or null when no edit is open.
  *   The dialog renders `draftRelays ?: relays`; [GroupDetailViewModel.saveRelays] persists the draft
  *   and [GroupDetailViewModel.cancelRelayEdit] discards it, leaving [relays] untouched.
- * @property expenseAuthors expense id to the pubkey that signed its original event; only that key can
- *   edit or delete the expense.
  */
 data class GroupDetailUiState(
     val groupId: String = "",
@@ -60,14 +59,13 @@ data class GroupDetailUiState(
     val relays: List<String> = emptyList(),
     val draftRelays: List<String>? = null,
     val debts: List<DebtTransaction> = emptyList(),
-    val expenses: List<Expense> = emptyList(),
-    val expenseAuthors: Map<String, String> = emptyMap()
+    val expenses: List<AuthoredExpense> = emptyList()
 ) {
     /** True once both keys are known and match; `"" == ""` during the initial empty frame is not creator. */
     val isCreator: Boolean get() = myPubkey.isNotEmpty() && myPubkey == createdBy
 
-    /** True when I signed the original event of [expenseId], so the protocol lets me change it. */
-    fun authoredByMe(expenseId: String): Boolean = myPubkey.isNotEmpty() && expenseAuthors[expenseId] == myPubkey
+    fun authoredByMe(identity: ExpenseIdentity): Boolean =
+        myPubkey.isNotEmpty() && identity.authorPubkey == myPubkey && expenses.any { it.identity == identity }
 }
 
 /**
@@ -135,17 +133,13 @@ constructor(
                 .collectLatest { allExpenses ->
                     try {
                         val result = computeBalances.computeWithExclusions(groupId)
-                        val excluded = result.excludedExpenseUuids
+                        val excluded = result.excludedExpenses
                         val debts = simplifyDebts(result.balances)
-                        val visible = allExpenses.filter { it.expense.id !in excluded }
+                        val visible = allExpenses.filter { it.identity !in excluded }
                         _uiState.update {
                             it.copy(
                                 debts = debts,
-                                expenses = visible.map { authored -> authored.expense },
-                                expenseAuthors = visible.associate { authored ->
-                                    authored.expense.id to
-                                        authored.authorPubkey
-                                }
+                                expenses = visible
                             )
                         }
                     } catch (e: CancellationException) {
@@ -259,12 +253,19 @@ constructor(
 
     private val deletionInProgress = AtomicBoolean(false)
 
-    /** Publish a deletion for [expenseId]; the ledger and balances update through the expense observer. */
-    fun deleteExpense(expenseId: String) {
+    /** Publish a deletion for [expenseIdentity]; the ledger and balances update through the expense observer. */
+    fun deleteExpense(expenseIdentity: ExpenseIdentity) {
         if (!deletionInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
-                deleteExpenseUseCase(groupId, expenseId)
+                check(identity.getPublicKeyHex() == expenseIdentity.authorPubkey) {
+                    "Only the creator can delete this expense"
+                }
+                deleteExpenseUseCase(
+                    groupId,
+                    expenseIdentity.expenseUuid,
+                    expectedAuthorPubkey = expenseIdentity.authorPubkey
+                )
                 _message.value = UiMessage.Res(R.string.expense_deleted)
             } catch (e: CancellationException) {
                 throw e

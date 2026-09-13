@@ -18,6 +18,7 @@ import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.util.RelayDefaults
+import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.worker.PowerManager
 import com.splitfree.sync.worker.SyncScheduler
 import com.splitfree.util.DebugLog as Log
@@ -46,6 +47,8 @@ class SplitFreeApp :
     @Inject lateinit var rotateGroupKeyUseCase: RotateGroupKeyUseCase
 
     @Inject lateinit var identity: IdentityContract
+
+    @Inject lateinit var eventProcessor: EventProcessor
 
     override val workManagerConfiguration: Configuration
         get() =
@@ -85,13 +88,6 @@ class SplitFreeApp :
         registerNetworkCallback()
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
             try {
-                relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Relay health check failed: ${e.message}")
-            }
-            try {
                 revokeKeyUseCase.resumeIfNeeded()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -105,6 +101,14 @@ class SplitFreeApp :
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Could not resume interrupted key rotation", e)
+            }
+            eventProcessor.recoverPending()
+            try {
+                relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay health check failed: ${e.message}")
             }
         }
     }

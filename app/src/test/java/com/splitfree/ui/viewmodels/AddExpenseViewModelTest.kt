@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
@@ -15,6 +16,7 @@ import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
 import com.splitfree.domain.usecase.expense.GetExpensesUseCase
 import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.viewmodels.expense.ExpenseDraft
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -32,6 +34,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -83,7 +86,7 @@ class AddExpenseViewModelTest {
             commands += expense
             writeExpense(expense)
         }
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
             corrections += firstArg<String>() to secondArg<Expense>()
         }
     }
@@ -617,18 +620,21 @@ class AddExpenseViewModelTest {
             category = "transport"
         )
 
-    private fun editHandle(expenseId: String = "exp-1") =
-        SavedStateHandle(mapOf("groupId" to "g1", "expenseId" to expenseId))
+    private fun editHandle(expenseId: String = "exp-1", author: String = "a") =
+        SavedStateHandle(mapOf("groupId" to "g1", "expenseId" to expenseId, "authorPubkey" to author))
 
     private fun stored(expense: Expense = storedExpense, author: String = "a") {
-        // The edit screen asks for the current user's own entry first (expense identity is (author, uuid)).
-        coEvery { getExpenses.get("g1", expense.id, preferAuthor = "a") } returns AuthoredExpense(expense, author)
+        coEvery { getExpenses.get("g1", ExpenseIdentity(author, expense.id)) } returns AuthoredExpense(expense, author)
     }
 
     @Test
     fun `editing seeds the draft from the stored expense without marking it dirty`() = runTest {
         stored()
-        val state = create(editHandle()).uiState.value
+        val handle = editHandle()
+        val state = create(handle).uiState.value
+        val draft = Json.decodeFromString<ExpenseDraft>(checkNotNull(handle.get<String>("expenseDraft")))
+        assertEquals(storedExpense.id, draft.expenseId)
+        assertEquals("a", draft.authorPubkey)
         assertTrue(state.editing)
         assertFalse(state.loading)
         assertTrue(state.editable)
@@ -730,7 +736,7 @@ class AddExpenseViewModelTest {
     fun `saving an edit ignores a second tap and a failed edit can be retried`() = runTest {
         stored()
         val gate = CompletableDeferred<Unit>()
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
             gate.await()
             corrections += firstArg<String>() to secondArg<Expense>()
         }
@@ -742,13 +748,13 @@ class AddExpenseViewModelTest {
         assertEquals(1, corrections.size)
         assertTrue(vm.uiState.value.saved)
 
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } throws IOException("relay down")
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } throws IOException("relay down")
         val failing = create(editHandle())
         failing.submit()
         assertEquals(UiMessage.Raw("relay down"), failing.uiState.value.error)
         assertFalse(failing.uiState.value.saved)
         assertTrue(failing.uiState.value.editable)
-        coEvery { expenseRepo.correctExpense(any(), any(), "g1") } coAnswers {
+        coEvery { expenseRepo.correctExpense(any(), any(), "g1", "a") } coAnswers {
             corrections += firstArg<String>() to secondArg<Expense>()
         }
         failing.submit()
@@ -758,7 +764,7 @@ class AddExpenseViewModelTest {
 
     @Test
     fun `an expense that cannot be loaded shows a loading error and retries`() = runTest {
-        coEvery { getExpenses.get("g1", "exp-1", any()) } returns null
+        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } returns null
         val vm = create(editHandle())
         assertTrue(vm.uiState.value.editing)
         assertFalse(vm.uiState.value.loading)
@@ -776,14 +782,14 @@ class AddExpenseViewModelTest {
     @Test
     fun `an expense authored by someone else cannot be edited`() = runTest {
         stored(author = "b")
-        val vm = create(editHandle())
+        val vm = create(editHandle(author = "b"))
         assertFalse(vm.uiState.value.editable)
         assertEquals(UiMessage.Res(R.string.expense_edit_not_author), vm.uiState.value.loadingError)
     }
 
     @Test
     fun `a failing expense lookup is reported as a loading error`() = runTest {
-        coEvery { getExpenses.get("g1", "exp-1", any()) } throws IOException("decrypt failed")
+        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } throws IOException("decrypt failed")
         val vm = create(editHandle())
         assertEquals(UiMessage.Raw("decrypt failed"), vm.uiState.value.loadingError)
         assertFalse(vm.uiState.value.editable)
@@ -796,7 +802,8 @@ class AddExpenseViewModelTest {
         val first = create(handle)
         first.updateDescription("Changed")
         first.viewModelScope.cancel()
-        coEvery { getExpenses.get("g1", "exp-1", any()) } throws AssertionError("must not reload after restore")
+        coEvery { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) } throws
+            AssertionError("must not reload after restore")
 
         val restored = create(restore(handle))
 
@@ -804,10 +811,80 @@ class AddExpenseViewModelTest {
         assertEquals("Changed", restored.uiState.value.description)
         assertEquals("120.50", restored.uiState.value.amount)
         assertTrue(restored.uiState.value.dirty)
+        assertNull(restored.uiState.value.loadingError)
         assertTrue(restored.uiState.value.editable)
         restored.submit()
+        assertEquals("exp-1", corrections.single().first)
         assertEquals("Changed", corrections.single().second.description)
         assertEquals(1_700_000_000L, corrections.single().second.timestamp)
+    }
+
+    @Test
+    fun `selecting another author never edits my colliding expense implicitly`() = runTest {
+        stored(storedExpense.copy(description = "Mine"), author = "a")
+        stored(storedExpense.copy(description = "Theirs"), author = "b")
+        val vm = create(editHandle(author = "b"))
+
+        assertTrue(vm.uiState.value.editing)
+        assertFalse(vm.uiState.value.editable)
+        assertEquals(UiMessage.Res(R.string.expense_edit_not_author), vm.uiState.value.loadingError)
+        vm.submit()
+        assertTrue(commands.isEmpty())
+        assertTrue(corrections.isEmpty())
+        coVerify(exactly = 0) { getExpenses.get("g1", ExpenseIdentity("a", "exp-1")) }
+    }
+
+    @Test
+    fun `selecting my colliding expense preserves its author through correction`() = runTest {
+        stored(storedExpense.copy(description = "Theirs"), author = "b")
+        stored(storedExpense.copy(description = "Mine"), author = "a")
+        val vm = create(editHandle())
+
+        assertEquals("Mine", vm.uiState.value.description)
+        vm.submit()
+        assertTrue(vm.uiState.value.saved)
+        coVerify(exactly = 1) { expenseRepo.correctExpense("exp-1", any(), "g1", "a") }
+        coVerify(exactly = 0) { getExpenses.get("g1", ExpenseIdentity("b", "exp-1")) }
+    }
+
+    @Test
+    fun `incomplete edit arguments are blocked rather than treated as new expenses`() = runTest {
+        val arguments = listOf(
+            mapOf("expenseId" to "exp-1"),
+            mapOf("authorPubkey" to "a"),
+            mapOf("expenseId" to "exp-1", "authorPubkey" to ""),
+            mapOf("expenseId" to "", "authorPubkey" to "a")
+        )
+        for (args in arguments) {
+            val vm = create(SavedStateHandle(args + ("groupId" to "g1")))
+            assertTrue(vm.uiState.value.editing)
+            assertFalse(vm.uiState.value.editable)
+            assertEquals(UiMessage.Res(R.string.expense_edit_missing), vm.uiState.value.loadingError)
+            vm.submit()
+        }
+        assertTrue(commands.isEmpty())
+        assertTrue(corrections.isEmpty())
+        coVerify(exactly = 0) { getExpenses.get(any(), any()) }
+    }
+
+    @Test
+    fun `restored draft cannot change the selected expense uuid or author`() = runTest {
+        stored()
+        val handle = editHandle()
+        create(handle).apply {
+            updateDescription("Changed")
+            viewModelScope.cancel()
+        }
+        val wrongUuid = restore(handle).apply { this["expenseId"] = "other-expense" }
+        val wrongAuthor = restore(handle).apply { this["authorPubkey"] = "b" }
+        for (savedState in listOf(wrongUuid, wrongAuthor)) {
+            val vm = create(savedState)
+            assertFalse(vm.uiState.value.editable)
+            assertNotNull(vm.uiState.value.loadingError)
+            vm.submit()
+        }
+        assertTrue(commands.isEmpty())
+        assertTrue(corrections.isEmpty())
     }
 
     @Test

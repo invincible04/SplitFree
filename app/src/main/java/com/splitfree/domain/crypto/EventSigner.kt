@@ -24,12 +24,17 @@ constructor(private val identityManager: IdentityContract) {
      *   decrypting it
      * @return signed [NostrEvent] with computed ID and BIP-340 signature
      */
+    /**
+     * @param createdAt explicit `created_at`, or null for now. A corrective control event uses it to
+     *   sort strictly after the plan event it supersedes, whatever the wall clock says.
+     */
     fun createSignedEvent(
         groupId: String,
         eventType: String,
         encryptedContent: String,
         expenseUuid: String? = null,
-        recipientPubkey: String? = null
+        recipientPubkey: String? = null,
+        createdAt: Long? = null
     ): NostrEvent {
         val privKey = identityManager.getPrivateKeyBytes()
         try {
@@ -56,7 +61,7 @@ constructor(private val identityManager: IdentityContract) {
 
             return NostrEvent(
                 pubkey = pubHex,
-                createdAt = System.currentTimeMillis() / 1000,
+                createdAt = createdAt ?: (System.currentTimeMillis() / 1000),
                 kind = NostrKind.APP_SPECIFIC,
                 tags = tags,
                 content = encryptedContent

@@ -40,6 +40,7 @@ class SyncEngineTest {
         every { android.util.Log.i(any(), any()) } returns 0
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { identity.getPublicKeyHex() } returns myPub
+        coEvery { eventProcessor.retryDeferred(any()) } returns 0
         engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor)
     }
 
@@ -113,7 +114,7 @@ class SyncEngineTest {
         engine.pullEvents(groupId, 0, groupKey)
 
         coVerify {
-            eventProcessor.process(event, groupId, groupKey, false, false, IngestionContext.LIVE)
+            eventProcessor.process(event, groupId, null, false, false, IngestionContext.LIVE)
         }
     }
 
@@ -128,7 +129,7 @@ class SyncEngineTest {
         engine.pullEvents(groupId, 0, groupKey, lenientTimestamp = true)
 
         coVerify {
-            eventProcessor.process(event, groupId, groupKey, false, true, IngestionContext.RECONCILIATION)
+            eventProcessor.process(event, groupId, null, false, true, IngestionContext.RECONCILIATION)
         }
     }
 
@@ -285,4 +286,11 @@ class SyncEngineTest {
         lastRetryAt = lastRetryAt,
         eventType = eventType
     )
+
+    @Test
+    fun `empty relay pull still recovers durable pending work`() = runBlocking {
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns emptyList()
+        engine.pullEvents(groupId, 0, groupKey)
+        coVerify(atLeast = 2) { eventProcessor.retryDeferred(groupId) }
+    }
 }

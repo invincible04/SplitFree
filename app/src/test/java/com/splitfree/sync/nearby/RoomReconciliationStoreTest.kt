@@ -6,6 +6,7 @@ import com.splitfree.data.local.AppDatabase
 import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.repository.ControlOperationJournal
 import com.splitfree.data.repository.EventRepository
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.data.util.CompressionUtil
@@ -23,6 +24,7 @@ import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.SettingsContract
+import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
@@ -34,7 +36,9 @@ import com.splitfree.sync.event.EventPublisher
 import com.splitfree.sync.event.IngestOutcome
 import com.splitfree.sync.event.IngestionContext
 import com.splitfree.sync.event.MembershipHistory
+import com.splitfree.sync.event.PostProcessOutcome
 import com.splitfree.test.FakeSecureStorage
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -98,13 +102,15 @@ class RoomReconciliationStoreTest {
         val pub = identity.pub
         val db: AppDatabase =
             Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)
+                .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
                 .allowMainThreadQueries()
                 .setQueryExecutor(direct)
                 .setTransactionExecutor(direct)
                 .build()
         val eventDao = db.eventDao()
         val deliveryDao = db.deliveryDao()
-        val groupRepo = GroupRepository(db.groupDao(), FakeSecureStorage())
+        val keyStore = FakeSecureStorage()
+        val groupRepo = GroupRepository(db.groupDao(), keyStore)
         val encryption = GroupEncryption(CompressionUtil)
         val settings = mockk<SettingsContract>().also { every { it.giftWrapEnabled } returns true }
         val giftWrap = GiftWrapService(identity.contract, settings)
@@ -122,7 +128,16 @@ class RoomReconciliationStoreTest {
             )
         val eventRepo = EventRepository(db, eventDao)
         val rotateGroupKey =
-            RotateGroupKeyUseCase(groupRepo, encryption, identity.contract, signer, publisher, eventRepo)
+            RotateGroupKeyUseCase(
+                groupRepo,
+                encryption,
+                identity.contract,
+                signer,
+                publisher,
+                eventRepo,
+                ControlOperationJournal(db.controlOperationDao()),
+                ControlOperationLock()
+            )
         val postProcessor =
             EventPostProcessor(
                 groupRepo,
@@ -145,7 +160,14 @@ class RoomReconciliationStoreTest {
                 postProcessor,
                 MembershipHistory(eventDao, groupRepo, identity.contract)
             )
-        val store = RoomReconciliationStore(eventDao, deliveryDao, processor, groupRepo, identity.contract)
+        val store = RoomReconciliationStore(
+            eventDao,
+            deliveryDao,
+            processor,
+            groupRepo,
+            identity.contract,
+            db.syncRevisionDao()
+        )
         val transport = FakeTransport("d$seed").also { it.router = router }
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         val coordinator =
@@ -232,7 +254,15 @@ class RoomReconciliationStoreTest {
     /** Equal-ish split whose shares are all positive and sum exactly to [amount]. */
     private fun splitAmong(members: List<String>, amount: Long): List<SplitEntry> {
         val base = amount / members.size
-        return members.mapIndexed { i, m -> SplitEntry(m, if (i == 0) amount - base * (members.size - 1) else base) }
+        return members.mapIndexed {
+                i,
+                m
+            ->
+            SplitEntry(
+                m,
+                if (i == 0) amount - base * (members.size - 1) else base
+            )
+        }
     }
 
     /**
@@ -326,14 +356,32 @@ class RoomReconciliationStoreTest {
                 pubkey = device.pub,
                 createdAt = createdAt,
                 kind = NostrKind.APP_SPECIFIC,
-                tags = listOf(listOf("d", "$groupId:meta:$createdAt"), listOf("g", groupId), listOf("t", "group_meta")),
+                tags = listOf(
+                    listOf(
+                        "d",
+                        "$groupId:meta:$createdAt"
+                    ),
+                    listOf(
+                        "g",
+                        groupId
+                    ),
+                    listOf(
+                        "t",
+                        "group_meta"
+                    )
+                ),
+
                 content = encrypted
             ).sign(device.identity.priv)
         }
     }
 
     private fun ingest(device: Device, event: NostrEvent): IngestOutcome = runBlocking {
-        device.processor.process(event, knownGroupId = groupId, context = IngestionContext.RECONCILIATION).outcome
+        device.processor.process(
+            event,
+            knownGroupId = groupId,
+            context = IngestionContext.RECONCILIATION
+        ).outcome
     }
 
     // ------------------------------------------------------------------ tests
@@ -345,7 +393,12 @@ class RoomReconciliationStoreTest {
         val members = listOf(a.pub, b.pub)
         listOf(a, b).forEach { it.join(members, creator = a.pub) }
         val recent = (1..31).map { authorExpense(a, amount = 200L + it, description = "expense $it") }
-        val old = authorExpense(a, amount = 500, description = "forty days ago", createdAt = nowSecs() - 40 * 86_400)
+        val old = authorExpense(
+            a,
+            amount = 500,
+            description = "forty days ago",
+            createdAt = nowSecs() - 40 * 86_400
+        )
         val authored = recent + old
         // The backdated event keeps its timestamp through the publisher.
         assertEquals(old.createdAt, a.row(old.id)?.createdAt)
@@ -552,6 +605,67 @@ class RoomReconciliationStoreTest {
         assertTrue(b.availableDeliveries().none { it.recipient == dPub })
     }
 
+    /**
+     * B applied C's identity revocation (C -> C2) before the creator A heard of it. A then rotates D out,
+     * so its signed roster and envelopes still name C. B must not refuse the rotation: that row would be
+     * parked as failed and B would sit at epoch 0 while every later epoch is a gap. B installs epoch 1
+     * with C resolved to C2, keeps the tombstone, and continues to author and sync under the new key.
+     */
+    @Test
+    fun `a rotation naming an identity this device already saw revoked still installs the new epoch`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val dPub = TestIdentity(4).pub
+        val c2 = TestIdentity(5).pub
+        val members = listOf(a.pub, b.pub, c.pub, dPub)
+        listOf(a, b, c).forEach { it.join(members, creator = a.pub) }
+        assertTrue(runBlocking { b.groupRepo.applyIdentityRevocation(groupId, c.pub, c2, nowSecs() - 100, "rev") })
+        assertEquals(listOf(a.pub, b.pub, c2, dPub), b.group().members)
+
+        runBlocking { a.rotateGroupKey(groupId, dPub) }
+        assertEquals(listOf(a.pub, b.pub, c.pub), a.group().members)
+        val rotationForB = rotationsFor(a, b.pub).single()
+
+        assertEquals(IngestOutcome.APPLIED, ingest(b, rotationForB))
+
+        assertEquals(1, b.group().keyEpoch)
+        assertEquals(a.keyForEpoch(1), b.keyForEpoch(1))
+        assertEquals(listOf(a.pub, b.pub, c2), b.group().members)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(rotationForB.id)?.applyState)
+        // The tombstone survives the rotation: C's old key still cannot come back on its own.
+        assertFalse(runBlocking { b.groupRepo.applyMemberSelfUpdate(groupId, c.pub, nowSecs(), "back", true, null, 1) })
+        // A's post-rotation meta (roster without C2) resolves the same way instead of dropping C2.
+        val metaAfterRotation = runBlocking {
+            a.eventDao.getEventsByType(groupId, "group_meta").filter { it.pubkey == a.pub }
+                .mapNotNull { it.originalEventJson?.let(NostrEvent::fromJson) }.maxByOrNull { it.createdAt }
+        }
+        assertEquals(IngestOutcome.APPLIED, ingest(b, checkNotNull(metaAfterRotation)))
+        assertEquals(listOf(a.pub, b.pub, c2), b.group().members)
+
+        // A hears of the revocation after its rotation: both devices now hold the same roster, and B is a
+        // live member at epoch 1 that authors under the new key and A reads.
+        assertTrue(runBlocking { a.groupRepo.applyIdentityRevocation(groupId, c.pub, c2, nowSecs() - 100, "rev") })
+        assertEquals(b.group().members, a.group().members)
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        val e1 = authorExpense(b, amount = 500, description = "after the resolved rotation")
+        router.pump()
+        val e1AtA = checkNotNull(a.row(e1.id))
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, e1AtA.applyState)
+        assertEquals(
+            "after the resolved rotation",
+            decryptExpense(a, e1AtA, checkNotNull(a.keyForEpoch(1))).description
+        )
+        assertEquals(0, a.stats(ep(b)).rejected)
+        // B declines to courier A's envelope addressed to the revoked key (not a member in B's view);
+        // that is the only record refused in either direction.
+        assertEquals(1, b.stats(ep(a)).rejected)
+        assertTrue(b.availableDeliveries().none { it.recipient == c.pub })
+    }
+
     @Test
     fun `out of order rotations defer then apply`() {
         val a = Device(1)
@@ -651,7 +765,11 @@ class RoomReconciliationStoreTest {
         val b2 = Device(2)
         b2.join(members, creator = a.pub)
         val rotation = runBlocking {
-            b2.processor.process(rotationForB, knownGroupId = groupId, context = IngestionContext.RECONCILIATION)
+            b2.processor.process(
+                rotationForB,
+                knownGroupId = groupId,
+                context = IngestionContext.RECONCILIATION
+            )
         }
         assertEquals(IngestOutcome.APPLIED, rotation.outcome)
         assertEquals(1, b2.group().keyEpoch)
@@ -682,19 +800,39 @@ class RoomReconciliationStoreTest {
         val now = nowSecs()
 
         // Sep 1 morning: a rename under epoch 0 that still lists C (authored before the removal).
-        val staleMeta = authorMeta(a, epoch = 0, name = "Trip (old)", members = members, createdAt = now - 200)
+        val staleMeta = authorMeta(
+            a,
+            epoch = 0,
+            name = "Trip (old)",
+            members = members,
+            createdAt = now - 200
+        )
         // Sep 1 noon: creator removes C (epoch 1).
         runBlocking { a.rotateGroupKey(groupId, cPub) }
         val rotationForB = rotationsFor(a, bPub).single()
         // Sep 2: creator renames again under the new key.
-        val rename = authorMeta(a, epoch = 1, name = "Trip 2026", members = listOf(a.pub, bPub), createdAt = now + 100)
+        val rename = authorMeta(
+            a,
+            epoch = 1,
+            name = "Trip 2026",
+            members = listOf(
+                a.pub,
+                bPub
+            ),
+            createdAt = now + 100
+        )
 
         val orders =
             listOf(
                 "rotation, rename, stale" to listOf(rotationForB, rename, staleMeta),
                 "rotation, stale, rename" to listOf(rotationForB, staleMeta, rename),
                 "stale, rotation, rename" to listOf(staleMeta, rotationForB, rename),
-                "rename first is undecryptable until the key lands" to listOf(rename, rotationForB, staleMeta, rename)
+                "rename first is undecryptable until the key lands" to listOf(
+                    rename,
+                    rotationForB,
+                    staleMeta,
+                    rename
+                )
             )
         for ((label, sequence) in orders) {
             val b = Device(2)
@@ -703,7 +841,14 @@ class RoomReconciliationStoreTest {
             val g = b.group()
             assertEquals(label, 1, g.keyEpoch)
             assertEquals(label, "Trip 2026", g.name)
-            assertEquals("$label: the removed member must stay removed", setOf(a.pub, bPub), g.members.toSet())
+            assertEquals(
+                "$label: the removed member must stay removed",
+                setOf(
+                    a.pub,
+                    bPub
+                ),
+                g.members.toSet()
+            )
             assertEquals(a.keyForEpoch(1), b.keyForEpoch(1))
         }
     }
@@ -812,7 +957,10 @@ class RoomReconciliationStoreTest {
                 )
             }
         }
-        assertEquals(RoomReconciliationStore.MAX_CARRIED_PER_GROUP, runBlocking { b.deliveryDao.countCarried(groupId) })
+        assertEquals(
+            RoomReconciliationStore.MAX_CARRIED_PER_GROUP,
+            runBlocking { b.deliveryDao.countCarried(groupId) }
+        )
         val oldest = "%064x".format(java.math.BigInteger.ONE)
 
         authorExpense(a, amount = 100, description = "new for C")
@@ -825,7 +973,10 @@ class RoomReconciliationStoreTest {
         val carried = checkNotNull(b.delivery(envForC.envelopeId))
         assertEquals(DeliveryEntity.STATE_AVAILABLE, carried.state)
         assertNull("the oldest carried envelope makes room", b.delivery(oldest))
-        assertEquals(RoomReconciliationStore.MAX_CARRIED_PER_GROUP, runBlocking { b.deliveryDao.countCarried(groupId) })
+        assertEquals(
+            RoomReconciliationStore.MAX_CARRIED_PER_GROUP,
+            runBlocking { b.deliveryDao.countCarried(groupId) }
+        )
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
         assertEquals(0, b.stats(ep(a)).busy)
     }
@@ -872,5 +1023,181 @@ class RoomReconciliationStoreTest {
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(c)))
         // C's rumor row is not offered onward (a peer could not verify it).
         assertTrue(runBlocking { c.store.inventory(groupId) }.none { it.id == e.id })
+    }
+
+    @Test
+    fun `retrying a persisted member rename after removal cannot resurrect the member`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val members = listOf(a.pub, b.pub, c.pub)
+        listOf(a, b, c).forEach { it.join(members, a.pub) }
+        val rename = authorMeta(c, 0, "Trip", members, nowSecs() - 100)
+        val failedEffects = mockk<EventPostProcessor>()
+        coEvery { failedEffects.handle(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            PostProcessOutcome.FAILED
+        val interruptedProcessor = EventProcessor(
+            a.eventDao, a.groupRepo, a.encryption, a.signer,
+            a.identity.contract, a.giftWrap, EventValidator(), failedEffects,
+            MembershipHistory(a.eventDao, a.groupRepo, a.identity.contract)
+        )
+        runBlocking {
+            assertEquals(
+                IngestOutcome.DEFERRED,
+                interruptedProcessor.process(
+                    rename,
+                    context = IngestionContext.RECONCILIATION
+                ).outcome
+            )
+            a.rotateGroupKey(groupId, c.pub)
+            assertEquals(1, a.group().keyEpoch)
+            assertFalse(c.pub in a.group().members)
+            a.processor.retryDeferred(groupId)
+        }
+        assertFalse("old metadata cannot grant current membership", c.pub in a.group().members)
+        assertEquals(EventEntity.APPLY_STATE_FAILED, a.row(rename.id)?.applyState)
+        assertFalse(runBlocking { a.store.isAuthorizedForGroup(groupId, c.pub) })
+        assertEquals(IngestOutcome.REJECTED, ingest(a, rename))
+    }
+
+    @Test
+    fun `gifted join releases pending rotation over an already open session`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val courier = Device(4)
+        val removed = TestIdentity(5).pub
+        val members = listOf(a.pub, b.pub, c.pub, courier.pub, removed)
+        listOf(a, c, courier).forEach { it.join(members, a.pub) }
+        b.join(members - c.pub, a.pub)
+        runBlocking { a.rotateGroupKey(groupId, removed) }
+        val rotation = rotationsFor(a, b.pub).single()
+        assertEquals(IngestOutcome.DEFERRED, ingest(b, rotation))
+        b.activate()
+        courier.activate()
+        connect(courier, b)
+        router.pump()
+        assertEquals(PeerPhase.WAITING_DEPENDENCY, b.phase(ep(courier)))
+        val join = authorMeta(c, 0, "Trip", members - removed)
+        val gift = c.giftWrap.wrapIfEnabled(join, b.pub)
+        runBlocking {
+            assertEquals(
+                RecordOutcome.CARRIED,
+                courier.store.ingest(
+                    groupId,
+                    InventoryItem(gift.id, NearbyWire.KIND_DELIVERY, r = b.pub),
+                    gift.toJson(),
+                    a.pub
+                ).outcome
+            )
+        }
+        router.pump()
+        assertEquals(1, b.group().keyEpoch)
+        assertEquals(a.keyForEpoch(1), b.keyForEpoch(1))
+        assertFalse(removed in b.group().members)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, b.row(rotation.id)?.applyState)
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(courier)))
+        assertEquals(PeerPhase.UP_TO_DATE, courier.phase(ep(b)))
+    }
+
+    @Test
+    fun `stale cached key after a rotation never authorizes an old creator roster`() {
+        val a = Device(1)
+        val b = Device(2)
+        val removed = TestIdentity(3).pub
+        val members = listOf(a.pub, b.pub, removed)
+        listOf(a, b).forEach { it.join(members, a.pub) }
+        val oldMeta = authorMeta(a, 0, "Old-key rename", members, nowSecs() - 10)
+        runBlocking { a.rotateGroupKey(groupId, removed) }
+        assertEquals(IngestOutcome.APPLIED, ingest(b, rotationsFor(a, b.pub).single()))
+        runBlocking {
+            val result = b.processor.process(
+                oldMeta,
+                knownGroupKey = groupKey,
+                context = IngestionContext.RECONCILIATION
+            )
+            assertEquals(IngestOutcome.APPLIED, result.outcome)
+        }
+        assertEquals(0, b.row(oldMeta.id)?.keyEpoch)
+        assertFalse(removed in b.group().members)
+        val expense = authorExpense(a, 120, "new epoch")
+        assertEquals(
+            IngestOutcome.APPLIED,
+            runBlocking {
+                b.processor.process(
+                    expense,
+                    knownGroupKey = groupKey,
+                    context = IngestionContext.RECONCILIATION
+                ).outcome
+            }
+        )
+        assertEquals(1, b.row(expense.id)?.keyEpoch)
+    }
+
+    @Test
+    fun `full courier admits a delivery-kind rotation and forwards it without the author`() {
+        val a = Device(1)
+        val b = Device(2)
+        val c = Device(3)
+        val courier = Device(4)
+        val removed = TestIdentity(5).pub
+        val members = listOf(a.pub, b.pub, c.pub, courier.pub, removed)
+        listOf(a, b, c, courier).forEach { it.join(members, a.pub) }
+        runBlocking { a.rotateGroupKey(groupId, removed) }
+        val rotation = rotationsFor(a, c.pub).single()
+        val base = nowSecs() - 3600
+        runBlocking {
+            repeat(RoomReconciliationStore.MAX_CARRIED_PER_GROUP) { i ->
+                val old = DeliveryEntity(
+                    "%064x".format(i + 1), groupId, c.pub, null, "{}",
+                    DeliveryEntity.TYPE_GIFT_WRAP, DeliveryEntity.STATE_AVAILABLE,
+                    DeliveryEntity.SOURCE_CARRIED, base + i, base + i, 2
+                )
+                b.deliveryDao.insert(old)
+                courier.deliveryDao.insert(
+                    old.copy(
+                        state = DeliveryEntity.STATE_CONSUMED,
+                        envelopeJson = null
+                    )
+                )
+            }
+            assertEquals(
+                RecordOutcome.CARRIED,
+                courier.store.ingest(
+                    groupId,
+                    InventoryItem(rotation.id, NearbyWire.KIND_EVENT),
+                    rotation.toJson(),
+                    a.pub
+                ).outcome
+            )
+            val item = courier.store.inventory(groupId).single { it.id == rotation.id }
+            assertEquals(NearbyWire.KIND_DELIVERY, item.t)
+            assertTrue(b.store.selectWanted(groupId, listOf(item), courier.pub).contains(item))
+        }
+        b.activate()
+        courier.activate()
+        connect(courier, b)
+        router.pump()
+        assertNotNull(b.delivery(rotation.id)?.envelopeJson)
+        assertEquals(
+            RoomReconciliationStore.MAX_CARRIED_PER_GROUP,
+            runBlocking { b.deliveryDao.countCarried(groupId) }
+        )
+        courier.coordinator.deactivate()
+        router.pump()
+        // Keep only the real rotation for the onward leg: old fixture envelopes intentionally are not signed.
+        runBlocking {
+            b.deliveryDao.evictOldestCarried(
+                groupId,
+                RoomReconciliationStore.MAX_CARRIED_PER_GROUP - 1
+            )
+        }
+        c.activate()
+        connect(b, c)
+        router.pump()
+        assertEquals(1, c.group().keyEpoch)
+        assertEquals(a.keyForEpoch(1), c.keyForEpoch(1))
+        assertFalse(removed in c.group().members)
+        assertEquals(EventEntity.APPLY_STATE_APPLIED, c.row(rotation.id)?.applyState)
     }
 }

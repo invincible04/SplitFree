@@ -298,8 +298,9 @@ class Nip44Test {
     fun `decrypt rejects tampered ciphertext`() {
         val convKey = Nip44.getConversationKey(privA, pubB)
         val encrypted = Nip44.encrypt("hello", convKey)
-        // Flip a character in the middle of the base64
-        val tampered = encrypted.substring(0, 50) + "X" + encrypted.substring(51)
+        // Replace a character in the middle of the base64 with one that differs from the original.
+        val replacement = if (encrypted[50] == 'X') 'Y' else 'X'
+        val tampered = encrypted.substring(0, 50) + replacement + encrypted.substring(51)
         Nip44.decrypt(tampered, convKey)
     }
 

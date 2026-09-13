@@ -20,7 +20,10 @@ import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
@@ -50,6 +53,7 @@ constructor(
     private val membershipHistory: MembershipHistory
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val retryLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
     /**
      * Result of [process].
@@ -77,7 +81,7 @@ constructor(
      *
      * @param rawEvent the event to process (may be gift-wrapped)
      * @param knownGroupId override group ID extraction from tags
-     * @param knownGroupKey override group key lookup from encrypted storage
+     * @param knownGroupKey retained for caller compatibility; only stored, epoch-bound keys are trusted
      * @param nonCancellable if true, post-processing runs inside [NonCancellable]
      * @param lenientTimestamp if true, allows events older than 30 days (for initial/full sync)
      * @param context why the event is being ingested; [IngestionContext.RECONCILIATION] implies
@@ -87,6 +91,7 @@ constructor(
      *   group; an envelope it delivers must not be able to mutate another.
      * @return [ProcessResult] with the [IngestOutcome] and, when stored, the event's metadata
      */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun process(
         rawEvent: NostrEvent,
         knownGroupId: String? = null,
@@ -107,7 +112,12 @@ constructor(
         val expenseUuid = tags.expenseUuid
         val authorHex = inner.pubkey
         val groupId = tags.groupId ?: return rejected("missing group tag", inner.id, eventType, authorHex)
-        if (expectedGroupId != null && groupId != expectedGroupId) {
+        if (expectedGroupId != null &&
+            (
+                groupId != expectedGroupId ||
+                    inner.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1) != expectedGroupId
+                )
+        ) {
             Log.w(TAG, "Rejecting $eventType ${inner.id.take(8)} for group $groupId delivered in a session for another")
             return rejected("out of scope", inner.id, eventType, authorHex)
         }
@@ -125,15 +135,17 @@ constructor(
                     eventId = inner.id
                 )
             }
+            if (existing.applyState == EventEntity.APPLY_STATE_FAILED) {
+                return rejected("effect rejected", existing.eventId, existing.eventType, existing.pubkey)
+            }
             Log.i(TAG, "Re-driving pending $eventType ${inner.id.take(8)} in group $groupId")
             return applyStoredEffects(
-                eventId = inner.id,
-                eventType = eventType,
-                authorHex = authorHex,
-                content = inner.content,
-                createdAt = inner.createdAt,
-                groupId = groupId,
-                knownGroupKey = knownGroupKey,
+                eventId = existing.eventId,
+                eventType = existing.eventType,
+                authorHex = existing.pubkey,
+                content = existing.contentEncrypted,
+                createdAt = existing.createdAt,
+                groupId = existing.groupId,
                 nonCancellable = nonCancellable
             )
         }
@@ -177,13 +189,13 @@ constructor(
             historicalAuthors ?: membershipHistory.historicalAuthors(groupId).also { historicalAuthors = it }
 
         val membershipResult =
-            validateMembership(eventType, authorHex, group, knownGroupKey, groupId, inner, context) { historical() }
+            validateMembership(eventType, authorHex, group, groupId, inner, context) { historical() }
         if (!membershipResult.allowed) return rejected("not a member", inner.id, eventType, authorHex)
 
         // 7. Decrypt: use cached self-join decryption if available, else try epoch keys
         val decryptedContent: Decrypted =
             membershipResult.cachedDecrypted?.let { Decrypted(it, group.keyEpoch) }
-                ?: decryptContent(inner.content, eventType, authorHex, group, groupId, knownGroupKey)
+                ?: decryptContent(inner.content, eventType, authorHex, group, groupId)
                 ?: run {
                     // There is no legitimate reason to store ciphertext we cannot read: the epoch
                     // fallback loop already tried every known group key.
@@ -316,13 +328,30 @@ constructor(
      *
      * @return number of rows that moved to APPLIED during this call
      */
-    suspend fun retryDeferred(groupId: String): Int {
+    suspend fun retryDeferred(groupId: String): Int =
+        retryLocks.getOrPut(groupId) { Mutex() }.withLock { retryDeferredLocked(groupId) }
+
+    /** Startup recovery does not require opening the Nearby screen or receiving a duplicate. */
+    suspend fun recoverPending() {
+        for (group in groupRepo.getAll()) {
+            try {
+                retryDeferred(group.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Pending recovery failed for ${group.id.take(8)}: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun retryDeferredLocked(groupId: String): Int {
         var applied = 0
         repeat(MAX_RETRY_PASSES) {
             val pending = eventDao.getPendingEvents(groupId)
             if (pending.isEmpty()) return applied
             var progress = 0
             for (row in pending) {
+                if (eventDao.getEvent(row.eventId)?.applyState != EventEntity.APPLY_STATE_PENDING) continue
                 val result = applyStoredEffects(
                     eventId = row.eventId,
                     eventType = row.eventType,
@@ -330,7 +359,6 @@ constructor(
                     content = row.contentEncrypted,
                     createdAt = row.createdAt,
                     groupId = row.groupId,
-                    knownGroupKey = null,
                     nonCancellable = false
                 )
                 if (result.outcome == IngestOutcome.APPLIED) progress++
@@ -343,7 +371,8 @@ constructor(
 
     /**
      * Decrypt an already-stored row and run its side effects, flipping it to APPLIED on success. The
-     * row was fully validated when it was inserted, so membership and payload rules are not repeated.
+     * signatures were validated at insertion, but membership-changing effects recheck their authority
+     * against the live epoch in EventPostProcessor and the repository's atomic mutation guard.
      * On [PostProcessOutcome.FAILED] the row stays pending (retried later); on
      * [PostProcessOutcome.REJECTED] it is marked failed and no longer retried.
      */
@@ -354,12 +383,11 @@ constructor(
         content: String,
         createdAt: Long,
         groupId: String,
-        knownGroupKey: String?,
         nonCancellable: Boolean
     ): ProcessResult {
         val group = groupRepo.getById(groupId)
             ?: return rejected("unknown group", eventId, eventType, authorHex)
-        val decrypted = decryptContent(content, eventType, authorHex, group, groupId, knownGroupKey)
+        val decrypted = decryptContent(content, eventType, authorHex, group, groupId)
             ?: return rejected("undecryptable", eventId, eventType, authorHex)
         val effect =
             postProcessor.handle(
@@ -441,17 +469,13 @@ constructor(
         eventType: String,
         authorHex: String,
         group: Group,
-        groupId: String,
-        knownGroupKey: String?
+        groupId: String
     ): Decrypted? {
-        val groupKey = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: return null
-        tryDecrypt(content, groupKey)?.let { return Decrypted(it, group.keyEpoch) }
-        if (group.keyEpoch > 0) {
-            // Event may have been encrypted with an older epoch key (race condition, or history)
-            for (epoch in (group.keyEpoch - 1) downTo 0) {
-                val oldKey = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
-                tryDecrypt(content, oldKey)?.let { return Decrypted(it, epoch) }
-            }
+        // Never label an arbitrary cached key with the current epoch. Each candidate is loaded by
+        // its immutable epoch, including after a rotation in the middle of a relay pull.
+        for (epoch in group.keyEpoch downTo 0) {
+            val key = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+            tryDecrypt(content, key)?.let { return Decrypted(it, epoch) }
         }
         // key_rotation events are encrypted per-member with NIP-44 conversation keys
         if (eventType == TYPE_KEY_ROTATION) {
@@ -493,7 +517,6 @@ constructor(
         eventType: String,
         authorHex: String,
         group: Group,
-        knownGroupKey: String?,
         groupId: String,
         inner: NostrEvent,
         context: IngestionContext,
@@ -518,7 +541,7 @@ constructor(
         if (eventType == "group_meta") {
             val isCreator = group.createdBy.isNotEmpty() && authorHex == group.createdBy
             if (!isCreator && authorHex !in group.members) {
-                val key = knownGroupKey ?: groupRepo.getGroupKey(groupId) ?: ""
+                val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return MembershipResult(false)
                 val decryptedContent = tryDecrypt(inner.content, key)
                 // A self-join is a meta, sealed under the CURRENT group key (so its author holds an
                 // invite), whose roster adds nobody but its author. What it says about the name,

@@ -12,6 +12,7 @@ import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
 import com.splitfree.ui.theme.SplitFreeTheme
@@ -38,7 +39,7 @@ private fun previewGroup(): GroupDetailUiState {
         splitAmong = members.map { SplitEntry(it, amount / members.size) },
         timestamp = now - age,
         category = category
-    )
+    ).let { AuthoredExpense(it, paidBy) }
     return GroupDetailUiState(
         groupId = "preview-group",
         groupName = "Goa trip",
@@ -58,8 +59,7 @@ private fun previewGroup(): GroupDetailUiState {
             expense("beach", 400000, ME, "Beach stay", "rent", 3 * DAY_SECONDS),
             expense("dinner", 160000, RAHUL, "Dinner", "food", 2 * DAY_SECONDS),
             expense("taxi", 80000, MEERA, "Airport taxi", "transport", DAY_SECONDS)
-        ),
-        expenseAuthors = mapOf("beach" to ME, "dinner" to RAHUL, "taxi" to MEERA)
+        )
     )
 }
 

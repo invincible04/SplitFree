@@ -110,6 +110,7 @@ constructor(
      * The old key is NOT overwritten until [commitPendingKeyPair] is called.
      */
     override fun generatePendingKeyPair(): String {
+        getPendingPublicKeyHex()?.let { return it }
         val (privHex, pubHex) = newKeyPairHex()
         // Private key first, for the same reason as in installActiveKey.
         storage.putString(KEY_PENDING_PRIVATE, privHex)
@@ -124,11 +125,33 @@ constructor(
                 ?: error("No pending keypair to commit")
         val pendingPub = getPendingPublicKeyHex() ?: error("No pending keypair to commit")
         installActiveKey(pendingPriv, pendingPub)
-        storage.remove(KEY_PENDING_PRIVATE)
+        clearPendingState()
+        identityState.value = true
+    }
+
+    override fun finishPendingKeyPair(expectedPubkey: String) {
+        synchronized(keyLock) {
+            if (getPublicKeyHex() != expectedPubkey) {
+                check(getPendingPublicKeyHex() == expectedPubkey) { "Pending identity does not match journal" }
+                commitPendingKeyPair()
+            } else {
+                check(getPendingPublicKeyHex().let { it == null || it == expectedPubkey }) {
+                    "Pending identity does not match journal"
+                }
+                // The private-key write is authoritative even if the public mirror or cleanup failed.
+                storage.putString(KEY_PUBLIC, expectedPubkey)
+                clearPendingState()
+                identityState.value = true
+            }
+        }
+    }
+
+    private fun clearPendingState() {
         storage.remove(KEY_PENDING_PUBLIC)
         storage.remove(KEY_REVOCATION_EVENT_IDS)
         storage.remove(KEY_REVOCATION_START)
-        identityState.value = true
+        // Last: failure before this point still leaves a usable replacement key.
+        storage.remove(KEY_PENDING_PRIVATE)
     }
 
     /** Discard a pending keypair (e.g., on revocation failure). */
@@ -231,8 +254,9 @@ constructor(
      */
     private fun installActiveKey(privHex: String, pubHex: String) {
         synchronized(keyLock) {
-            storage.putString(KEY_PRIVATE, privHex)
+            // A storage error may be reported after the durable write landed.
             cachedPub = null
+            storage.putString(KEY_PRIVATE, privHex)
             storage.putString(KEY_PUBLIC, pubHex)
         }
     }

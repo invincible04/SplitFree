@@ -101,9 +101,12 @@ Completion: a session is **up to date** only when both snapshots are consumed, e
 has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, and **neither side holds
 pending rows**. The pending count is read from durable storage (`applyState = PENDING`), so work left
 over from an earlier session or a process restart counts, and is re-driven when the screen opens and
-when a group opens; the peer's count travels in its `ReconcileResult`. Either side pending gives
-**waiting for a key or earlier update** on both. Failures give **incomplete** with a count. A dropped
-transport gives **interrupted** with the durable progress kept: a reconnect authenticates afresh and
+when a group opens, as well as during app startup recovery. The peer's count travels in its
+`InventoryPage` and `ReconcileResult`. Either side pending gives
+**waiting for a key or earlier update** on both. An unreadable pending count fails closed: inventory
+advertises at least one pending item and the round report at least one unresolved item until storage
+is readable again. Readability changes trigger a new report even when the stored count stays zero.
+Failures give **incomplete**. A dropped transport gives **interrupted** with the durable progress kept: a reconnect authenticates afresh and
 only transfers what is still missing. `CARRIED` is never shown as delivery to the recipient.
 
 Retries: a record with no terminal result after 30 s of silence is re-requested once, then counted
@@ -128,14 +131,17 @@ While the Nearby screen is open, any change to the offerable inventory (a ledger
 peer or a relay, or an envelope that appeared without a new row, such as history re-wrapped for a new
 member) is re-advertised to every other connected peer, so an A–B–C chain propagates without a second
 button press. Records are identified by immutable ids, and a peer is never offered an id it has
-already acknowledged, so cycles converge.
+already acknowledged, so cycles converge. Room v3 maintains a per-group revision through SQL triggers
+on events, deliveries and group state. Evidence upgrades, pending-state changes, same-count replacements
+and delivery-only writes all advance it; no-op writes and sync timestamps do not.
 
 ## Ledger rules that changed with this protocol
 
 - **Expense identity** is `(group, original author, uuid)`. A correction or deletion only affects the
-  original by the same author; two authors using one uuid are two expenses; editing resolves to the
-  editor's own entry.
-- **Three orderings for group state**, each with its own clock, never mixed:
+  original by the same author; two authors using one uuid are two expenses. List rows, detail sheets,
+  edit routes, restored drafts, delete confirmations and exclusions keep that exact identity. Missing
+  or non-owned identities fail closed; editing never falls back to a different author's entry.
+- **Independent orderings for group state:**
   - *Rotations* are ordered by epoch. Applying one installs the epoch and the roster it defines in a
     single statement and never touches the creator's metadata watermark.
   - *Creator metas* are ordered by `(created_at, event id)`. A meta sealed under an epoch older than
@@ -146,12 +152,34 @@ already acknowledged, so cycles converge.
     clock. A creator meta older than a member's rename keeps the member's name. A self-join is any
     meta sealed under the current key whose roster adds nobody but its author, so two members
     joining concurrently, or a joiner unaware of a recent rename, are admitted in either order.
-  - Key revocation (an identity swap) has no epoch and rides the creator watermark, raised to the
-    revocation's own clock rather than to the wall clock.
-- **Rotation is resumable.** The key for epoch N+1 is generated once and immutable; an interrupted
-  removal reuses it, so every member ends up with the same key however many attempts it took.
-  Envelopes are published (durably queued) before the local transition; at start-up the creator
-  recognises a stored key for N+1 with published envelopes and finishes the transition.
+  - Key revocation (an identity swap) has no epoch. It atomically derives the replacement roster
+    from current state, preserves concurrent names/joins and advances the metadata watermark to the
+    maximum event-clock tuple. A durable tombstone blocks the old identity from self-joining,
+    returning in creator snapshots, bootstrapping creator authority or appearing in a later rotation.
+  Creator metadata compares its authenticated creator to the live creator in the final write; all
+  metadata effects recheck epoch and authority when retried, not only at original ingestion.
+- **Control operations are journaled before publication.** Room v3 stores the immutable removal or
+  identity-revocation intent, then the exact signed events before any publication attempt. Recovery
+  reuses those events and epoch keys, finishes local projection and publishes follow-up metadata even
+  if the epoch already advanced before interruption. A different removal cannot reuse an unfinished
+  operation's key. Identity promotion checks the journal's replacement key and remains recoverable
+  after a secure-storage write commits then throws. Ambiguous legacy state is preserved and blocked,
+  never guessed from an empty outbox or an old timestamp.
+- **A journaled operation can always finish**, whatever the roster did meanwhile. A removal that had
+  prepared nothing is rebased onto the live roster (same member removed, same epoch, same stored key).
+  A prepared removal keeps and re-publishes its signed envelopes; a member the snapshot did not know
+  (a join, or the successor of a revoked key) gets its own envelope for the same key, and a corrective
+  `group_meta` with the live roster is appended, dated strictly after the plan's so it wins on every
+  receiver in any arrival order. Everything that can refuse a revocation is checked before its intent
+  is journaled; its local projection records the tombstone even if a creator snapshot dropped the
+  user in between, re-adding nobody. Only a change of creator authority, or an epoch this device did
+  not produce, fails closed.
+- **A revoked key in someone else's roster resolves, it does not brick.** A creator that has not yet
+  seen a member's revocation still names the old key in its rotation and metadata. A device that has
+  seen it installs the recorded successor (or drops a key without one) and advances the epoch; a
+  device addressed only through its own revoked key advances without key material, exactly as if
+  removed, until the creator rotates again. Refusing would park the record as failed and leave the
+  device at the old epoch for good, since every later epoch is then a gap.
 - **Stored vs applied**: control events are stored pending until their effect lands (`applyState`).
   A missing dependency (epoch gap, a member whose join has not arrived) or a transient failure
   keeps the row pending and retried; an effect that can never apply on this device (key material it
@@ -164,7 +192,7 @@ already acknowledged, so cycles converge.
 
 - Android 12 and below: fine and coarse location are requested in the same prompt.
 - Android 17 (target 37): `ACCESS_LOCAL_NETWORK` is declared and requested for the Wi-Fi LAN path;
-  Nearby still uses Bluetooth if it is denied.
+  denial does not by itself establish whether other transports work on a device.
 - Nearby sync is foreground only. Leaving the screen, or the activity stopping (Home, lock screen,
   app switch), closes every session and stops advertising; durable records and envelopes remain for
   the next session. `ON_PAUSE` is deliberately not used: the system consent dialog Nearby shows on a
@@ -178,6 +206,8 @@ already acknowledged, so cycles converge.
   pre-removal history relies on the epoch, not on a creator-signed checkpoint; that checkpoint is the
   documented follow-up before any claim of tamper-proof historical membership.
 - The Nearby SDK reports diagnostics to Google under the device's Usage & diagnostics setting.
-- JVM tests cover the protocol and the Room-backed pipeline end to end over an in-memory transport;
+- JVM tests cover the protocol and the Room-backed pipeline over an in-memory transport. File-backed
+  Room recreation tests inject control-operation failures; secure storage and publication are test
+  doubles, so these are not physical process-kill or Android Keystore durability tests. Actual
   radio behaviour (transport selection, permission prompts, OEM differences) still needs the
   three-phone matrix in the audit report before the mesh claim is made in release notes.

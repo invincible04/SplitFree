@@ -59,6 +59,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.ui.components.CurrencyLine
 import com.splitfree.ui.components.MemberStack
 import com.splitfree.ui.components.MiniLabel
@@ -93,7 +94,7 @@ sealed interface GroupSheet {
     data class Settle(val debt: DebtTransaction) : GroupSheet
 
     /** Breakdown of one expense; its author can edit or delete it from here. */
-    data class ExpenseDetail(val expenseId: String) : GroupSheet
+    data class ExpenseDetail(val identity: ExpenseIdentity) : GroupSheet
 
     /** Confirm removing [pubkey] (creator only). */
     data class RemoveMember(val pubkey: String) : GroupSheet
@@ -116,7 +117,8 @@ internal val GroupSheetSaver: Saver<GroupSheet?, Any> =
                         sheet.debt.amount.toString(),
                         sheet.debt.currency
                     )
-                is GroupSheet.ExpenseDetail -> listOf(SHEET_EXPENSE, sheet.expenseId)
+                is GroupSheet.ExpenseDetail ->
+                    listOf(SHEET_EXPENSE, sheet.identity.authorPubkey, sheet.identity.expenseUuid)
                 is GroupSheet.RemoveMember -> listOf(SHEET_REMOVE, sheet.pubkey)
             }
         },
@@ -129,7 +131,8 @@ internal val GroupSheetSaver: Saver<GroupSheet?, Any> =
                     parts.getOrNull(SETTLE_PART_COUNT - 1)?.let {
                         GroupSheet.Settle(DebtTransaction(parts[1], parts[2], parts[3].toLong(), parts[4]))
                     }
-                SHEET_EXPENSE -> parts.getOrNull(1)?.let { GroupSheet.ExpenseDetail(it) }
+                SHEET_EXPENSE -> parts.takeIf { it.size == EXPENSE_PART_COUNT && it.drop(1).all(String::isNotBlank) }
+                    ?.let { GroupSheet.ExpenseDetail(ExpenseIdentity(it[1], it[2])) }
                 SHEET_REMOVE -> parts.getOrNull(1)?.let { GroupSheet.RemoveMember(it) }
                 else -> null
             }
@@ -143,6 +146,7 @@ private const val SHEET_SETTLE = "settle"
 private const val SHEET_EXPENSE = "expense"
 private const val SHEET_REMOVE = "remove"
 private const val SETTLE_PART_COUNT = 5
+private const val EXPENSE_PART_COUNT = 3
 
 /**
  * Everything the group screen can ask the outside world to do. Sheet and tab changes are handled inside
@@ -157,8 +161,8 @@ data class GroupDetailActions(
     val share: () -> Unit = {},
     val copyInvite: () -> Unit = {},
     val confirmSettle: (DebtTransaction) -> Unit = {},
-    val editExpense: (String) -> Unit = {},
-    val deleteExpense: (String) -> Unit = {},
+    val editExpense: (ExpenseIdentity) -> Unit = {},
+    val deleteExpense: (ExpenseIdentity) -> Unit = {},
     val removeMember: (String) -> Unit = {},
     val beginRelayEdit: () -> Unit = {},
     val cancelRelayEdit: () -> Unit = {},
@@ -173,7 +177,7 @@ data class GroupDetailActions(
 @Composable
 fun GroupDetailScreen(
     onAddExpense: (String) -> Unit,
-    onEditExpense: (String) -> Unit = {},
+    onEditExpense: (ExpenseIdentity) -> Unit = {},
     onNearbySync: (String) -> Unit = {},
     onBack: () -> Unit,
     expenseSaved: Boolean = false,
@@ -286,7 +290,8 @@ internal fun GroupDetailContent(
     val tokens = adaptiveSizeTokens()
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
-    val currencies = remember(state.debts, state.expenses) { groupCurrencies(state.debts, state.expenses) }
+    val currencies =
+        remember(state.debts, state.expenses) { groupCurrencies(state.debts, state.expenses.map { it.expense }) }
     val defaultCurrency = remember(currencies, state.debts, state.myPubkey) {
         defaultBalanceCurrency(currencies, state.debts, state.myPubkey)
     }
@@ -461,7 +466,7 @@ private fun SummaryCard(state: GroupDetailUiState, currency: String?) {
                 else -> R.string.group_your_balance
             }
         )
-    val note = summaryNote(state.debts, state.expenses, currency, state.myPubkey)
+    val note = summaryNote(state.debts, state.expenses.map { it.expense }, currency, state.myPubkey)
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_summary"),
         shape = SummaryCardShape,

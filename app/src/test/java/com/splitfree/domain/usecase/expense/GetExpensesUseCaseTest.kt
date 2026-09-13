@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.expense
 
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.repository.EventRepositoryContract
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -446,12 +448,38 @@ class GetExpensesUseCaseTest {
     }
 
     @Test
-    fun `get resolves the caller's expense id among colliding records`() = runBlocking {
+    fun `get resolves each exact identity regardless of colliding list order`() = runBlocking {
+        for (events in permutations(collisionEvents())) {
+            every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(events)
+
+            val first = useCase.get(groupId, ExpenseIdentity(alice, "U"))
+            val second = useCase.get(groupId, ExpenseIdentity(mallory, "U"))
+
+            assertEquals("alice's", first?.expense?.description)
+            assertEquals("mallory's", second?.expense?.description)
+            assertEquals(ExpenseIdentity(alice, "U"), first?.identity)
+            assertEquals(ExpenseIdentity(mallory, "U"), second?.identity)
+            assertNull(useCase.get(groupId, ExpenseIdentity("unknown", "U")))
+        }
+    }
+
+    @Test
+    fun `get uses the signed tag uuid even when the original payload id differs`() = runBlocking {
+        stubPayload("enc-alice", makeExpense("payload-id"))
+        every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(listOf(aliceExpense()))
+
+        val found = useCase.get(groupId, ExpenseIdentity(alice, "U"))
+
+        assertEquals(ExpenseIdentity(alice, "U"), found?.identity)
+        assertNull(useCase.get(groupId, ExpenseIdentity(alice, "payload-id")))
+    }
+
+    @Test
+    fun `get never falls back to another author when the selected record is deleted`() = runBlocking {
         every { eventRepo.observeEventsByGroup(groupId) } returns flowOf(collisionEvents() + malloryDelete())
 
-        val found = useCase.get(groupId, "U")
-
-        assertEquals(alice, found?.authorPubkey)
+        assertNull(useCase.get(groupId, ExpenseIdentity(mallory, "U")))
+        assertEquals(alice, useCase.get(groupId, ExpenseIdentity(alice, "U"))?.authorPubkey)
     }
 
     private fun makeExpense(id: String, timestamp: Long = 1000, amount: Long = 5000, description: String = "test") =

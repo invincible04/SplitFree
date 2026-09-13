@@ -5,9 +5,13 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
+import com.splitfree.data.repository.ControlOperationJournal
 import com.splitfree.di.DatabaseModule
+import com.splitfree.domain.repository.ControlOperation
 import java.io.File
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -57,23 +61,24 @@ class MigrationTest {
         }
     }
 
-    private fun openV2(name: String = dbName): AppDatabase =
+    private fun openCurrent(name: String = dbName): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+            .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
             .allowMainThreadQueries()
             .build()
             .also { db = it }
 
     @Test
-    fun `migrated database reports version 2`() {
-        val migrated = openV2()
+    fun `migrated database reports version 3`() {
+        val migrated = openCurrent()
 
-        assertEquals(2, migrated.openHelper.readableDatabase.version)
+        assertEquals(3, migrated.openHelper.readableDatabase.version)
     }
 
     @Test
     fun `existing event row survives with applyState APPLIED`() = runBlocking {
-        val migrated = openV2()
+        val migrated = openCurrent()
 
         val event = migrated.eventDao().getEvent("e1")
         assertNotNull(event)
@@ -96,7 +101,7 @@ class MigrationTest {
 
     @Test
     fun `existing group row keeps its data and picks up the v2 defaults`() = runBlocking {
-        val migrated = openV2()
+        val migrated = openCurrent()
 
         val group = migrated.groupDao().getById("g1")
         assertNotNull(group)
@@ -116,7 +121,7 @@ class MigrationTest {
 
     @Test
     fun `migrated group still accepts the new tiebreak and self-update writes`() = runBlocking {
-        val migrated = openV2()
+        val migrated = openCurrent()
         val dao = migrated.groupDao()
 
         // Same timestamp as the legacy watermark, but any non-empty eventId beats the '' default.
@@ -134,7 +139,7 @@ class MigrationTest {
 
     @Test
     fun `existing outbox row survives`() = runBlocking {
-        val migrated = openV2()
+        val migrated = openCurrent()
 
         val outbox = migrated.outboxDao().getAll()
         assertEquals(1, outbox.size)
@@ -148,7 +153,7 @@ class MigrationTest {
 
     @Test
     fun `deliveries table is created and usable`() = runBlocking {
-        val migrated = openV2()
+        val migrated = openCurrent()
         val dao = migrated.deliveryDao()
         val delivery =
             DeliveryEntity(
@@ -193,7 +198,7 @@ class MigrationTest {
         db = null
 
         // ...and with it, nothing was lost.
-        assertNotNull(openV2().groupDao().getById("g1"))
+        assertNotNull(openCurrent().groupDao().getById("g1"))
     }
 
     @Test
@@ -211,7 +216,55 @@ class MigrationTest {
         assertEquals(EventEntity.APPLY_STATE_APPLIED, prod.eventDao().getEvent("e1")!!.applyState)
         assertEquals(1, prod.outboxDao().count())
         assertNull(prod.deliveryDao().get("nope"))
-        assertEquals(2, prod.openHelper.readableDatabase.version)
+        assertEquals(3, prod.openHelper.readableDatabase.version)
+    }
+
+    @Test
+    fun `v2 to v3 preserves pending evidence and outbox and exposes immutable operation journal`() = runBlocking {
+        SQLiteDatabase.openDatabase(
+            context.getDatabasePath(dbName).path,
+            null,
+            SQLiteDatabase.OPEN_READWRITE
+        ).use { raw ->
+            raw.execSQL("ALTER TABLE events ADD COLUMN applyState INTEGER NOT NULL DEFAULT 0")
+            raw.execSQL("ALTER TABLE groups ADD COLUMN lastMetaEventId TEXT NOT NULL DEFAULT ''")
+            raw.execSQL("ALTER TABLE groups ADD COLUMN memberClocks TEXT NOT NULL DEFAULT '{}'")
+            val schemaFile = listOf(
+                File("schemas/com.splitfree.data.local.AppDatabase/2.json"),
+                File("app/schemas/com.splitfree.data.local.AppDatabase/2.json")
+            ).first { it.exists() }
+            val entities = JSONObject(schemaFile.readText()).getJSONObject("database").getJSONArray("entities")
+            val deliveries = (0 until entities.length()).map { entities.getJSONObject(it) }
+                .first { it.getString("tableName") == "deliveries" }
+            raw.execSQL(deliveries.getString("createSql").replace("\${TABLE_NAME}", "deliveries"))
+            val indices = deliveries.getJSONArray("indices")
+            for (i in 0 until indices.length()) {
+                raw.execSQL(indices.getJSONObject(i).getString("createSql").replace("\${TABLE_NAME}", "deliveries"))
+            }
+            raw.execSQL("UPDATE events SET applyState = 1")
+            raw.version = 2
+        }
+        val migrated = openCurrent()
+        assertEquals(EventEntity.APPLY_STATE_PENDING, migrated.eventDao().getEvent("e1")!!.applyState)
+        assertEquals(1, migrated.outboxDao().count())
+        assertNotNull(migrated.groupDao().getById("g1"))
+        val journal = ControlOperationJournal(migrated.controlOperationDao())
+        val operation = ControlOperation("rotation:g1", "rotation", "public intent")
+        journal.insert(operation)
+        journal.prepare(operation.id, "ciphertext envelopes")
+        assertTrue(runCatching { journal.prepare(operation.id, "different envelopes") }.isFailure)
+        assertTrue(runCatching { journal.insert(operation.copy(intentJson = "changed target")) }.isFailure)
+        assertEquals("ciphertext envelopes", journal.get(operation.id)!!.preparedJson)
+        val before = migrated.syncRevisionDao().observeRevision("g1").first()
+        migrated.openHelper.writableDatabase.execSQL("UPDATE events SET applyState = 0 WHERE eventId = 'e1'")
+        assertEquals(before + 1, migrated.syncRevisionDao().observeRevision("g1").first())
+        migrated.close()
+        db = null
+        val reopened = openCurrent()
+        assertEquals(
+            "ciphertext envelopes",
+            ControlOperationJournal(reopened.controlOperationDao()).get(operation.id)!!.preparedJson
+        )
     }
 
     // --- v1 fixture ---

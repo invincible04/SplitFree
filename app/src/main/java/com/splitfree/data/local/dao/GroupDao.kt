@@ -59,7 +59,15 @@ interface GroupDao {
             "description = COALESCE(:description, description), " +
             "createdBy = CASE WHEN :createdBy != '' THEN :createdBy ELSE createdBy END, " +
             "lastMetaTimestamp = :eventTimestamp, lastMetaEventId = :eventId " +
-            "WHERE groupId = :groupId AND (lastMetaTimestamp < :eventTimestamp " +
+            "WHERE groupId = :groupId " +
+            "AND (:expectedKeyEpoch IS NULL OR keyEpoch = :expectedKeyEpoch) " +
+            "AND (:expectedCreatedBy IS NULL OR createdBy = :expectedCreatedBy) " +
+            "AND (:expectedMembers IS NULL OR members = :expectedMembers) " +
+            "AND (:expectedMemberNames IS NULL OR memberNames = :expectedMemberNames) " +
+            "AND (:expectedMemberClocks IS NULL OR memberClocks = :expectedMemberClocks) " +
+            "AND (:expectedMetaTimestamp IS NULL OR lastMetaTimestamp = :expectedMetaTimestamp) " +
+            "AND (:expectedMetaEventId IS NULL OR lastMetaEventId = :expectedMetaEventId) " +
+            "AND (lastMetaTimestamp < :eventTimestamp " +
             "OR (lastMetaTimestamp = :eventTimestamp AND lastMetaEventId < :eventId))"
     )
     suspend fun updateMetaIfNewer(
@@ -71,7 +79,14 @@ interface GroupDao {
         eventTimestamp: Long,
         memberNames: String = "{}",
         description: String? = null,
-        eventId: String = ""
+        eventId: String = "",
+        expectedKeyEpoch: Int? = null,
+        expectedMembers: String? = null,
+        expectedMemberNames: String? = null,
+        expectedMemberClocks: String? = null,
+        expectedMetaTimestamp: Long? = null,
+        expectedMetaEventId: String? = null,
+        expectedCreatedBy: String? = null
     ): Int
 
     /**
@@ -108,20 +123,79 @@ interface GroupDao {
      */
     @Query(
         "UPDATE `groups` SET keyEpoch = :epoch, members = :members, memberNames = :memberNames " +
-            "WHERE groupId = :groupId AND keyEpoch < :epoch"
+            "WHERE groupId = :groupId AND keyEpoch < :epoch " +
+            "AND (:expectedMembers IS NULL OR members = :expectedMembers) " +
+            "AND (:expectedKeyEpoch IS NULL OR keyEpoch = :expectedKeyEpoch) " +
+            "AND (:expectedMemberClocks IS NULL OR memberClocks = :expectedMemberClocks) " +
+            "AND (:expectedCreatedBy IS NULL OR createdBy = :expectedCreatedBy)"
     )
-    suspend fun applyKeyRotation(groupId: String, epoch: Int, members: String, memberNames: String): Int
+    suspend fun applyKeyRotation(
+        groupId: String,
+        epoch: Int,
+        members: String,
+        memberNames: String,
+        expectedMembers: String? = null,
+        expectedKeyEpoch: Int? = null,
+        expectedMemberClocks: String? = null,
+        expectedCreatedBy: String? = null
+    ): Int
 
     /**
      * Apply a member's own change (self-join / own display name) computed by the repository.
      * Deliberately leaves `lastMetaTimestamp` / `lastMetaEventId` alone: a member editing their
-     * own name must not block or be blocked by the creator's metadata watermark. Per-member
-     * ordering lives in `memberClocks`.
+     * own name must not block the creator's metadata watermark. Per-member name and join ordering
+     * lives in `memberClocks`. Snapshot guards reject concurrent metadata, revocation and rotation
+     * writes so the repository can re-read and merge without holding a mutex across Room calls.
      */
     @Query(
-        "UPDATE `groups` SET members = :members, memberNames = :memberNames, memberClocks = :memberClocks WHERE groupId = :groupId"
+        "UPDATE `groups` SET members = :members, memberNames = :memberNames, memberClocks = :memberClocks " +
+            "WHERE groupId = :groupId " +
+            "AND (:expectedKeyEpoch IS NULL OR keyEpoch = :expectedKeyEpoch) " +
+            "AND (:expectedCreatedBy IS NULL OR createdBy = :expectedCreatedBy) " +
+            "AND (:expectedMembers IS NULL OR members = :expectedMembers) " +
+            "AND (:expectedMemberNames IS NULL OR memberNames = :expectedMemberNames) " +
+            "AND (:expectedMemberClocks IS NULL OR memberClocks = :expectedMemberClocks) " +
+            "AND (:expectedMetaTimestamp IS NULL OR lastMetaTimestamp = :expectedMetaTimestamp) " +
+            "AND (:expectedMetaEventId IS NULL OR lastMetaEventId = :expectedMetaEventId)"
     )
-    suspend fun updateMemberSelf(groupId: String, members: String, memberNames: String, memberClocks: String)
+    suspend fun updateMemberSelf(
+        groupId: String,
+        members: String,
+        memberNames: String,
+        memberClocks: String,
+        expectedKeyEpoch: Int? = null,
+        expectedMembers: String? = null,
+        expectedMemberNames: String? = null,
+        expectedMemberClocks: String? = null,
+        expectedMetaTimestamp: Long? = null,
+        expectedMetaEventId: String? = null,
+        expectedCreatedBy: String? = null
+    ): Int
+
+    @Query(
+        "UPDATE `groups` SET members = :members, memberNames = :memberNames, memberClocks = :memberClocks, " +
+            "createdBy = :createdBy, lastMetaTimestamp = :eventTimestamp, lastMetaEventId = :eventId " +
+            "WHERE groupId = :groupId AND keyEpoch = :expectedKeyEpoch AND createdBy = :expectedCreatedBy " +
+            "AND members = :expectedMembers AND memberNames = :expectedMemberNames " +
+            "AND memberClocks = :expectedMemberClocks AND lastMetaTimestamp = :expectedMetaTimestamp " +
+            "AND lastMetaEventId = :expectedMetaEventId"
+    )
+    suspend fun applyIdentityRevocation(
+        groupId: String,
+        members: String,
+        memberNames: String,
+        memberClocks: String,
+        createdBy: String,
+        eventTimestamp: Long,
+        eventId: String,
+        expectedKeyEpoch: Int,
+        expectedMembers: String,
+        expectedMemberNames: String,
+        expectedMemberClocks: String,
+        expectedMetaTimestamp: Long,
+        expectedMetaEventId: String,
+        expectedCreatedBy: String
+    ): Int
 
     @Delete
     suspend fun delete(group: GroupEntity)
@@ -133,6 +207,15 @@ interface GroupDao {
      * Records the verified creator of a group whose `createdBy` was unknown (legacy import).
      * Deliberately leaves `lastMetaTimestamp` alone so historical `group_meta` replays still apply.
      */
-    @Query("UPDATE `groups` SET createdBy = :createdBy, createdAt = :createdAt WHERE groupId = :groupId")
-    suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long)
+    @Query(
+        "UPDATE `groups` SET createdBy = :createdBy, createdAt = :createdAt " +
+            "WHERE groupId = :groupId AND createdBy = '' " +
+            "AND (:expectedMemberClocks IS NULL OR memberClocks = :expectedMemberClocks)"
+    )
+    suspend fun updateCreator(
+        groupId: String,
+        createdBy: String,
+        createdAt: Long,
+        expectedMemberClocks: String? = null
+    ): Int
 }

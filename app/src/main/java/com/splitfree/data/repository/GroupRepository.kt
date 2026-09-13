@@ -36,8 +36,8 @@ constructor(
     private val json = Json
 
     /**
-     * Metadata writes are read-modify-write (roster scope, per-member name clocks), so writers to the
-     * same group are serialised here. Relay and nearby ingestion may otherwise interleave.
+     * Only synchronous key-storage operations run under this lock. Metadata uses SQL compare-and-set
+     * instead: a Room transaction may call this repository, so locking across DAO calls can deadlock.
      */
     private val groupLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
@@ -89,8 +89,10 @@ constructor(
      */
     override suspend fun deleteGroupKey(groupId: String) {
         val maxEpoch = groupDao.getById(groupId)?.keyEpoch ?: MAX_ORPHAN_EPOCH_SWEEP
-        keyStore.remove(groupId)
-        for (epoch in 0..maxEpoch) keyStore.remove("$groupId:$epoch")
+        lockFor(groupId).withLock {
+            keyStore.remove(groupId)
+            for (epoch in 0..maxEpoch) keyStore.remove("$groupId:$epoch")
+        }
     }
 
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
@@ -99,9 +101,11 @@ constructor(
         // Persist the key FIRST. SecureStorage.putString commits synchronously and throws
         // SecureStorageException on failure, so if the key cannot be stored we never reach
         // groupDao.insert and no Room row exists without a recoverable key behind it.
-        keyStore.putString("${group.id}:${group.keyEpoch}", groupKey)
-        // Also store under plain groupId for backward compat at epoch 0
-        if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
+        lockFor(group.id).withLock {
+            saveEpochKey(group.id, group.keyEpoch, groupKey)
+            // Also store under plain groupId for backward compat at epoch 0.
+            if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
+        }
         val safeMemberNames = sanitizeMemberNames(group.memberNames, group.members)
         groupDao.insert(
             GroupEntity(
@@ -128,7 +132,12 @@ constructor(
      * would mean two rotations claim it, and silently replacing one would strand whoever holds the other.
      */
     override suspend fun saveGroupKeyForEpoch(groupId: String, epoch: Int, groupKey: String) {
+        lockFor(groupId).withLock { saveEpochKey(groupId, epoch, groupKey) }
+    }
+
+    private fun saveEpochKey(groupId: String, epoch: Int, groupKey: String) {
         val existing = keyStore.getString("$groupId:$epoch", null)
+            ?: if (epoch == 0) keyStore.getString(groupId, null) else null
         if (existing != null) {
             check(existing == groupKey) { "Epoch $epoch of ${groupId.take(8)} already has different key material" }
             return
@@ -142,7 +151,13 @@ constructor(
 
     override suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long) {
         require(createdBy.isNotEmpty()) { "createdBy must not be empty" }
-        groupDao.updateCreator(groupId, createdBy, createdAt)
+        updateGroup(groupId) { entity ->
+            if (entity.createdBy.isNotEmpty()) return@updateGroup false
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            if ("revoked:$createdBy" in clocks) return@updateGroup false
+            groupDao.updateCreator(groupId, createdBy, createdAt, entity.memberClocks)
+                .let { if (it == 1) true else null }
+        }
     }
 
     override suspend fun updateLastSync(groupId: String, timestamp: Long) {
@@ -159,7 +174,9 @@ constructor(
         memberNames: Map<String, String>,
         description: String?,
         eventId: String,
-        applyRoster: Boolean
+        applyRoster: Boolean,
+        expectedKeyEpoch: Int?,
+        expectedCreator: String?
     ): Boolean {
         require(eventTimestamp > 0) { "group_meta needs the event's created_at to be ordered" }
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
@@ -169,25 +186,32 @@ constructor(
             )
             return false
         }
-        return lockFor(groupId).withLock {
-            val entity = groupDao.getById(groupId) ?: return@withLock false
+        return updateGroup(groupId) { entity ->
+            if (expectedCreator != null && entity.createdBy != expectedCreator) return@updateGroup false
             if (!isNewerClock(eventTimestamp, eventId, entity.lastMetaTimestamp to entity.lastMetaEventId)) {
-                return@withLock false
+                return@updateGroup false
             }
             val storedMembers = decodeList(entity.members, groupId, "members")
-            val finalMembers = if (applyRoster) members else storedMembers
-            if (!applyRoster) {
+            val canApplyRoster = applyRoster && (expectedKeyEpoch == null || expectedKeyEpoch == entity.keyEpoch)
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            if (expectedCreator != null && "revoked:$expectedCreator" in clocks) return@updateGroup false
+            if (createdBy.isNotEmpty() && "revoked:$createdBy" in clocks) return@updateGroup false
+            // The creator may not have seen a revocation this device applied: its roster names the old
+            // key, which becomes the recorded replacement here rather than resurrecting the tombstone.
+            val resolved = resolveRoster(members, clocks)
+            val finalMembers = if (canApplyRoster) resolved.members else storedMembers
+            if (!canApplyRoster) {
                 Log.i(TAG, "group_meta ${eventId.take(8)} predates the current key epoch; roster kept")
             }
+            val incomingNames = resolved.remapNames(memberNames)
             val storedNames = decodeMap(entity.memberNames, groupId, "memberNames")
-            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
             // Per member: the creator's map wins unless that member's own rename is newer.
             val merged = LinkedHashMap<String, String>()
             for (member in finalMembers) {
                 val ownClock = clocks[member]?.let(::parseMemberClock)
                 val memberIsNewer =
                     ownClock != null && isNewerClock(ownClock.first, ownClock.second, eventTimestamp to eventId)
-                val chosen = if (memberIsNewer) storedNames[member] else memberNames[member]
+                val chosen = if (memberIsNewer) storedNames[member] else incomingNames[member]
                 if (chosen != null) merged[member] = chosen
             }
             val safeRelays = relays.filter { it.startsWith("wss://") && it.length <= 256 }
@@ -202,8 +226,15 @@ constructor(
                 eventTimestamp,
                 json.encodeToString(nameMapSerializer, sanitizeMemberNames(merged, finalMembers)),
                 description,
-                eventId
-            ) == 1
+                eventId,
+                expectedKeyEpoch = entity.keyEpoch,
+                expectedMembers = entity.members,
+                expectedMemberNames = entity.memberNames,
+                expectedMemberClocks = entity.memberClocks,
+                expectedMetaTimestamp = entity.lastMetaTimestamp,
+                expectedMetaEventId = entity.lastMetaEventId,
+                expectedCreatedBy = entity.createdBy
+            ).let { if (it == 1) true else null }
         }
     }
 
@@ -211,19 +242,38 @@ constructor(
         groupId: String,
         epoch: Int,
         members: List<String>,
-        memberNames: Map<String, String>
+        memberNames: Map<String, String>,
+        expectedMembers: List<String>?
     ): Boolean {
         if (members.size > RelayDefaults.MAX_GROUP_MEMBERS) {
             Log.w(TAG, "Rejecting key_rotation with ${members.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})")
             return false
         }
-        return lockFor(groupId).withLock {
+        return updateGroup(groupId) { entity ->
+            if (epoch <= entity.keyEpoch) return@updateGroup false
+            val storedMembers = decodeList(entity.members, groupId, "members")
+            if (expectedMembers != null && storedMembers != expectedMembers) return@updateGroup false
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            // A rotation authored before its creator saw a revocation still names the revoked key.
+            // Installing the recorded replacement keeps this device on the new epoch; refusing the
+            // rotation would leave it behind for good (every later epoch is then a gap).
+            val resolved = resolveRoster(members, clocks)
+            if (resolved.members != members) {
+                Log.i(TAG, "key_rotation to epoch $epoch of ${groupId.take(8)} named revoked identities; resolved")
+            }
             groupDao.applyKeyRotation(
                 groupId,
                 epoch,
-                json.encodeToString(stringListSerializer, members),
-                json.encodeToString(nameMapSerializer, sanitizeMemberNames(memberNames, members))
-            ) == 1
+                json.encodeToString(stringListSerializer, resolved.members),
+                json.encodeToString(
+                    nameMapSerializer,
+                    sanitizeMemberNames(resolved.remapNames(memberNames), resolved.members)
+                ),
+                expectedMembers = entity.members,
+                expectedKeyEpoch = entity.keyEpoch,
+                expectedMemberClocks = entity.memberClocks,
+                expectedCreatedBy = entity.createdBy
+            ).let { if (it == 1) true else null }
         }
     }
 
@@ -239,69 +289,202 @@ constructor(
             Log.w(TAG, "Rejecting membership override with ${members.size} members")
             return
         }
-        lockFor(groupId).withLock {
-            groupDao.overrideMembership(
+        groupDao.overrideMembership(
+            groupId,
+            json.encodeToString(stringListSerializer, members),
+            json.encodeToString(nameMapSerializer, sanitizeMemberNames(memberNames, members)),
+            createdBy,
+            eventTimestamp,
+            eventId
+        )
+    }
+
+    override suspend fun applyIdentityRevocation(
+        groupId: String,
+        oldPubkey: String,
+        newPubkey: String,
+        eventTimestamp: Long,
+        eventId: String,
+        allowAbsent: Boolean
+    ): Boolean {
+        require(oldPubkey.isNotEmpty() && oldPubkey != newPubkey) { "Revocation needs distinct identities" }
+        require(eventTimestamp > 0) { "Revocation needs the event's created_at to be ordered" }
+        return updateGroup(groupId) { entity ->
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            val revokedKey = "revoked:$oldPubkey"
+            if (revokedKey in clocks) return@updateGroup true
+            val members = decodeList(entity.members, groupId, "members")
+            if (oldPubkey !in members && (newPubkey.isEmpty() || newPubkey !in members)) {
+                if (!allowAbsent) return@updateGroup false
+                Log.i(TAG, "Revocation of ${oldPubkey.take(8)} in ${groupId.take(8)}: identity absent, tombstone only")
+            }
+            val replacement = newPubkey.takeIf { it.isNotEmpty() && "revoked:$it" !in clocks }
+            val newMembers = when {
+                replacement != null && replacement !in members -> members.map {
+                    if (it ==
+                        oldPubkey
+                    ) {
+                        replacement
+                    } else {
+                        it
+                    }
+                }
+                else -> members - oldPubkey
+            }
+            val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
+            val oldName = names.remove(oldPubkey)
+            if (replacement != null && oldName != null && replacement !in names) names[replacement] = oldName
+            val creator = if (entity.createdBy == oldPubkey) replacement.orEmpty() else entity.createdBy
+            val newClocks = clocks.toMutableMap().apply {
+                put(revokedKey, "$eventTimestamp:$eventId")
+                // Lets a roster authored without knowledge of this revocation resolve to the successor.
+                if (replacement != null) put("$REPLACED_PREFIX$oldPubkey", replacement)
+            }
+            val watermark = if (isNewerClock(
+                    eventTimestamp,
+                    eventId,
+                    entity.lastMetaTimestamp to entity.lastMetaEventId
+                )
+            ) {
+                eventTimestamp to eventId
+            } else {
+                entity.lastMetaTimestamp to entity.lastMetaEventId
+            }
+            groupDao.applyIdentityRevocation(
                 groupId,
-                json.encodeToString(stringListSerializer, members),
-                json.encodeToString(nameMapSerializer, sanitizeMemberNames(memberNames, members)),
-                createdBy,
-                eventTimestamp,
-                eventId
-            )
+                json.encodeToString(stringListSerializer, newMembers),
+                json.encodeToString(nameMapSerializer, sanitizeMemberNames(names, newMembers)),
+                json.encodeToString(nameMapSerializer, newClocks),
+                creator,
+                watermark.first,
+                watermark.second,
+                expectedKeyEpoch = entity.keyEpoch,
+                expectedMembers = entity.members,
+                expectedMemberNames = entity.memberNames,
+                expectedMemberClocks = entity.memberClocks,
+                expectedMetaTimestamp = entity.lastMetaTimestamp,
+                expectedMetaEventId = entity.lastMetaEventId,
+                expectedCreatedBy = entity.createdBy
+            ).let { if (it == 1) true else null }
         }
     }
 
-    /**
-     * Per-member self-update, ordered by the member's own `(eventTimestamp, eventId)` clock stored
-     * in `memberClocks` rather than by the creator's `lastMetaTimestamp` watermark, so a member
-     * renaming themselves can neither block nor be blocked by the creator's metas.
-     *
-     * Only the author's own entries are touched: their membership (when [join]) and their own
-     * display name. Every other member's name is carried over untouched.
-     *
-     * Read-modify-write; callers are expected to serialise event ingestion per group.
-     */
     override suspend fun applyMemberSelfUpdate(
         groupId: String,
         author: String,
         eventTimestamp: Long,
         eventId: String,
         join: Boolean,
-        displayName: String?
-    ): Boolean = lockFor(groupId).withLock {
-        val entity = groupDao.getById(groupId) ?: return@withLock false
-        val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
-        val stored = clocks[author]?.let(::parseMemberClock)
-        if (stored != null && !isNewerClock(eventTimestamp, eventId, stored)) return@withLock false
+        displayName: String?,
+        expectedKeyEpoch: Int?
+    ): Boolean {
+        require(eventTimestamp > 0) { "member update needs the event's created_at to be ordered" }
+        var authorWasPresent = false
+        return updateGroup(groupId) { entity ->
+            val members = decodeList(entity.members, groupId, "members")
+            // A concurrent same-epoch revocation must not turn a rename into a fresh self-join.
+            if (authorWasPresent && author !in members) return@updateGroup false
+            authorWasPresent = author in members
+            if (author !in members && (!join || (expectedKeyEpoch != null && expectedKeyEpoch != entity.keyEpoch))) {
+                return@updateGroup false
+            }
+            val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
+            if ("revoked:$author" in clocks) return@updateGroup false
+            val ownClock = clocks[author]?.let(::parseMemberClock)
+            // Names and joins are independent registers; a null name must not hide an older rename.
+            val joinClockKey = "join:$author"
+            val joinClock = clocks[joinClockKey]?.let(::parseMemberClock)
+            val applyJoin = join && (joinClock == null || isNewerClock(eventTimestamp, eventId, joinClock))
+            val applyName = displayName != null &&
+                (ownClock == null || isNewerClock(eventTimestamp, eventId, ownClock))
+            if (!applyJoin && !applyName) return@updateGroup false
 
-        val members = decodeList(entity.members, groupId, "members")
-        val newMembers = when {
-            join && author !in members -> members + author
-            else -> members
-        }
-        if (author !in newMembers) return@withLock false // name change for a non-member: nothing to apply
-        if (newMembers.size > RelayDefaults.MAX_GROUP_MEMBERS) {
-            Log.w(
-                TAG,
-                "Rejecting self-join to $groupId: ${newMembers.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
-            )
-            return@withLock false
-        }
+            val newMembers = if (applyJoin && author !in members) members + author else members
+            if (author !in newMembers) return@updateGroup false
+            if (newMembers.size > RelayDefaults.MAX_GROUP_MEMBERS) {
+                Log.w(
+                    TAG,
+                    "Rejecting self-join to $groupId: ${newMembers.size} members (max ${RelayDefaults.MAX_GROUP_MEMBERS})"
+                )
+                return@updateGroup false
+            }
 
-        val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
-        if (displayName != null) {
-            val safeName = displayName.trim().take(MAX_DISPLAY_NAME_LENGTH)
-            if (safeName.isEmpty()) names.remove(author) else names[author] = safeName
-        }
-        val newClocks = clocks.toMutableMap().apply { put(author, "$eventTimestamp:$eventId") }
+            val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
+            if (applyName &&
+                isNewerClock(eventTimestamp, eventId, entity.lastMetaTimestamp to entity.lastMetaEventId)
+            ) {
+                val safeName = checkNotNull(displayName).trim().take(MAX_DISPLAY_NAME_LENGTH)
+                if (safeName.isEmpty()) names.remove(author) else names[author] = safeName
+            }
+            val newClocks = clocks.toMutableMap().apply {
+                if (applyName) put(author, "$eventTimestamp:$eventId")
+                if (applyJoin) put(joinClockKey, "$eventTimestamp:$eventId")
+            }
 
-        groupDao.updateMemberSelf(
-            groupId,
-            json.encodeToString(stringListSerializer, newMembers),
-            json.encodeToString(nameMapSerializer, names),
-            json.encodeToString(nameMapSerializer, newClocks)
-        )
-        true
+            groupDao.updateMemberSelf(
+                groupId,
+                json.encodeToString(stringListSerializer, newMembers),
+                json.encodeToString(nameMapSerializer, sanitizeMemberNames(names, newMembers)),
+                json.encodeToString(nameMapSerializer, newClocks),
+                expectedKeyEpoch = entity.keyEpoch,
+                expectedMembers = entity.members,
+                expectedMemberNames = entity.memberNames,
+                expectedMemberClocks = entity.memberClocks,
+                expectedMetaTimestamp = entity.lastMetaTimestamp,
+                expectedMetaEventId = entity.lastMetaEventId,
+                expectedCreatedBy = entity.createdBy
+            ).let { if (it == 1) true else null }
+        }
+    }
+
+    override suspend fun resolveRoster(groupId: String, members: List<String>): List<String> {
+        val entity = groupDao.getById(groupId) ?: return members
+        return resolveRoster(members, decodeMap(entity.memberClocks, groupId, "memberClocks")).members
+    }
+
+    /** A roster with tombstoned identities replaced or dropped, plus how each original identity moved. */
+    private class ResolvedRoster(val members: List<String>, private val moved: Map<String, String>) {
+        /** Names keyed by the original identities, re-keyed to where they resolved; explicit entries win. */
+        fun remapNames(names: Map<String, String>): Map<String, String> {
+            if (moved.isEmpty()) return names
+            val out = LinkedHashMap<String, String>()
+            for ((member, name) in names) if (member !in moved) out[member] = name
+            for ((member, name) in names) {
+                val target = moved[member] ?: continue
+                if (target.isNotEmpty() && target !in out) out[target] = name
+            }
+            return out
+        }
+    }
+
+    private fun resolveRoster(members: List<String>, clocks: Map<String, String>): ResolvedRoster {
+        val moved = LinkedHashMap<String, String>()
+        val resolved = ArrayList<String>(members.size)
+        for (member in members) {
+            var current = member
+            var hops = 0
+            while ("revoked:$current" in clocks && hops++ < MAX_REPLACEMENT_HOPS) {
+                current = clocks["$REPLACED_PREFIX$current"] ?: ""
+                if (current.isEmpty()) break
+            }
+            if (current.isEmpty() || "revoked:$current" in clocks) {
+                moved[member] = ""
+                continue
+            }
+            if (current != member) moved[member] = current
+            if (current !in resolved) resolved += current
+        }
+        return ResolvedRoster(resolved, moved)
+    }
+
+    private suspend fun updateGroup(groupId: String, update: suspend (GroupEntity) -> Boolean?): Boolean {
+        var entity = groupDao.getById(groupId) ?: return false
+        while (true) {
+            update(entity)?.let { return it }
+            val latest = groupDao.getById(groupId) ?: return false
+            if (latest == entity) return false
+            entity = latest
+        }
     }
 
     /** `"createdAt:eventId"` -> `(createdAt, eventId)`, or null when the stored value is unreadable. */
@@ -370,5 +553,11 @@ constructor(
          * realistic group's lifetime.
          */
         private const val MAX_ORPHAN_EPOCH_SWEEP = 64
+
+        /** `memberClocks` entry recording which identity replaced a tombstoned one. */
+        private const val REPLACED_PREFIX = "replaced:"
+
+        /** A revoked identity replaced by another revoked identity is followed at most this far. */
+        private const val MAX_REPLACEMENT_HOPS = 8
     }
 }

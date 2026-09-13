@@ -8,6 +8,7 @@ import com.splitfree.data.local.AppDatabase
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.repository.ControlOperationJournal
 import com.splitfree.data.repository.ExpenseRepository
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.EventSigner
@@ -23,6 +24,7 @@ import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.OutboxFullException
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import io.mockk.every
 import io.mockk.mockk
@@ -82,6 +84,7 @@ class EventPublisherTest {
 
     @Before
     fun setup() = runBlocking {
+        every { identity.hasPendingKeyPair() } returns false
         every { identity.getPublicKeyHex() } returns myPub
         every { keyStore.getString(any(), any()) } returns "group-key"
         every { giftWrap.enabled } returns true
@@ -225,7 +228,9 @@ class EventPublisherTest {
         every { identity.getPublicKeyHex() } returns creator
         every { identity.getPrivateKeyBytes() } answers { privateKey.copyOf() }
         // No key stored for epoch 1 yet, so the rotation generates one instead of resuming an interrupted attempt.
-        every { keyStore.getString("g1:1", any()) } returns null
+        var epochKey: String? = null
+        every { keyStore.getString("g1:1", any()) } answers { epochKey }
+        every { keyStore.putString("g1:1", any()) } answers { epochKey = secondArg() }
         val encryption = mockk<GroupEncryption>()
         every { encryption.generateGroupKey() } returns "rotated-key"
         every { encryption.encrypt(any(), "rotated-key") } answers { "meta:${firstArg<String>()}" }
@@ -237,7 +242,16 @@ class EventPublisherTest {
             event.copy(id = "post-rotation-meta", pubkey = creator, content = thirdArg())
         }
 
-        RotateGroupKeyUseCase(groupRepo, encryption, identity, signer, publisher, mockk(relaxed = true))("g1", thirdPub)
+        RotateGroupKeyUseCase(
+            groupRepo,
+            encryption,
+            identity,
+            signer,
+            publisher,
+            mockk(relaxed = true),
+            ControlOperationJournal(db.controlOperationDao()),
+            ControlOperationLock()
+        )("g1", thirdPub)
 
         val stored = db.eventDao().getEventsByGroup("g1")
         val rotations = stored.filter { it.eventType == "key_rotation" }
@@ -328,7 +342,8 @@ class EventPublisherTest {
         groupRepo.save(group.copy(members = listOf(myPub, otherPub)), "group-key")
         expectFailure<IllegalStateException> { publisher.publishExpense(event, group, "operation") }
         assertEmptySave()
-        groupRepo.save(group.copy(keyEpoch = 1), "new-key")
+        every { keyStore.getString("g1:${group.keyEpoch + 1}", any()) } returns null
+        groupRepo.save(group.copy(keyEpoch = group.keyEpoch + 1), "new-key")
         expectFailure<IllegalStateException> { publisher.publishExpense(event, group, "operation") }
         assertEmptySave()
     }

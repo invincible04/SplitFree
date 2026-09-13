@@ -10,6 +10,7 @@ import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
@@ -48,6 +49,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -354,42 +356,48 @@ class GroupDetailViewModelTest {
         every { getExpenses.observeWithAuthors("g1") } returns flowOf(
             listOf(AuthoredExpense(expense("mine"), pubkey), AuthoredExpense(expense("theirs", paidBy = other), other))
         )
-        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(emptyList(), setOf("excluded"))
+        coEvery { computeBalances.computeWithExclusions("g1") } returns
+            BalanceResult(emptyList(), setOf(ExpenseIdentity(pubkey, "excluded")))
 
         val fresh = newViewModel()
 
-        assertEquals(listOf("mine", "theirs"), fresh.uiState.value.expenses.map { it.id })
-        assertEquals(mapOf("mine" to pubkey, "theirs" to other), fresh.uiState.value.expenseAuthors)
-        assertTrue(fresh.uiState.value.authoredByMe("mine"))
-        assertFalse(fresh.uiState.value.authoredByMe("theirs"))
-        assertFalse(fresh.uiState.value.authoredByMe("unknown"))
+        assertEquals(listOf("mine", "theirs"), fresh.uiState.value.expenses.map { it.expense.id })
+        assertEquals(listOf(pubkey, other), fresh.uiState.value.expenses.map { it.authorPubkey })
+        assertTrue(fresh.uiState.value.authoredByMe(ExpenseIdentity(pubkey, "mine")))
+        assertFalse(fresh.uiState.value.authoredByMe(ExpenseIdentity(other, "theirs")))
+        assertFalse(fresh.uiState.value.authoredByMe(ExpenseIdentity(pubkey, "unknown")))
         fresh.viewModelScope.cancel()
     }
 
     @Test
-    fun `excluded expenses are dropped from the ledger and the author map alike`() = runTest {
+    fun `excluded expenses are dropped from the authored ledger`() = runTest {
         every { getExpenses.observeWithAuthors("g1") } returns flowOf(
             listOf(AuthoredExpense(expense("kept"), pubkey), AuthoredExpense(expense("excluded"), pubkey))
         )
-        coEvery { computeBalances.computeWithExclusions("g1") } returns BalanceResult(emptyList(), setOf("excluded"))
+        coEvery { computeBalances.computeWithExclusions("g1") } returns
+            BalanceResult(emptyList(), setOf(ExpenseIdentity(pubkey, "excluded")))
 
         val fresh = newViewModel()
 
-        assertEquals(listOf("kept"), fresh.uiState.value.expenses.map { it.id })
-        assertEquals(setOf("kept"), fresh.uiState.value.expenseAuthors.keys)
+        assertEquals(listOf("kept"), fresh.uiState.value.expenses.map { it.expense.id })
+        assertEquals(listOf(ExpenseIdentity(pubkey, "kept")), fresh.uiState.value.expenses.map { it.identity })
         fresh.viewModelScope.cancel()
     }
 
     @Test
     fun `authoredByMe is false while my key is unknown`() {
-        assertFalse(GroupDetailUiState(expenseAuthors = mapOf("e" to "")).authoredByMe("e"))
+        assertFalse(
+            GroupDetailUiState(
+                expenses = listOf(AuthoredExpense(expense("e"), ""))
+            ).authoredByMe(ExpenseIdentity("", "e"))
+        )
     }
 
     @Test
     fun `deleteExpense publishes the deletion and confirms with a message`() = runTest {
-        vm.deleteExpense("exp1")
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp1"))
 
-        coVerify(exactly = 1) { deleteExpense("g1", "exp1") }
+        coVerify(exactly = 1) { deleteExpense("g1", "exp1", expectedAuthorPubkey = pubkey) }
         assertEquals(UiMessage.Res(R.string.expense_deleted), vm.message.value)
         assertNull(vm.error.value)
 
@@ -399,28 +407,70 @@ class GroupDetailViewModelTest {
 
     @Test
     fun `deleteExpense surfaces the use case error and releases the guard`() = runTest {
-        coEvery { deleteExpense("g1", "exp1") } throws IllegalStateException("Only the creator can delete this expense")
+        coEvery { deleteExpense("g1", "exp1", expectedAuthorPubkey = pubkey) } throws
+            IllegalStateException("Only the creator can delete this expense")
 
-        vm.deleteExpense("exp1")
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp1"))
 
         assertEquals(UiMessage.Raw("Only the creator can delete this expense"), vm.error.value)
         assertNull(vm.message.value)
-        vm.deleteExpense("exp1")
-        coVerify(exactly = 2) { deleteExpense("g1", "exp1") }
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp1"))
+        coVerify(exactly = 2) { deleteExpense("g1", "exp1", expectedAuthorPubkey = pubkey) }
     }
 
     @Test
     fun `deleteExpense ignores a second tap while the first is in flight`() = runTest {
         val gate = CompletableDeferred<Unit>()
-        coEvery { deleteExpense("g1", "exp1") } coAnswers { gate.await() }
+        coEvery { deleteExpense("g1", "exp1", expectedAuthorPubkey = pubkey) } coAnswers { gate.await() }
 
-        vm.deleteExpense("exp1")
-        vm.deleteExpense("exp1")
-        coVerify(exactly = 1) { deleteExpense("g1", any()) }
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp1"))
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp1"))
+        coVerify(exactly = 1) { deleteExpense("g1", any(), expectedAuthorPubkey = pubkey) }
 
         gate.complete(Unit)
-        vm.deleteExpense("exp2")
-        coVerify(exactly = 1) { deleteExpense("g1", "exp2") }
+        vm.deleteExpense(ExpenseIdentity(pubkey, "exp2"))
+        coVerify(exactly = 1) { deleteExpense("g1", "exp2", expectedAuthorPubkey = pubkey) }
+    }
+
+    @Test
+    fun `colliding expenses keep distinct identities and delete only the selected own record`() = runTest {
+        val theirs = AuthoredExpense(expense("shared", paidBy = pubkey), other)
+        val mine = AuthoredExpense(expense("shared", paidBy = other), pubkey)
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(listOf(theirs, mine))
+        val fresh = newViewModel()
+
+        assertEquals(listOf(theirs, mine), fresh.uiState.value.expenses)
+        assertFalse(fresh.uiState.value.authoredByMe(theirs.identity))
+        assertTrue(fresh.uiState.value.authoredByMe(mine.identity))
+        fresh.deleteExpense(theirs.identity)
+        coVerify(exactly = 0) { deleteExpense(any(), any(), any(), any()) }
+        fresh.deleteExpense(mine.identity)
+        coVerify(exactly = 1) { deleteExpense("g1", "shared", expectedAuthorPubkey = pubkey) }
+        fresh.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `exclusion removes only the matching author even when another record shares its uuid`() = runTest {
+        val theirs = AuthoredExpense(expense("shared"), other)
+        val mine = AuthoredExpense(expense("shared"), pubkey)
+        every { getExpenses.observeWithAuthors("g1") } returns flowOf(listOf(theirs, mine))
+        coEvery { computeBalances.computeWithExclusions("g1") } returns
+            BalanceResult(emptyList(), setOf(theirs.identity))
+        val fresh = newViewModel()
+
+        assertEquals(listOf(mine), fresh.uiState.value.expenses)
+        assertTrue(fresh.uiState.value.authoredByMe(mine.identity))
+        fresh.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `delete rechecks the active signer rather than trusting cached ui ownership`() = runTest {
+        every { identity.getPublicKeyHex() } returns other
+
+        vm.deleteExpense(ExpenseIdentity(pubkey, "shared"))
+
+        coVerify(exactly = 0) { deleteExpense(any(), any(), any(), any()) }
+        assertNotNull(vm.error.value)
     }
 
     // --- observation failure boundaries ---

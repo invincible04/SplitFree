@@ -2,6 +2,7 @@ package com.splitfree.ui.screens.groupdetail
 
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import org.junit.Assert.assertEquals
@@ -97,7 +98,7 @@ class GroupDetailLedgerTest {
             GroupSheet.Tools,
             GroupSheet.SyncStatus,
             settle,
-            GroupSheet.ExpenseDetail("e-1"),
+            GroupSheet.ExpenseDetail(ExpenseIdentity("alice", "e-1")),
             GroupSheet.RemoveMember(b)
         ).forEach { sheet ->
             @Suppress("UNCHECKED_CAST")
@@ -105,6 +106,18 @@ class GroupDetailLedgerTest {
             assertEquals(sheet, GroupSheetSaver.restore(saved))
         }
         assertNull(with(GroupSheetSaver) { FakeSaverScope.save(null) })
+    }
+
+    @Test
+    fun `expense sheet restoration keeps the full author and rejects old uuid-only state`() {
+        val author = "same-prefix-" + "a".repeat(64)
+        val sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(author, "shared"))
+        val saved = with(GroupSheetSaver) { FakeSaverScope.save(sheet) }
+
+        assertEquals(sheet, GroupSheetSaver.restore(checkNotNull(saved)))
+        assertNull(GroupSheetSaver.restore(listOf("expense", "shared")))
+        assertNull(GroupSheetSaver.restore(listOf("expense", "", "shared")))
+        assertNull(GroupSheetSaver.restore(listOf("expense", author, "")))
     }
 
     private object FakeSaverScope : androidx.compose.runtime.saveable.SaverScope {

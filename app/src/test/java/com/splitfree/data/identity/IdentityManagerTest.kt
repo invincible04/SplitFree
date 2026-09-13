@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
 import com.splitfree.domain.repository.SecureStorage
+import com.splitfree.domain.repository.SecureStorageException
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.test.FakeSecureStorage
 import io.mockk.Runs
@@ -264,6 +265,58 @@ class IdentityManagerTest {
         assertEquals(NostrEvent.pubkeyFromPrivkey(priv.hexToBytes()), pub)
         assertEquals(pub, storage.getString("npub_pending", null))
         assertEquals(pub, mgr.getPendingPublicKeyHex())
+    }
+
+    @Test
+    fun `generatePendingKeyPair reuses durable private key even when public mirror was never written`() {
+        storage.putString("nsec_pending", otherPrivHex)
+        assertEquals(otherPubHex, mgr.generatePendingKeyPair())
+        assertEquals(otherPrivHex, storage.getString("nsec_pending", null))
+    }
+
+    @Test
+    fun `finishPendingKeyPair repairs cleanup after promotion without a pending private key`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.putString("npub", validPubHex)
+        storage.putString("npub_pending", otherPubHex)
+        storage.putString("revocation_event_ids", "event")
+        storage.putLong("revocation_start", 1)
+        mgr.finishPendingKeyPair(otherPubHex)
+        mgr = IdentityManager(context, storage)
+        mgr.finishPendingKeyPair(otherPubHex)
+        assertEquals(otherPubHex, storage.getString("npub", null))
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertFalse(mgr.hasPendingKeyPair())
+        assertNull(storage.getString("npub_pending", null))
+        assertTrue(mgr.getRevocationEventIds().isEmpty())
+        assertEquals(0L, mgr.getRevocationStartTime())
+    }
+
+    @Test
+    fun `promotion invalidates cached public key even when storage throws after active private write`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("nsec_pending", otherPrivHex)
+        val failing = object : SecureStorage by storage {
+            override fun putString(key: String, value: String) {
+                storage.putString(key, value)
+                if (key == "nsec") throw SecureStorageException("injected after durable active write")
+            }
+        }
+        val manager = IdentityManager(context, failing)
+        assertEquals(validPubHex, manager.getPublicKeyHex())
+        assertThrows(SecureStorageException::class.java) { manager.finishPendingKeyPair(otherPubHex) }
+        assertEquals(otherPubHex, manager.getPublicKeyHex())
+        manager.finishPendingKeyPair(otherPubHex)
+        assertFalse(manager.hasPendingKeyPair())
+    }
+
+    @Test
+    fun `finishPendingKeyPair cannot promote a replacement different from the journal target`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("nsec_pending", otherPrivHex)
+        assertThrows(IllegalStateException::class.java) { mgr.finishPendingKeyPair("cc".repeat(32)) }
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(otherPrivHex, storage.getString("nsec_pending", null))
     }
 
     @Test

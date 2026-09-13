@@ -3,10 +3,14 @@ package com.splitfree.di
 import android.content.Context
 import androidx.room.Room
 import com.splitfree.data.local.AppDatabase
+import com.splitfree.data.local.dao.ControlOperationDao
 import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.dao.SyncRevisionDao
+import com.splitfree.data.repository.ControlOperationJournal
+import com.splitfree.domain.repository.ControlOperationJournalContract
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -19,8 +23,9 @@ import javax.inject.Singleton
  *
  * ## Schema migration
  *
- * Currently at **version 2** (`exportSchema = true`). Registered migrations:
+ * Currently at **version 3** (`exportSchema = true`). Registered migrations:
  * - [AppDatabase.MIGRATION_1_2]: additive columns on `events` / `groups` plus the `deliveries` table.
+ * - [AppDatabase.MIGRATION_2_3]: control journal and persistent sync revisions (including change triggers).
  *
  * ### Do not use `fallbackToDestructiveMigration()`
  *
@@ -48,7 +53,8 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase = Room
         .databaseBuilder(context, AppDatabase::class.java, "splitfree.db")
-        .addMigrations(AppDatabase.MIGRATION_1_2)
+        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+        .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
         .build()
 
     @Provides fun provideEventDao(db: AppDatabase): EventDao = db.eventDao()
@@ -56,6 +62,14 @@ object DatabaseModule {
     @Provides fun provideGroupDao(db: AppDatabase): GroupDao = db.groupDao()
 
     @Provides fun provideOutboxDao(db: AppDatabase): OutboxDao = db.outboxDao()
+
+    @Provides fun provideControlOperationDao(db: AppDatabase): ControlOperationDao = db.controlOperationDao()
+
+    @Provides fun provideSyncRevisionDao(db: AppDatabase): SyncRevisionDao = db.syncRevisionDao()
+
+    @Provides
+    @Singleton
+    fun provideControlOperationJournal(impl: ControlOperationJournal): ControlOperationJournalContract = impl
 
     @Provides fun provideDeliveryDao(db: AppDatabase): DeliveryDao = db.deliveryDao()
 }

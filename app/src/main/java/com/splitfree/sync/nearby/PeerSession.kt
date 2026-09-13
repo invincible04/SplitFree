@@ -2,6 +2,7 @@ package com.splitfree.sync.nearby
 
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.util.DebugLog as Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -9,24 +10,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * One authenticated nearby connection, from transport `Connected` to a terminal close.
+ * Authenticates and reconciles one transport connection within a single group.
  *
- * The session is a serialized state machine: every entry point ([start], [onFrame],
- * [onTransportDisconnected], [markDirty], [close]) is invoked by [NearbySessionCoordinator] under one
- * lock, and every timer re-enters through [runSerialized]. Timers are children of [scope], which is
- * cancelled on close, so a stale timeout can never touch a replacement session for the same endpoint.
- *
- * After the group is open the protocol is symmetric. Each side is a *provider* of its own inventory
- * snapshots (`outSnap`) and a *consumer* of the peer's (`inSnap`); a snapshot is finished when the
- * consumer has a terminal [RecordOutcome] for every record it wanted and has sent [ReconcileResult].
- *
- * The provider only treats an inventory item as known to the peer once a [ReconcileResult] for the
- * snapshot that carried it has arrived (`outAcked`); a later snapshot resends everything not yet
- * acknowledged, so a lost page can never turn into an empty delta that both sides mistake for done.
- *
- * "Up to date" means both directions are finished with nothing rejected, busy or unresolved, and
- * nothing pending in durable storage on either side (`stats.deferred` mirrors the store, so work left
- * over from an earlier session or a restart counts too).
+ * The owner serializes all entry points and [runSerialized] callbacks under the same lock.
+ * This session owns [scope] and cancels it on close, isolating its timers from replacement sessions.
+ * Each side provides local inventory and consumes peer inventory independently; only [ReconcileResult]
+ * acknowledges a snapshot, and subsequent snapshots include every unacknowledged item.
+ * [PeerPhase.UP_TO_DATE] requires both directions finished without failures and no durable pending
+ * work reported by either side. An unreadable local pending count prevents that phase.
  */
 class PeerSession(
     val endpointId: String,
@@ -42,16 +33,19 @@ class PeerSession(
     private val runSerialized: suspend (suspend () -> Unit) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    /** Owner callbacks; all are invoked while the owner's lock is held. */
     interface Listener {
+        /** Publishes changed session progress while the session remains open. */
         fun onProgress(session: PeerSession)
 
-        /** New records were applied or carried from this peer; other sessions on the group should re-advertise. */
+        /** Local data or evidence changes during reconciliation require other group sessions to re-advertise. */
         suspend fun onDataChanged(session: PeerSession)
 
+        /** Terminal. [reason] is a [NearbyWire] `CLOSE_*` constant; the session's scope is already cancelled. */
         fun onClosed(session: PeerSession, reason: String)
     }
 
-    // ---- identity & authentication ----
+    // ------------------------------------------- identity & authentication state
     private val myPubkey = identity.getPublicKeyHex()
     private val myNonce = NearbyAuth.newNonce()
     private var peerHello: Hello? = null
@@ -65,10 +59,10 @@ class PeerSession(
     private var groupOpen = false
     private var violations = 0
 
-    // ---- provider half (my inventory -> peer) ----
+    // ---------------------------------- provider state (local inventory -> peer)
     private var outSnap = 0
 
-    /** Ids the peer has confirmed seeing: the union of every snapshot it answered with a ReconcileResult. */
+    /** Ids the peer has confirmed seeing: the union of every snapshot it answered with a [ReconcileResult]. */
     private var outAcked: Set<String> = emptySet()
     private var outBaselineAcked = false
 
@@ -77,10 +71,13 @@ class PeerSession(
     private var outItemsById: Map<String, InventoryItem> = emptyMap()
     private var outPeerDone = true
     private var outDirty = false
+    private var outStateDirty = false
+    private var pendingReadable = true
+    private var peerPending = 0
     private val awaitingResult = LinkedHashSet<String>()
     private var peerReport: ReconcileResult? = null
 
-    // ---- consumer half (peer inventory -> me) ----
+    // ---------------------------------- consumer state (peer inventory -> local)
     private var inSnap = -1
     private val inItems = ArrayList<InventoryItem>()
     private var inNextPage = 0
@@ -96,7 +93,7 @@ class PeerSession(
     private val rejectedThisSnapshot = ArrayList<InventoryItem>()
     private var retriedRejected = false
 
-    // ---- lifecycle ----
+    // ----------------------------------------------------------- lifecycle state
     var phase: PeerPhase = PeerPhase.AUTHENTICATING
         private set
     var closeReason: String? = null
@@ -112,6 +109,7 @@ class PeerSession(
 
     fun progress(): PeerProgress = PeerProgress(endpointId, peerPubkey, phase, groupId, stats, closeReason)
 
+    /** Send [Hello] and arm the watchdog. Called once, immediately after construction. */
     fun start() {
         send(Hello(NearbyWire.PROTOCOL_VERSION, myPubkey, myNonce, incoming, CAPABILITIES.toList()))
         setPhase(PeerPhase.AUTHENTICATING)
@@ -124,8 +122,9 @@ class PeerSession(
             }
     }
 
-    // ------------------------------------------------------------------ frames
+    // -------------------------------------------------------------------- frames
 
+    /** Route one raw transport payload. Frames arriving after close are ignored. */
     suspend fun onFrame(data: ByteArray) {
         if (closed) return
         lastActivity = clock()
@@ -162,7 +161,16 @@ class PeerSession(
     }
 
     private suspend fun requireGroupOpen(): Boolean {
-        if (groupOpen) return true
+        if (groupOpen) {
+            if (identity.getPublicKeyHex() != myPubkey ||
+                !store.isAuthorizedForGroup(groupId, myPubkey) ||
+                !store.isAuthorizedForGroup(groupId, checkNotNull(peerPubkey))
+            ) {
+                terminate(PeerPhase.UNAUTHORIZED, NearbyWire.CLOSE_UNAUTHORIZED, notifyPeer = true)
+                return false
+            }
+            return true
+        }
         violation("message before group open")
         return false
     }
@@ -213,9 +221,7 @@ class PeerSession(
     private suspend fun onAuth(auth: Auth) {
         val t = transcript
         if (t == null) {
-            // Same-type payload order is guaranteed on one Nearby connection, so a peer's Auth cannot
-            // overtake its Hello; a lone Auth is a violation. Buffer exactly one anyway so an
-            // unusual transport cannot make a valid peer fail.
+            // Buffer at most one Auth before Hello to tolerate transport reordering.
             if (peerAuth == null) peerAuth = auth else violation("Auth before Hello")
             return
         }
@@ -241,7 +247,7 @@ class PeerSession(
     private suspend fun openGroup() {
         val peer = checkNotNull(peerPubkey)
         if (!store.isAuthorizedForGroup(groupId, peer)) {
-            // Never reveal the group id to a peer we cannot place in it.
+            // The group id is never sent to a peer the local side cannot authorize for it.
             terminate(PeerPhase.UNAUTHORIZED, NearbyWire.CLOSE_UNAUTHORIZED, notifyPeer = true)
             return
         }
@@ -283,11 +289,11 @@ class PeerSession(
     private suspend fun onGroupOpened() {
         groupOpen = true
         setPhase(PeerPhase.COMPARING)
-        // Work left pending by an earlier session or a restart is this session's business too: try
-        // it now (a dependency may have arrived meanwhile) and carry whatever is still pending into
-        // the completion check.
+        // Retry durable pending work before advertising; its dependencies may be available locally.
         try {
             store.retryDeferred(groupId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "retryDeferred at open failed for $endpointId: ${e.message}")
         }
@@ -295,33 +301,43 @@ class PeerSession(
         advertise(force = true)
     }
 
-    /** Mirror the store's durable pending count into [stats]; the phase derives from it. */
+    /** An unreadable durable pending count prevents either side from reporting convergence. */
     private suspend fun refreshPending() {
+        val wasReadable = pendingReadable
         val pending =
             try {
-                store.pendingCount(groupId)
+                store.pendingCount(groupId).also { pendingReadable = true }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                pendingReadable = false
                 Log.w(TAG, "pendingCount failed for $endpointId: ${e.message}")
                 stats.deferred
             }
-        if (pending != stats.deferred) stats = stats.copy(deferred = pending)
+        if (pending != stats.deferred || wasReadable != pendingReadable) {
+            stats = stats.copy(deferred = pending)
+            outStateDirty = true
+        }
     }
 
     // ------------------------------------------------------------- provider half
 
-    /** Local data changed; re-advertise now or as soon as the peer finishes the current snapshot. */
+    /** Refreshes pending state and re-advertises changed data when the current provider snapshot completes. */
     suspend fun markDirty() {
-        if (closed || !groupOpen) return
+        if (closed || !groupOpen || !requireGroupOpen()) return
+        refreshPending()
+        if (inDone && outStateDirty) sendReconcileResult()
         outDirty = true
         if (outPeerDone) advertise(force = false)
     }
 
     private suspend fun advertise(force: Boolean) {
+        refreshPending()
         val items = store.inventory(groupId)
-        // Delta against what the peer has ACKNOWLEDGED, not what we once sent: a page lost in
-        // transit is simply sent again in the next snapshot.
+        // The delta is against what the peer has acknowledged, so a page lost in transit is
+        // resent by the next snapshot.
         val toSend = items.filter { it.id !in outAcked }
-        if (!force && outBaselineAcked && toSend.isEmpty()) {
+        if (!force && !outStateDirty && outBaselineAcked && toSend.isEmpty()) {
             outDirty = false
             updatePhase()
             return
@@ -331,9 +347,16 @@ class PeerSession(
         outItemsById = items.associateBy { it.id }
         outPeerDone = false
         outDirty = false
+        outStateDirty = false
         peerReport = null
         awaitingResult.clear()
-        NearbyWire.paginate(outSnap, delta = outBaselineAcked, toSend).forEach { send(it) }
+        NearbyWire.paginate(
+            outSnap,
+            delta = outBaselineAcked,
+            toSend,
+            pending = if (pendingReadable) stats.deferred else stats.deferred.coerceAtLeast(1)
+        )
+            .forEach { send(it) }
         updatePhase()
     }
 
@@ -347,7 +370,7 @@ class PeerSession(
             val item = outItemsById[id]
             val record = item?.let { store.loadRecord(groupId, it) }
             if (record == null) {
-                // Only advertised, still-available records are served; anything else is "unavailable".
+                // Only advertised, still-available records are served; a zero-part Record means unavailable.
                 send(Record(outSnap, id, item?.t ?: NearbyWire.KIND_EVENT, 0, 0, ""))
                 continue
             }
@@ -376,6 +399,7 @@ class PeerSession(
         outPeerDone = true
         outReadvertised = 0
         peerReport = report
+        peerPending = report.deferred.coerceAtLeast(0)
         outAcked = outAdvertised
         outBaselineAcked = true
         awaitingResult.clear()
@@ -388,8 +412,7 @@ class PeerSession(
         if (page.snap < inSnap) return
         if (page.snap > inSnap) beginSnapshot(page.snap)
         if (page.page != inNextPage) {
-            // A page went missing (failed send). Not a violation: the provider notices the silence
-            // and re-advertises everything we have not acknowledged.
+            // Only contiguous pages are consumed; the provider's watchdog retries unacknowledged inventory.
             Log.w(TAG, "Inventory page ${page.page} from $endpointId out of order (expected $inNextPage); waiting")
             return
         }
@@ -400,6 +423,7 @@ class PeerSession(
         }
         inItems += page.items.filter { it.isWellFormed() }
         if (page.last) {
+            peerPending = page.pending.coerceAtLeast(0)
             inComplete = true
             val wanted = store.selectWanted(groupId, inItems, checkNotNull(peerPubkey))
             inItems.clear()
@@ -412,8 +436,7 @@ class PeerSession(
     }
 
     private fun beginSnapshot(snap: Int) {
-        // A peer only advertises a new snapshot after we reported the previous one done, so
-        // anything still in flight here is lost; count it rather than pretend it applied.
+        // In-flight requests belong to their snapshot and remain unresolved when a newer one replaces it.
         if (inflight.isNotEmpty()) stats = stats.copy(unresolved = stats.unresolved + inflight.size)
         inSnap = snap
         inItems.clear()
@@ -452,8 +475,7 @@ class PeerSession(
             }
             refreshPending()
             if (!retriedRejected && rejectedThisSnapshot.isNotEmpty()) {
-                // Records that arrived before the key they need were rejected as undecryptable.
-                // Now that a control record landed, ask for them once more within this snapshot.
+                // Applied control records may supply missing keys; retry rejected records once per snapshot.
                 retriedRejected = true
                 controlApplied = false
                 val again = rejectedThisSnapshot.toList()
@@ -464,7 +486,13 @@ class PeerSession(
                 return
             }
         }
+        refreshPending()
         inDone = true
+        sendReconcileResult()
+        if (appliedThisSnapshot > 0) listener.onDataChanged(this)
+    }
+
+    private fun sendReconcileResult() {
         send(
             ReconcileResult(
                 snap = inSnap,
@@ -474,10 +502,11 @@ class PeerSession(
                 rejected = stats.rejected,
                 carried = stats.carried,
                 busy = stats.busy,
-                unresolved = stats.unresolved
+                // An unreadable pending count fails closed on the peer too. The sentinel is per
+                // report; the local counter is not incremented.
+                unresolved = if (pendingReadable) stats.unresolved else stats.unresolved.coerceAtLeast(1)
             )
         )
-        if (appliedThisSnapshot > 0) listener.onDataChanged(this)
     }
 
     private suspend fun onRecord(record: Record) {
@@ -524,6 +553,8 @@ class PeerSession(
         val report =
             try {
                 store.ingest(groupId, item, json, checkNotNull(peerPubkey))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Ingest threw for ${record.id.take(8)}: ${e.message}")
                 IngestReport(RecordOutcome.REJECTED)
@@ -578,7 +609,7 @@ class PeerSession(
         if (idle < TRANSFER_TIMEOUT_MS) return
         if (inflight.isNotEmpty()) {
             if (!retriedInflight) {
-                // One bounded retry reusing the same record identities; duplicates are harmless.
+                // Each snapshot permits one retry of its in-flight requests.
                 retriedInflight = true
                 partials.clear()
                 send(Want(inSnap, inflight.keys.toList()))
@@ -591,23 +622,23 @@ class PeerSession(
             }
             return
         }
-        if (!outPeerDone && awaitingResult.isEmpty()) {
-            // The peer's ReconcileResult, or one of our pages, was lost. Re-advertise everything the
-            // peer has not acknowledged (empty if only the result went missing); give up after a
-            // bounded number of attempts.
+        if (!outPeerDone) {
+            // The consumer gets its own retry window before the snapshot it is requesting from is
+            // replaced; provider and consumer watchdogs may fire at the same instant.
+            if (awaitingResult.isNotEmpty() && idle < TRANSFER_TIMEOUT_MS * 2) return
+            // Retry unacknowledged inventory up to MAX_READVERTISE times to recover missing pages or receipts.
             if (outReadvertised < MAX_READVERTISE) {
                 outReadvertised++
                 advertise(force = true)
                 lastActivity = clock()
             } else {
-                stats = stats.copy(unresolved = stats.unresolved + 1)
-                outPeerDone = true
-                updatePhase()
+                stats = stats.copy(unresolved = stats.unresolved + awaitingResult.size.coerceAtLeast(1))
+                terminate(PeerPhase.INTERRUPTED, NearbyWire.CLOSE_TIMEOUT, notifyPeer = true)
             }
         }
     }
 
-    // ------------------------------------------------------------------ lifecycle
+    // ----------------------------------------------------------------- lifecycle
 
     private suspend fun onPeerClose(close: Close) {
         val phase =
@@ -620,11 +651,12 @@ class PeerSession(
         terminate(phase, close.reason, notifyPeer = false)
     }
 
+    /** The transport dropped the endpoint. Terminal; no [Close] is sent. */
     suspend fun onTransportDisconnected() {
         terminate(PeerPhase.INTERRUPTED, NearbyWire.CLOSE_PEER_DISCONNECTED, notifyPeer = false)
     }
 
-    /** Owner-initiated close (stop, replacement, permission loss). Idempotent. */
+    /** Closes the session once, attempts to send [reason], and cancels its scope; use a [NearbyWire] close reason. */
     suspend fun close(reason: String) {
         terminate(PeerPhase.CLOSED, reason, notifyPeer = true)
     }
@@ -645,13 +677,13 @@ class PeerSession(
             try {
                 transport.sendPayload(endpointId, NearbyWire.encode(Close(reason)))
             } catch (_: Exception) {
-                // Transport already gone; nothing to do.
+                // Local cleanup must complete even if the close frame cannot be sent.
             }
         }
         if (inflight.isNotEmpty()) stats = stats.copy(unresolved = stats.unresolved + inflight.size)
         watchdog?.cancel()
         scope.cancel()
-        // Terminal cleanup: nothing authenticated or half-received survives this session.
+        // Release transfer buffers and disable authenticated processing before notifying the owner.
         authenticated = false
         groupOpen = false
         transcript = null
@@ -672,15 +704,15 @@ class PeerSession(
         if (closed || !groupOpen) return
         val transferring = inflight.isNotEmpty() || awaitingResult.isNotEmpty() || wantQueue.isNotEmpty()
         val finished = inDone && outPeerDone && !outDirty && !transferring
-        val peerFailed = peerReport?.let { it.rejected + it.busy + it.unresolved > 0 } ?: false
-        // Either side still holding pending work means the pair is not converged: the peer's
-        // deferred count is its durable pending state, reported in its ReconcileResult.
-        val peerWaiting = (peerReport?.deferred ?: 0) > 0
+        val peerFailed = peerReport?.let { it.rejected > 0 || it.busy > 0 || it.unresolved > 0 } ?: false
+        // Pending work on either side means the pair is not converged. The peer's count is its
+        // durable pending state, carried on its last inventory page and its ReconcileResult.
+        val peerWaiting = peerPending > 0
         val next =
             when {
                 transferring -> PeerPhase.TRANSFERRING
                 !finished -> PeerPhase.COMPARING
-                stats.hasFailures || peerFailed -> PeerPhase.INCOMPLETE
+                !pendingReadable || stats.hasFailures || peerFailed -> PeerPhase.INCOMPLETE
                 stats.deferred > 0 || peerWaiting -> PeerPhase.WAITING_DEPENDENCY
                 else -> PeerPhase.UP_TO_DATE
             }
@@ -709,11 +741,21 @@ class PeerSession(
 
     companion object {
         private const val TAG = "PeerSession"
+
+        /** Idle limit while authenticating or opening the group. */
         const val HANDSHAKE_TIMEOUT_MS = 10_000L
+
+        /** Idle limit after group open before in-flight work is retried once, then abandoned. */
         const val TRANSFER_TIMEOUT_MS = 30_000L
+
+        /** Period of the timeout check. */
         const val WATCHDOG_INTERVAL_MS = 2_500L
         private const val MAX_VIOLATIONS = 3
+
+        /** Snapshot re-advertisements to a silent peer before the session is interrupted. */
         private const val MAX_READVERTISE = 2
+
+        /** Capabilities offered in [Hello]; the intersection with the peer's is bound into the auth transcript. */
         val CAPABILITIES: Set<String> = setOf(NearbyWire.CAP_RECONCILE_V2, NearbyWire.CAP_DELIVERIES)
     }
 }

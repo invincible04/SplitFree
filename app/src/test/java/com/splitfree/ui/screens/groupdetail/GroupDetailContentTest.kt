@@ -36,8 +36,10 @@ import androidx.compose.ui.test.performSemanticsAction
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
 import com.splitfree.ui.theme.SplitFreeTheme
@@ -103,7 +105,7 @@ class GroupDetailContentTest {
 
     @Test
     fun `no debts with expenses reads settled, no data at all reads neutral`() {
-        state = state.copy(debts = emptyList(), expenses = state.expenses.filter { it.currency == "INR" })
+        state = state.copy(debts = emptyList(), expenses = state.expenses.filter { it.expense.currency == "INR" })
         render()
         compose.onAllNodesWithText("Everyone is settled in INR").assertCountEquals(2)
 
@@ -124,7 +126,7 @@ class GroupDetailContentTest {
             state.copy(
                 debts = state.debts.filter { it.currency == "INR" },
                 expenses = state.expenses.filter {
-                    it.currency ==
+                    it.expense.currency ==
                         "INR"
                 }
             )
@@ -150,8 +152,8 @@ class GroupDetailContentTest {
         compose.onNodeWithText("1 open").assertIsDisplayed()
         compose.onNodeWithText("You owe Rahul").assertIsDisplayed()
         compose.onNodeWithText("Meera owes you").assertDoesNotExist()
-        compose.onNodeWithTag("group_expense_museum").assertIsDisplayed()
-        compose.onNodeWithTag("group_expense_taxi").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_${RAHUL}_museum").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertDoesNotExist()
     }
 
     // --- Summary pane -------------------------------------------------------------------------------------
@@ -175,10 +177,10 @@ class GroupDetailContentTest {
         render()
 
         scrollScreen(700f)
-        compose.onNodeWithTag("group_expense_taxi").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertIsDisplayed()
         compose.onNodeWithText("you lent ₹3,000.00").assertIsDisplayed()
         compose.onNodeWithText("your share ₹400.00").assertExists()
-        compose.onNodeWithTag("group_expense_snacks").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_${SAM}_snacks").assertDoesNotExist()
     }
 
     @Test
@@ -217,7 +219,16 @@ class GroupDetailContentTest {
     fun `switching from a long pane while scrolled down keeps the tabs in view`() {
         val extraMembers = (1..8).map { "extra$it".padEnd(64, '0') }
         val extraExpenses = (1..12).map { index ->
-            state.expenses.first().copy(id = "extra$index", description = "Extra $index", timestamp = 1_000L + index)
+            state.expenses.first().let {
+                it.copy(
+                    expense = it.expense.copy(
+                        id = "extra$index",
+                        description = "Extra $index",
+                        timestamp =
+                        1_000L + index
+                    )
+                )
+            }
         }
         state =
             state.copy(
@@ -228,7 +239,7 @@ class GroupDetailContentTest {
         render()
         showPage(R.string.tab_expenses)
         scrollScreen(2_000f)
-        compose.onNodeWithTag("group_expense_extra1").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${ME}_extra1").assertIsDisplayed()
         compose.onNodeWithTag("group_tabs").assertIsNotDisplayed()
 
         // The tab is off screen, so select it the way accessibility services would.
@@ -283,7 +294,11 @@ class GroupDetailContentTest {
 
         compose.onNodeWithText("4 entries").assertIsDisplayed()
         val tops = listOf("taxi", "dinner", "beach", "snacks").map { id ->
-            compose.onNodeWithTag("group_expense_$id").assertExists().fetchSemanticsNode().positionInRoot.y
+            compose.onNodeWithTag(
+                "group_expense_${state.expenses.single {
+                    it.expense.id == id
+                }.authorPubkey}_$id"
+            ).assertExists().fetchSemanticsNode().positionInRoot.y
         }
         assertEquals("Rows must be ordered newest first", tops.sorted(), tops)
         compose.onNodeWithText(text(R.string.group_delta_not_involved)).assertExists()
@@ -295,9 +310,9 @@ class GroupDetailContentTest {
         render()
         showPage(R.string.tab_expenses)
 
-        compose.onNodeWithTag("group_expense_taxi").performClick()
+        compose.onNodeWithTag("group_expense_${MEERA}_taxi").performClick()
 
-        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail("taxi"), sheet) }
+        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail(ExpenseIdentity(MEERA, "taxi")), sheet) }
         compose.onNodeWithTag("group_sheet_amount").assertTextEquals("₹800.00")
         compose.onNode(
             hasText("Airport taxi") and hasAnyAncestor(hasTestTag("group_sheet_expense"))
@@ -315,7 +330,7 @@ class GroupDetailContentTest {
     @Test
     fun `delete is offered only on expenses I authored`() {
         render()
-        sheet = GroupSheet.ExpenseDetail("taxi")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(MEERA, "taxi"))
 
         compose.onNodeWithTag("group_expense_delete").assertDoesNotExist()
         compose.onNodeWithTag("group_expense_edit").assertDoesNotExist()
@@ -323,7 +338,7 @@ class GroupDetailContentTest {
             .assertIsDisplayed()
             .assertTextEquals(text(R.string.group_expense_only_author, "Meera"))
 
-        sheet = GroupSheet.ExpenseDetail("beach")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
 
         compose.onNodeWithTag("group_expense_delete").assertIsDisplayed()
         compose.onNodeWithTag("group_expense_edit").assertIsDisplayed()
@@ -333,23 +348,87 @@ class GroupDetailContentTest {
 
     @Test
     fun `edit closes the sheet and hands the expense to the editor`() {
-        val edited = mutableListOf<String>()
+        val edited = mutableListOf<ExpenseIdentity>()
         render(GroupDetailActions(editExpense = { edited += it }))
-        sheet = GroupSheet.ExpenseDetail("beach")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
 
         compose.onNodeWithTag("group_expense_edit").performClick()
 
         compose.runOnIdle {
-            assertEquals(listOf("beach"), edited)
+            assertEquals(listOf(ExpenseIdentity(ME, "beach")), edited)
             assertNull(sheet)
         }
     }
 
     @Test
-    fun `no author information hides delete without blaming anyone`() {
-        state = state.copy(expenseAuthors = emptyMap())
+    fun `colliding uuid rows open the selected details and only my record exposes mutations`() {
+        val mine = state.expenses.first().copy(expense = state.expenses.first().expense.copy(id = "shared"))
+        val theirs = AuthoredExpense(mine.expense.copy(description = "Their stay", amount = 500000), RAHUL)
+        state = state.copy(expenses = listOf(theirs, mine))
+        val edited = mutableListOf<ExpenseIdentity>()
+        val deleted = mutableListOf<ExpenseIdentity>()
+        render(GroupDetailActions(editExpense = { edited += it }, deleteExpense = { deleted += it }))
+        showPage(R.string.tab_expenses)
+
+        compose.onNodeWithText("2 entries").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${RAHUL}_shared").performClick()
+        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail(theirs.identity), sheet) }
+        compose.onNodeWithTag("group_sheet_amount").assertTextEquals("₹5,000.00")
+        compose.onNodeWithTag("group_expense_edit").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_delete").assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.done)).performClick()
+
+        compose.onNodeWithTag("group_expense_${ME}_shared").performClick()
+        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail(mine.identity), sheet) }
+        compose.onNodeWithTag("group_sheet_amount").assertTextEquals("₹4,000.00")
+        compose.onNodeWithTag("group_expense_edit").performClick()
+        compose.runOnIdle { assertEquals(listOf(mine.identity), edited) }
+
+        compose.onNodeWithTag("group_expense_${ME}_shared").performClick()
+        compose.onNodeWithTag("group_expense_delete").performClick()
+        compose.onNodeWithTag("group_confirm_delete").performClick()
+        compose.runOnIdle { assertEquals(listOf(mine.identity), deleted) }
+    }
+
+    @Test
+    fun `recent activity preserves both colliding identities and never falls back after removal`() {
+        val mine = state.expenses.first()
+        val theirs = AuthoredExpense(mine.expense.copy(description = "Their stay"), RAHUL)
+        state = state.copy(expenses = listOf(theirs, mine))
         render()
-        sheet = GroupSheet.ExpenseDetail("beach")
+
+        scrollScreen(700f)
+        compose.onNodeWithTag("group_expense_${RAHUL}_beach").assertExists()
+        compose.onNodeWithTag("group_expense_${ME}_beach").performClick()
+        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail(mine.identity), sheet) }
+        state = state.copy(expenses = listOf(theirs))
+        compose.onNodeWithTag("group_sheet_expense").assertDoesNotExist()
+        compose.runOnIdle { assertNull(sheet) }
+    }
+
+    @Test
+    fun `delete confirmation does not carry to another author with the same uuid`() {
+        val mine = state.expenses.first()
+        val theirs = AuthoredExpense(mine.expense.copy(description = "Their stay"), RAHUL)
+        state = state.copy(expenses = listOf(theirs, mine))
+        render()
+        sheet = GroupSheet.ExpenseDetail(mine.identity)
+        compose.onNodeWithTag("group_expense_delete").performClick()
+        compose.onNodeWithTag("group_confirm_delete").assertIsDisplayed()
+
+        sheet = GroupSheet.ExpenseDetail(theirs.identity)
+
+        compose.onNodeWithTag("group_confirm_delete").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_delete").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_edit").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_only_author").assertIsDisplayed()
+    }
+
+    @Test
+    fun `no author information hides delete without blaming anyone`() {
+        state = state.copy(expenses = state.expenses.map { it.copy(authorPubkey = "") })
+        render()
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity("", "beach"))
 
         compose.onNodeWithTag("group_expense_delete").assertDoesNotExist()
         compose.onNodeWithTag("group_expense_only_author").assertDoesNotExist()
@@ -358,9 +437,9 @@ class GroupDetailContentTest {
 
     @Test
     fun `deleting asks for confirmation and reports the expense once confirmed`() {
-        val deleted = mutableListOf<String>()
+        val deleted = mutableListOf<ExpenseIdentity>()
         render(GroupDetailActions(deleteExpense = { deleted += it }))
-        sheet = GroupSheet.ExpenseDetail("beach")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
 
         compose.onNodeWithTag("group_expense_delete").performClick()
 
@@ -368,7 +447,7 @@ class GroupDetailContentTest {
         compose.onNodeWithText(text(R.string.group_expense_delete_body)).assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("Confirmation must not delete yet", deleted.isEmpty())
-            assertEquals(GroupSheet.ExpenseDetail("beach"), sheet)
+            assertEquals(GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach")), sheet)
         }
 
         compose.onNodeWithTag("group_cancel_delete").performClick()
@@ -377,7 +456,7 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_confirm_delete").performClick()
 
         compose.runOnIdle {
-            assertEquals(listOf("beach"), deleted)
+            assertEquals(listOf(ExpenseIdentity(ME, "beach")), deleted)
             assertNull(sheet)
         }
     }
@@ -620,7 +699,7 @@ class GroupDetailContentTest {
     @Test
     fun `renders the expense detail sheet`() {
         render()
-        sheet = GroupSheet.ExpenseDetail("beach")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
         compose.onNodeWithText(text(R.string.done)).assertIsDisplayed()
         capture("group-sheet-expense-light", overlay = compose.onNodeWithTag("group_sheet_expense"))
     }
@@ -628,7 +707,7 @@ class GroupDetailContentTest {
     @Test
     fun `renders the delete expense confirmation`() {
         render()
-        sheet = GroupSheet.ExpenseDetail("beach")
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
         compose.onNodeWithTag("group_expense_delete").performClick()
         compose.onNodeWithTag("group_confirm_delete").assertIsDisplayed()
         capture("group-sheet-delete-expense-light", overlay = compose.onNodeWithTag("group_sheet_delete_expense"))
@@ -740,7 +819,7 @@ class GroupDetailContentTest {
                 splitAmong = shares.map { (key, share) -> SplitEntry(key, share) },
                 timestamp = now - ageSeconds,
                 category = category
-            )
+            ).let { AuthoredExpense(it, paidBy) }
             val equal = mapOf(ME to 0L, RAHUL to 0L, MEERA to 0L, SAM to 0L)
             return GroupDetailUiState(
                 groupId = "group-1",
@@ -783,13 +862,6 @@ class GroupDetailContentTest {
                         5 * 3_600L,
                         currency = "USD"
                     )
-                ),
-                expenseAuthors = mapOf(
-                    "beach" to ME,
-                    "dinner" to RAHUL,
-                    "taxi" to MEERA,
-                    "snacks" to SAM,
-                    "museum" to RAHUL
                 )
             )
         }

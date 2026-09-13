@@ -56,9 +56,7 @@ constructor(
      * snapshots, corrections, deletions, and settlements.
      *
      * @param groupId target group UUID
-     * @return [BalanceResult] with per-member balances and the UUIDs of deleted expenses. A UUID is excluded
-     *   only once every author-bound record carrying it has been deleted by its own author; while another
-     *   author's record with the same UUID is still live the UUID stays visible.
+     * @return [BalanceResult] with per-member balances and the exact identities of deleted expenses.
      */
     suspend fun computeWithExclusions(groupId: String): BalanceResult = withContext(Dispatchers.Default) {
         val events = eventRepo.getEventsByGroup(groupId)
@@ -82,7 +80,7 @@ constructor(
 
         BalanceResult(
             balances = balances.map { (key, net) -> Balance(key.first, net, key.second) },
-            excludedExpenseUuids = index.excludedUuids()
+            excludedExpenses = index.excludedExpenses()
         )
     }
 
@@ -311,16 +309,7 @@ constructor(
             latestCorrection[identity] ?: earliestExpense[identity]
         }
 
-        /**
-         * UUIDs that must be hidden: at least one author deleted their record and no author's record with
-         * that UUID is still desired. Consumers filter the expense list by UUID alone, so a UUID shared by
-         * two authors is only hidden once both records are gone; otherwise deleting one's own copy of a
-         * hijacked UUID would erase the victim's expense from view.
-         */
-        fun excludedUuids(): Set<String> {
-            val live = identities.filter { desiredEvent(it) != null }.mapTo(HashSet()) { it.expenseUuid }
-            return deleted.mapTo(HashSet()) { it.expenseUuid }.apply { removeAll(live) }
-        }
+        fun excludedExpenses(): Set<ExpenseIdentity> = deleted.toSet()
 
         private fun MutableMap<ExpenseIdentity, EventSnapshot>.keepLatest(identity: ExpenseIdentity, e: EventSnapshot) {
             val current = this[identity]

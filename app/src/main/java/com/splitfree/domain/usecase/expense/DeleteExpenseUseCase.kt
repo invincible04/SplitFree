@@ -17,8 +17,9 @@ constructor(private val expenseRepo: ExpenseRepositoryContract) {
      * @param reason optional note stored with the deletion
      * @throws IllegalStateException if the expense is unknown or the caller did not author it
      */
-    suspend operator fun invoke(groupId: String, expenseId: String, reason: String = "") {
+    suspend operator fun invoke(groupId: String, expenseId: String, reason: String = "", expectedAuthorPubkey: String) {
         require(expenseId.isNotBlank()) { "Expense ID must not be blank" }
-        expenseRepo.deleteExpense(expenseId, groupId, reason)
+        require(expectedAuthorPubkey.isNotBlank()) { "Expense author must not be blank" }
+        expenseRepo.deleteExpense(expenseId, groupId, reason, expectedAuthorPubkey)
     }
 }

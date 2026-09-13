@@ -18,7 +18,9 @@ import kotlinx.serialization.json.Json
  * One visible expense plus the pubkey that signed its original event. Only that key may correct or
  * delete the expense, so the UI needs it alongside the payload.
  */
-data class AuthoredExpense(val expense: Expense, val authorPubkey: String)
+data class AuthoredExpense(val expense: Expense, val authorPubkey: String) {
+    val identity: ExpenseIdentity get() = ExpenseIdentity(authorPubkey, expense.id)
+}
 
 /**
  * Observes and decrypts expenses for a group as a reactive [Flow].
@@ -49,17 +51,9 @@ constructor(
     fun observe(groupId: String): Flow<List<Expense>> =
         observeWithAuthors(groupId).map { authored -> authored.map { it.expense } }
 
-    /**
-     * The current payload and author of one visible expense, or null when it is unknown or deleted.
-     *
-     * Expense identity is `(author, uuid)`, so two members may legitimately hold the same uuid. When
-     * [preferAuthor] is given, that author's entry is returned if it exists; otherwise the first in
-     * the deterministic list order.
-     */
-    suspend fun get(groupId: String, expenseId: String, preferAuthor: String? = null): AuthoredExpense? {
-        val matches = observeWithAuthors(groupId).first().filter { it.expense.id == expenseId }
-        return matches.firstOrNull { preferAuthor != null && it.authorPubkey == preferAuthor } ?: matches.firstOrNull()
-    }
+    /** The current payload for exactly this author and UUID, or null if unknown or deleted. */
+    suspend fun get(groupId: String, identity: ExpenseIdentity): AuthoredExpense? =
+        observeWithAuthors(groupId).first().firstOrNull { it.identity == identity }
 
     /**
      * Same list as [observe], each entry paired with the pubkey of its original `expense` event. When
@@ -117,7 +111,7 @@ constructor(
                     val original = originalEvent?.let { decryptExpense(it) }
                     val corrected = correctionEvent?.let { decryptExpense(it) }
                     // Prefer the correction; fall back to the original if the correction is unreadable.
-                    val shown = corrected?.copy(id = identity.expenseUuid) ?: original ?: return@mapNotNull null
+                    val shown = (corrected ?: original)?.copy(id = identity.expenseUuid) ?: return@mapNotNull null
                     AuthoredExpense(shown, identity.authorPubkey) to (original ?: shown).timestamp
                 }
                 .sortedWith(

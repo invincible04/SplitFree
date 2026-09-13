@@ -24,6 +24,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MemberAvatar
 import com.splitfree.ui.components.MoneyText
@@ -48,7 +49,7 @@ internal fun SummaryPane(
     state: GroupDetailUiState,
     currency: String?,
     onSettle: (DebtTransaction) -> Unit,
-    onOpenExpense: (String) -> Unit,
+    onOpenExpense: (ExpenseIdentity) -> Unit,
     onSeeAll: () -> Unit
 ) {
     val debts = remember(state.debts, currency) {
@@ -56,12 +57,13 @@ internal fun SummaryPane(
     }
     val recent = remember(state.expenses, currency) {
         state.expenses
-            .filter { it.currency == currency }
-            .distinctBy { it.id }
-            .sortedByDescending { it.timestamp }
+            .filter { it.expense.currency == currency }
+            .distinctBy { it.identity }
+            .sortedByDescending { it.expense.timestamp }
             .take(RECENT_EXPENSE_COUNT)
     }
-    val hasCurrencyExpenses = remember(state.expenses, currency) { state.expenses.any { it.currency == currency } }
+    val hasCurrencyExpenses =
+        remember(state.expenses, currency) { state.expenses.any { it.expense.currency == currency } }
     val debtRows = rememberDebtRows(debts, state)
     val recentRows = rememberExpenseRows(recent, state)
 
@@ -111,7 +113,7 @@ internal fun SummaryPane(
             SfListCard {
                 recentRows.forEachIndexed { index, row ->
                     if (index > 0) SfDivider()
-                    ExpenseRow(row = row, onClick = { onOpenExpense(row.expense.id) })
+                    ExpenseRow(row = row, onClick = { onOpenExpense(row.identity) })
                 }
             }
         }

@@ -1,11 +1,9 @@
 package com.splitfree.sync.nearby
 
 /**
- * Where one peer session is. The UI maps these to text; the engine owns the transitions.
- *
- * Terminal phases: [UP_TO_DATE] and [INCOMPLETE] describe a finished round (the session stays open
- * and starts another round when new data appears); [CLOSED] and its more specific siblings mean the
- * connection is gone.
+ * Observer-facing phase controlled by the session engine.
+ * [UP_TO_DATE], [WAITING_DEPENDENCY] and [INCOMPLETE] keep the session open for further reconciliation.
+ * [UNSUPPORTED_PEER], [AUTH_FAILED], [UNAUTHORIZED], [INTERRUPTED] and [CLOSED] are terminal.
  */
 enum class PeerPhase {
     /** Transport connected, Hello sent, waiting for the peer's Hello/Auth. */
@@ -20,35 +18,34 @@ enum class PeerPhase {
     /** Records are moving in at least one direction. */
     TRANSFERRING,
 
-    /** All requested records handled; some are deferred on a missing key or dependency. */
+    /** Both directions finished without failures; at least one side reports durable pending work. */
     WAITING_DEPENDENCY,
 
-    /** Both snapshots consumed with nothing rejected, busy or unresolved. */
+    /** Both directions finished without failures or pending work, and the local pending count is readable. */
     UP_TO_DATE,
 
-    /** A round finished with rejected, busy or unresolved records; a retry is available. */
+    /** Reconciliation finished with failures on either side or an unreadable local pending count. */
     INCOMPLETE,
 
-    /** Peer speaks a protocol version we do not support. */
+    /** Protocol versions are incompatible. */
     UNSUPPORTED_PEER,
 
-    /** Peer failed identity or channel binding. */
+    /** Identity or transcript verification failed. */
     AUTH_FAILED,
 
-    /** Peer is not authorised for this group (or we are not, from their view). */
+    /** Group authorization failed on either side, or the local identity changed. */
     UNAUTHORIZED,
 
     /** Transport dropped or timed out mid-session; durable progress is kept. */
     INTERRUPTED,
 
-    /** Closed for any other reason (we stopped, protocol violation). */
+    /** Session closed for another reason, including an explicit stop or protocol violation. */
     CLOSED
 }
 
 /**
- * Per-record counters for one session. Counts are for the current connection only, except
- * [deferred], which mirrors the store's durable pending count for the group (work left over from an
- * earlier session or a restart included) because completion must be derived from durable state.
+ * Transfer and outcome counters for one connection; retries can count a record more than once.
+ * [deferred] is the last readable durable pending count for the group, including work across sessions.
  */
 data class TransferStats(
     val sent: Int = 0,
@@ -56,12 +53,11 @@ data class TransferStats(
     val applied: Int = 0,
     val alreadyApplied: Int = 0,
     val upgraded: Int = 0,
-    /** Rows stored in this group whose effect has not landed yet (durable, not per-session). */
     val deferred: Int = 0,
     val rejected: Int = 0,
     val carried: Int = 0,
     val busy: Int = 0,
-    /** Requested records that never produced a terminal result. */
+    /** Unresolved requests and snapshot timeouts; a snapshot timeout contributes at least one. */
     val unresolved: Int = 0
 ) {
     val hasFailures: Boolean get() = rejected > 0 || busy > 0 || unresolved > 0
@@ -78,6 +74,7 @@ data class PeerProgress(
     val closeReason: String? = null
 )
 
+/** Coordinator snapshot containing live peers and retained terminal progress, keyed by transport endpoint id. */
 data class NearbySessionsState(
     val active: Boolean = false,
     val groupId: String? = null,

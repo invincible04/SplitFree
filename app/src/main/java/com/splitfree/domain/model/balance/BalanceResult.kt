@@ -1,9 +1,6 @@
 package com.splitfree.domain.model.balance
 
-/**
- * Result of balance computation.
- *
- * @property excludedExpenseUuids UUIDs of expenses that must not be shown: those soft-deleted via
- *   `expense_delete`. Corrected expenses are not excluded; the UI shows the latest correction's payload instead.
- */
-data class BalanceResult(val balances: List<Balance>, val excludedExpenseUuids: Set<String>)
+import com.splitfree.domain.model.expense.ExpenseIdentity
+
+/** Balances and the exact author-bound expenses that have been soft-deleted. */
+data class BalanceResult(val balances: List<Balance>, val excludedExpenses: Set<ExpenseIdentity>)

@@ -36,7 +36,7 @@ interface ExpenseRepositoryContract {
      * @param reason optional human-readable deletion reason
      * @throws IllegalStateException if the expense is not found or the caller is not the creator
      */
-    suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String = "")
+    suspend fun deleteExpense(expenseUuid: String, groupId: String, reason: String = "", expectedAuthorPubkey: String)
 
     /**
      * Publish a corrected version of an existing expense.
@@ -46,7 +46,7 @@ interface ExpenseRepositoryContract {
      * @param groupId target group UUID
      * @throws IllegalStateException if the original expense is not found or the caller is not the creator
      */
-    suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String)
+    suspend fun correctExpense(originalUuid: String, corrected: Expense, groupId: String, expectedAuthorPubkey: String)
 }
 
 class ExpenseSaveConflictException : IllegalStateException("This expense was already saved with different details")

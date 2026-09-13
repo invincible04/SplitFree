@@ -2,6 +2,7 @@ package com.splitfree.sync.nearby
 
 import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.EventDao
+import com.splitfree.data.local.dao.SyncRevisionDao
 import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.domain.crypto.NostrEvent
@@ -16,17 +17,13 @@ import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 
 /**
- * [ReconciliationStore] over Room. Nearby ingress goes through the same [EventProcessor] as relay
- * ingress, in [IngestionContext.RECONCILIATION], so both paths apply identical verification,
- * membership, decryption and application rules.
- *
- * Deliveries: a recipient-addressed envelope (NIP-59 gift wrap, or a per-member `key_rotation`
- * event) addressed to us is opened and applied; one addressed to another member is retained opaque
- * under quota so it can be handed on later. Couriers never learn the inner event and never vouch for
- * it; the recipient verifies the original author's proof.
+ * Room-backed reconciliation using [EventProcessor] in [IngestionContext.RECONCILIATION].
+ * Local recipients' records are processed within the session's group scope. Envelopes for other members
+ * are retained opaque under per-group quotas; carriage confirms retention only, not recipient application.
+ * Signed evidence can replace a rumor's placeholder signature without reapplying its effect.
  */
 @Singleton
 class RoomReconciliationStore
@@ -36,14 +33,9 @@ constructor(
     private val deliveryDao: DeliveryDao,
     private val eventProcessor: EventProcessor,
     private val groupRepo: GroupRepositoryContract,
-    private val identity: IdentityContract
+    private val identity: IdentityContract,
+    private val syncRevisionDao: SyncRevisionDao
 ) : ReconciliationStore {
-    /**
-     * Key material and membership control records are advertised first, so a consumer receives the
-     * epoch it needs before the records encrypted under it. Within each class the order is the
-     * DAO's deterministic `(createdAt, eventId)`. Pending rows are offered too: a rotation this phone
-     * cannot apply yet is still the signed record the next phone may be waiting for.
-     */
     override suspend fun inventory(groupId: String): List<InventoryItem> {
         val controlIds =
             CONTROL_TYPES.flatMapTo(HashSet()) { type -> eventDao.getEventsByType(groupId, type).map { it.eventId } }
@@ -56,6 +48,7 @@ constructor(
             deliveryDao.getAvailable(groupId)
                 .map { InventoryItem(it.envelopeId, NearbyWire.KIND_DELIVERY, r = it.recipient, e = it.eventId) to it }
                 .partition { (_, row) -> row.eventType == DeliveryEntity.TYPE_KEY_ROTATION }
+        // Prioritize key and membership records so consumers can resolve dependencies early.
         return control + keyEnvelopes.map { it.first } + ledger + otherEnvelopes.map { it.first }
     }
 
@@ -88,8 +81,7 @@ constructor(
         val envelopes = deliveryDao.getEnvelopeIds(groupId).toHashSet()
         val me = identity.getPublicKeyHex()
         val members = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
-        // Bounds how much new courier storage one snapshot may claim; a full cache is not a reason
-        // to refuse (carry() evicts the oldest), or a new key could stop propagating silently.
+        // Bound carriage requests per snapshot; carry() enforces cache quotas with oldest-first eviction.
         var newCarried = 0
         val wanted = ArrayList<InventoryItem>()
         for (item in items) {
@@ -136,7 +128,7 @@ constructor(
             NearbyWire.KIND_EVENT -> {
                 if (event.kind != NostrKind.APP_SPECIFIC || gTag != groupId) return rejected("out of scope")
                 if (tTag == "key_rotation" && pTag != null && pTag != me) {
-                    // A rotation envelope for another member: opaque to us, carry it.
+                    // A recipient-addressed rotation remains opaque even when advertised as a ledger event.
                     return carry(event, recordJson, groupId, pTag, DeliveryEntity.TYPE_KEY_ROTATION)
                 }
                 applyOwn(event, recordJson, groupId, tTag)
@@ -154,8 +146,7 @@ constructor(
                     }
                 if (type == DeliveryEntity.TYPE_KEY_ROTATION && gTag != groupId) return rejected("out of scope")
                 if (recipient == me) {
-                    // A gift wrap reveals its group only once unwrapped; the processor checks the
-                    // inner event against this session's group before touching anything.
+                    // The processor checks the unwrapped event's group before accessing group-scoped records.
                     val report =
                         applyOwn(
                             event,
@@ -198,7 +189,11 @@ constructor(
             expectedGroupId = groupId
         )
         return when (result.outcome) {
-            IngestOutcome.APPLIED -> IngestReport(RecordOutcome.APPLIED, controlApplied = eventType in CONTROL_TYPES)
+            IngestOutcome.APPLIED -> IngestReport(
+                RecordOutcome.APPLIED,
+                controlApplied =
+                result.eventType in CONTROL_TYPES
+            )
             IngestOutcome.DEFERRED -> IngestReport(RecordOutcome.DEFERRED)
             IngestOutcome.REJECTED -> rejected(result.reason ?: "rejected")
             IngestOutcome.ALREADY_APPLIED -> {
@@ -209,7 +204,7 @@ constructor(
                         !EventSnapshot.isThirdPartyVerifiable(existing.sig) &&
                         EventSnapshot.isThirdPartyVerifiable(event.sig) &&
                         event.kind == NostrKind.APP_SPECIFIC &&
-                        // Same id means same canonical content; the id is the hash of it.
+                        // The verified content hash binds this signature upgrade to the stored event's identity.
                         eventDao.upgradeEvidence(id, event.sig, recordJson) == 1
                 if (upgraded) Log.i(TAG, "Upgraded evidence for ${id.take(8)} in $groupId")
                 IngestReport(RecordOutcome.ALREADY_APPLIED, upgraded = upgraded)
@@ -272,9 +267,7 @@ constructor(
     override suspend fun pendingCount(groupId: String): Int = eventDao.countPending(groupId)
 
     override fun observeChanges(groupId: String): Flow<StoreVersion> =
-        combine(eventDao.observeEventCount(groupId), deliveryDao.observeAvailableCount(groupId)) { e, d ->
-            StoreVersion(e, d)
-        }
+        syncRevisionDao.observeRevision(groupId).map { StoreVersion(it) }
 
     override suspend fun ownJoinEvent(groupId: String): String? {
         val me = identity.getPublicKeyHex()
@@ -308,13 +301,14 @@ constructor(
         private const val TAG = "NearbyStore"
         private val CONTROL_TYPES = setOf("key_rotation", "group_meta", "key_revocation")
 
-        /** Quotas for envelopes carried on behalf of other members, per group. */
+        // Per-group quotas apply to available carried envelopes; MAX_ENVELOPE_BYTES limits one UTF-8 JSON payload.
+        // MAX_EVICTIONS_PER_INSERT bounds eviction work; exceeding it reports RecordOutcome.BUSY.
         const val MAX_CARRIED_PER_GROUP = 512
         const val MAX_CARRIED_BYTES_PER_GROUP = 4L * 1024 * 1024
         const val MAX_ENVELOPE_BYTES = 64 * 1024
         private const val MAX_EVICTIONS_PER_INSERT = 16
 
-        /** Retention: authored envelopes 90 days, carried envelopes 30 days. */
+        // Retention uses local receipt time: authored envelopes 90 days, carried envelopes 30 days.
         const val AUTHORED_RETENTION_SECS = 90L * 86_400
         const val CARRIED_RETENTION_SECS = 30L * 86_400
     }

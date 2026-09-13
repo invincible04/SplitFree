@@ -51,7 +51,10 @@ interface IdentityContract {
     /** Promote the pending keypair to active and delete the old one. */
     fun commitPendingKeyPair()
 
-    /** Discard a pending keypair (e.g. on revocation failure). */
+    /** Complete promotion/cleanup again after any secure-storage write failed, validating the journal target. */
+    fun finishPendingKeyPair(expectedPubkey: String)
+
+    /** Discard a pending keypair only when publication is known to be impossible. */
     fun discardPendingKeyPair()
 
     /** @return true if there is an uncommitted pending keypair */

@@ -175,6 +175,7 @@ class EventProcessorTest {
         every { signer.verify(any()) } returns true
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns groupKey
         every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         // The relaxed dao would otherwise hand back a non-null relaxed EventEntity here.
         coEvery { eventDao.getEvent(any()) } returns null
@@ -509,6 +510,7 @@ class EventProcessorTest {
     @Test
     fun `process returns null group key falls through`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns null
         val result = processor.process(makeEvent(), knownGroupId = groupId, knownGroupKey = null)
         assertFalse(result.stored)
     }
@@ -1594,7 +1596,7 @@ class EventProcessorTest {
                 rotationJson(),
                 pubkey,
                 groupId,
-                event.createdAt,
+                1000,
                 false,
                 "rot-pending",
                 any()
@@ -1935,5 +1937,42 @@ class EventProcessorTest {
 
         coVerify(exactly = 1) { membershipHistory.historicalAuthors(groupId) }
         verify { eventValidator.isExpenseValid(any(), setOf(pubkey, bob)) }
+    }
+
+    @Test
+    fun `cached old key cannot masquerade as current epoch`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "current-key"
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
+        every { encryption.decrypt(any(), "current-key") } throws IllegalArgumentException("old ciphertext")
+        val event = makeEvent(eventType = "group_meta", expenseUuid = null)
+        every { encryption.decrypt(any(), groupKey) } returns
+            """{"name":"Old","created_by":"$pubkey","members":["$pubkey"],"relays":[]}"""
+        val row = slot<EventEntity>()
+        coEvery { eventDao.insertIfNew(capture(row)) } returns true
+        processor.process(event, knownGroupKey = groupKey)
+        assertEquals(0, row.captured.keyEpoch)
+        coVerify { postProcessor.handle("group_meta", any(), pubkey, groupId, event.createdAt, false, event.id, 0) }
+    }
+
+    @Test
+    fun `current key is tried after rotation even with a cached old key`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 1) } returns "current-key"
+        every { encryption.decrypt(any(), "current-key") } returns expenseJson()
+        every { encryption.decrypt(any(), groupKey) } throws IllegalArgumentException("stale")
+        val row = slot<EventEntity>()
+        coEvery { eventDao.insertIfNew(capture(row)) } returns true
+        assertEquals(IngestOutcome.APPLIED, processor.process(makeEvent(), knownGroupKey = groupKey).outcome)
+        assertEquals(1, row.captured.keyEpoch)
+    }
+
+    @Test
+    fun `permanently failed duplicate never reruns its effect`() = runBlocking {
+        val event = makeEvent(eventType = "key_rotation", expenseUuid = null, id = "failed")
+        coEvery { eventDao.getEvent(event.id) } returns
+            storedRow(event.id, "key_rotation", EventEntity.APPLY_STATE_FAILED)
+        assertEquals(IngestOutcome.REJECTED, processor.process(event).outcome)
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 }

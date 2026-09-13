@@ -9,6 +9,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.ui.screens.debug.DebugLogScreen
 import com.splitfree.ui.screens.expense.AddExpenseScreen
 import com.splitfree.ui.screens.group.CreateGroupScreen
@@ -35,15 +36,16 @@ sealed class Screen(val route: String) {
         fun withId(id: String) = "group/$id"
     }
 
-    /** The expense editor. Without `expenseId` it adds a new expense; with one it edits that expense. */
-    data object AddExpense : Screen("group/{groupId}/expense?expenseId={expenseId}") {
+    /** Without an expense identity the editor adds a new expense. */
+    data object AddExpense : Screen("group/{groupId}/expense?expenseId={expenseId}&authorPubkey={authorPubkey}") {
         fun withGroupId(id: String) = "group/$id/expense"
     }
 
     /** Same destination as [AddExpense], opened on an existing expense. */
     data object EditExpense : Screen(AddExpense.route) {
-        fun createRoute(groupId: String, expenseId: String) =
-            "group/$groupId/expense?expenseId=${Uri.encode(expenseId)}"
+        fun createRoute(groupId: String, identity: ExpenseIdentity) =
+            "group/$groupId/expense?expenseId=${Uri.encode(identity.expenseUuid)}" +
+                "&authorPubkey=${Uri.encode(identity.authorPubkey)}"
     }
 
     data object NearbySync : Screen("group/{groupId}/nearby_sync") {
@@ -104,8 +106,8 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
                 expenseSaved = expenseSaved,
                 onExpenseSavedConsumed = { entry.savedStateHandle["expenseSaved"] = false },
                 onAddExpense = { navController.navigate(Screen.AddExpense.withGroupId(it)) },
-                onEditExpense = { expenseId ->
-                    navController.navigate(Screen.EditExpense.createRoute(groupId, expenseId))
+                onEditExpense = { expenseIdentity ->
+                    navController.navigate(Screen.EditExpense.createRoute(groupId, expenseIdentity))
                 },
                 onNearbySync = { groupId ->
                     navController.navigate(Screen.NearbySync.withGroupId(groupId))
@@ -119,6 +121,11 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
             listOf(
                 navArgument("groupId") { type = NavType.StringType },
                 navArgument("expenseId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+                navArgument("authorPubkey") {
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null

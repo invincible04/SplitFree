@@ -26,6 +26,7 @@ internal class ExpenseDraftSeeder(
         val exactInputs = expense.splitAmong.associate { it.pubkey to moneyText(BigDecimal.valueOf(it.share, digits)) }
         val (splitType, inputs) = reconstructSplit(expense, participants)
         return draft.copy(
+            expenseId = expense.id,
             createdAt = expense.timestamp,
             amount = moneyText(BigDecimal.valueOf(expense.amount, digits)),
             description = expense.description,

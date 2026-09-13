@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.splitfree.R
 import com.splitfree.domain.model.expense.Expense
+import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
@@ -80,14 +81,17 @@ constructor(
 ) : ViewModel() {
     private val groupId: String = savedStateHandle["groupId"] ?: ""
 
-    /** Id of the expense being corrected, or null when adding a new one. */
-    private val editingExpenseId: String? = savedStateHandle.get<String?>("expenseId")?.takeIf { it.isNotBlank() }
-    private val editing: Boolean get() = editingExpenseId != null
+    private val editingExpenseId: String? = savedStateHandle["expenseId"]
+    private val editingAuthorPubkey: String? = savedStateHandle["authorPubkey"]
+    private val editing: Boolean get() = editingExpenseId != null || editingAuthorPubkey != null
+    private val editingIdentity: ExpenseIdentity? = editingExpenseId?.takeIf { it.isNotBlank() }?.let { uuid ->
+        editingAuthorPubkey?.takeIf { it.isNotBlank() }?.let { ExpenseIdentity(it, uuid) }
+    }
     private val store = ExpenseDraftStore(savedStateHandle)
     private var draftLoadError: UiMessage? = null
     private var recoveryError: UiMessage? = null
     private var draft = try {
-        store.read()
+        store.read(editingExpenseId = editingIdentity?.expenseUuid)
     } catch (_: IllegalArgumentException) {
         draftLoadError = UiMessage.Res(R.string.expense_draft_unrestorable)
         ExpenseDraft(expenseId = "", createdAt = 0, localeTag = Locale.getDefault().toLanguageTag())
@@ -213,14 +217,15 @@ constructor(
 
     /** Fills the draft from the expense being edited; only its author may open it, mirroring the protocol. */
     private suspend fun seedFromExpense(pubkey: String) {
-        val id = editingExpenseId ?: return
+        val selected = editingIdentity ?: throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
         val authored = try {
-            getExpenses.get(groupId, id, preferAuthor = pubkey)
+            getExpenses.get(groupId, selected)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             throw UiMessageException(e.toUiMessage(R.string.expense_edit_load_failed))
         } ?: throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
+        if (authored.identity != selected) throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
         if (authored.authorPubkey != pubkey) throw UiMessageException(UiMessage.Res(R.string.expense_edit_not_author))
         draft = try {
             seeder.seed(draft, authored.expense, pubkey)
@@ -283,7 +288,8 @@ constructor(
                         splitType = draft.splitType,
                         splitAmong = _uiState.value.previewSplits,
                         timestamp = draft.createdAt,
-                        category = draft.category
+                        category = draft.category,
+                        expectedAuthorPubkey = checkNotNull(editingIdentity).authorPubkey
                     )
                 } else {
                     draft = draft.copy(needsRecovery = true)
@@ -365,6 +371,17 @@ constructor(
 
     private fun currentAuthor(): String {
         val pubkey = identity.getPublicKeyHex()
+        if (editing) {
+            val selected = editingIdentity ?: throw UiMessageException(UiMessage.Res(R.string.expense_edit_missing))
+            if (selected.authorPubkey != pubkey) {
+                throw UiMessageException(UiMessage.Res(R.string.expense_edit_not_author))
+            }
+            if (draft.initialized &&
+                (draft.expenseId != selected.expenseUuid || draft.authorPubkey != selected.authorPubkey)
+            ) {
+                throw UiMessageException(UiMessage.Res(R.string.expense_draft_unrestorable))
+            }
+        }
         if (draft.initialized && draft.authorPubkey != pubkey) {
             val changed = UiMessage.Res(R.string.expense_identity_changed)
             recoveryError = changed

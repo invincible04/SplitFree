@@ -14,19 +14,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The one consumer of transport connection callbacks. Owns every [PeerSession], serializes all
- * session work behind one lock, and propagates newly available data to other open sessions on the
- * same group (store-and-forward while peers stay connected).
- *
- * Nearby work is explicitly enabled and foreground only: [activate] starts consuming transport
- * events for one group; [deactivate] performs terminal cleanup for every session. There is no
- * always-on background mesh. Durable records and envelopes stay available for later sessions.
+ * Owns peer sessions for one active group and serializes their work, including timers, under one lock.
+ * Store changes trigger reconciliation across open sessions; durable records survive session cleanup.
+ * Callers control the foreground lifecycle through [activate] and [deactivate] and manage advertising
+ * and discovery separately. Lifecycle requests run asynchronously in the application scope.
  */
 @Singleton
 class NearbySessionCoordinator(
@@ -55,7 +51,10 @@ class NearbySessionCoordinator(
     private val _state = MutableStateFlow(NearbySessionsState())
     val state: StateFlow<NearbySessionsState> = _state.asStateFlow()
 
-    /** Start consuming transport events for [groupId]. Re-activating with another group closes everything first. */
+    /**
+     * Schedules transport collection for [groupId], closing existing sessions before switching groups.
+     * Has no effect when the same group already has an active collector.
+     */
     fun activate(groupId: String) {
         appScope.launch {
             mutex.withLock {
@@ -65,8 +64,7 @@ class NearbySessionCoordinator(
                 _state.value = NearbySessionsState(active = true, groupId = groupId)
                 try {
                     store.prune()
-                    // Rows left pending by an earlier session or a process restart: their dependency
-                    // may have arrived since (relay pull), so re-drive them before the first peer.
+                    // Dependencies can arrive through other sync paths; retry durable work before opening peers.
                     val retried = store.retryDeferred(groupId)
                     if (retried > 0) Log.i(TAG, "Applied $retried pending record(s) for $groupId at activation")
                 } catch (e: Exception) {
@@ -87,11 +85,20 @@ class NearbySessionCoordinator(
                     }
                 changeObserver =
                     appScope.launch {
-                        // Local data changed (user action, relay, another peer, an envelope re-wrapped
-                        // for a new member): re-advertise to everyone. Only while active; this is not
-                        // a background mesh.
-                        store.observeChanges(groupId).distinctUntilChanged().drop(1).collect {
-                            mutex.withLock { sessions.values.forEach { it.markDirty() } }
+                        // Inventory, membership and apply-state changes must reach every active session.
+                        store.observeChanges(groupId).distinctUntilChanged().collect {
+                            mutex.withLock {
+                                try {
+                                    store.retryDeferred(groupId)
+                                    sessions.values.toList().forEach { it.markDirty() }
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Store change recovery failed: ${e.message}")
+                                    // Pending-state refresh remains necessary when dependency recovery fails.
+                                    sessions.values.toList().forEach { it.markDirty() }
+                                }
+                            }
                         }
                     }
                 publishLocked()
@@ -99,16 +106,16 @@ class NearbySessionCoordinator(
         }
     }
 
-    /** Terminal cleanup for every session and stop consuming transport events. Idempotent. */
+    /** Schedules cleanup of all sessions and collectors; repeated calls are safe. */
     fun deactivate() {
         appScope.launch { mutex.withLock { closeAllLocked(NearbyWire.CLOSE_STOPPED) } }
     }
 
-    /** External hint that [groupId] gained data (e.g. after a relay pull); re-advertise to open sessions. */
+    /** Schedules re-advertisement after an external data change; ignored unless [groupId] is active. */
     fun notifyGroupChanged(groupId: String) {
         appScope.launch {
             mutex.withLock {
-                if (activeGroupId == groupId) sessions.values.forEach { it.markDirty() }
+                if (activeGroupId == groupId) sessions.values.toList().forEach { it.markDirty() }
             }
         }
     }
@@ -120,8 +127,7 @@ class NearbySessionCoordinator(
             is BleEvent.PayloadReceived -> mutex.withLock { sessions[event.endpointId]?.onFrame(event.data) }
             is BleEvent.Error -> {
                 if (event.operation == "connection_result" || event.operation == "send_payload") {
-                    // A failed send means the peer will never see that frame; the session's timeouts
-                    // and receipts handle the rest. Nothing to route.
+                    // These errors carry no endpoint id; session receipts and timeouts track missing progress.
                     return
                 }
                 if (event.operation == "advertise" || event.operation == "discovery") {
@@ -159,7 +165,7 @@ class NearbySessionCoordinator(
     }
 
     private suspend fun closeAllLocked(reason: String) {
-        // Each close removes its own entry through onClosed and records the terminal progress.
+        // Snapshot the sessions because onClosed removes entries during iteration.
         sessions.values.toList().forEach { it.close(reason) }
         sessions.clear()
         collector?.cancel()
@@ -179,14 +185,14 @@ class NearbySessionCoordinator(
     }
 
     override suspend fun onDataChanged(session: PeerSession) {
-        // Already under the lock: called from within a session entry point.
+        // Listener callbacks execute under the non-reentrant session lock.
         sessions.values.filter { it !== session && !it.closed }.forEach { it.markDirty() }
     }
 
     override fun onClosed(session: PeerSession, reason: String) {
         if (sessions[session.endpointId] === session) {
             sessions.remove(session.endpointId)
-            // Keep the terminal progress visible so the UI can show why.
+            // Retain the terminal reason for UI observers after removing the live session.
             _state.value =
                 _state.value.copy(peers = _state.value.peers + (session.endpointId to session.progress()))
         }
@@ -202,15 +208,17 @@ class NearbySessionCoordinator(
 
     private fun publishLocked() {
         val live = sessions.values.associate { it.endpointId to it.progress() }
-        // Retain terminal entries for endpoints that have no live session, drop the rest.
+        // A replacement session supersedes the endpoint's terminal progress.
         val terminal = _state.value.peers.filter { (id, p) -> id !in live && p.phase.isTerminal() }
         _state.value =
             NearbySessionsState(active = activeGroupId != null, groupId = activeGroupId, peers = terminal + live)
     }
 
-    private fun PeerPhase.isTerminal(): Boolean =
-        this == PeerPhase.UNSUPPORTED_PEER || this == PeerPhase.AUTH_FAILED || this == PeerPhase.UNAUTHORIZED ||
-            this == PeerPhase.INTERRUPTED || this == PeerPhase.CLOSED
+    private fun PeerPhase.isTerminal(): Boolean = this == PeerPhase.UNSUPPORTED_PEER ||
+        this == PeerPhase.AUTH_FAILED ||
+        this == PeerPhase.UNAUTHORIZED ||
+        this == PeerPhase.INTERRUPTED ||
+        this == PeerPhase.CLOSED
 
     companion object {
         private const val TAG = "NearbyCoordinator"
