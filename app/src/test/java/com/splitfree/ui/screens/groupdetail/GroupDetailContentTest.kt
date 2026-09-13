@@ -18,7 +18,6 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyAncestor
@@ -32,6 +31,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
@@ -256,6 +256,7 @@ class GroupDetailContentTest {
     @Test
     fun `switching from a long pane while scrolled down keeps the tabs in view`() {
         val extraMembers = (1..8).map { "extra$it".padEnd(64, '0') }
+        val extraDebts = extraMembers.map { DebtTransaction(it, ME, 10000, "INR") }
         val extraExpenses = (1..12).map { index ->
             state.expenses.first().let {
                 it.copy(
@@ -272,22 +273,64 @@ class GroupDetailContentTest {
             state.copy(
                 members = state.members + extraMembers,
                 memberNames = state.memberNames + extraMembers.associateWith { "Guest ${it.take(6)}" },
+                debts = state.debts + extraDebts,
                 expenses = state.expenses + extraExpenses
             )
         render()
-        showPage(R.string.tab_expenses)
         scrollScreen(2_000f)
-        compose.onNodeWithTag("group_expense_${ME}_extra1").assertIsDisplayed()
-        compose.onNodeWithTag("group_tabs").assertIsNotDisplayed()
+        compose.onNodeWithTag("group_see_all").assertIsDisplayed()
+        // The tabs have left the lazy viewport, so the switch happens from inside the pane.
+        compose.onNodeWithTag("group_tabs").assertDoesNotExist()
 
-        // The tab is off screen, so select it the way accessibility services would.
-        compose.onNodeWithText(text(R.string.tab_members)).performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("group_see_all").performClick()
         compose.waitForIdle()
 
-        compose.onNodeWithTag("group_pane_people").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(TAB_EXPENSES, selectedTab) }
         compose.onNodeWithTag("group_tabs").assertIsDisplayed()
-        compose.onNodeWithTag("group_people_invite").assertIsDisplayed()
-        compose.onNodeWithTag("group_pane_expenses").assertDoesNotExist()
+        compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertIsDisplayed()
+        compose.onNodeWithTag("group_pane_summary").assertDoesNotExist()
+    }
+
+    @Test
+    fun `long expense histories compose only the viewport and keep rows anchored when expenses arrive`() {
+        selectedTab = TAB_EXPENSES
+        val base = state.expenses.first()
+        state = state.copy(
+            expenses = (0 until 2000).map { index ->
+                base.copy(
+                    expense = base.expense.copy(
+                        id = "history_$index",
+                        description = "History $index",
+                        timestamp = 10_000L - index
+                    )
+                )
+            }
+        )
+        render()
+
+        compose.onNodeWithText("2000 entries").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${ME}_history_0").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_${ME}_history_1999").assertDoesNotExist()
+        compose.onNodeWithTag("group_scroll").performScrollToKey(expenseRowKey(ExpenseIdentity(ME, "history_1000")))
+        val before = compose.onNodeWithTag("group_expense_${ME}_history_1000").fetchSemanticsNode().positionInRoot.y
+
+        state = state.copy(
+            expenses = listOf(base.copy(expense = base.expense.copy(id = "new", timestamp = 20_000L))) + state.expenses
+        )
+
+        val after = compose.onNodeWithTag("group_expense_${ME}_history_1000").fetchSemanticsNode().positionInRoot.y
+        assertEquals("Stable row keys keep the same expense anchored after insertion", before, after, 1f)
+        compose.onNodeWithTag("group_expense_${ME}_history_0").assertDoesNotExist()
+        compose.onNodeWithTag("group_expense_${ME}_new").assertDoesNotExist()
+        capture("group-long-history-middle")
+
+        compose.onNodeWithTag("group_scroll").performScrollToKey(expenseRowKey(ExpenseIdentity(ME, "history_1999")))
+        compose.onNodeWithTag("group_expense_${ME}_history_1999").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "history_1999")), sheet) }
+        sheet = null
+        capture("group-long-history-end")
+        compose.onNodeWithTag("group_add_expense").assertIsDisplayed()
     }
 
     @Test
@@ -668,6 +711,29 @@ class GroupDetailContentTest {
         compose.onNodeWithText(text(R.string.done)).assertIsDisplayed()
     }
 
+    @Test
+    @Config(qualifiers = "en-rUS-w640dp-h360dp-land-mdpi")
+    fun `group sheets keep their confirmation controls reachable at 200 percent in landscape`() {
+        RuntimeEnvironment.setFontScale(2f)
+        render()
+
+        sheet = GroupSheet.Settle(DebtTransaction(MEERA, ME, 80000, "INR"))
+        val confirm = compose.onNodeWithTag("group_confirm_settle").assertIsDisplayed().fetchSemanticsNode()
+        assertTrue("Confirm must keep a full touch target", confirm.boundsInRoot.height >= 48f)
+        assertEquals("Confirm must not be clipped", confirm.size.height.toFloat(), confirm.boundsInRoot.height, 1f)
+        capture(
+            "group-sheet-settle-landscape-font200",
+            expectedWidth = 640,
+            overlay = compose.onNodeWithTag("group_sheet_settle"),
+            expectedMinHeight = 300
+        )
+
+        sheet = GroupSheet.ExpenseDetail(ExpenseIdentity(ME, "beach"))
+        compose.onNodeWithTag("group_expense_edit").assertIsDisplayed()
+        compose.onNodeWithTag("group_expense_delete").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("group_confirm_delete").assertIsDisplayed()
+    }
+
     // --- Screenshots --------------------------------------------------------------------------------------
 
     @Test
@@ -802,7 +868,12 @@ class GroupDetailContentTest {
      * Draws the main window and, for sheets, the sheet's own window on top: a modal sheet lives in a second
      * window whose view is reachable only through one of its semantics nodes.
      */
-    private fun capture(name: String, expectedWidth: Int = 390, overlay: SemanticsNodeInteraction? = null) {
+    private fun capture(
+        name: String,
+        expectedWidth: Int = 390,
+        overlay: SemanticsNodeInteraction? = null,
+        expectedMinHeight: Int = 600
+    ) {
         val overlayView = overlay?.let {
             (requireNotNull(it.fetchSemanticsNode().root) as ViewRootForTest).view.rootView
         }
@@ -817,7 +888,7 @@ class GroupDetailContentTest {
             }
         }
         assertEquals("Capture must use the configured screen width", expectedWidth, bitmap.width)
-        assertTrue("Capture must have screen height", bitmap.height >= 600)
+        assertTrue("Capture must have screen height", bitmap.height >= expectedMinHeight)
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
         assertTrue("Capture must contain rendered content, not a blank bitmap", pixels.toSet().size > 16)

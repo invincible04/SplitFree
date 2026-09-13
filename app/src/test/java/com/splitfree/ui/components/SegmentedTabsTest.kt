@@ -9,26 +9,33 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.splitfree.ui.theme.SplitFreeTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -38,6 +45,9 @@ class SegmentedTabsTest {
     val compose = createComposeRule()
 
     private val labels = listOf("Summary", "Expenses", "People")
+
+    /** Labels that overflow a 360dp track at 200 percent text when given equal widths. */
+    private val wideLabels = listOf("Balances", "Expense history", "Group members", "Settlements")
 
     @Test
     fun `segments keep tab semantics and a 48dp target while the pill animates between them`() {
@@ -92,6 +102,50 @@ class SegmentedTabsTest {
 
         compose.runOnIdle { assertEquals(1, selected) }
         compose.onNodeWithTag("tab_1").assertIsSelected()
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w360dp-h640dp-mdpi")
+    fun `large text keeps every label on one untruncated line and scrolls each segment into view`() {
+        assertLargeTextTabs(LayoutDirection.Ltr)
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w360dp-h640dp-mdpi")
+    fun `large text scrollable segments keep RTL order and the selected segment visible`() {
+        assertLargeTextTabs(LayoutDirection.Rtl)
+    }
+
+    private fun assertLargeTextTabs(direction: LayoutDirection) {
+        RuntimeEnvironment.setFontScale(2f)
+        var selected by mutableIntStateOf(0)
+        compose.setContent {
+            CompositionLocalProvider(LocalLayoutDirection provides direction) {
+                SplitFreeTheme {
+                    SegmentedTabs(
+                        options = wideLabels,
+                        selectedIndex = selected,
+                        onSelect = { selected = it },
+                        optionModifier = { Modifier.testTag("tab_$it") }
+                    )
+                }
+            }
+        }
+
+        val first = compose.onNodeWithTag("tab_0").fetchSemanticsNode().positionInRoot.x
+        val second = compose.onNodeWithTag("tab_1").fetchSemanticsNode().positionInRoot.x
+        assertEquals("Segments must follow the reading direction", direction == LayoutDirection.Rtl, first > second)
+        wideLabels.forEachIndexed { index, label ->
+            compose.onNodeWithTag("tab_$index").performScrollTo().assertIsDisplayed().performClick()
+            compose.onNodeWithTag("tab_$index").assertIsSelected()
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals("$label must stay on one line", 1, layouts.single().lineCount)
+            assertFalse("$label must not be ellipsized", layouts.single().isLineEllipsized(0))
+        }
+        selected = 0
+        compose.onNodeWithTag("tab_0").assertIsDisplayed().assertIsSelected()
     }
 
     @Test

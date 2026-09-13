@@ -3,6 +3,7 @@ package com.splitfree.ui.navigation
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -57,13 +58,14 @@ sealed class Screen(val route: String) {
 
 @Composable
 fun SplitFreeNavGraph(navController: NavHostController, startDestination: String, onScanResult: (String) -> Unit = {}) {
+    val direction = LocalLayoutDirection.current
     NavHost(
         navController = navController,
         startDestination = startDestination,
-        enterTransition = { SfMotion.forwardEnter },
-        exitTransition = { SfMotion.forwardExit },
-        popEnterTransition = { SfMotion.popEnter },
-        popExitTransition = { SfMotion.popExit }
+        enterTransition = { SfMotion.forwardEnter(direction) },
+        exitTransition = { SfMotion.forwardExit(direction) },
+        popEnterTransition = { SfMotion.popEnter(direction) },
+        popExitTransition = { SfMotion.popExit(direction) }
     ) {
         composable(Screen.Onboarding.route) {
             OnboardingScreen(onComplete = {

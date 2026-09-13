@@ -8,10 +8,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.ui.unit.LayoutDirection
 
 /**
  * Restrained, directional motion: one easing curve and three durations. Forward navigation slides in from
- * the trailing edge, back navigation from the leading edge.
+ * the trailing edge, back navigation from the leading edge; the transitions take the [LayoutDirection] so
+ * "trailing" and "leading" follow the reading direction and mirror under RTL.
  */
 object SfMotion {
     val Ease = CubicBezierEasing(0.22f, 0.8f, 0.25f, 1f)
@@ -25,17 +27,25 @@ object SfMotion {
     /** Large reveals (hero card, empty-state art). */
     val Slow: Int = 320
 
+    /** +1 when the trailing edge is on the right (LTR), -1 when it is on the left (RTL). */
+    private val LayoutDirection.trailingSign: Int
+        get() = if (this == LayoutDirection.Ltr) 1 else -1
+
     private fun <T> spec() = tween<T>(durationMillis = Base, easing = Ease)
 
-    /** New destination entering on forward navigation. */
-    val forwardEnter: EnterTransition = slideInHorizontally(spec()) { it / 9 } + fadeIn(spec())
+    /** New destination entering on forward navigation, from the trailing edge. */
+    fun forwardEnter(direction: LayoutDirection): EnterTransition =
+        slideInHorizontally(spec()) { direction.trailingSign * it / 9 } + fadeIn(spec())
 
-    /** Current destination leaving on forward navigation. */
-    val forwardExit: ExitTransition = slideOutHorizontally(spec()) { -it / 16 } + fadeOut(spec())
+    /** Current destination leaving on forward navigation, towards the leading edge. */
+    fun forwardExit(direction: LayoutDirection): ExitTransition =
+        slideOutHorizontally(spec()) { -direction.trailingSign * it / 16 } + fadeOut(spec())
 
-    /** Previous destination re-entering on back. */
-    val popEnter: EnterTransition = slideInHorizontally(spec()) { -it / 13 } + fadeIn(spec())
+    /** Previous destination re-entering on back, from the leading edge. */
+    fun popEnter(direction: LayoutDirection): EnterTransition =
+        slideInHorizontally(spec()) { -direction.trailingSign * it / 13 } + fadeIn(spec())
 
-    /** Popped destination leaving on back. */
-    val popExit: ExitTransition = slideOutHorizontally(spec()) { it / 11 } + fadeOut(spec())
+    /** Popped destination leaving on back, towards the trailing edge. */
+    fun popExit(direction: LayoutDirection): ExitTransition =
+        slideOutHorizontally(spec()) { direction.trailingSign * it / 11 } + fadeOut(spec())
 }

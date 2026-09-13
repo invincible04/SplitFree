@@ -4,23 +4,30 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,12 +41,20 @@ private val SegmentShape = RoundedCornerShape(11.dp)
 private val TrackPadding = 4.dp
 private val SegmentInset = 1.5.dp
 private val SegmentMinHeight = 48.dp
+private val SegmentLabelPadding = 4.dp
+private val ScrollableSegmentLabelPadding = 14.dp
+
+/** Font scale from which segments are content-sized and the track scrolls instead of truncating labels. */
+private const val SCROLLABLE_FONT_SCALE = 1.3f
 
 /**
- * Equal-width segmented control: `surfaceContainer` track with 4dp inset and one raised `surfaceBright` pill
- * that slides to the selected segment while the labels crossfade between `onSurface` and muted. Each segment
- * is a 48dp `Role.Tab` inside a `selectableGroup`. [optionModifier] is applied to the segment at each index so
- * callers can attach test tags to individual segments.
+ * Segmented control: `surfaceContainer` track with 4dp inset and one raised `surfaceBright` pill that slides
+ * to the selected segment while the labels crossfade between `onSurface` and muted. Each segment is a 48dp
+ * `Role.Tab` inside a `selectableGroup`. Below font scale [SCROLLABLE_FONT_SCALE] the segments share the
+ * width equally; from there on each segment is as wide as its single-line label, the track scrolls
+ * horizontally, the selected segment is highlighted in place and is brought into view whenever the selection
+ * changes, so no label is ever truncated. [optionModifier] is applied to the segment at each index so callers
+ * can attach test tags to individual segments.
  */
 @Composable
 fun SegmentedTabs(
@@ -49,6 +64,7 @@ fun SegmentedTabs(
     modifier: Modifier = Modifier,
     optionModifier: (index: Int) -> Modifier = { Modifier }
 ) {
+    val scrollable = LocalDensity.current.fontScale >= SCROLLABLE_FONT_SCALE
     val count = options.size.coerceAtLeast(1)
     val pillIndex by animateFloatAsState(
         targetValue = selectedIndex.coerceIn(0, count - 1).toFloat(),
@@ -63,10 +79,19 @@ fun SegmentedTabs(
             .background(MaterialTheme.colorScheme.surfaceContainer)
             .padding(TrackPadding)
     ) {
-        SelectionPill(pillIndex = { pillIndex }, count = count)
-        Row(Modifier.fillMaxWidth().selectableGroup()) {
+        if (!scrollable) SelectionPill(pillIndex = { pillIndex }, count = count)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(if (scrollable) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
+                .selectableGroup()
+        ) {
             options.forEachIndexed { index, label ->
                 val selected = index == selectedIndex
+                val bringIntoView = remember { BringIntoViewRequester() }
+                LaunchedEffect(selected, scrollable) {
+                    if (selected && scrollable) bringIntoView.bringIntoView()
+                }
                 val ink by animateColorAsState(
                     targetValue =
                     if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -76,11 +101,19 @@ fun SegmentedTabs(
                 Box(
                     modifier =
                     Modifier
-                        .weight(1f)
+                        .then(if (scrollable) Modifier else Modifier.weight(1f))
                         .then(optionModifier(index))
                         .padding(horizontal = SegmentInset)
                         .heightIn(min = SegmentMinHeight)
                         .clip(SegmentShape)
+                        .then(
+                            if (scrollable && selected) {
+                                Modifier.background(MaterialTheme.colorScheme.surfaceBright)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .bringIntoViewRequester(bringIntoView)
                         .selectable(
                             selected = selected,
                             interactionSource = null,
@@ -88,7 +121,10 @@ fun SegmentedTabs(
                             role = Role.Tab,
                             onClick = { onSelect(index) }
                         )
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                        .padding(
+                            horizontal = if (scrollable) ScrollableSegmentLabelPadding else SegmentLabelPadding,
+                            vertical = 6.dp
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -96,7 +132,8 @@ fun SegmentedTabs(
                         style = MaterialTheme.typography.labelMedium,
                         color = ink,
                         textAlign = TextAlign.Center,
-                        maxLines = 2,
+                        maxLines = if (scrollable) 1 else 2,
+                        softWrap = !scrollable,
                         overflow = TextOverflow.Ellipsis
                     )
                 }

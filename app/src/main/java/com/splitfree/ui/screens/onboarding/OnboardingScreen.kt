@@ -483,7 +483,17 @@ private fun NameSheet(onContinue: (String) -> Unit, onDismiss: () -> Unit) {
     SfSheet(
         onDismiss = onDismiss,
         title = stringResource(R.string.onboarding_name_sheet_title),
-        modifier = Modifier.testTag("onboarding_sheet_name")
+        scrollable = true,
+        modifier = Modifier.testTag("onboarding_sheet_name"),
+        footer = {
+            SfSheetFooter(secondary = null) {
+                SfPrimaryButton(
+                    text = stringResource(R.string.continue_button),
+                    onClick = { onContinue(name) },
+                    modifier = Modifier.testTag("onboarding_name_continue")
+                )
+            }
+        }
     ) {
         MiniLabel(stringResource(R.string.your_name))
         Spacer(Modifier.height(7.dp))
@@ -512,13 +522,6 @@ private fun NameSheet(onContinue: (String) -> Unit, onDismiss: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        SfSheetFooter(secondary = null) {
-            SfPrimaryButton(
-                text = stringResource(R.string.continue_button),
-                onClick = { onContinue(name) },
-                modifier = Modifier.testTag("onboarding_name_continue")
-            )
-        }
     }
 }
 
