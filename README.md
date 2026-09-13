@@ -5,7 +5,7 @@
 <h1 align="center">SplitFree</h1>
 
 <p align="center">
-  <b>Decentralized expense splitting: no servers, no accounts, no tracking.</b>
+  <b>Decentralized expense splitting: no proprietary backend, no accounts, no analytics SDKs.</b>
 </p>
 
 <p align="center">
@@ -34,20 +34,20 @@ Every expense-splitting app today wants your money or your data, or both. Monthl
 | | Traditional Apps | SplitFree |
 |---|---|---|
 | **Cost** | Free tier + paywalled features | 100% free, forever |
-| **Data storage** | Company servers | Your device only |
+| **Data storage** | Company servers | Your device, plus encrypted events on relays you choose |
 | **Account** | Email/phone required | Cryptographic keypair (no signup) |
-| **Sync** | Proprietary cloud | Nostr relays + Bluetooth |
-| **Encryption** | Server-side (they can read it) | End-to-end (relays see only ciphertext) |
+| **Sync** | Proprietary cloud | Nostr relays + Nearby Connections |
+| **Encryption** | Server-side (they can read it) | End-to-end payloads (relays see ciphertext plus routing tags) |
 | **Identity** | Email/password | 24-word mnemonic backup (BIP-39) |
-| **Offline** | ❌ Requires internet | ✅ BLE sync with nearby members |
+| **Offline** | ❌ Requires internet | ✅ Nearby sync with group members, no internet needed |
 
-SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open, decentralized network. Your groups sync peer-to-peer through public Nostr relays and local Bluetooth, so your financial data stays under your control.
+SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open, decentralized network. Your groups sync peer-to-peer through public Nostr relays and Google Nearby Connections, so your financial data stays under your control.
 
 ## Features
 
 ### 🔐 Privacy & Security
-- **End-to-end encryption**: all group data encrypted with [NIP-44](https://nips.nostr.com/44) v2 (ChaCha20 + HMAC-SHA256); relays see only ciphertext
-- **Gift Wrap privacy**: optional [NIP-59](https://nips.nostr.com/59) triple-layer encryption hides sender metadata from relays
+- **End-to-end encryption**: event payloads encrypted with [NIP-44](https://nips.nostr.com/44) v2 (ChaCha20 + HMAC-SHA256); relays see ciphertext plus the routing tags listed in [PRIVACY.md](PRIVACY.md)
+- **Gift Wrap privacy**: optional [NIP-59](https://nips.nostr.com/59) triple-layer encryption hides which member authored a wrapped expense; the wrap still shows the recipient's key and the group tag, and group-metadata events are published directly
 - **Cryptographic identity**: [BIP-340](https://bips.dev/340) Schnorr keypair as your identity, exportable as a [BIP-39](https://en.bitcoin.it/wiki/BIP_0039) 24-word mnemonic
 - **Key revocation & group migration**: rotate your identity or remove members without losing history
 
@@ -59,13 +59,13 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
 
 ### 🔄 Sync & Connectivity
 - **Decentralized sync**: expenses propagate through Nostr relays ([NIP-01](https://nips.nostr.com/1)) with no proprietary backend
-- **Offline-first nearby sync**: sync with nearby group members over Bluetooth or Wi-Fi when there's no internet, and carry sealed updates to members you meet later
-- **Adaptive power management**: sync intervals, relay connections, and BLE duty cycles adjust to battery state
+- **Offline-first nearby sync**: sync with nearby group members through Google Nearby Connections (Bluetooth, BLE or Wi-Fi, chosen by the SDK) when there's no internet, and carry sealed updates to members you meet later
+- **Adaptive power management**: periodic sync intervals and Nearby discovery duty cycles adjust to battery state
 - **Invite links**: one compact, versioned bearer link carries everything a joiner needs (group id, creator, key epoch, group key, relays, expiry, name); the group id is bound to its creator so a forged "created by" cannot pass
 
 ### 🎨 User Experience
-- **Material 3 + circular reveal theme switching**: light/dark theme with smooth animation
-- **Export / Import**: self-contained encrypted backup (`.splitfree` files, format v2) for cross-device transfer; the whole file is authenticated with HMAC-SHA256 under a key HKDF-derived from your identity, so only the identity that made a backup can restore it
+- **Material 3 light/dark themes**: system, light or dark mode with a fixed brand palette and restrained directional navigation motion
+- **Export / Import**: self-contained backup (`.splitfree` files, format v2) for cross-device transfer; expense payloads stay NIP-44 encrypted and the group keys are encrypted to your identity, and the whole file is authenticated with HMAC-SHA256 under a key HKDF-derived from your identity, so only the identity that made a backup can restore it
 - **QR code sharing**: scan to join groups instantly
 - **Debug log**: real-time protocol event viewer for developers
 
@@ -82,7 +82,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
      │  └─────────────────────────────────┘  │
      │                                       │
      │  ┌─────────────────────────────────┐  │
-     └──►     Bluetooth Low Energy        ◄──┘  ← Direct sync (no internet)
+     └──►       Nearby Connections        ◄──┘  ← Direct sync (no internet)
         └─────────────────────────────────┘
 ```
 
@@ -96,7 +96,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
 
 5. **Sync**: The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. A foreground service maintains real-time sync; WorkManager handles periodic and midnight sync.
 
-6. **Nearby sync**: When group members are together, they can sync directly through Google Nearby Connections (Bluetooth, BLE or Wi-Fi, chosen by the SDK). Each connection runs a channel-bound Schnorr handshake, opens exactly one group after checking membership, then reconciles paginated inventories with per-record receipts, so both phones know what was applied. A member can carry sealed envelopes (gift wraps, key rotations) for other members and hand them over later, and data received from one connected peer is forwarded to other connected peers. See `app/src/main/java/com/splitfree/sync/nearby/README.md`.
+6. **Nearby sync**: When group members are together, they can sync directly through Google Nearby Connections (Bluetooth, BLE or Wi-Fi, chosen by the SDK). Before any group data is exchanged, both phones sign a Schnorr challenge bound to that specific connection's Nearby authentication token, and exactly one group is opened only after both sides pass a membership check. Records then flow as small JSON frames (16 KiB max, paged inventories, chunked records) with a per-record receipt and durable progress, so an interrupted session re-authenticates and transfers only what is still missing. A member can carry sealed envelopes (gift wraps, per-member key rotations) for other members and hand them over later, and data applied from one connected peer is re-offered to the other connected peers. Only records with a third-party-verifiable signature are forwarded; an expense a phone holds only as a gift-wrapped rumor is not. Both phones must speak the current protocol version (v2); an older peer is refused rather than half-understood. See `app/src/main/java/com/splitfree/sync/nearby/README.md`.
 
 7. **Balances**: Balances are computed from the full event history (with snapshot optimization). The debt simplification algorithm greedily matches the largest creditor with the largest debtor, which settles everyone in at most n−1 transfers; it does not search for the true minimum.
 
@@ -124,13 +124,13 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │              content safety, author checks)                 │
 ├─────────────────────────────────────────────────────────────┤
 │                     Data Layer                              │
-│   Room DB (events, groups, outbox)                          │
+│   Room DB v3 (events, groups, outbox, deliveries, journal)  │
 │   Nostr: Relay (OkHttp WebSocket), NostrClient,             │
 │          RelayHealthMonitor, RelayConnectionManager         │
 │   Nearby: NearbySync, NearbySessionCoordinator, PeerSession │
 │   Sync: SyncEngine, SyncWorker, ForegroundSyncService,      │
 │         MidnightSyncWorker, SyncScheduler, PowerManager     │
-│   Settings: Android Keystore (AES-256-GCM)                  │
+│   Keys: Keystore-wrapped AES-256-GCM storage                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -155,7 +155,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 | Database | Room (SQLite) |
 | Networking | OkHttp (raw WebSocket) |
 | Crypto | secp256k1-kmp, BouncyCastle |
-| BLE | Google Nearby Connections API |
+| Nearby sync | Google Nearby Connections API (Bluetooth, BLE or Wi-Fi, chosen by the SDK) |
 | Serialization | kotlinx.serialization |
 | Compression | LZ4 |
 | Background | WorkManager + Foreground Service |
@@ -216,7 +216,7 @@ app/src/main/java/com/splitfree/
 │   ├── repository/       # GroupRepository, ExpenseRepository
 │   ├── settings/         # UserPreferences (plain SharedPreferences)
 │   └── util/             # Compression, Keystore-backed encrypted storage
-├── di/                   # Hilt modules (Database, Repository, Nearby)
+├── di/                   # Hilt modules (Database, Repository, Security, Nearby, Coroutine)
 ├── domain/
 │   ├── crypto/           # NostrEvent, GroupEncryption, IdentityManager, EventSigner
 │   │   └── nip/          # Nip44, Nip59, Bip39 (from-scratch implementations)
@@ -237,7 +237,7 @@ app/src/main/java/com/splitfree/
 ├── ui/
 │   ├── navigation/       # NavGraph, Screen definitions
 │   ├── screens/          # Compose screens (onboarding, groups, expenses, settings, etc.)
-│   ├── theme/            # Material 3 theme, circular reveal animation
+│   ├── theme/            # Material 3 color/type/shape tokens, theme preference, navigation motion
 │   └── util/             # QR code generator
 ├── util/                 # DebugLog, CurrencyFormatter, ProcessHealthTracker
 ├── MainActivity.kt       # Deep link handling, intent sanitization
@@ -294,8 +294,8 @@ git checkout -b feat/your-feature-name
 
 SplitFree takes security seriously:
 
-- All group data is end-to-end encrypted (NIP-44 v2)
-- Private keys stored in Android Keystore (AES-256-GCM, hardware-backed)
+- Event payloads are end-to-end encrypted (NIP-44 v2); routing tags on relays and group metadata in the local database are not
+- Private and group keys stored AES-256-GCM under an Android Keystore key; hardware backing depends on the device
 - Event signatures verified on receipt (BIP-340 Schnorr)
 - Content validated for size limits, nesting depth, and rate limiting
 - Nearby connections authenticated with Schnorr signatures bound to the connection's Nearby authentication token; group scope disclosed only to members
@@ -305,7 +305,7 @@ If you discover a security vulnerability, please **do not** open a public issue.
 
 ## Privacy
 
-SplitFree collects no personal data. All expense data is end-to-end encrypted and stored only on your device. See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+SplitFree has no developer-operated service and collects nothing itself. Expense payloads are end-to-end encrypted and stored on your device and, as ciphertext, on the relays you choose; group names, member lists and relay lists are kept in plaintext in the app's private database. See [PRIVACY.md](PRIVACY.md) for the full privacy policy, including what relays and Google Play services can see.
 
 ## License
 
