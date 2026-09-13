@@ -34,6 +34,7 @@ import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.NearbySyncUiState
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -208,6 +209,16 @@ class NearbySyncContentTest {
         card("nearby_permission_warning", text(R.string.nearby_bluetooth_unavailable_hint)).assertIsDisplayed()
         compose.onNodeWithTag("nearby_primary").assertIsNotEnabled()
             .assertTextContains(text(R.string.bluetooth_unavailable))
+    }
+
+    @Test
+    fun `permission set follows the SDK with fine and coarse together on 31 and local network only from 37`() {
+        val android12 = requiredNearbyPermissions(31)
+        assertTrue(android12.contains(android.Manifest.permission.ACCESS_FINE_LOCATION))
+        assertTrue(android12.contains(android.Manifest.permission.ACCESS_COARSE_LOCATION))
+        assertTrue(requiredNearbyPermissions(33).contains(android.Manifest.permission.NEARBY_WIFI_DEVICES))
+        assertFalse(requiredNearbyPermissions(36).contains("android.permission.ACCESS_LOCAL_NETWORK"))
+        assertTrue(requiredNearbyPermissions(37).contains("android.permission.ACCESS_LOCAL_NETWORK"))
     }
 
     @Test

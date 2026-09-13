@@ -546,20 +546,20 @@ private fun NearbyDock(state: NearbySyncUiState, permissions: NearbyPermissionSt
  * request, so both are always requested together below API 33. API 37 (target) adds the local-network
  * permission for the Wi-Fi LAN path; without it Nearby still falls back to Bluetooth.
  */
-private fun requiredNearbyPermissions(): List<String> = buildList {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+internal fun requiredNearbyPermissions(sdk: Int = Build.VERSION.SDK_INT): List<String> = buildList {
+    if (sdk >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.BLUETOOTH_SCAN)
         add(Manifest.permission.BLUETOOTH_ADVERTISE)
         add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_PERMISSION_API) add(ACCESS_LOCAL_NETWORK)
-    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (sdk >= LOCAL_NETWORK_PERMISSION_API) add(ACCESS_LOCAL_NETWORK)
+    } else if (sdk >= Build.VERSION_CODES.S) {
         add(Manifest.permission.BLUETOOTH_SCAN)
         add(Manifest.permission.BLUETOOTH_ADVERTISE)
         add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
-    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    } else if (sdk >= Build.VERSION_CODES.Q) {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
     } else {
