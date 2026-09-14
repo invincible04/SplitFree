@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.model.expense.Expense
@@ -44,6 +49,7 @@ import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayInfo
 import com.splitfree.ui.theme.SplitFreeTheme
+import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.GroupDetailUiState
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -644,6 +650,122 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_copy_invite").assertIsNotEnabled()
         compose.onNodeWithTag("group_share_invite").assertIsNotEnabled()
         compose.onNodeWithContentDescription(text(R.string.generating_invite_link)).assertExists()
+    }
+
+    @Test
+    fun `invite refreshes on opening and foreground return but not other sheets`() {
+        var refreshes = 0
+        val owner = object : LifecycleOwner {
+            val registry = LifecycleRegistry(this)
+            override val lifecycle: Lifecycle get() = registry
+        }
+        compose.runOnIdle { owner.registry.currentState = Lifecycle.State.RESUMED }
+        compose.setContent {
+            CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+                InviteRefreshEffect(sheet) { refreshes++ }
+            }
+        }
+        compose.runOnIdle {
+            assertEquals(0, refreshes)
+            sheet = GroupSheet.Invite
+        }
+        compose.runOnIdle {
+            assertEquals(1, refreshes)
+            owner.registry.currentState = Lifecycle.State.CREATED
+        }
+        compose.runOnIdle { owner.registry.currentState = Lifecycle.State.RESUMED }
+        compose.runOnIdle {
+            assertEquals(2, refreshes)
+            sheet = GroupSheet.Tools
+        }
+        compose.runOnIdle { owner.registry.currentState = Lifecycle.State.CREATED }
+        compose.runOnIdle { owner.registry.currentState = Lifecycle.State.RESUMED }
+        compose.runOnIdle { assertEquals(2, refreshes) }
+    }
+
+    @Test
+    fun `invite failure is persistent and retryable without an obsolete QR`() {
+        var retries = 0
+        render(GroupDetailActions(retryInvite = { retries++ }))
+        sheet = GroupSheet.Invite
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription(text(R.string.invite_qr_content_desc))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle {
+            inviteLink = null
+            state = state.copy(inviteError = UiMessage.Res(R.string.create_invite_failed))
+        }
+        compose.onNodeWithText(text(R.string.create_invite_failed)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.invite_qr_content_desc)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(text(R.string.generating_invite_link)).assertDoesNotExist()
+        compose.onNodeWithTag("group_copy_invite").assertIsNotEnabled()
+        compose.onNodeWithTag("group_share_invite").assertIsNotEnabled()
+        capture("group-invite-error", overlay = compose.onNodeWithTag("group_sheet_invite"))
+        compose.onNodeWithTag("group_retry_invite").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun `invalidated invite hides previous QR while a replacement is loading`() {
+        render()
+        sheet = GroupSheet.Invite
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription(text(R.string.invite_qr_content_desc))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle { inviteLink = null }
+        compose.onNodeWithContentDescription(text(R.string.invite_qr_content_desc)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(text(R.string.generating_invite_link)).assertExists()
+        compose.onNodeWithTag("group_copy_invite").assertIsNotEnabled()
+    }
+
+    @Test
+    fun `legacy relay invite error leads directly to editable relays without changing them`() {
+        var begun = 0
+        inviteLink = null
+        state = state.copy(inviteError = UiMessage.Res(R.string.invite_relays_need_edit))
+        val saved = state.relays
+        render(GroupDetailActions(beginRelayEdit = { begun++ }))
+        sheet = GroupSheet.Invite
+        compose.onNodeWithText(text(R.string.invite_relays_need_edit)).assertIsDisplayed()
+        compose.onNodeWithTag("group_invite_relays").performClick()
+        compose.runOnIdle {
+            assertEquals(1, begun)
+            assertEquals(GroupSheet.SyncStatus, sheet)
+            assertEquals(saved, state.relays)
+        }
+    }
+
+    @Test
+    fun `legacy overbudget relay editor disables Save until a deliberate replacement fits`() {
+        val relays = listOf("wss://relay.test/" + "a".repeat(111), "wss://relay.test/" + "b".repeat(111))
+        state = state.copy(relays = relays, draftRelays = relays)
+        render()
+        sheet = GroupSheet.SyncStatus
+        compose.onNodeWithText(text(R.string.save)).assertIsNotEnabled()
+        compose.onNodeWithText(text(R.string.invite_relays_need_edit)).assertIsDisplayed()
+        compose.runOnIdle { state = state.copy(draftRelays = relays.drop(1)) }
+        compose.onNodeWithText(text(R.string.save)).assertIsEnabled()
+        compose.runOnIdle { assertEquals(relays, state.relays) }
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w360dp-h844dp-mdpi")
+    fun `legacy invitation error remains recoverable at 200 percent text`() {
+        RuntimeEnvironment.setFontScale(2f)
+        inviteLink = null
+        state = state.copy(inviteError = UiMessage.Res(R.string.invite_relays_need_edit))
+        render()
+        sheet = GroupSheet.Invite
+        compose.onNodeWithTag("group_invite_relays").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("group_retry_invite").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("group_copy_invite").assertIsNotEnabled()
+        capture(
+            "group-invite-legacy-font200",
+            expectedWidth = 360,
+            overlay = compose.onNodeWithTag("group_sheet_invite")
+        )
     }
 
     @Test

@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -47,6 +48,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.expense.DebtTransaction
 import com.splitfree.domain.usecase.expense.AuthoredExpense
 import com.splitfree.ui.components.DetailRow
@@ -65,11 +67,14 @@ import com.splitfree.ui.components.SfSheetFooter
 import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.WarningCard
 import com.splitfree.ui.util.QrGenerator
+import com.splitfree.ui.util.UiMessage
+import com.splitfree.ui.util.asString
 import com.splitfree.ui.util.disambiguatedMemberName
 import com.splitfree.ui.viewmodels.GroupDetailUiState
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -95,6 +100,12 @@ internal fun GroupDetailSheetHost(
             InviteSheet(
                 groupName = state.groupName,
                 inviteLink = inviteLink,
+                error = state.inviteError,
+                onRetry = actions.retryInvite,
+                onRelays = {
+                    actions.beginRelayEdit()
+                    onSheet(GroupSheet.SyncStatus)
+                },
                 onCopy = {
                     actions.copyInvite()
                     // The snackbar lives behind the sheet's scrim, so the sheet closes for the confirmation to show.
@@ -181,6 +192,9 @@ internal fun GroupDetailSheetHost(
 private fun InviteSheet(
     groupName: String,
     inviteLink: String?,
+    error: UiMessage?,
+    onRetry: () -> Unit,
+    onRelays: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onDismiss: () -> Unit
@@ -197,21 +211,38 @@ private fun InviteSheet(
                     text = stringResource(R.string.group_copy_link),
                     onClick = onCopy,
                     modifier = Modifier.weight(1f).testTag("group_copy_invite"),
-                    enabled = inviteLink != null,
+                    enabled = inviteLink != null && error == null,
                     leadingIcon = Icons.Outlined.ContentCopy
                 )
                 SfSecondaryButton(
                     text = stringResource(R.string.share),
                     onClick = onShare,
                     modifier = Modifier.weight(1f).testTag("group_share_invite"),
-                    enabled = inviteLink != null,
+                    enabled = inviteLink != null && error == null,
                     leadingIcon = Icons.Outlined.Share
                 )
             }
         }
     ) {
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            QrTile(inviteLink)
+            if (error != null) {
+                WarningCard(text = error.asString(), modifier = Modifier.testTag("group_invite_error"))
+                SfTextButton(
+                    text = stringResource(R.string.retry_invite),
+                    onClick = onRetry,
+                    modifier = Modifier.testTag("group_retry_invite")
+                )
+                if (error == UiMessage.Res(R.string.invite_relays_need_edit)) {
+                    SfTextButton(
+                        text = stringResource(R.string.group_sync_status_relays),
+                        onClick = onRelays,
+                        modifier = Modifier.testTag("group_invite_relays")
+                    )
+                }
+            } else {
+                // produceState retains its old value when keys change. A keyed tile cannot display the old QR.
+                key(inviteLink) { QrTile(inviteLink) }
+            }
             Spacer(Modifier.height(16.dp))
             Text(
                 stringResource(R.string.group_invite_copy),
@@ -230,8 +261,15 @@ private fun InviteSheet(
 @Composable
 private fun QrTile(inviteLink: String?) {
     // Encoding runs off the main thread; the ring covers the short gap.
+    var failed by remember { mutableStateOf(false) }
     val qrBitmap by produceState<Bitmap?>(initialValue = null, inviteLink) {
-        value = inviteLink?.let { link -> withContext(Dispatchers.Default) { QrGenerator.encode(link) } }
+        try {
+            value = inviteLink?.let { link -> withContext(Dispatchers.Default) { QrGenerator.encode(link) } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            failed = true
+        }
     }
     val bitmap = qrBitmap
     val generating = stringResource(R.string.generating_invite_link)
@@ -245,6 +283,8 @@ private fun QrTile(inviteLink: String?) {
                 contentDescription = stringResource(R.string.invite_qr_content_desc),
                 modifier = Modifier.fillMaxSize()
             )
+        } else if (failed) {
+            Text(stringResource(R.string.invite_qr_failed), color = Color.Black)
         } else {
             CircularProgressIndicator(
                 modifier = Modifier.size(28.dp).semantics { contentDescription = generating },
@@ -315,7 +355,11 @@ private fun RelaysSheet(
                 },
                 primary = {
                     if (isCreator) {
-                        SfPrimaryButton(text = stringResource(R.string.save), onClick = onSave)
+                        SfPrimaryButton(
+                            text = stringResource(R.string.save),
+                            onClick = onSave,
+                            enabled = relays.isNotEmpty() && InviteLinkCodec.fitsInviteLink(relays)
+                        )
                     } else {
                         SfPrimaryButton(text = stringResource(R.string.done), onClick = onDismiss)
                     }
@@ -330,6 +374,9 @@ private fun RelaysSheet(
             ),
             icon = Icons.Outlined.CellTower
         )
+        if (!InviteLinkCodec.fitsInviteLink(relays)) {
+            WarningCard(text = stringResource(R.string.invite_relays_need_edit))
+        }
         Spacer(Modifier.height(14.dp))
         RelayEditor(
             relays = relays,

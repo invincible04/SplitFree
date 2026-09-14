@@ -132,6 +132,11 @@
     <string name="share">Share</string>
     <string name="share_invite_warning">Anyone with this link holds the group key and can read the whole history. Share it only in a private message.</string>
     <string name="invite_qr_content_desc">Invite QR code</string>
+    <string name="create_invite_failed">Could not create an invitation. Retry to read the current group and key.</string>
+    <string name="invite_group_unavailable">The current group is unavailable. Retry before sharing an invitation.</string>
+    <string name="invite_relays_need_edit">This relay list is too large for an invitation. All saved relays are still used for sync. The group creator must edit the list before sharing.</string>
+    <string name="retry_invite">Retry invitation</string>
+    <string name="invite_qr_failed">Could not display the QR code. You can still copy or share the link.</string>
     <string name="generating_invite_link">Generating invite link…</string>
     <string name="group_share_text">Join my SplitFree group.\n\n1. Install SplitFree\n2. Copy this link\n3. Open SplitFree and tap Paste link\n\n%1$s</string>
     <string name="group_share_chooser">Share invite</string>

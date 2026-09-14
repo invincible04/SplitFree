@@ -53,6 +53,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
 import com.splitfree.domain.model.expense.DebtTransaction
@@ -170,7 +171,8 @@ data class GroupDetailActions(
     val resetRelays: () -> Unit = {},
     val saveRelays: (onDone: () -> Unit) -> Unit = { it() },
     val selectCurrency: (String) -> Unit = {},
-    val retryBalances: () -> Unit = {}
+    val retryBalances: () -> Unit = {},
+    val retryInvite: () -> Unit = {}
 )
 
 @Composable
@@ -218,6 +220,8 @@ fun GroupDetailScreen(
         }
     }
 
+    InviteRefreshEffect(sheet, viewModel::retryInviteLink)
+
     val linkCopied = stringResource(R.string.group_link_copied)
     GroupDetailContent(
         state = uiState,
@@ -232,9 +236,9 @@ fun GroupDetailScreen(
             addExpense = { onAddExpense(uiState.groupId) },
             nearbySync = { onNearbySync(uiState.groupId) },
             back = onBack,
-            share = { inviteLink?.let { shareInvite(context, it) } },
+            share = { viewModel.inviteLink.value?.let { shareInvite(context, it) } },
             copyInvite = {
-                inviteLink?.let {
+                viewModel.inviteLink.value?.let {
                     copyInvite(context, it)
                     scope.launch { snackbarHostState.showSnackbar(linkCopied) }
                 }
@@ -252,12 +256,22 @@ fun GroupDetailScreen(
             resetRelays = viewModel::resetRelays,
             saveRelays = viewModel::saveRelays,
             selectCurrency = { selectedCurrency = it },
-            retryBalances = viewModel::retryBalances
+            retryBalances = viewModel::retryBalances,
+            retryInvite = viewModel::retryInviteLink
         ),
         sheet = sheet,
         onSheet = { sheet = it },
         snackbarHostState = snackbarHostState
     )
+}
+
+/** Renew on opening and foreground return, including an Invite sheet restored after process death. */
+@Composable
+internal fun InviteRefreshEffect(sheet: GroupSheet?, refresh: () -> Unit) {
+    LifecycleResumeEffect(sheet) {
+        if (sheet == GroupSheet.Invite) refresh()
+        onPauseOrDispose { }
+    }
 }
 
 internal const val TAB_SUMMARY = 0

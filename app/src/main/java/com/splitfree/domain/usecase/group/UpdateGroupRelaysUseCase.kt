@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -17,7 +18,7 @@ import kotlinx.serialization.json.Json
  * and re-publishes existing events to the new relays so history is not lost.
  *
  * Flow:
- * 1. Validate relay URLs (non-empty, all `wss://`)
+ * 1. Validate the non-empty relay list against the invite-link budget
  * 2. Update local group record with new relays
  * 3. Reconnect [NostrClientContract] to include the new relays
  * 4. Encrypt and publish `group_meta` event with updated relay list
@@ -38,13 +39,13 @@ constructor(
 
     /**
      * @param groupId target group UUID
-     * @param relays new relay URL list (must be non-empty, all `wss://`)
-     * @throws IllegalArgumentException if relays is empty or contains non-wss URLs
-     * @throws IllegalStateException if group or group key not found
+     * @param relays new relay URL list (non-empty and satisfying [InviteLinkCodec.fitsInviteLink])
+     * @throws IllegalArgumentException if relays is empty or cannot fit in an invite link
+     * @throws IllegalStateException if group or group key not found, or the metadata update is rejected
      */
     suspend operator fun invoke(groupId: String, relays: List<String>) {
         require(relays.isNotEmpty()) { "At least one relay is required" }
-        require(relays.all { it.startsWith("wss://") }) { "Only wss:// relay URLs are allowed" }
+        require(InviteLinkCodec.fitsInviteLink(relays)) { "Relays do not fit in an invite link" }
 
         val group = groupRepo.getById(groupId) ?: error("Group not found")
         val groupKey = groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch) ?: error("Group key not found")
@@ -70,7 +71,7 @@ constructor(
         )
 
         // 2. Update local
-        groupRepo.updateFromMeta(
+        val updated = groupRepo.updateFromMeta(
             groupId = group.id,
             name = group.name,
             members = group.members,
@@ -81,6 +82,8 @@ constructor(
             description = group.description,
             eventId = event.id
         )
+
+        check(updated) { "Group changed before the relays could be saved. Try again" }
 
         // 3. Reconnect to include new relays, then publish
         val allRelays = (oldRelays + relays).distinct()

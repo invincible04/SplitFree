@@ -294,6 +294,11 @@ class CustomRelayIntegrationTest {
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) } returns groupKey
+        coEvery {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        } returns true
 
         val useCase = UpdateGroupRelaysUseCase(
             groupRepo,

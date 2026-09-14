@@ -1,8 +1,10 @@
 package com.splitfree.sync.event
 
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
@@ -19,8 +21,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -454,6 +458,93 @@ class EventPostProcessorTest {
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         coVerify { selfHeal(groupId) }
     }
+
+    @Test
+    fun `known creator overbudget meta is rejected before any metadata write or self heal`() = runBlocking {
+        val relays = budgetRelays()
+        assertEquals(256, relays.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(relays.all(InviteLinkCodec::relayFits))
+
+        val outcome = processor.handle("group_meta", budgetMeta(relays), pubkey, groupId, 2000, false)
+
+        assertEquals(PostProcessOutcome.REJECTED, outcome)
+        noMetaWrites()
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) { selfHeal(any()) }
+        coVerify(exactly = 0) { eventPublisher.redeliverAuthoredEvents(any(), any()) }
+    }
+
+    @Test
+    fun `overbudget bootstrap meta cannot adopt creator or change creation time`() = runBlocking {
+        val boundId = GroupIdentity.derive(pubkey, 1000)
+        val legacy = group.copy(id = boundId, createdBy = "", createdAt = 12345)
+        coEvery { groupRepo.getById(boundId) } returns legacy
+
+        val outcome = processor.handle("group_meta", budgetMeta(budgetRelays()), pubkey, boundId, 2000, false)
+
+        assertEquals(PostProcessOutcome.REJECTED, outcome)
+        noMetaWrites()
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) { selfHeal(any()) }
+        assertEquals(legacy, groupRepo.getById(boundId))
+    }
+
+    @Test
+    fun `bootstrap meta at 255 bytes remains admissible even when the metadata clock is stale`() = runBlocking {
+        val boundId = GroupIdentity.derive(pubkey, 1000)
+        coEvery { groupRepo.getById(boundId) } returns group.copy(id = boundId, createdBy = "", createdAt = 12345)
+        coEvery {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        } returns false
+        val relays = budgetRelays(secondPathLength = 106)
+        assertEquals(255, relays.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+
+        val outcome = processor.handle("group_meta", budgetMeta(relays), pubkey, boundId, 500, false)
+
+        assertEquals(PostProcessOutcome.APPLIED, outcome)
+        coVerifyOrder {
+            groupRepo.updateCreator(boundId, pubkey, 1000)
+            groupRepo.updateFromMeta(
+                boundId, "Budget", listOf(pubkey), relays, 500, pubkey, emptyMap(), "", "", true, null, pubkey
+            )
+        }
+    }
+
+    @Test
+    fun `noncreator oversized relay claims do not prevent their own name update`() = runBlocking {
+        coEvery { groupRepo.getById(groupId) } returns group.copy(members = listOf(pubkey, stranger))
+        val meta = Json.encodeToString(
+            GroupMeta.serializer(),
+            GroupMeta(
+                name = "Ignored",
+                members = listOf(pubkey, stranger),
+                relays = budgetRelays(),
+                memberNames = mapOf(stranger to "New name")
+            )
+        )
+
+        val outcome = processor.handle("group_meta", meta, stranger, groupId, 2000, false, eventId = "rename")
+
+        assertEquals(PostProcessOutcome.APPLIED, outcome)
+        noCreatorWrite()
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, stranger, 2000, "rename", join = false, displayName = "New name")
+        }
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) { selfHeal(any()) }
+    }
+
+    private fun budgetRelays(secondPathLength: Int = 107): List<String> = listOf(
+        "wss://relay.example/" + "a".repeat(107),
+        "wss://relay.example/" + "b".repeat(secondPathLength)
+    )
+
+    private fun budgetMeta(relays: List<String>): String = Json.encodeToString(
+        GroupMeta.serializer(),
+        GroupMeta(name = "Budget", createdBy = pubkey, createdAt = 1000, members = listOf(pubkey), relays = relays)
+    )
 
     // --- non-creator metas go through applyMemberSelfUpdate, never updateFromMeta ---
 

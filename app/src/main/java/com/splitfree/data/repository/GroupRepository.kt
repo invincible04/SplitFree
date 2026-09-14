@@ -188,6 +188,11 @@ constructor(
             )
             return false
         }
+        val safeRelays = relays.filter(InviteLinkCodec::relayFits)
+        if (!InviteLinkCodec.fitsInviteLink(safeRelays)) {
+            Log.w(TAG, "Rejecting group_meta whose relays do not fit in an invite link")
+            return false
+        }
         return updateGroup(groupId) { entity ->
             if (expectedCreator != null && entity.createdBy != expectedCreator) return@updateGroup false
             if (!isNewerClock(eventTimestamp, eventId, entity.lastMetaTimestamp to entity.lastMetaEventId)) {
@@ -216,8 +221,6 @@ constructor(
                 val chosen = if (memberIsNewer) storedNames[member] else incomingNames[member]
                 if (chosen != null) merged[member] = chosen
             }
-            // The roster's relay list must remain encodable in an invite link, so it is filtered and capped here.
-            val safeRelays = relays.filter(InviteLinkCodec::relayFits).take(InviteLinkCodec.MAX_RELAYS)
             // The conditional statement is kept as the final guard: the watermark, roster and names
             // land together or not at all, even if another writer slipped in between read and write.
             groupDao.updateMetaIfNewer(

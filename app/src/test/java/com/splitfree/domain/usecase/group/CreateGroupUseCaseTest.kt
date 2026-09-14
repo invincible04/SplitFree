@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.group
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventPublisherContract
@@ -10,6 +11,7 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.util.RelayDefaults
+import io.mockk.Called
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -20,6 +22,7 @@ import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -142,6 +145,77 @@ class CreateGroupUseCaseTest {
         val group = useCase("Test", relays)
         assertEquals(relays, group.relays)
     }
+
+    @Test
+    fun `fresh creation rejects invalid relay budgets before generating keys or publishing`() = runBlocking {
+        val overbudget = budgetRelays()
+        assertEquals(256, overbudget.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(overbudget.all(InviteLinkCodec::relayFits))
+        val invalidDrafts = listOf(
+            overbudget,
+            RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS + 1),
+            listOf("wss://relay.example/" + "a".repeat(235)),
+            listOf("ws://insecure.example")
+        )
+
+        for (relays in invalidDrafts) {
+            assertFalse(InviteLinkCodec.fitsInviteLink(relays))
+            val failure = runCatching { useCase("Trip", relays) }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertTrue(failure!!.message!!.contains("Relays do not fit in an invite link"))
+        }
+
+        verify { listOf(encryption, signer) wasNot Called }
+        coVerify { eventPublisher wasNot Called }
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+    }
+
+    @Test
+    fun `fresh creation accepts exactly 255 custom bytes alongside known relays`() = runBlocking {
+        val custom = budgetRelays(secondPathLength = 106)
+        val relays = RelayDefaults.DEFAULT_RELAYS + custom
+        assertEquals(255, custom.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(InviteLinkCodec.fitsInviteLink(relays))
+
+        val created = useCase("Trip", relays)
+
+        assertEquals(relays, created.relays)
+        assertEquals(relays, InviteLinkCodec.decode(InviteLinkCodec.encode(created, fakeGroupKey)).relays)
+        coVerify { eventPublisher.publishCreatedGroup(fakeEvent, created, fakeGroupKey) }
+    }
+
+    @Test
+    fun `fresh creation accepts ten known relays`() = runBlocking {
+        val relays = RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS)
+
+        val created = useCase("Trip", relays)
+
+        assertEquals(relays, created.relays)
+        coVerify { eventPublisher.publishCreatedGroup(fakeEvent, created, fakeGroupKey) }
+    }
+
+    @Test
+    fun `committed creation with saved overbudget relays still reconciles without changing them`() = runBlocking {
+        val relays = budgetRelays()
+        val existing = existingGroup(relays = relays)
+        coEvery { groupRepo.getById(existing.id) } returns existing
+        coEvery { groupRepo.getGroupKeyForEpoch(existing.id, 0) } returns fakeGroupKey
+        coEvery { eventPublisher.hasCreatedGroupCommand(existing.id, fakePubkey, "creation-command") } returns true
+
+        val result = useCase("Trip", relays, createdAt = 1000, commandId = "creation-command")
+
+        assertEquals(existing, result)
+        assertEquals(relays, result.relays)
+        verify { listOf(encryption, signer) wasNot Called }
+        coVerify(exactly = 0) { eventPublisher.publishCreatedGroup(any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+    }
+
+    private fun budgetRelays(secondPathLength: Int = 107): List<String> = listOf(
+        "wss://relay.example/" + "a".repeat(107),
+        "wss://relay.example/" + "b".repeat(secondPathLength)
+    )
 
     @Test(expected = IllegalArgumentException::class)
     fun `invoke rejects blank name`() = runBlocking {

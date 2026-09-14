@@ -63,7 +63,8 @@ constructor(
      * @param jsonContent raw JSON string from a `.splitfree` export file
      * @return number of new events imported (duplicates are skipped)
      * @throws IllegalArgumentException if the MAC is missing/invalid, the version is unsupported, or
-     *   the backup's key material is malformed or conflicts with keys already stored for the group
+     *   the backup's key material is malformed or conflicts with keys already stored for the group,
+     *   or a new group's relay list cannot fit in an invite link
      * @throws IllegalStateException if the key for the backup's epoch cannot be obtained
      */
     suspend operator fun invoke(jsonContent: String): Int = invoke(json.decodeFromString<SplitFreeExport>(jsonContent))
@@ -72,7 +73,8 @@ constructor(
      * @param export a decoded `.splitfree` export
      * @return number of new events imported (duplicates are skipped)
      * @throws IllegalArgumentException if the MAC is missing/invalid, the version is unsupported, or
-     *   the backup's key material is malformed or conflicts with keys already stored for the group
+     *   the backup's key material is malformed or conflicts with keys already stored for the group,
+     *   or a new group's relay list cannot fit in an invite link
      * @throws IllegalStateException if the key for the backup's epoch cannot be obtained
      */
     suspend operator fun invoke(export: SplitFreeExport): Int {
@@ -304,9 +306,13 @@ constructor(
     private fun sanitizeGroupName(raw: String): String =
         TextSanitizer.stripControlChars(raw).take(MAX_GROUP_NAME_LENGTH).trim().ifBlank { DEFAULT_GROUP_NAME }
 
-    /** Relay list from the file, restricted to relays an invite link can carry and bounded in count. */
-    private fun sanitizeRelays(raw: List<String>): List<String> =
-        raw.filter(InviteLinkCodec::relayFits).distinct().take(InviteLinkCodec.MAX_RELAYS)
+    private fun sanitizeRelays(raw: List<String>): List<String> {
+        val relays = raw.filter(InviteLinkCodec::relayFits).distinct()
+        require(InviteLinkCodec.fitsInviteLink(relays)) {
+            "Backup relays do not fit in an invite link; reduce the group's relays on the source device and export again"
+        }
+        return relays
+    }
 
     /**
      * A row from the export that passed authenticity and timestamp checks and is ready to store.
@@ -498,18 +504,34 @@ constructor(
                 var currentGroup = groupRepo.getById(groupId)
 
                 // Bootstrap createdBy only from the author the group id is cryptographically bound to.
-                if (currentGroup != null &&
+                val bootstrapsCreator = currentGroup != null &&
                     currentGroup.createdBy.isEmpty() &&
                     meta.createdBy == event.pubkey &&
                     GroupIdentity.matches(groupId, event.pubkey, meta.createdAt)
-                ) {
+                val isCreator = currentGroup == null ||
+                    bootstrapsCreator ||
+                    (currentGroup.createdBy.isNotEmpty() && event.pubkey == currentGroup.createdBy)
+                if (isCreator && !InviteLinkCodec.fitsInviteLink(meta.relays.filter(InviteLinkCodec::relayFits))) {
+                    continue
+                }
+                if (bootstrapsCreator) {
                     groupRepo.updateCreator(groupId, event.pubkey, meta.createdAt)
-                    currentGroup = currentGroup.copy(createdBy = event.pubkey, createdAt = meta.createdAt)
+                    currentGroup = checkNotNull(currentGroup).copy(createdBy = event.pubkey, createdAt = meta.createdAt)
                 }
                 if (currentGroup == null || currentGroup.createdBy.isNotEmpty()) creatorKnown = true
 
-                val isCreator = currentGroup == null ||
-                    (currentGroup.createdBy.isNotEmpty() && event.pubkey == currentGroup.createdBy)
+                if (!isCreator && currentGroup != null && !InviteLinkCodec.fitsInviteLink(currentGroup.relays)) {
+                    // A member's own change must not re-admit or rewrite a legacy relay list.
+                    groupRepo.applyMemberSelfUpdate(
+                        groupId,
+                        event.pubkey,
+                        event.createdAt,
+                        event.eventId,
+                        join = event.pubkey !in currentGroup.members,
+                        displayName = meta.memberNames[event.pubkey]?.trim().orEmpty().take(50)
+                    )
+                    continue
+                }
 
                 val finalMembers = if (isCreator) {
                     meta.members

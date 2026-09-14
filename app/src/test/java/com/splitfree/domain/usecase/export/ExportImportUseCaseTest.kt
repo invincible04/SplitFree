@@ -8,10 +8,12 @@ import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
@@ -33,6 +35,7 @@ import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -1181,7 +1184,7 @@ class ExportImportUseCaseTest {
     // --- ImportGroupUseCase: untrusted group metadata is sanitised on a fresh device ---
 
     @Test
-    fun `import keeps only relays an invite link can carry and at most ten of them`() = runBlocking {
+    fun `import still removes invalid URLs and duplicates before whole-list validation`() = runBlocking {
         val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
         val store = FakeStore()
         wireFakeStore(gid, store)
@@ -1191,15 +1194,11 @@ class ExportImportUseCaseTest {
             "https://not-a-relay.example",
             "wss://" + "a".repeat(300),
             "wss://ok.example"
-        ) + (1..12).map { "wss://relay$it.example" }
+        )
 
         newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = relays))
 
-        val kept = store.group!!.relays
-        assertEquals(10, kept.size)
-        assertEquals("wss://ok.example", kept.first())
-        assertTrue(kept.all(InviteLinkCodec::relayFits))
-        assertEquals(kept.size, kept.distinct().size)
+        assertEquals(listOf("wss://ok.example"), store.group!!.relays)
     }
 
     @Test
@@ -1237,15 +1236,316 @@ class ExportImportUseCaseTest {
     }
 
     @Test
-    fun `import caps eleven valid relays at ten`() = runBlocking {
+    fun `import accepts ten known relays`() = runBlocking {
         val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
         val store = FakeStore()
         wireFakeStore(gid, store)
-        val relays = (1..11).map { "wss://relay$it.example" }
+        val relays = RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS)
 
         newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = relays))
 
-        assertEquals(relays.take(10), store.group!!.relays)
+        assertEquals(relays, store.group!!.relays)
+    }
+
+    @Test
+    fun `fresh backup with eleven valid relays fails without writes or truncation`() = runBlocking {
+        assertFreshRelayBackupRejected(RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS + 1))
+    }
+
+    @Test
+    fun `fresh backup accepts exactly 255 custom bytes alongside known relays`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val custom = budgetRelays(secondPathLength = 106)
+        val relays = custom + RelayDefaults.DEFAULT_RELAYS
+        assertEquals(255, custom.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(InviteLinkCodec.fitsInviteLink(relays))
+
+        newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = relays))
+
+        assertEquals(relays, store.group!!.relays)
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+    }
+
+    @Test
+    fun `authenticated fresh backup with 256 custom bytes fails before any database or key write`() = runBlocking {
+        val relays = budgetRelays()
+        assertEquals(256, relays.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertFreshRelayBackupRejected(relays)
+    }
+
+    @Test
+    fun `import leaves already saved overbudget relays untouched`() = runBlocking {
+        val savedRelays = budgetRelays()
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        store.group = store.group!!.copy(relays = savedRelays)
+        val before = store.group
+        val backup = buildFreshDeviceExport(emptyList(), groupId, groupName = "Ignored", relays = savedRelays)
+
+        assertEquals(0, newImport()(backup))
+
+        assertEquals(before, store.group)
+        assertEquals(mapOf(0 to groupKey), store.epochKeys)
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        }
+    }
+
+    @Test
+    fun `fitting backup envelope does not bootstrap from oversized meta and later valid meta repairs`() = runBlocking {
+        val createdAt = 1_690_000_000L
+        val gid = GroupIdentity.derive(strangerPubkey, createdAt)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val oversized = relayMetaEvent(strangerPrivKey, gid, createdAt + 5, "oversized")
+        every { encryption.decrypt("oversized", any()) } returns relayMetaJson(
+            strangerPubkey,
+            createdAt,
+            listOf(strangerPubkey, memberPubkey),
+            budgetRelays(),
+            "Rejected"
+        )
+        val backup = buildFreshDeviceExport(listOf(oversized), gid, groupName = "Envelope")
+
+        assertEquals(1, newImport()(backup))
+
+        assertEquals("", store.group!!.createdBy)
+        assertEquals(1700000100L, store.group!!.createdAt)
+        assertEquals("Envelope", store.group!!.name)
+        assertEquals(listOf(memberPubkey), store.group!!.members)
+        assertEquals(listOf("wss://relay.test"), store.group!!.relays)
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        }
+
+        val relays = budgetRelays(secondPathLength = 106)
+        val repair = relayMetaEvent(strangerPrivKey, gid, createdAt + 6, "repair")
+        every { encryption.decrypt("repair", any()) } returns relayMetaJson(
+            strangerPubkey,
+            createdAt,
+            listOf(strangerPubkey, memberPubkey),
+            relays,
+            "Repaired"
+        )
+
+        assertEquals(1, newImport()(buildFreshDeviceExport(listOf(oversized, repair), gid, groupName = "Ignored")))
+
+        assertEquals(strangerPubkey, store.group!!.createdBy)
+        assertEquals(createdAt, store.group!!.createdAt)
+        assertEquals("Repaired", store.group!!.name)
+        assertEquals(listOf(strangerPubkey, memberPubkey), store.group!!.members)
+        assertEquals(relays, store.group!!.relays)
+        coVerify(exactly = 1) { groupRepo.updateCreator(gid, strangerPubkey, createdAt) }
+    }
+
+    @Test
+    fun `oversized known creator backup meta leaves all saved group metadata intact`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        val before = store.group
+        val event = relayMetaEvent(memberPrivKey, groupId, group.createdAt + 5, "oversized")
+        every { encryption.decrypt("oversized", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey),
+            budgetRelays(),
+            "Rejected"
+        )
+
+        assertEquals(1, newImport()(buildFreshDeviceExport(listOf(event), groupId, groupName = "Ignored")))
+
+        assertEquals(before, store.group)
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        }
+    }
+
+    @Test
+    fun `noncreator oversized relay claims in backup do not prevent their own member change`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        val event = relayMetaEvent(strangerPrivKey, groupId, group.createdAt + 5, "join")
+        every { encryption.decrypt("join", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey, strangerPubkey),
+            budgetRelays(),
+            memberNames = mapOf(strangerPubkey to "Joiner")
+        )
+
+        assertEquals(1, newImport()(buildFreshDeviceExport(listOf(event), groupId, groupName = "Ignored")))
+
+        assertEquals(group.relays, store.group!!.relays)
+        assertEquals(group.members + strangerPubkey, store.group!!.members)
+        assertEquals("Joiner", store.group!!.memberNames[strangerPubkey])
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+    }
+
+    @Test
+    fun `member replay can join and rename without rewriting legacy oversized relays`() = runBlocking {
+        val store = storeAtEpoch(0, mapOf(0 to groupKey))
+        val saved = store.group!!.copy(relays = budgetRelays())
+        store.group = saved
+        coEvery { groupRepo.applyMemberSelfUpdate(groupId, any(), any(), any(), any(), any(), any()) } answers {
+            val current = store.group!!
+            val author = secondArg<String>()
+            val displayName = arg<String?>(5)
+            store.group = current.copy(
+                members = if (arg<Boolean>(4)) (current.members + author).distinct() else current.members,
+                memberNames = when {
+                    displayName == null -> current.memberNames
+                    displayName.isEmpty() -> current.memberNames - author
+                    else -> current.memberNames + (author to displayName)
+                }
+            )
+            true
+        }
+        val join = relayMetaEvent(strangerPrivKey, groupId, group.createdAt + 5, "join")
+        val rename = relayMetaEvent(strangerPrivKey, groupId, group.createdAt + 6, "rename")
+        every { encryption.decrypt("join", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey, strangerPubkey),
+            saved.relays,
+            memberNames = mapOf(strangerPubkey to "Joiner")
+        )
+        every { encryption.decrypt("rename", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey, strangerPubkey),
+            saved.relays,
+            memberNames = mapOf(strangerPubkey to "  Renamed  ")
+        )
+
+        assertEquals(2, newImport()(buildFreshDeviceExport(listOf(rename, join), groupId, groupName = "Ignored")))
+
+        assertEquals(
+            saved.copy(
+                members = saved.members + strangerPubkey,
+                memberNames = mapOf(
+                    strangerPubkey to "Renamed"
+                )
+            ),
+            store.group
+        )
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, strangerPubkey, join.createdAt, join.eventId, true, "Joiner", null)
+            groupRepo.applyMemberSelfUpdate(
+                groupId,
+                strangerPubkey,
+                rename.createdAt,
+                rename.eventId,
+                false,
+                "Renamed",
+                null
+            )
+        }
+        val blank = relayMetaEvent(strangerPrivKey, groupId, group.createdAt + 7, "blank")
+        val absent = relayMetaEvent(strangerPrivKey, groupId, group.createdAt + 8, "absent")
+        every { encryption.decrypt("blank", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey, strangerPubkey),
+            saved.relays,
+            memberNames = mapOf(strangerPubkey to "   ")
+        )
+        every { encryption.decrypt("absent", any()) } returns relayMetaJson(
+            memberPubkey,
+            group.createdAt,
+            listOf(memberPubkey, strangerPubkey),
+            saved.relays
+        )
+        assertEquals(2, newImport()(buildFreshDeviceExport(listOf(absent, blank), groupId, groupName = "Ignored")))
+        assertEquals(saved.copy(members = saved.members + strangerPubkey), store.group)
+        coVerify(exactly = 1) {
+            groupRepo.applyMemberSelfUpdate(groupId, strangerPubkey, blank.createdAt, blank.eventId, false, "", null)
+            groupRepo.applyMemberSelfUpdate(groupId, strangerPubkey, absent.createdAt, absent.eventId, false, "", null)
+        }
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        }
+    }
+
+    private fun relayMetaEvent(privateKey: ByteArray, gid: String, createdAt: Long, encrypted: String): ExportedEvent =
+        buildSignedExportedEvent(
+            privateKey = privateKey,
+            eventType = "group_meta",
+            expenseUuid = null,
+            contentEncrypted = encrypted,
+            createdAt = createdAt,
+            gid = gid
+        )
+
+    private fun relayMetaJson(
+        creator: String,
+        createdAt: Long,
+        members: List<String>,
+        relays: List<String>,
+        name: String = "Trip",
+        memberNames: Map<String, String> = emptyMap()
+    ): String = Json.encodeToString(
+        GroupMeta.serializer(),
+        GroupMeta(
+            name = name,
+            createdBy = creator,
+            createdAt = createdAt,
+            members = members,
+            relays = relays,
+            memberNames = memberNames
+        )
+    )
+
+    private fun budgetRelays(secondPathLength: Int = 107): List<String> = listOf(
+        "wss://relay.example/" + "a".repeat(107),
+        "wss://relay.example/" + "b".repeat(secondPathLength)
+    )
+
+    private suspend fun assertFreshRelayBackupRejected(relays: List<String>) {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        assertTrue(relays.all(InviteLinkCodec::relayFits))
+        assertFalse(InviteLinkCodec.fitsInviteLink(relays))
+        val backup = json.decodeFromString<SplitFreeExport>(
+            buildFreshDeviceExport(
+                listOf(buildSignedExportedEvent(gid = gid)),
+                gid,
+                groupName = "Trip",
+                relays = relays
+            )
+        )
+        val original = Json.encodeToString(SplitFreeExport.serializer(), backup)
+
+        val failure = runCatching { newImport()(backup) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertTrue(failure!!.message!!.contains("Backup relays do not fit in an invite link"))
+        assertEquals(original, Json.encodeToString(SplitFreeExport.serializer(), backup))
+        assertNull(store.group)
+        assertTrue(store.epochKeys.isEmpty())
+        assertTrue(store.events.isEmpty())
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.applyKeyRotation(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateCreator(any(), any(), any()) }
+        coVerify(exactly = 0) {
+            groupRepo.updateFromMeta(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        }
+        coVerify(exactly = 0) { eventRepo.insert(any<EventSnapshot>()) }
     }
 
     @Test

@@ -78,8 +78,8 @@ interface GroupRepositoryContract {
      * @param groupId target group UUID
      * @param name updated group name
      * @param members the roster the meta carries (ignored when [applyRoster] is false)
-     * @param relays updated relay URL list; entries an invite link cannot carry are dropped and the
-     *   list is capped at [com.splitfree.domain.invite.InviteLinkCodec.MAX_RELAYS]
+     * @param relays updated relay URL list; individually invalid entries are dropped, then the entire
+     *   meta is rejected if the list fails [com.splitfree.domain.invite.InviteLinkCodec.fitsInviteLink]
      * @param eventTimestamp the meta event's `created_at`; must be positive
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
      * @param memberNames full snapshot of member display names; absent or empty entries clear a name

@@ -35,12 +35,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -66,6 +67,7 @@ data class GroupDetailUiState(
     val draftRelays: List<String>? = null,
     val debts: List<DebtTransaction> = emptyList(),
     val expenses: List<AuthoredExpense> = emptyList(),
+    val inviteError: UiMessage? = null,
     val balancesAvailable: Boolean = true
 ) {
     /** True once both keys are known and match; `"" == ""` during the initial empty frame is not creator. */
@@ -123,10 +125,14 @@ constructor(
     private val _message = MutableStateFlow<UiMessage?>(null)
     val message: StateFlow<UiMessage?> = _message.asStateFlow()
 
-    private val inviteLinkLoaded = AtomicBoolean(false)
+    private var inviteGroup: Group? = null
+    private var inviteJob: Job? = null
+    private var inviteGeneration = 0L
+    private var inviteMutations = 0
 
     /** Bumped by [retryBalances]; both observations restart on every bump. */
     private val retryRequests = MutableStateFlow(0L)
+    private val groupRetryRequests = MutableStateFlow(0L)
 
     /** False after the group observation or the own-key read fails; a successful [applyGroup] restores it. */
     private var groupAvailable = true
@@ -136,16 +142,21 @@ constructor(
 
     init {
         viewModelScope.launch {
-            retryRequests.flatMapLatest {
-                groupRepo.observeById(groupId)
-                    .catch { e -> reportGroupFailure(R.string.group_observation_failed, "Group observation", e) }
-            }.collect { group ->
+            groupRetryRequests.collectLatest {
                 try {
-                    applyGroup(group)
+                    groupRepo.observeById(groupId).collect { group ->
+                        try {
+                            applyGroup(group)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            reportGroupFailure(R.string.group_update_failed, "Apply group update", e)
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    reportGroupFailure(R.string.group_update_failed, "Apply group update", e)
+                    reportGroupFailure(R.string.group_observation_failed, "Group observation", e)
                 }
             }
         }
@@ -161,6 +172,7 @@ constructor(
     /** Recomputes balances from a fresh subscription to both the group and the ledger. */
     fun retryBalances() {
         _error.value = null
+        groupRetryRequests.update { it + 1 }
         retryRequests.update { it + 1 }
     }
 
@@ -199,8 +211,9 @@ constructor(
                 relays = group?.relays ?: emptyList()
             )
         }
-        if (inviteLinkLoaded.compareAndSet(false, true)) {
-            loadInviteLink()
+        if (group != inviteGroup || (_inviteLink.value == null && inviteJob?.isActive != true)) {
+            inviteGroup = group
+            refreshInviteLink()
         }
     }
 
@@ -212,6 +225,8 @@ constructor(
     private fun reportGroupFailure(@StringRes fallback: Int, what: String, e: Throwable) {
         if (e is CancellationException || e !is Exception) throw e
         groupAvailable = false
+        inviteGroup = null
+        invalidateInvite(UiMessage.Res(R.string.invite_group_unavailable))
         _uiState.update { it.copy(balancesAvailable = false) }
         reportObservationFailure(fallback, what, e)
     }
@@ -235,14 +250,60 @@ constructor(
         _error.value = e.toUiMessage(fallback)
     }
 
-    private fun loadInviteLink() {
-        viewModelScope.launch {
+    /** Withdraw the bearer link before starting any replacement work, including a failed observation. */
+    private fun invalidateInvite(error: UiMessage? = null) {
+        inviteGeneration++
+        inviteJob?.cancel()
+        inviteJob = null
+        _inviteLink.value = null
+        _uiState.update { it.copy(inviteError = error) }
+    }
+
+    private fun refreshInviteLink() {
+        invalidateInvite()
+        if (inviteMutations > 0) return
+        val group = inviteGroup
+        if (group == null) {
+            _uiState.update { it.copy(inviteError = UiMessage.Res(R.string.invite_group_unavailable)) }
+            return
+        }
+        if (!InviteLinkCodec.fitsInviteLink(group.relays)) {
+            // Legacy saved lists keep every endpoint for sync. Only an explicit relay edit changes them.
+            _uiState.update { it.copy(inviteError = UiMessage.Res(R.string.invite_relays_need_edit)) }
+            return
+        }
+        val generation = inviteGeneration
+        inviteJob = viewModelScope.launch {
             try {
-                _inviteLink.value = createInviteLink(groupId)
+                val link = createInviteLink(group)
+                ensureActive()
+                if (generation == inviteGeneration) _inviteLink.value = link
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to create invite link: ${e.message}")
+                if (generation == inviteGeneration) {
+                    Log.w(TAG, "Failed to create invite link")
+                    _uiState.update { it.copy(inviteError = UiMessage.Res(R.string.create_invite_failed)) }
+                }
             }
         }
+    }
+
+    /** Re-read the group, also recovering a dead observer. Opening Invite renews its 24-hour expiry. */
+    fun retryInviteLink() {
+        inviteGroup = null
+        invalidateInvite()
+        groupRetryRequests.update { it + 1 }
+    }
+
+    private fun beginInviteMutation() {
+        inviteMutations++
+        invalidateInvite()
+    }
+
+    private fun finishInviteMutation() {
+        inviteMutations--
+        if (inviteMutations == 0) retryInviteLink()
     }
 
     private val settlingInProgress = AtomicBoolean(false)
@@ -291,6 +352,7 @@ constructor(
     fun removeMember(pubkey: String) {
         // A second tap while a rotation is in flight would try to publish epoch N+1 twice.
         if (!removalInProgress.compareAndSet(false, true)) return
+        beginInviteMutation()
         viewModelScope.launch {
             try {
                 rotateGroupKey(groupId, pubkey)
@@ -301,6 +363,7 @@ constructor(
                 _error.value = e.toUiMessage(R.string.remove_member_failed)
             } finally {
                 removalInProgress.set(false)
+                finishInviteMutation()
             }
         }
     }
@@ -425,6 +488,7 @@ constructor(
 
     /** Persist the draft relay list (or the saved list if no draft is open), then close the draft. */
     fun saveRelays(onDone: () -> Unit) {
+        beginInviteMutation()
         viewModelScope.launch {
             val toSave = _uiState.value.let { it.draftRelays ?: it.relays }
             try {
@@ -436,6 +500,8 @@ constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to update relays: ${e.message}")
                 _error.value = e.toUiMessage(R.string.update_relays_failed)
+            } finally {
+                finishInviteMutation()
             }
         }
     }

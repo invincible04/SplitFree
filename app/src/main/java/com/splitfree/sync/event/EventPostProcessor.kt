@@ -1,6 +1,7 @@
 package com.splitfree.sync.event
 
 import com.splitfree.di.ApplicationScope
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
@@ -127,6 +128,9 @@ constructor(
         val isCreator = currentGroup == null || isKnownCreator || bootstrapsCreator
 
         if (isCreator) {
+            if (!InviteLinkCodec.fitsInviteLink(meta.relays.filter(InviteLinkCodec::relayFits))) {
+                return@runSafe PostProcessOutcome.REJECTED
+            }
             applyCreatorMeta(
                 meta,
                 authorHex,

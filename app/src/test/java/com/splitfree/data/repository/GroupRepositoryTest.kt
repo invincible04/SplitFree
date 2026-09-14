@@ -2,10 +2,13 @@ package com.splitfree.data.repository
 
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.repository.SecureStorageException
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.test.FakeSecureStorage
+import io.mockk.Called
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -600,12 +603,118 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `updateFromMeta stores at most ten relays so the roster stays encodable in an invite link`() = runBlocking {
+    fun `updateFromMeta accepts ten known relays`() = runBlocking {
         coEvery { groupDao.getById("g1") } returns groupEntity
         stubMetaWrite(1)
-        val relays = (1..11).map { "wss://relay$it.example" }
+        val relays = RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS)
 
-        assertEquals(relays.take(10), capturedRelays { repo.updateFromMeta("g1", "name", listOf("pub1"), relays, 500) })
+        assertEquals(relays, capturedRelays { repo.updateFromMeta("g1", "name", listOf("pub1"), relays, 500) })
+    }
+
+    @Test
+    fun `updateFromMeta rejects eleven valid relays rather than truncating`() = runBlocking {
+        val relays = RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS + 1)
+        assertTrue(relays.all(InviteLinkCodec::relayFits))
+
+        assertFalse(repo.updateFromMeta("g1", "name", listOf("pub1"), relays, 500))
+
+        coVerify { groupDao wasNot Called }
+    }
+
+    @Test
+    fun `updateFromMeta accepts exactly 255 custom bytes alongside known relays`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        val custom = budgetRelays(secondPathLength = 106)
+        val relays = custom + RelayDefaults.DEFAULT_RELAYS
+        assertEquals(255, custom.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(InviteLinkCodec.fitsInviteLink(relays))
+
+        val stored = capturedRelays {
+            assertTrue(repo.updateFromMeta("g1", "name", listOf("pub1"), relays, 500))
+        }
+
+        assertEquals(relays, stored)
+    }
+
+    @Test
+    fun `overbudget meta leaves all stored fields intact and a valid later meta can repair`() = runBlocking {
+        stubMetaPersistence(groupEntity)
+        val relays = budgetRelays()
+        assertEquals(256, relays.sumOf { 1 + it.toByteArray(Charsets.UTF_8).size })
+        assertTrue(relays.all(InviteLinkCodec::relayFits))
+        assertFalse(InviteLinkCodec.fitsInviteLink(relays))
+
+        assertFalse(
+            repo.updateFromMeta(
+                "g1", "Rejected", listOf("pub3"), relays, 500, "pub3",
+                mapOf("pub3" to "Changed"), "Changed description", "rejected"
+            )
+        )
+
+        coVerify { groupDao wasNot Called }
+        assertEquals(groupEntity, repo.getGroupEntity("g1"))
+        val repairRelays = budgetRelays(secondPathLength = 106)
+        assertTrue(
+            repo.updateFromMeta(
+                "g1", "Repaired", listOf("pub1"), repairRelays, 501, "pub1",
+                mapOf("pub1" to "Alice"), "New description", "repair"
+            )
+        )
+        assertEquals(
+            groupEntity.copy(
+                name = "Repaired",
+                members = """["pub1"]""",
+                relays = Json.encodeToString(ListSerializer(String.serializer()), repairRelays),
+                createdBy = "pub1",
+                memberNames = """{"pub1":"Alice"}""",
+                description = "New description",
+                lastMetaTimestamp = 501,
+                lastMetaEventId = "repair"
+            ),
+            repo.getGroupEntity("g1")
+        )
+    }
+
+    @Test
+    fun `saved overbudget relays remain unchanged until valid replacement metadata arrives`() = runBlocking {
+        val savedRelays = budgetRelays()
+        val saved = groupEntity.copy(relays = Json.encodeToString(ListSerializer(String.serializer()), savedRelays))
+        stubMetaPersistence(saved)
+
+        assertEquals(savedRelays, repo.getById("g1")!!.relays)
+        assertEquals(saved, repo.getGroupEntity("g1"))
+        val valid = listOf("wss://repaired.example")
+        assertTrue(repo.updateFromMeta("g1", "Trip", listOf("pub1", "pub2"), valid, 500))
+        assertEquals(valid, repo.getById("g1")!!.relays)
+    }
+
+    private fun budgetRelays(secondPathLength: Int = 107): List<String> = listOf(
+        "wss://relay.example/" + "a".repeat(107),
+        "wss://relay.example/" + "b".repeat(secondPathLength)
+    )
+
+    private fun stubMetaPersistence(initial: GroupEntity) {
+        var stored = initial
+        coEvery { groupDao.getById("g1") } answers { stored }
+        coEvery {
+            groupDao.updateMetaIfNewer(
+                any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any()
+            )
+        } answers {
+            stored = stored.copy(
+                name = secondArg(),
+                members = thirdArg(),
+                relays = arg(3),
+                createdBy = arg<String>(4).ifEmpty { stored.createdBy },
+                lastMetaTimestamp = arg(5),
+                memberNames = arg(6),
+                description = arg<String?>(7) ?: stored.description,
+                lastMetaEventId = arg(8)
+            )
+            1
+        }
     }
 
     /** Runs [write] and returns the relay list it handed to `updateMetaIfNewer`. */

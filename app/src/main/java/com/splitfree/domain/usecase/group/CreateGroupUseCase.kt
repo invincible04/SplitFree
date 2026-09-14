@@ -2,6 +2,7 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
@@ -47,7 +48,7 @@ constructor(
      * @param expectedAuthorPubkey the identity the command was issued under, or null for the current one
      * @param commandId stable id of this creation; the `group_meta` is addressed under it on relays
      * @return the newly created [Group], or the group an earlier attempt of the same command already created
-     * @throws IllegalArgumentException if [name] is blank or exceeds 100 chars
+     * @throws IllegalArgumentException if [name] is blank or exceeds 100 chars, or new relays cannot fit an invite
      * @throws IllegalStateException if the identity changed, or a different group already owns the id
      */
     suspend operator fun invoke(
@@ -66,6 +67,7 @@ constructor(
         }
         val groupId = GroupIdentity.derive(pubkey, createdAt)
         groupRepo.getById(groupId)?.let { return reconcile(it, name, relays, pubkey, createdAt, commandId) }
+        require(InviteLinkCodec.fitsInviteLink(relays)) { "Relays do not fit in an invite link" }
         // An attempt that stored the key but rolled back the row continues with the same key material.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, 0) ?: encryption.generateGroupKey()
         val myName = settings.displayName

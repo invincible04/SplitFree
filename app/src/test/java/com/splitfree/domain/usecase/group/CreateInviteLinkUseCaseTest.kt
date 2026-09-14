@@ -77,6 +77,20 @@ class CreateInviteLinkUseCaseTest {
         coVerify(exactly = 0) { groupRepo.getGroupKeyForEpoch(any(), any()) }
     }
 
+    @Test
+    fun `observed snapshot does not mix in a newer repository epoch or endpoints`() = runBlocking {
+        val observed = group()
+        coEvery { groupRepo.getById(groupId) } returns group(keyEpoch = 2).copy(relays = listOf("wss://new.test"))
+        coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns epoch0Key
+
+        val invite = InviteLinkCodec.decode(useCase(observed))
+
+        assertEquals(0, invite.keyEpoch)
+        assertEquals(epoch0Key, invite.groupKey)
+        assertEquals(observed.relays, invite.relays)
+        coVerify(exactly = 0) { groupRepo.getById(any()) }
+    }
+
     @Test(expected = IllegalStateException::class)
     fun `throws when group not found`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns null
