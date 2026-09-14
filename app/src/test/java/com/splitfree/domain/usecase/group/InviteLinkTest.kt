@@ -29,7 +29,7 @@ class InviteLinkTest {
     private fun testGroup(
         id: String = groupId,
         name: String = "Trip",
-        relays: List<String> = listOf("wss://relay.damus.io", "wss://nos.lol"),
+        relays: List<String> = listOf("wss://purplerelay.com", "wss://nos.lol"),
         creator: String = creatorPubkey,
         created: Long = createdAt,
         keyEpoch: Int = 0
@@ -64,7 +64,7 @@ class InviteLinkTest {
         assertEquals(group.id, invite.groupId)
         assertEquals("Goa Trip 2026", invite.name)
         assertEquals(testKey, invite.groupKey)
-        assertTrue(invite.relays.contains("wss://relay.damus.io"))
+        assertTrue(invite.relays.contains("wss://purplerelay.com"))
         assertTrue(invite.relays.contains("wss://nos.lol"))
         assertTrue(invite.expiry > System.currentTimeMillis() / 1000)
         assertEquals(creatorPubkey, invite.creatorPubkey)
@@ -91,11 +91,11 @@ class InviteLinkTest {
 
     @Test
     fun `link with custom relay includes it in payload`() {
-        val relays = listOf("wss://relay.damus.io", "wss://custom.relay.example")
+        val relays = listOf("wss://purplerelay.com", "wss://custom.relay.example")
         val link = InviteLinkCodec.encode(testGroup(relays = relays), testKey)
         val invite = InviteLinkCodec.decode(link)
         assertEquals(2, invite.relays.size)
-        assertTrue(invite.relays.contains("wss://relay.damus.io"))
+        assertTrue(invite.relays.contains("wss://purplerelay.com"))
         assertTrue(invite.relays.contains("wss://custom.relay.example"))
     }
 

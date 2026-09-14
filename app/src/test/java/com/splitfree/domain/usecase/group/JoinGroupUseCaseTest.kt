@@ -59,14 +59,14 @@ class JoinGroupUseCaseTest {
 
     private fun inviteGroup(
         name: String = "TestGroup",
-        relays: List<String> = listOf("wss://relay.damus.io"),
+        relays: List<String> = listOf("wss://purplerelay.com"),
         keyEpoch: Int = 0
     ): Group = Group(groupId, name, "", creatorPubkey, createdAt, listOf(creatorPubkey), relays, keyEpoch = keyEpoch)
 
     /** Encode an invite link for the creator-bound test group. */
     private fun buildInviteUri(
         name: String = "TestGroup",
-        relays: List<String> = listOf("wss://relay.damus.io"),
+        relays: List<String> = listOf("wss://purplerelay.com"),
         keyEpoch: Int = 0,
         key: String = groupKey
     ): String = InviteLinkCodec.encode(inviteGroup(name, relays, keyEpoch), key)

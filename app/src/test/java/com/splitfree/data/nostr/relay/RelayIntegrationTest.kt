@@ -33,7 +33,7 @@ import org.junit.Test
  * Real integration test against a live Nostr relay.
  *
  * Validates the full stack: OkHttp WebSocket → Relay → NostrClient → event flow.
- * Uses wss://relay.damus.io (public, no auth required).
+ * Uses wss://nos.lol (public, no auth required).
  *
  * These tests require network access and may be slow (~5s each).
  * They are NOT mocked; they exercise the real code paths.

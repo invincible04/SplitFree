@@ -37,14 +37,14 @@ import org.junit.Test
 /**
  * Integration test for group custom relay feature using REAL relays.
  *
- * Uses `nos.lol` + `relay.damus.io`; both accept kind 30078 writes.
+ * Uses `nos.lol` + `purplerelay.com`; both accept kind 30078 writes.
  * Tests: NIP-11 probe, publish+verify, relay migration with self-heal, auth guard.
  *
  * Run: `./gradlew test -DREAL_RELAY_TEST=true --tests "*.CustomRelayIntegrationTest"`
  */
 class CustomRelayIntegrationTest {
     private val relayA = "wss://nos.lol"
-    private val relayB = "wss://relay.damus.io"
+    private val relayB = "wss://purplerelay.com"
 
     private lateinit var client: NostrClient
     private val encryption = GroupEncryption(CompressionUtil)

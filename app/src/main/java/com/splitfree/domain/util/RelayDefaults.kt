@@ -8,11 +8,11 @@ object RelayDefaults {
     /**
      * Default relays for new groups and fallback when no group relays exist.
      *
-     * Each one was verified to accept a kind-30078 write and return it, accept a kind-1059 gift wrap,
-     * and serve `#p` gift-wrap queries without NIP-42 auth. Free, different operators.
+     * Every entry meets the acceptance criteria: accepts a kind-30078 write and returns it on
+     * read-back, accepts a kind-1059 gift wrap, serves `#p` queries without NIP-42 auth, and is free.
      */
     val DEFAULT_RELAYS = listOf(
-        "wss://relay.damus.io",
+        "wss://purplerelay.com",
         "wss://nos.lol",
         "wss://relay.primal.net",
         "wss://relay.snort.social",
@@ -21,10 +21,11 @@ object RelayDefaults {
 
     /**
      * Fallback relays, always included in every connection for redundancy.
-     * Different operators, different continents, no overlap with [DEFAULT_RELAYS].
+     * Every entry meets the [DEFAULT_RELAYS] acceptance criteria and runs on different operators
+     * and hosts from [DEFAULT_RELAYS].
      */
     val FALLBACK_RELAYS = listOf(
-        "wss://nostr.mom",
+        "wss://nostr.data.haus",
         "wss://nostr.oxtr.dev",
         "wss://relay.nostr.wirednet.jp"
     )
