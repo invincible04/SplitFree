@@ -37,6 +37,30 @@ class RelayDefaultsTest {
     }
 
     @Test
+    fun `KNOWN_RELAYS is frozen because its index is the invite link bit position`() {
+        assertEquals(
+            "KNOWN_RELAYS is wire format: bit i of the invite-link relay bitmap means KNOWN_RELAYS[i]. Reordering or " +
+                "removing an entry silently re-points every invite link ever shared. New relays go at the END only; " +
+                "if that is what you did, extend this literal by the same entry.",
+            listOf(
+                "wss://purplerelay.com",
+                "wss://nos.lol",
+                "wss://relay.primal.net",
+                "wss://relay.snort.social",
+                "wss://offchain.pub",
+                "wss://nostr.data.haus",
+                "wss://nostr.oxtr.dev",
+                "wss://relay.nostr.wirednet.jp",
+                "wss://nostr-pub.wellorder.net",
+                "wss://nostr.sathoarder.com",
+                "wss://nostr.bitcoiner.social",
+                "wss://nostr.mom"
+            ),
+            RelayDefaults.KNOWN_RELAYS
+        )
+    }
+
+    @Test
     fun `DEFAULT_RELAYS has 5 relays`() {
         assertEquals(5, RelayDefaults.DEFAULT_RELAYS.size)
     }

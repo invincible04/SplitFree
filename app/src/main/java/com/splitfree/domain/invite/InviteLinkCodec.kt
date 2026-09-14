@@ -54,15 +54,17 @@ data class InviteParams(
  *
  * Format: `splitfree://join?d=<base64url>`
  *
- * Binary layout (version 2):
+ * Binary layout (version 3):
  * ```
- * [version:1 = 0x02][groupId:16][creatorPub:32][createdAt:8][keyEpoch:2][groupKey:32]
- * [relayBitmap:2][customRelayLen:1][customRelays:N][expiry:4][name:rest]
+ * [version:1 = 0x03][groupId:16][creatorPub:32][createdAt:8][keyEpoch:2][groupKey:32]
+ * [relayBitmap:2][customRelayLen:1][customRelays:customRelayLen][expiry:4][name:rest]
  * ```
  *
  * Relay URLs in [RelayDefaults.KNOWN_RELAYS] are encoded as bits of the big-endian 16-bit bitmap (bit `i`
- * = index `i`); any other relay travels as UTF-8 text, comma-separated, in at most [MAX_CUSTOM_RELAY_BYTES]
- * bytes. [fitsInviteLink] tells whether a relay list satisfies that budget and [MAX_RELAYS].
+ * = index `i`). Any other relay travels inside the custom-relay region as `[len:1][utf8:len]`, one entry after
+ * another with no separator, so a URL may contain any byte (`,` included). Each entry is at most
+ * [MAX_RELAY_URL_LENGTH] UTF-8 bytes and the region as a whole at most [MAX_CUSTOM_RELAY_BYTES] bytes.
+ * [fitsInviteLink] tells whether a relay list satisfies those budgets and [MAX_RELAYS].
  */
 object InviteLinkCodec {
     private val KNOWN_RELAYS = RelayDefaults.KNOWN_RELAYS
@@ -70,13 +72,17 @@ object InviteLinkCodec {
 
     /** Upper bound on relays per group; the invite link refuses to carry more. */
     const val MAX_RELAYS = 10
+
+    /** Size of the whole custom-relay region, which its one-byte length prefix can address. */
     private const val MAX_CUSTOM_RELAY_BYTES = 255
-    private const val MAX_RELAY_URL_LENGTH = 256
+
+    /** UTF-8 bytes of one custom relay URL: the region minus that entry's own length byte. */
+    private const val MAX_RELAY_URL_LENGTH = MAX_CUSTOM_RELAY_BYTES - 1
     private const val MAX_PAYLOAD_LENGTH = 2048
     private const val MAX_NAME_BYTES = 100
     private const val DEFAULT_NAME = "Group"
 
-    private const val VERSION: Int = 0x02
+    private const val VERSION: Int = 0x03
     private const val UUID_SIZE = 16
     private const val PUBKEY_SIZE = 32
     private const val CREATED_AT_SIZE = 8
@@ -92,13 +98,15 @@ object InviteLinkCodec {
     private const val EXPIRY_SIZE = 4
 
     /**
-     * True when [relays] can travel in an invite link: at most [MAX_RELAYS] entries, and the relays outside
-     * [RelayDefaults.KNOWN_RELAYS] take at most [MAX_CUSTOM_RELAY_BYTES] UTF-8 bytes once joined by `,`.
+     * True when [relays] can travel in an invite link: at most [MAX_RELAYS] entries, every relay outside
+     * [RelayDefaults.KNOWN_RELAYS] between 1 and [MAX_RELAY_URL_LENGTH] UTF-8 bytes, and their length-prefixed
+     * encoding at most [MAX_CUSTOM_RELAY_BYTES] bytes in total.
      */
-    fun fitsInviteLink(relays: List<String>): Boolean = fits(relays, customRelayBytes(relays))
+    fun fitsInviteLink(relays: List<String>): Boolean = fits(relays, customRelays(relays))
 
-    private fun fits(relays: List<String>, customRelayBytes: ByteArray): Boolean =
-        relays.size <= MAX_RELAYS && customRelayBytes.size <= MAX_CUSTOM_RELAY_BYTES
+    private fun fits(relays: List<String>, custom: List<ByteArray>): Boolean = relays.size <= MAX_RELAYS &&
+        custom.all { it.size in 1..MAX_RELAY_URL_LENGTH } &&
+        custom.sumOf { CUSTOM_RELAY_LEN_SIZE + it.size } <= MAX_CUSTOM_RELAY_BYTES
 
     /**
      * Encode a group into a compact invite link.
@@ -117,15 +125,17 @@ object InviteLinkCodec {
             "Group id does not match its creator"
         }
         require(group.keyEpoch in 0..MAX_EPOCH) { "Key epoch out of range" }
-        val customRelayBytes = customRelayBytes(group.relays)
-        require(fits(group.relays, customRelayBytes)) {
-            "Relays do not fit in an invite link (max $MAX_RELAYS, custom relays up to $MAX_CUSTOM_RELAY_BYTES bytes)"
+        val custom = customRelays(group.relays)
+        require(fits(group.relays, custom)) {
+            "Relays do not fit in an invite link (max $MAX_RELAYS, each custom relay up to $MAX_RELAY_URL_LENGTH " +
+                "bytes, $MAX_CUSTOM_RELAY_BYTES bytes of custom relays in total)"
         }
         val keyBytes = Base64.getDecoder().decode(groupKey)
         require(keyBytes.size == GROUP_KEY_SIZE) { "Group key must be $GROUP_KEY_SIZE bytes" }
 
         val nameBytes = truncateUtf8(sanitizeName(group.name), MAX_NAME_BYTES)
         val exp = (System.currentTimeMillis() / 1000 + INVITE_EXPIRY_SECS)
+        val customRelayBytes = customRelayBytes(custom)
 
         val buf = ByteArrayOutputStream()
         buf.write(VERSION)
@@ -230,11 +240,26 @@ object InviteLinkCodec {
         if (idx >= 0) bitmap or (1 shl idx) else bitmap
     }
 
-    /** The relays outside [KNOWN_RELAYS], joined by `,`, as UTF-8; the payload carries these verbatim. */
-    private fun customRelayBytes(relays: List<String>): ByteArray =
-        relays.filter { it !in KNOWN_RELAYS }.joinToString(",").toByteArray(Charsets.UTF_8)
+    /** The UTF-8 bytes of every relay outside [KNOWN_RELAYS], in list order; the payload carries these verbatim. */
+    private fun customRelays(relays: List<String>): List<ByteArray> =
+        relays.filter { it !in KNOWN_RELAYS }.map { it.toByteArray(Charsets.UTF_8) }
 
-    /** Decodes relay bitmap + custom relays from binary data. Returns (relays, bytesConsumed). */
+    /** The custom-relay region: one `[len:1][utf8:len]` entry per relay, no separators. Requires [fits]. */
+    private fun customRelayBytes(custom: List<ByteArray>): ByteArray {
+        val buf = ByteArrayOutputStream()
+        for (relay in custom) {
+            buf.write(relay.size)
+            buf.write(relay, 0, relay.size)
+        }
+        return buf.toByteArray()
+    }
+
+    /**
+     * Decodes relay bitmap + custom relays from binary data. Returns (relays, bytesConsumed).
+     *
+     * The custom-relay region must be consumed exactly by whole `[len:1][utf8:len]` entries, each non-empty,
+     * at most [MAX_RELAY_URL_LENGTH] bytes and a `wss://` URL; anything else is a malformed link.
+     */
     private fun decodeRelays(data: ByteArray, startPos: Int): Pair<List<String>, Int> {
         var pos = startPos
         val bitmap = readUint16(data, pos)
@@ -246,16 +271,18 @@ object InviteLinkCodec {
 
         val customLen = data[pos].toInt() and 0xFF
         pos += CUSTOM_RELAY_LEN_SIZE
-        if (customLen > 0) {
-            require(data.size >= pos + customLen) { "Invalid invite link: truncated custom relays" }
-            val customList = String(data, pos, customLen, Charsets.UTF_8).split(",").filter { it.isNotBlank() }
-            for (r in customList) {
-                require(r.startsWith("wss://") && r.length <= MAX_RELAY_URL_LENGTH) {
-                    "Invalid relay URL in invite link"
-                }
-            }
-            relays.addAll(customList)
-            pos += customLen
+        val end = pos + customLen
+        require(data.size >= end) { "Invalid invite link: truncated custom relays" }
+        while (pos < end) {
+            val len = data[pos].toInt() and 0xFF
+            pos += CUSTOM_RELAY_LEN_SIZE
+            require(len > 0) { "Invalid invite link: empty custom relay" }
+            require(len <= MAX_RELAY_URL_LENGTH) { "Invalid invite link: custom relay too long" }
+            require(pos + len <= end) { "Invalid invite link: custom relay overruns its region" }
+            val relay = String(data, pos, len, Charsets.UTF_8)
+            require(relay.startsWith("wss://")) { "Invalid relay URL in invite link" }
+            relays.add(relay)
+            pos += len
         }
         require(relays.size <= MAX_RELAYS) { "Too many relays in invite link (max $MAX_RELAYS)" }
         return relays to (pos - startPos)

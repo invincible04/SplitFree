@@ -12,7 +12,8 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * Tests for the version-2 invite link codec (creator-bound group id, raw epoch key).
+ * Tests for the version-3 invite link codec (creator-bound group id, raw epoch key, length-prefixed custom
+ * relays).
  */
 class InviteLinkTest {
 
@@ -28,6 +29,9 @@ class InviteLinkTest {
     private val customRelayLenPos = 1 + 16 + 32 + 8 + 2 + 32 + 2
     private val expiryPosNoCustomRelays = customRelayLenPos + 1
 
+    /** The longest custom relay URL one link can carry: the region's 255 bytes minus the entry's length byte. */
+    private val maximalRelay = "wss://" + "a".repeat(240) + ".example"
+
     private fun testGroup(
         id: String = groupId,
         name: String = "Trip",
@@ -41,6 +45,24 @@ class InviteLinkTest {
 
     private fun linkFrom(data: ByteArray): String =
         "splitfree://join?d=" + Base64.getUrlEncoder().withoutPadding().encodeToString(data)
+
+    /**
+     * A well-formed payload (one known relay, no custom relays) whose custom-relay region is replaced by
+     * [region], declared as [declaredLen] bytes long.
+     */
+    private fun payloadWithCustomRegion(region: ByteArray, declaredLen: Int = region.size): ByteArray {
+        val data =
+            payloadBytes(InviteLinkCodec.encode(testGroup(relays = listOf(RelayDefaults.KNOWN_RELAYS[0])), testKey))
+        assertEquals(0, data[customRelayLenPos].toInt())
+        val head = data.copyOfRange(0, customRelayLenPos)
+        val tail = data.copyOfRange(customRelayLenPos + 1, data.size)
+        return head + byteArrayOf(declaredLen.toByte()) + region + tail
+    }
+
+    private fun entry(relay: String): ByteArray {
+        val bytes = relay.toByteArray(Charsets.UTF_8)
+        return byteArrayOf(bytes.size.toByte()) + bytes
+    }
 
     private fun assertRejected(expectedMessage: String, block: () -> Unit) {
         try {
@@ -130,7 +152,7 @@ class InviteLinkTest {
     @Test
     fun `fitsInviteLink caps the custom relays at 255 bytes`() {
         val relay = { label: Char -> "wss://" + label.toString().repeat(120) + ".example" }
-        // Two 134-byte URLs joined by a comma: 269 bytes.
+        // Two 134-byte URLs, each behind its length byte: 270 bytes.
         assertFalse(InviteLinkCodec.fitsInviteLink(listOf(relay('a'), relay('b'))))
         // One fits on its own, and known relays cost no custom bytes.
         assertTrue(InviteLinkCodec.fitsInviteLink(listOf(relay('a')) + RelayDefaults.KNOWN_RELAYS.take(9)))
@@ -143,6 +165,93 @@ class InviteLinkTest {
         assertRejected("do not fit") {
             InviteLinkCodec.encode(testGroup(relays = RelayDefaults.KNOWN_RELAYS.take(11)), testKey)
         }
+    }
+
+    // --- Custom relay region: [len:1][utf8:len] entries ---
+
+    @Test
+    fun `custom relays with URL punctuation round-trip byte-identical alongside known relays`() {
+        val custom = listOf(
+            "wss://relay.example/room,a",
+            "wss://relay.example/?a=1&b=2",
+            "wss://relay.example/a%2Fb",
+            "wss://relay.example:8443/x",
+            "wss://relay.example/TeamA/Room"
+        )
+        val relays = listOf(RelayDefaults.KNOWN_RELAYS[0]) + custom + listOf(RelayDefaults.KNOWN_RELAYS[11])
+
+        val decoded = InviteLinkCodec.decode(InviteLinkCodec.encode(testGroup(relays = relays), testKey)).relays
+
+        // Known relays come first, in bitmap order; custom relays follow in list order, untouched.
+        assertEquals(listOf(RelayDefaults.KNOWN_RELAYS[0], RelayDefaults.KNOWN_RELAYS[11]) + custom, decoded)
+    }
+
+    @Test
+    fun `two custom relays round-trip in order`() {
+        val custom = listOf("wss://b.example/second,first", "wss://a.example")
+        val decoded = InviteLinkCodec.decode(InviteLinkCodec.encode(testGroup(relays = custom), testKey)).relays
+        assertEquals(custom, decoded)
+    }
+
+    @Test
+    fun `a 254-byte custom relay is the maximum and a 255-byte one is refused`() {
+        assertEquals(254, maximalRelay.toByteArray(Charsets.UTF_8).size)
+        val relays = listOf(RelayDefaults.KNOWN_RELAYS[0], maximalRelay)
+        assertTrue(InviteLinkCodec.fitsInviteLink(relays))
+        assertEquals(relays, InviteLinkCodec.decode(InviteLinkCodec.encode(testGroup(relays = relays), testKey)).relays)
+
+        val oneByteTooLong = "wss://" + "a".repeat(241) + ".example"
+        assertEquals(255, oneByteTooLong.toByteArray(Charsets.UTF_8).size)
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf(oneByteTooLong)))
+        assertRejected("do not fit") { InviteLinkCodec.encode(testGroup(relays = listOf(oneByteTooLong)), testKey) }
+    }
+
+    @Test
+    fun `the maximal custom relay leaves no room for a second one`() {
+        // 1 + 254 bytes fill the region; even the shortest wss URL beside it overflows 255.
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf(maximalRelay, "wss://a")))
+    }
+
+    @Test
+    fun `an empty custom relay does not fit`() {
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf(RelayDefaults.KNOWN_RELAYS[0], "")))
+    }
+
+    @Test
+    fun `decode rejects a custom entry whose length overruns the region`() {
+        val data = payloadWithCustomRegion(byteArrayOf(0x10) + "wss://x".toByteArray(Charsets.UTF_8))
+        assertRejected("overruns its region") { InviteLinkCodec.decode(linkFrom(data)) }
+    }
+
+    @Test
+    fun `decode rejects a custom entry of length zero`() {
+        assertRejected("empty custom relay") {
+            InviteLinkCodec.decode(linkFrom(payloadWithCustomRegion(byteArrayOf(0))))
+        }
+        assertRejected("empty custom relay") {
+            InviteLinkCodec.decode(linkFrom(payloadWithCustomRegion(entry("wss://x") + byteArrayOf(0))))
+        }
+    }
+
+    @Test
+    fun `decode rejects a custom entry that is not a wss URL`() {
+        val data = payloadWithCustomRegion(entry("wss://ok.example") + entry("http://evil.example"))
+        assertRejected("Invalid relay URL") { InviteLinkCodec.decode(linkFrom(data)) }
+    }
+
+    @Test
+    fun `decode rejects a custom region that declares more bytes than the payload holds`() {
+        val data = payloadWithCustomRegion(entry("wss://x"), declaredLen = 200)
+        assertRejected("truncated custom relays") { InviteLinkCodec.decode(linkFrom(data)) }
+    }
+
+    @Test
+    fun `decode reads a hand-built custom region exactly as encode would write it`() {
+        val data = payloadWithCustomRegion(entry("wss://relay.example/room,a") + entry("wss://b.example"))
+        assertEquals(
+            listOf(RelayDefaults.KNOWN_RELAYS[0], "wss://relay.example/room,a", "wss://b.example"),
+            InviteLinkCodec.decode(linkFrom(data)).relays
+        )
     }
 
     @Test
@@ -201,9 +310,22 @@ class InviteLinkTest {
     // --- Version and bounds ---
 
     @Test
+    fun `encode writes version 3`() {
+        assertEquals(0x03, payloadBytes(InviteLinkCodec.encode(testGroup(), testKey))[versionPos].toInt())
+    }
+
+    @Test
     fun `decode rejects wrong version byte`() {
         val data = payloadBytes(InviteLinkCodec.encode(testGroup(), testKey))
         data[versionPos] = 0x01
+
+        assertRejected("Unsupported invite link version") { InviteLinkCodec.decode(linkFrom(data)) }
+    }
+
+    @Test
+    fun `decode rejects a version 2 header without any fallback`() {
+        val data = payloadBytes(InviteLinkCodec.encode(testGroup(), testKey))
+        data[versionPos] = 0x02
 
         assertRejected("Unsupported invite link version") { InviteLinkCodec.decode(linkFrom(data)) }
     }
