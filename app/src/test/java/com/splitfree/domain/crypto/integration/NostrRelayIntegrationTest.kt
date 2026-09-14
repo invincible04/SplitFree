@@ -46,7 +46,7 @@ class NostrRelayIntegrationTest {
     private val relays =
         listOf(
             "wss://nos.lol",
-            "wss://relay.nostr.net",
+            "wss://offchain.pub",
             "wss://relay.primal.net"
         )
 

@@ -5,13 +5,18 @@ package com.splitfree.domain.util
  * KNOWN_RELAYS order is append-only; changing order breaks existing invite links.
  */
 object RelayDefaults {
-    /** Default relays for new groups and fallback when no group relays exist. */
+    /**
+     * Default relays for new groups and fallback when no group relays exist.
+     *
+     * Each one was verified to accept a kind-30078 write and return it, accept a kind-1059 gift wrap,
+     * and serve `#p` gift-wrap queries without NIP-42 auth. Free, different operators.
+     */
     val DEFAULT_RELAYS = listOf(
         "wss://relay.damus.io",
         "wss://nos.lol",
         "wss://relay.primal.net",
         "wss://relay.snort.social",
-        "wss://relay.nostr.net"
+        "wss://offchain.pub"
     )
 
     /**
