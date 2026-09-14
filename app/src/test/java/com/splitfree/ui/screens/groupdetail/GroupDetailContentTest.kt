@@ -31,6 +31,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import com.splitfree.R
@@ -652,12 +653,14 @@ class GroupDetailContentTest {
         var checked = 0
         var cancelled = 0
         var saved = 0
+        var resets = 0
         render(
             GroupDetailActions(
                 nearbySync = { nearby++ },
                 beginRelayEdit = { begun++ },
                 checkAllRelays = { checked++ },
                 cancelRelayEdit = { cancelled++ },
+                resetRelays = { resets++ },
                 saveRelays = {
                     saved++
                     it()
@@ -684,6 +687,10 @@ class GroupDetailContentTest {
         compose.onNodeWithText(text(R.string.relay_status_online)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.relay_status_idle)).assertIsDisplayed()
         compose.onAllNodesWithContentDescription(text(R.string.relay_remove)).assertCountEquals(2)
+        // The creator can add from the curated list and return to the defaults.
+        compose.onNodeWithTag("relay_add_toggle").assertIsDisplayed()
+        compose.onNodeWithTag("relay_reset").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(1, resets) }
 
         compose.onNodeWithText(text(R.string.cancel)).performClick()
         compose.runOnIdle {
@@ -707,6 +714,8 @@ class GroupDetailContentTest {
 
         compose.onNodeWithText(text(R.string.relay_editor_hint_member)).assertIsDisplayed()
         compose.onAllNodesWithContentDescription(text(R.string.relay_remove)).assertCountEquals(0)
+        compose.onNodeWithTag("relay_add_toggle").assertDoesNotExist()
+        compose.onNodeWithTag("relay_reset").assertDoesNotExist()
         compose.onNodeWithText(text(R.string.save)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.done)).assertIsDisplayed()
     }
@@ -732,6 +741,13 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_expense_edit").assertIsDisplayed()
         compose.onNodeWithTag("group_expense_delete").assertIsDisplayed().performClick()
         compose.onNodeWithTag("group_confirm_delete").assertIsDisplayed()
+
+        // The relay sheet body scrolls, so Save stays reachable even with the suggestions open.
+        sheet = GroupSheet.SyncStatus
+        compose.onNodeWithTag("relay_add_toggle").performScrollTo().performClick()
+        compose.onNodeWithTag("relay_suggestions").assertExists()
+        val save = compose.onNodeWithText(text(R.string.save)).assertIsDisplayed().fetchSemanticsNode()
+        assertTrue("Save must keep a full touch target", save.boundsInRoot.height >= 48f)
     }
 
     // --- Screenshots --------------------------------------------------------------------------------------

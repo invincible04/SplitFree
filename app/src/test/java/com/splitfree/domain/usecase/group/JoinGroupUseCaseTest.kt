@@ -55,7 +55,7 @@ class JoinGroupUseCaseTest {
     private val groupKey = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
 
     /** Byte offset of the expiry field when the link carries no custom relays. */
-    private val expiryPos = 1 + 16 + 32 + 8 + 2 + 32 + 1 + 1
+    private val expiryPos = 1 + 16 + 32 + 8 + 2 + 32 + 2 + 1
 
     private fun inviteGroup(
         name: String = "TestGroup",

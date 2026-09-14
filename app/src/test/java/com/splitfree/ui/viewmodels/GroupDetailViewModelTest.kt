@@ -6,6 +6,7 @@ import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.data.nostr.relay.RelayStatus
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.balance.Balance
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.expense.DebtTransaction
@@ -29,6 +30,7 @@ import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.usecase.group.UpdateGroupRelaysUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
+import com.splitfree.ui.components.RelayInfo
 import com.splitfree.ui.util.UiMessage
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -635,15 +637,121 @@ class GroupDetailViewModelTest {
 
         assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
         assertEquals(UiMessage.Res(R.string.relay_check_failed, "custom.bad.relay"), vm.error.value)
+        assertTrue(url in vm.uiState.value.draftRelays!!)
     }
 
     @Test
-    fun `relay check failure leaves a default relay grey`() = runTest {
+    fun `relay check failure marks a default relay offline and surfaces an error`() = runTest {
         val url = RelayDefaults.DEFAULT_RELAYS.first()
         coEvery { relayHealthMonitor.checkRelays(any()) } throws java.io.IOException("socket closed")
 
         vm.checkRelay(url)
 
-        assertEquals(RelayCheckStatus.IDLE, vm.relayStatuses.value[url])
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
+        assertEquals(UiMessage.Res(R.string.relay_check_failed, url.removePrefix("wss://")), vm.error.value)
+    }
+
+    // --- statuses are informational; only the user changes the list ---
+
+    @Test
+    fun `an unreachable default relay is OFFLINE without an error`() = runTest {
+        val url = RelayDefaults.DEFAULT_RELAYS.first()
+        every { relayHealthMonitor.statuses } returns mapOf(url to RelayStatus(url, online = false))
+
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.OFFLINE, vm.relayStatuses.value[url])
+        assertNull(vm.error.value)
+    }
+
+    @Test
+    fun `a known relay that answers NIP-11 is ONLINE without a write round-trip`() = runTest {
+        val url = RelayDefaults.KNOWN_RELAYS.last()
+        every { relayHealthMonitor.statuses } returns mapOf(url to RelayStatus(url, online = true, latencyMs = 30))
+
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value[url])
+        assertEquals(RelayInfo(latencyMs = 30), vm.relayInfo.value[url])
+        coVerify(exactly = 0) { relayHealthMonitor.verifyRelayRoundTrip(any(), any()) }
+    }
+
+    @Test
+    fun `a custom relay that fails the round-trip is REJECTED and stays in the draft without an error`() = runTest {
+        val url = "wss://custom.relay"
+        every { relayHealthMonitor.statuses } returns mapOf(url to RelayStatus(url, online = true, latencyMs = 30))
+        coEvery { relayHealthMonitor.verifyRelayRoundTrip(url, any()) } returns false
+
+        vm.beginRelayEdit()
+        vm.addRelay(url)
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.REJECTED, vm.relayStatuses.value[url])
+        assertNull(vm.error.value)
+        assertTrue(url in vm.uiState.value.draftRelays!!)
+    }
+
+    @Test
+    fun `a custom relay that passes the round-trip is ONLINE`() = runTest {
+        val url = "wss://custom.relay"
+        every { relayHealthMonitor.statuses } returns mapOf(url to RelayStatus(url, online = true, latencyMs = 30))
+        coEvery { relayHealthMonitor.verifyRelayRoundTrip(url, any()) } returns true
+
+        vm.checkRelay(url)
+
+        assertEquals(RelayCheckStatus.ONLINE, vm.relayStatuses.value[url])
+    }
+
+    // --- invite-link budget and reset ---
+
+    @Test
+    fun `addRelay ignores the eleventh relay`() {
+        vm.beginRelayEdit()
+        (1..8).forEach { vm.addRelay("wss://custom$it.relay") }
+        assertEquals(InviteLinkCodec.MAX_RELAYS, vm.uiState.value.draftRelays!!.size)
+
+        vm.addRelay("wss://one.too.many")
+
+        assertEquals(InviteLinkCodec.MAX_RELAYS, vm.uiState.value.draftRelays!!.size)
+        assertFalse("wss://one.too.many" in vm.uiState.value.draftRelays!!)
+    }
+
+    @Test
+    fun `addRelay ignores a relay that overflows the custom byte budget`() {
+        vm.beginRelayEdit()
+        vm.addRelay("wss://" + "a".repeat(200) + ".example")
+        vm.addRelay("wss://" + "b".repeat(60) + ".example")
+
+        assertEquals(3, vm.uiState.value.draftRelays!!.size)
+    }
+
+    @Test
+    fun `resetRelays makes the draft the defaults and checks the ones not yet online`() = runTest {
+        val online = RelayDefaults.DEFAULT_RELAYS.first()
+        every { relayHealthMonitor.statuses } returns mapOf(online to RelayStatus(online, online = true, latencyMs = 5))
+        vm.checkRelay(online)
+
+        vm.resetRelays()
+
+        assertEquals(RelayDefaults.DEFAULT_RELAYS, vm.uiState.value.draftRelays)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two"), vm.uiState.value.relays)
+        coVerify(exactly = 1) { relayHealthMonitor.checkRelays(listOf(online)) }
+        RelayDefaults.DEFAULT_RELAYS.drop(1).forEach { url ->
+            coVerify(exactly = 1) { relayHealthMonitor.checkRelays(listOf(url)) }
+        }
+    }
+
+    @Test
+    fun `resetRelays replaces an open draft and cancel still reverts`() = runTest {
+        vm.beginRelayEdit()
+        vm.addRelay("wss://new.relay")
+
+        vm.resetRelays()
+        assertEquals(RelayDefaults.DEFAULT_RELAYS, vm.uiState.value.draftRelays)
+
+        vm.cancelRelayEdit()
+        assertNull(vm.uiState.value.draftRelays)
+        assertEquals(listOf("wss://relay.one", "wss://relay.two"), vm.uiState.value.relays)
+        coVerify(exactly = 0) { updateGroupRelays(any(), any()) }
     }
 }

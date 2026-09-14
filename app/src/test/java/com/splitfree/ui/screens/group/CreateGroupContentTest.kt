@@ -23,6 +23,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import com.splitfree.R
 import com.splitfree.domain.util.RelayDefaults
@@ -118,18 +119,33 @@ class CreateGroupContentTest {
         compose.onNodeWithText(text(R.string.relay_section_hint)).assertIsDisplayed()
         compose.onNodeWithText(RelayDefaults.DEFAULT_RELAYS.first().removePrefix("wss://"), substring = true)
             .assertIsDisplayed()
+        // The creator can pick more relays; the defaults are in place so there is nothing to reset.
+        compose.onNodeWithTag("relay_add_toggle").performScrollTo().assertIsDisplayed()
+            .assertTextContains(text(R.string.relay_add))
+        compose.onNodeWithTag("relay_reset").assertDoesNotExist()
     }
 
     @Test
-    fun `custom relay lists show a count instead of default configuration`() {
+    fun `custom relay lists show a count instead of default configuration and offer a reset`() {
         relays = CreateGroupRelays(
             relays = RelayDefaults.DEFAULT_RELAYS + "wss://relay.example",
             statuses = mapOf("wss://relay.example" to RelayCheckStatus.ONLINE)
         )
+        showRelays = true
         render()
 
         compose.onNodeWithTag("create_group_relays_toggle")
             .assertTextContains(plural(R.plurals.relays_count, RelayDefaults.DEFAULT_RELAYS.size + 1))
+        compose.onNodeWithTag("relay_reset").assertExists()
+    }
+
+    @Test
+    fun `reordered default relays still read as the default configuration`() {
+        relays = CreateGroupRelays(relays = RelayDefaults.DEFAULT_RELAYS.reversed())
+        render()
+
+        compose.onNodeWithTag("create_group_relays_toggle")
+            .assertTextContains(text(R.string.relay_default_configuration))
     }
 
     @Test

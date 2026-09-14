@@ -6,14 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RelayDefaultsTest {
-    @Test
-    fun `DEFAULT_RELAYS are all wss`() {
-        RelayDefaults.DEFAULT_RELAYS.forEach { assertTrue("Expected wss:// prefix: $it", it.startsWith("wss://")) }
-    }
+    private val allLists = RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS + RelayDefaults.KNOWN_RELAYS
 
     @Test
-    fun `FALLBACK_RELAYS are all wss`() {
-        RelayDefaults.FALLBACK_RELAYS.forEach { assertTrue("Expected wss:// prefix: $it", it.startsWith("wss://")) }
+    fun `every relay URL is wss`() {
+        allLists.forEach { assertTrue("Expected wss:// prefix: $it", it.startsWith("wss://")) }
     }
 
     @Test
@@ -23,8 +20,20 @@ class RelayDefaultsTest {
     }
 
     @Test
-    fun `KNOWN_RELAYS equals DEFAULT_RELAYS`() {
-        assertEquals(RelayDefaults.DEFAULT_RELAYS, RelayDefaults.KNOWN_RELAYS)
+    fun `DEFAULT_RELAYS is a subset of KNOWN_RELAYS`() {
+        val unknown = RelayDefaults.DEFAULT_RELAYS - RelayDefaults.KNOWN_RELAYS.toSet()
+        assertTrue("Defaults missing from KNOWN_RELAYS: $unknown", unknown.isEmpty())
+    }
+
+    @Test
+    fun `FALLBACK_RELAYS is a subset of KNOWN_RELAYS`() {
+        val unknown = RelayDefaults.FALLBACK_RELAYS - RelayDefaults.KNOWN_RELAYS.toSet()
+        assertTrue("Fallbacks missing from KNOWN_RELAYS: $unknown", unknown.isEmpty())
+    }
+
+    @Test
+    fun `KNOWN_RELAYS fits the 16-bit invite link bitmap`() {
+        assertTrue(RelayDefaults.KNOWN_RELAYS.size <= 16)
     }
 
     @Test
@@ -41,6 +50,7 @@ class RelayDefaultsTest {
     fun `no duplicate relays within lists`() {
         assertEquals(RelayDefaults.DEFAULT_RELAYS.size, RelayDefaults.DEFAULT_RELAYS.distinct().size)
         assertEquals(RelayDefaults.FALLBACK_RELAYS.size, RelayDefaults.FALLBACK_RELAYS.distinct().size)
+        assertEquals(RelayDefaults.KNOWN_RELAYS.size, RelayDefaults.KNOWN_RELAYS.distinct().size)
     }
 
     @Test
@@ -50,8 +60,6 @@ class RelayDefaultsTest {
 
     @Test
     fun `all relay URLs have no trailing slash`() {
-        (RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS).forEach {
-            assertFalse("Trailing slash in: $it", it.endsWith("/"))
-        }
+        allLists.forEach { assertFalse("Trailing slash in: $it", it.endsWith("/")) }
     }
 }

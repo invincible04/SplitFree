@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.group
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.util.RelayDefaults
 import java.util.Base64
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,7 +25,8 @@ class InviteLinkTest {
     /** Byte offsets in the decoded payload (see [InviteLinkCodec] layout). */
     private val versionPos = 0
     private val creatorPos = 1 + 16
-    private val expiryPosNoCustomRelays = 1 + 16 + 32 + 8 + 2 + 32 + 1 + 1
+    private val customRelayLenPos = 1 + 16 + 32 + 8 + 2 + 32 + 2
+    private val expiryPosNoCustomRelays = customRelayLenPos + 1
 
     private fun testGroup(
         id: String = groupId,
@@ -97,6 +99,50 @@ class InviteLinkTest {
         assertEquals(2, invite.relays.size)
         assertTrue(invite.relays.contains("wss://purplerelay.com"))
         assertTrue(invite.relays.contains("wss://custom.relay.example"))
+    }
+
+    // --- Relay bitmap and budget ---
+
+    @Test
+    fun `known relays beyond the eighth are bitmap bits, not custom bytes`() {
+        val relays = listOf(RelayDefaults.KNOWN_RELAYS[8], RelayDefaults.KNOWN_RELAYS.last())
+        val link = InviteLinkCodec.encode(testGroup(relays = relays), testKey)
+
+        assertEquals(0, payloadBytes(link)[customRelayLenPos].toInt())
+        assertEquals(relays, InviteLinkCodec.decode(link).relays)
+    }
+
+    @Test
+    fun `ten known relays round-trip in known order`() {
+        val relays = RelayDefaults.KNOWN_RELAYS.take(10)
+        val link = InviteLinkCodec.encode(testGroup(relays = relays), testKey)
+
+        assertEquals(0, payloadBytes(link)[customRelayLenPos].toInt())
+        assertEquals(relays, InviteLinkCodec.decode(link).relays)
+    }
+
+    @Test
+    fun `fitsInviteLink caps the relay count at MAX_RELAYS`() {
+        assertTrue(InviteLinkCodec.fitsInviteLink(RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS)))
+        assertFalse(InviteLinkCodec.fitsInviteLink(RelayDefaults.KNOWN_RELAYS.take(InviteLinkCodec.MAX_RELAYS + 1)))
+    }
+
+    @Test
+    fun `fitsInviteLink caps the custom relays at 255 bytes`() {
+        val relay = { label: Char -> "wss://" + label.toString().repeat(120) + ".example" }
+        // Two 134-byte URLs joined by a comma: 269 bytes.
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf(relay('a'), relay('b'))))
+        // One fits on its own, and known relays cost no custom bytes.
+        assertTrue(InviteLinkCodec.fitsInviteLink(listOf(relay('a')) + RelayDefaults.KNOWN_RELAYS.take(9)))
+    }
+
+    @Test
+    fun `encode refuses a relay list that does not fit`() {
+        val oversized = listOf("wss://" + "a".repeat(250) + ".example", "wss://b.example")
+        assertRejected("do not fit") { InviteLinkCodec.encode(testGroup(relays = oversized), testKey) }
+        assertRejected("do not fit") {
+            InviteLinkCodec.encode(testGroup(relays = RelayDefaults.KNOWN_RELAYS.take(11)), testKey)
+        }
     }
 
     @Test

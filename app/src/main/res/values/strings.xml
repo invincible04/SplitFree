@@ -164,8 +164,6 @@
 
     <!-- Relay checks (CreateGroupViewModel, GroupDetailViewModel) -->
     <string name="relay_check_failed">Could not check %1$s</string>
-    <string name="relay_offline">%1$s is offline or unreachable</string>
-    <string name="relay_write_read_failed">%1$s can\'t store events: write+read check failed</string>
     <string name="create_group_failed">Could not create group</string>
 
     <!-- OnboardingScreen -->
@@ -367,10 +365,23 @@
     <string name="debug_empty_body">Lines appear here as the app runs. Clear the filter if you expected some.</string>
 
     <!-- RelayEditor -->
+    <string name="relay_add">Add relay</string>
+    <plurals name="relay_suggestions_count">
+        <item quantity="one">%1$d suggested relay</item>
+        <item quantity="other">%1$d suggested relays</item>
+    </plurals>
+    <string name="relay_custom_url">Custom relay URL</string>
+    <string name="relay_custom_hint">Your own or another public relay</string>
+    <plurals name="relay_max_reached">
+        <item quantity="one">Up to %1$d relay per group</item>
+        <item quantity="other">Up to %1$d relays per group</item>
+    </plurals>
+    <string name="relay_reset_defaults">Reset to default relays</string>
     <string name="relay_placeholder">wss://relay.example.com</string>
     <string name="relay_must_start_wss">Must start with wss://</string>
     <string name="relay_url_too_short">URL too short</string>
     <string name="relay_already_added">Already added</string>
+    <string name="relay_invite_too_long">Too many custom relays for an invite link</string>
     <string name="relay_verifying">Verifying write+read…</string>
     <string name="relay_rejected">Relay can\'t store events</string>
     <string name="relay_status_online">Connected</string>

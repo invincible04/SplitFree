@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.splitfree.R
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.usecase.group.CreateGroupUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.components.RelayCheckStatus
@@ -59,9 +60,11 @@ constructor(
 
     private val creationInProgress = AtomicBoolean(false)
 
+    /** Append [url] unless a creation is in flight or the list would no longer fit an invite link. */
     fun addRelay(url: String) {
         if (_isCreating.value) return
-        setRelays((_relays.value + url).distinct())
+        val next = (_relays.value + url).distinct()
+        if (InviteLinkCodec.fitsInviteLink(next)) setRelays(next)
     }
 
     fun clearError() {
@@ -72,59 +75,55 @@ constructor(
         if (!_isCreating.value && _relays.value.size > 1) setRelays(_relays.value - url)
     }
 
+    /** Return to [RelayDefaults.DEFAULT_RELAYS] and check the ones not already known to be online. */
+    fun resetRelays() {
+        if (_isCreating.value) return
+        setRelays(RelayDefaults.DEFAULT_RELAYS)
+        _relays.value.filterNot { _relayStatuses.value[it] == RelayCheckStatus.ONLINE }.forEach(::checkRelay)
+    }
+
     fun checkRelay(url: String) {
-        val isKnown = url in RelayDefaults.DEFAULT_RELAYS || url in RelayDefaults.FALLBACK_RELAYS
-        val host = url.removePrefix("wss://")
         viewModelScope.launch {
             try {
-                runRelayCheck(url, host, isKnown)
+                runRelayCheck(url)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                val host = url.removePrefix("wss://")
                 Log.w(TAG, "Relay check failed for $host: ${e.message}")
-                _relayStatuses.value = _relayStatuses.value +
-                    (url to if (isKnown) RelayCheckStatus.IDLE else RelayCheckStatus.OFFLINE)
+                recordStatus(url, RelayCheckStatus.OFFLINE)
                 _error.value = UiMessage.Res(R.string.relay_check_failed, host)
             }
         }
     }
 
-    private suspend fun runRelayCheck(url: String, host: String, isKnown: Boolean) {
-        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.CHECKING)
+    /**
+     * NIP-11 probe, then a signed write+read round-trip for relays outside [RelayDefaults.KNOWN_RELAYS]. Known
+     * relays skip the round-trip: they already passed the write+read acceptance check recorded in
+     * [RelayDefaults]. Statuses are informational; only the user changes the list.
+     */
+    private suspend fun runRelayCheck(url: String) {
+        recordStatus(url, RelayCheckStatus.CHECKING)
         relayHealthMonitor.checkRelays(listOf(url))
         val status = relayHealthMonitor.statuses[url]
-        if (status?.online == true) {
-            _relayInfo.value = _relayInfo.value +
-                (
-                    url to
-                        RelayInfo(
-                            paid = status.paid,
-                            supportsGiftWrap = status.supportsGiftWrap,
-                            latencyMs = status.latencyMs
-                        )
-                    )
-        }
-        if (isKnown) {
-            // Default relays: ONLINE if NIP-11 passed, IDLE (grey) if not; never red
-            _relayStatuses.value = _relayStatuses.value +
-                (url to if (status?.online == true) RelayCheckStatus.ONLINE else RelayCheckStatus.IDLE)
-            return
-        }
         if (status?.online != true) {
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.OFFLINE)
-            if (!_isCreating.value) setRelays(_relays.value - url)
-            _error.value = UiMessage.Res(R.string.relay_offline, host)
+            recordStatus(url, RelayCheckStatus.OFFLINE)
             return
         }
-        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.VERIFYING)
+        _relayInfo.value = _relayInfo.value +
+            (url to RelayInfo(status.paid, status.supportsGiftWrap, status.latencyMs))
+        if (url in RelayDefaults.KNOWN_RELAYS) {
+            recordStatus(url, RelayCheckStatus.ONLINE)
+            return
+        }
+        recordStatus(url, RelayCheckStatus.VERIFYING)
         val testEvent = eventSigner.createSignedEvent("verify-${System.nanoTime()}", "relay_test", "test")
-        if (!relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)) {
-            _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.REJECTED)
-            if (!_isCreating.value) setRelays(_relays.value - url)
-            _error.value = UiMessage.Res(R.string.relay_write_read_failed, host)
-            return
-        }
-        _relayStatuses.value = _relayStatuses.value + (url to RelayCheckStatus.ONLINE)
+        val verified = relayHealthMonitor.verifyRelayRoundTrip(url, testEvent)
+        recordStatus(url, if (verified) RelayCheckStatus.ONLINE else RelayCheckStatus.REJECTED)
+    }
+
+    private fun recordStatus(url: String, status: RelayCheckStatus) {
+        _relayStatuses.value = _relayStatuses.value + (url to status)
     }
 
     fun checkAllRelays() {

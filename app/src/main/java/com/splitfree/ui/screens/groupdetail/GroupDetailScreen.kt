@@ -167,6 +167,7 @@ data class GroupDetailActions(
     val removeRelay: (String) -> Unit = {},
     val checkRelay: (String) -> Unit = {},
     val checkAllRelays: () -> Unit = {},
+    val resetRelays: () -> Unit = {},
     val saveRelays: (onDone: () -> Unit) -> Unit = { it() },
     val selectCurrency: (String) -> Unit = {},
     val retryBalances: () -> Unit = {}
@@ -248,6 +249,7 @@ fun GroupDetailScreen(
             removeRelay = viewModel::removeRelay,
             checkRelay = viewModel::checkRelay,
             checkAllRelays = viewModel::checkAllRelays,
+            resetRelays = viewModel::resetRelays,
             saveRelays = viewModel::saveRelays,
             selectCurrency = { selectedCurrency = it },
             retryBalances = viewModel::retryBalances

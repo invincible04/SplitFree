@@ -338,6 +338,7 @@ private fun RelaysSheet(
             onAdd = actions.addRelay,
             onRemove = actions.removeRelay,
             onCheck = actions.checkRelay,
+            onReset = actions.resetRelays,
             editable = isCreator
         )
     }

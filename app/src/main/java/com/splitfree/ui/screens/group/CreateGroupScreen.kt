@@ -1,13 +1,6 @@
 package com.splitfree.ui.screens.group
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,14 +25,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
@@ -52,18 +43,13 @@ import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.RelayCheckStatus
 import com.splitfree.ui.components.RelayEditor
 import com.splitfree.ui.components.RelayInfo
-import com.splitfree.ui.components.SettingsChevron
-import com.splitfree.ui.components.SettingsRow
 import com.splitfree.ui.components.SfAccentButton
 import com.splitfree.ui.components.SfBottomDock
-import com.splitfree.ui.components.SfDivider
+import com.splitfree.ui.components.SfExpandableRow
 import com.splitfree.ui.components.SfTopBar
-import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.CreateGroupViewModel
-
-private const val CHEVRON_EXPANDED_DEGREES = 90f
 
 /** Relay list, statuses and callbacks the expandable relay section needs; kept together to keep the API short. */
 data class CreateGroupRelays(
@@ -72,7 +58,8 @@ data class CreateGroupRelays(
     val info: Map<String, RelayInfo> = emptyMap(),
     val onAdd: (String) -> Unit = {},
     val onRemove: (String) -> Unit = {},
-    val onCheck: (String) -> Unit = {}
+    val onCheck: (String) -> Unit = {},
+    val onReset: () -> Unit = {}
 )
 
 /**
@@ -108,7 +95,8 @@ fun CreateGroupScreen(
             info = relayInfo,
             onAdd = viewModel::addRelay,
             onRemove = viewModel::removeRelay,
-            onCheck = viewModel::checkRelay
+            onCheck = viewModel::checkRelay,
+            onReset = viewModel::resetRelays
         ),
         showRelays = showRelays,
         onToggleRelays = { showRelays = !showRelays },
@@ -242,61 +230,44 @@ private fun FormIntro() {
 }
 
 /**
- * "Sync relays" toggle row between two hairlines, expanding into the relay hint and
- * [RelayEditor]. The chevron turns 90° while open and the row reports its expanded state to TalkBack.
+ * "Sync relays" [SfExpandableRow] between two hairlines, disclosing the relay hint and [RelayEditor]. The
+ * subtitle reads "Default relays" whenever the list equals [RelayDefaults.DEFAULT_RELAYS] as a set.
  */
 @Composable
 private fun RelaySection(relays: CreateGroupRelays, expanded: Boolean, onToggle: () -> Unit) {
-    val isDefault = relays.relays == RelayDefaults.DEFAULT_RELAYS
+    val isDefault = relays.relays.toSet() == RelayDefaults.DEFAULT_RELAYS.toSet()
     val subtitle =
         if (isDefault) {
             stringResource(R.string.relay_default_configuration)
         } else {
             pluralStringResource(R.plurals.relays_count, relays.relays.size, relays.relays.size)
         }
-    val expandedState = stringResource(if (expanded) R.string.cd_expanded else R.string.cd_collapsed)
-    val rotation by animateFloatAsState(
-        targetValue = if (expanded) CHEVRON_EXPANDED_DEGREES else 0f,
-        animationSpec = tween(SfMotion.Base, easing = SfMotion.Ease),
-        label = "relayChevron"
-    )
 
-    Column(Modifier.fillMaxWidth()) {
-        SfDivider()
-        SettingsRow(
-            icon = Icons.Outlined.CellTower,
-            title = stringResource(R.string.sync_relays),
-            subtitle = subtitle,
-            onClick = onToggle,
-            modifier = Modifier.semantics { stateDescription = expandedState }.testTag("create_group_relays_toggle"),
-            trailing = { SettingsChevron(modifier = Modifier.rotate(rotation)) }
-        )
-        SfDivider()
-        AnimatedVisibility(
-            visible = expanded,
-            enter =
-            fadeIn(tween(SfMotion.Base, easing = SfMotion.Ease)) +
-                expandVertically(tween(SfMotion.Base, easing = SfMotion.Ease)),
-            exit =
-            fadeOut(tween(SfMotion.Fast, easing = SfMotion.Ease)) +
-                shrinkVertically(tween(SfMotion.Base, easing = SfMotion.Ease))
-        ) {
-            Column(Modifier.fillMaxWidth().padding(vertical = 12.dp).testTag("create_group_relays_panel")) {
-                Text(
-                    stringResource(R.string.relay_section_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                RelayEditor(
-                    relays = relays.relays,
-                    relayStatuses = relays.statuses,
-                    relayInfo = relays.info,
-                    onAdd = relays.onAdd,
-                    onRemove = relays.onRemove,
-                    onCheck = relays.onCheck
-                )
-            }
+    SfExpandableRow(
+        icon = Icons.Outlined.CellTower,
+        title = stringResource(R.string.sync_relays),
+        subtitle = subtitle,
+        expanded = expanded,
+        onToggle = onToggle,
+        modifier = Modifier.testTag("create_group_relays_toggle"),
+        framed = true
+    ) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 12.dp).testTag("create_group_relays_panel")) {
+            Text(
+                stringResource(R.string.relay_section_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(10.dp))
+            RelayEditor(
+                relays = relays.relays,
+                relayStatuses = relays.statuses,
+                relayInfo = relays.info,
+                onAdd = relays.onAdd,
+                onRemove = relays.onRemove,
+                onCheck = relays.onCheck,
+                onReset = relays.onReset
+            )
         }
     }
 }

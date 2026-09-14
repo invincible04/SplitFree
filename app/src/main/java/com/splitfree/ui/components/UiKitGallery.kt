@@ -71,6 +71,7 @@ internal fun UiKitGallery(modifier: Modifier = Modifier) {
     var segment by rememberSaveable { mutableIntStateOf(0) }
     var choice by rememberSaveable { mutableIntStateOf(0) }
     var currency by rememberSaveable { mutableStateOf("INR") }
+    var disclosed by rememberSaveable { mutableStateOf(true) }
 
     // A Surface (not a bare background) so LocalContentColor is provided exactly as MainActivity does.
     Surface(
@@ -85,7 +86,9 @@ internal fun UiKitGallery(modifier: Modifier = Modifier) {
             choice = choice,
             onChoice = { choice = it },
             currency = currency,
-            onCurrency = { currency = it }
+            onCurrency = { currency = it },
+            disclosed = disclosed,
+            onDisclose = { disclosed = !disclosed }
         )
     }
 }
@@ -99,7 +102,9 @@ private fun GalleryBody(
     choice: Int,
     onChoice: (Int) -> Unit,
     currency: String,
-    onCurrency: (String) -> Unit
+    onCurrency: (String) -> Unit,
+    disclosed: Boolean,
+    onDisclose: () -> Unit
 ) {
     Column {
         SfTopBar(
@@ -237,7 +242,7 @@ private fun GalleryBody(
                 onSelect = onSegment
             )
 
-            SectionHead(title = "Rows") { Meta("choice · settings · detail") }
+            SectionHead(title = "Rows") { Meta("choice · settings · expandable · detail") }
             SfListCard {
                 Column(Modifier.padding(horizontal = 14.dp)) {
                     ChoiceRow(
@@ -281,6 +286,23 @@ private fun GalleryBody(
                     onClick = {},
                     iconTint = MaterialTheme.colorScheme.error,
                     titleColor = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            SfExpandableRow(
+                icon = Icons.Outlined.Add,
+                title = "Add relay",
+                subtitle = "7 suggested relays",
+                expanded = disclosed,
+                onToggle = onDisclose,
+                modifier = Modifier.testTag("ui_kit_expandable"),
+                framed = true
+            ) {
+                Text(
+                    "Disclosed content sits below the second hairline.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp)
                 )
             }
             Spacer(Modifier.height(10.dp))

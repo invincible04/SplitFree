@@ -1,5 +1,12 @@
 package com.splitfree.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,20 +29,30 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.splitfree.R
+import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.theme.splitFree
 import com.splitfree.ui.theme.tabular
 
 private val ChoiceRowMinHeight = 56.dp
 private val SettingsRowMinHeight = 64.dp
 private val RadioSize = 20.dp
+private const val CHEVRON_EXPANDED_DEGREES = 90f
 
 /**
  * Single-select row with a custom 20dp radio ring: ring and dot turn `primary` when
@@ -137,6 +154,57 @@ fun SettingsChevron(modifier: Modifier = Modifier) {
         modifier = modifier.size(22.dp),
         tint = MaterialTheme.splitFree.faint
     )
+}
+
+/**
+ * [SettingsRow] that discloses [content] beneath it. The row reports expanded/collapsed to TalkBack through
+ * `stateDescription`; its chevron turns to point down while [expanded] (the auto-mirrored chevron starts out
+ * pointing left in RTL, so the turn runs the other way there); [content] enters with a fade + vertical expand
+ * and leaves with a fade + vertical shrink over [SfMotion] timings. [modifier] applies to the toggle row, so
+ * test tags for the row go there. [framed] puts a hairline above and below the row for use outside an
+ * [SfListCard]; inside a card leave it false and let the card's dividers separate rows.
+ */
+@Composable
+fun SfExpandableRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String?,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    framed: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    val expandedState = stringResource(if (expanded) R.string.cd_expanded else R.string.cd_collapsed)
+    val turn = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) turn * CHEVRON_EXPANDED_DEGREES else 0f,
+        animationSpec = tween(SfMotion.Base, easing = SfMotion.Ease),
+        label = "expandableRowChevron"
+    )
+    Column(Modifier.fillMaxWidth()) {
+        if (framed) SfDivider()
+        SettingsRow(
+            icon = icon,
+            title = title,
+            subtitle = subtitle,
+            onClick = onToggle,
+            modifier = modifier.semantics { stateDescription = expandedState },
+            trailing = { SettingsChevron(modifier = Modifier.rotate(rotation)) }
+        )
+        if (framed) SfDivider()
+        AnimatedVisibility(
+            visible = expanded,
+            enter =
+            fadeIn(tween(SfMotion.Base, easing = SfMotion.Ease)) +
+                expandVertically(tween(SfMotion.Base, easing = SfMotion.Ease)),
+            exit =
+            fadeOut(tween(SfMotion.Fast, easing = SfMotion.Ease)) +
+                shrinkVertically(tween(SfMotion.Base, easing = SfMotion.Ease))
+        ) {
+            content()
+        }
+    }
 }
 
 /**
