@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.splitfree.R
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.util.RelayDefaults
+import com.splitfree.domain.util.RelayUrl
 
 /** Live health check status for a relay, driven by [RelayHealthMonitor][com.splitfree.data.nostr.relay.RelayHealthMonitor]. */
 enum class RelayCheckStatus { IDLE, CHECKING, ONLINE, OFFLINE, VERIFYING, REJECTED }
@@ -234,9 +235,11 @@ private fun RelaySuggestionRow(url: String, status: RelayCheckStatus, info: Rela
 }
 
 /**
- * "Custom relay URL" [SfExpandableRow] that reveals a URL field and an Add action. The field validates the
- * `wss://` prefix, a minimum length, duplicates (after lowercasing and dropping a trailing slash) and the
- * invite-link budget ([InviteLinkCodec.fitsInviteLink]) before calling [onAdd] and [onCheck].
+ * "Custom relay URL" [SfExpandableRow] that reveals a URL field and an Add action. The input is canonicalised by
+ * [RelayUrl.normalize] and then checked, in this order: not a usable `wss://` URL (the message says "must start
+ * with wss://" when even the scheme is wrong, "enter a valid relay URL" otherwise), too short, already in the
+ * list, and over the invite-link budget ([InviteLinkCodec.fitsInviteLink]). Only then are [onAdd] and [onCheck]
+ * called with the canonical URL.
  */
 @Composable
 private fun CustomRelayRow(relays: List<String>, onAdd: (String) -> Unit, onCheck: (String) -> Unit) {
@@ -244,9 +247,11 @@ private fun CustomRelayRow(relays: List<String>, onAdd: (String) -> Unit, onChec
     var input by rememberSaveable { mutableStateOf("") }
     var error by rememberSaveable { mutableStateOf<Int?>(null) }
     val submit = {
-        val url = input.trim().lowercase().trimEnd('/')
+        val typed = input.trim()
+        val url = RelayUrl.normalize(typed)
         when {
-            !url.startsWith("wss://") -> error = R.string.relay_must_start_wss
+            url == null && !typed.startsWith("wss://", ignoreCase = true) -> error = R.string.relay_must_start_wss
+            url == null -> error = R.string.relay_url_invalid
             url.length < RELAY_MIN_URL_LENGTH -> error = R.string.relay_url_too_short
             url in relays -> error = R.string.relay_already_added
             !InviteLinkCodec.fitsInviteLink(relays + url) -> error = R.string.relay_invite_too_long

@@ -379,6 +379,7 @@
     <string name="relay_reset_defaults">Reset to default relays</string>
     <string name="relay_placeholder">wss://relay.example.com</string>
     <string name="relay_must_start_wss">Must start with wss://</string>
+    <string name="relay_url_invalid">Enter a valid relay URL</string>
     <string name="relay_url_too_short">URL too short</string>
     <string name="relay_already_added">Already added</string>
     <string name="relay_invite_too_long">Too many custom relays for an invite link</string>

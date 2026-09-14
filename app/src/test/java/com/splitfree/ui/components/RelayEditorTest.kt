@@ -102,7 +102,7 @@ class RelayEditorTest {
     }
 
     @Test
-    fun `custom entry rejects bad input and accepts a normalised URL`() {
+    fun `custom entry rejects bad input and adds the canonical URL with its path and query intact`() {
         val longRelay = "wss://" + "a".repeat(200) + ".example"
         relays = listOf(known[1], longRelay)
         render()
@@ -110,18 +110,28 @@ class RelayEditorTest {
 
         submitCustom("ws://plain.example")
         compose.onNodeWithText(text(R.string.relay_must_start_wss)).assertExists()
+        submitCustom("not a url")
+        compose.onNodeWithText(text(R.string.relay_must_start_wss)).assertExists()
+        // A bare scheme starts with wss:// but has no host: it is invalid before it can be too short.
+        submitCustom("wss://")
+        compose.onNodeWithText(text(R.string.relay_url_invalid)).assertExists()
+        submitCustom("wss:///path")
+        compose.onNodeWithText(text(R.string.relay_url_invalid)).assertExists()
         submitCustom("wss://a")
         compose.onNodeWithText(text(R.string.relay_url_too_short)).assertExists()
-        submitCustom("wss://nos.lol/")
+        submitCustom("WSS://Nos.lol/")
         compose.onNodeWithText(text(R.string.relay_already_added)).assertExists()
         submitCustom("wss://" + "b".repeat(60) + ".example")
         compose.onNodeWithText(text(R.string.relay_invite_too_long)).assertExists()
         compose.runOnIdle { assertTrue("Rejected input must not reach the callbacks", calls.isEmpty()) }
 
-        submitCustom("WSS://Relay.Example.org/")
+        submitCustom(" WSS://Relay.Example/TeamA?token=AbC/ ")
 
         compose.runOnIdle {
-            assertEquals(listOf("add:wss://relay.example.org", "check:wss://relay.example.org"), calls)
+            assertEquals(
+                listOf("add:wss://relay.example/TeamA?token=AbC/", "check:wss://relay.example/TeamA?token=AbC/"),
+                calls
+            )
         }
         compose.onNodeWithTag("relay_custom_input").assertTextContains("")
     }
