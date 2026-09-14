@@ -1,0 +1,266 @@
+name: Release APK
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: splitfree-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUILD_TOOLS_VERSION: '36.1.0'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  build:
+    name: Release build
+    if: github.ref_type == 'tag' && github.event.repository.fork == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      package-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag, version, source and license review
+        id: source
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          commit="$(git rev-parse HEAD)"
+          python3 tools/release/artifacts.py validate \
+            --tag "$RELEASE_TAG" --commit "$commit" \
+            --repository "$RELEASE_REPOSITORY" --output "$RUNNER_TEMP/metadata.json"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Require an increasing Android version code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          code="$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/metadata.json"))["versionCode"])')"
+          python3 tools/release/github_release.py --repository "$RELEASE_REPOSITORY" --check-version-code "$code"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '15859902' # Command-line Tools 22.0, understands API 37.0 packages
+          packages: '' # Install only the explicit SDK packages below
+      - name: Install pinned Android SDK packages
+        run: sdkmanager 'platforms;android-37.0' "build-tools;$BUILD_TOOLS_VERSION"
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          cache-disabled: true
+      - name: Test release helpers
+        run: python3 -m unittest discover -s tools/release/tests -v
+      - name: Check and build without signing credentials
+        run: |
+          ./gradlew --no-daemon --max-workers=2 -PsplitfreeUnsignedRelease=true \
+            spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
+            :app:assembleDebug :app:assembleRelease
+      - name: Verify unsigned APK and package exact source
+        run: |
+          python3 tools/release/artifacts.py prepare \
+            --metadata "$RUNNER_TEMP/metadata.json" \
+            --apk app/build/outputs/apk/release/app-release-unsigned.apk \
+            --build-tools "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" \
+            --output "$RUNNER_TEMP/unsigned-package"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: unsigned-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/unsigned-package/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain test reports and R8 mapping
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-*.xml
+            app/build/reports/lint-results-*.html
+            app/build/outputs/mapping/release/mapping.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+  sign:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-signing
+    outputs:
+      signed-id: ${{ steps.upload.outputs.artifact-id }}
+      certificate: ${{ steps.sign.outputs.certificate }}
+    steps:
+      # No checkout, Gradle, repository scripts, or restored build caches in this job.
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '15859902' # Command-line Tools 22.0, understands API 37.0 packages
+          packages: '' # Install only the explicit SDK packages below
+      - run: sdkmanager "build-tools;$BUILD_TOOLS_VERSION"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.package-id }}
+          path: ${{ runner.temp }}/input
+          merge-multiple: true
+      - name: Sign only the verified APK with the existing identity
+        id: sign
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keydir="$(mktemp -d "$RUNNER_TEMP/splitfree-signing.XXXXXXXX")"
+          export KEYDIR="$keydir"
+          trap 'rm -rf -- "$keydir"' EXIT
+          python3 - <<'PY'
+          import base64, os, pathlib, re
+          names = ('RELEASE_KEYSTORE_BASE64', 'RELEASE_STORE_PASSWORD', 'RELEASE_KEY_ALIAS', 'RELEASE_KEY_PASSWORD', 'RELEASE_CERT_SHA256')
+          if any(not os.environ.get(n) for n in names):
+              raise SystemExit('Configure all release-signing secrets and RELEASE_CERT_SHA256 before signing.')
+          cert = os.environ['RELEASE_CERT_SHA256'].replace(':', '').lower()
+          if not re.fullmatch('[0-9a-f]{64}', cert):
+              raise SystemExit('Invalid expected signing fingerprint.')
+          try:
+              key = base64.b64decode(os.environ['RELEASE_KEYSTORE_BASE64'], validate=True)
+          except ValueError:
+              raise SystemExit('Invalid keystore Base64; store one line without whitespace.') from None
+          if not key or len(key) > 49152:
+              raise SystemExit('Unexpected keystore size.')
+          pathlib.Path(os.environ['KEYDIR'], 'release.jks').write_bytes(key)
+          PY
+          unset RELEASE_KEYSTORE_BASE64
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          "$tools/zipalign" -c -P 16 -v 4 "$RUNNER_TEMP/input/unsigned.apk"
+          "$tools/apksigner" sign --ks "$keydir/release.jks" \
+            --ks-key-alias "$RELEASE_KEY_ALIAS" \
+            --ks-pass env:RELEASE_STORE_PASSWORD --key-pass env:RELEASE_KEY_PASSWORD \
+            --v1-signing-enabled false --v2-signing-enabled true \
+            --v3-signing-enabled false --v4-signing-enabled false \
+            --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/input/unsigned.apk"
+          unset RELEASE_STORE_PASSWORD RELEASE_KEY_PASSWORD RELEASE_KEY_ALIAS
+          "$tools/apksigner" verify --verbose --print-certs "$RUNNER_TEMP/signed.apk" > "$RUNNER_TEMP/signer.txt"
+          python3 - <<'PY'
+          import os, pathlib, re
+          expected = os.environ['RELEASE_CERT_SHA256'].replace(':', '').lower()
+          text = pathlib.Path(os.environ['RUNNER_TEMP'], 'signer.txt').read_text()
+          found = re.findall(r'^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]+)$', text, re.M)
+          if found != [expected]:
+              raise SystemExit('APK signer does not match the expected release identity.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('certificate=' + expected + '\n')
+          PY
+          "$tools/zipalign" -c -P 16 -v 4 "$RUNNER_TEMP/signed.apk"
+      - name: Cleanup signing files even after a failed step
+        if: always()
+        run: |
+          for path in "$RUNNER_TEMP"/splitfree-signing.*; do
+            if [[ -d "$path" ]]; then rm -rf -- "$path"; fi
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: signed-apk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      bundle-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '15859902' # Command-line Tools 22.0, understands API 37.0 packages
+          packages: '' # Install only the explicit SDK packages below
+      - run: sdkmanager "build-tools;$BUILD_TOOLS_VERSION"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.package-id }}
+          path: ${{ runner.temp }}/input
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.sign.outputs.signed-id }}
+          path: ${{ runner.temp }}/signed
+          merge-multiple: true
+      - name: Verify signed payload and produce final checksums
+        env:
+          EXPECTED_CERTIFICATE: ${{ needs.sign.outputs.certificate }}
+        run: |
+          python3 tools/release/artifacts.py finalize \
+            --metadata "$RUNNER_TEMP/input/metadata.json" --package "$RUNNER_TEMP/input" \
+            --apk "$RUNNER_TEMP/signed/signed.apk" --output "$RUNNER_TEMP/bundle" \
+            --build-tools "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" \
+            --certificate "$EXPECTED_CERTIFICATE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: release-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bundle/
+          if-no-files-found: error
+          retention-days: 30
+
+  draft:
+    needs: [build, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: tools/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package.outputs.bundle-id }}
+          path: ${{ runner.temp }}/bundle
+          merge-multiple: true
+      - name: Create or safely resume the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 tools/release/github_release.py \
+            --directory "$RUNNER_TEMP/bundle" --repository "$RELEASE_REPOSITORY" \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
