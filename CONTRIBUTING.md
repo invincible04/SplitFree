@@ -1,281 +1,276 @@
 # Contributing to SplitFree
 
-Thank you for your interest in contributing to SplitFree! This document provides guidelines and instructions for contributing.
+Help improve the app through focused fixes, tests, documentation, and reproducible bug reports.
 
-## Table of Contents
+[Project overview](README.md) · [Nostr guide](app/src/main/java/com/splitfree/data/nostr/README.md) · [Nearby protocol](app/src/main/java/com/splitfree/sync/nearby/README.md) · [Release guide](RELEASING.md)
+
+## Contents
 
 - [Code of Conduct](#code-of-conduct)
-- [How Can I Contribute?](#how-can-i-contribute)
-- [Development Setup](#development-setup)
-- [Development Workflow](#development-workflow)
-- [Code Style](#code-style)
+- [How can I contribute?](#how-can-i-contribute)
+- [Development setup](#development-setup)
+- [Development workflow](#development-workflow)
+- [Code style](#code-style)
 - [Testing](#testing)
-- [Commit Messages](#commit-messages)
-- [Pull Request Process](#pull-request-process)
-- [Architecture Overview](#architecture-overview)
-- [Areas Where Help Is Needed](#areas-where-help-is-needed)
+- [Commit messages](#commit-messages)
+- [Pull request process](#pull-request-process)
+- [Architecture overview](#architecture-overview)
+- [Areas where help is needed](#areas-where-help-is-needed)
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior via [GitHub Discussions](https://github.com/invincible04/SplitFree/discussions) or by opening a private issue.
+- Follow the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+- Use its confidential reporting route for conduct concerns, not a public issue.
+- Report security vulnerabilities through [SECURITY.md](SECURITY.md).
 
-## How Can I Contribute?
+## How can I contribute?
 
-### Reporting Bugs
+| Contribution | What to include |
+| --- | --- |
+| **Bug report** | Device model, Android/app version, exact reproduction steps, expected behavior, and actual behavior. |
+| **Feature proposal** | The user problem, intended workflow, and why the existing behavior is insufficient. |
+| **Code change** | A focused implementation, regression tests, and an explanation of compatibility or data changes. |
+| **Documentation** | Source-verified behavior, working links, and clear examples without real credentials. |
 
-- Check [existing issues](https://github.com/invincible04/SplitFree/issues) to avoid duplicates
-- Use the bug report template when creating a new issue
-- Include: device model, Android version, steps to reproduce, expected vs actual behavior
-- Attach logs from the **DebugLog** screen (Settings → Debug Log) if relevant
+**Before opening an issue**
 
-### Suggesting Features
+- Search [existing issues](https://github.com/invincible04/SplitFree/issues).
+- Discuss large features or protocol changes before implementation.
+- Use disposable identities and sample data for reproductions.
+- Redact logs: never attach recovery phrases, private keys, usable invite links, or personal backups.
+- Debug builds expose **Settings → Debug Log**; release builds do not expose that screen.
 
-- Open an issue with the `enhancement` label
-- Describe the use case and why it would benefit users
-- For large features, discuss in an issue before starting implementation
-
-### Submitting Code
-
-- Bug fixes, performance improvements, and documentation are always welcome
-- For new features, open an issue first to discuss the approach
-- See [Development Workflow](#development-workflow) below
-
-## Development Setup
+## Development setup
 
 ### Prerequisites
 
-| Requirement | Version |
-|-------------|---------|
-| Android Studio | Meerkat (2024.3+) |
-| JDK | 17 |
-| Android SDK | 37 (compile), 26+ (min) |
-| Kotlin | 2.4 |
-| Gradle | 9.7 (AGP 9.4) |
+| Requirement | Setup |
+| --- | --- |
+| JDK | **17**, selected through `JAVA_HOME` or your IDE's Gradle JDK. |
+| Android SDK | Platform **37** for compilation; API **26+** device or emulator. |
+| Gradle | Use the checked-in wrapper, not a system Gradle installation. |
+| Android Studio | Optional; use a version compatible with the pinned Android Gradle Plugin. |
+| Google Play services | Needed to exercise Nearby Connections and QR scanning. |
 
-### Getting Started
+### Get a working build
+
+1. Fork the project if you plan to submit changes.
+2. Clone your fork, or clone the project to inspect it locally:
 
 ```bash
-# Fork and clone
-git clone https://github.com/<your-username>/SplitFree.git
+git clone https://github.com/invincible04/SplitFree.git
 cd SplitFree
-
-# Open in Android Studio and let Gradle sync
-
-# Verify everything builds
-./gradlew assembleDebug
-
-# Run tests
-./gradlew test
+./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest
 ```
 
-### Project Configuration
+- Configure `ANDROID_HOME` or `sdk.dir` in untracked `local.properties`.
+- In Android Studio, open the repository root and let Gradle sync.
+- On Windows, use `gradlew.bat`.
+- Debug builds do not require release signing credentials.
 
-- **Version catalog**: `gradle/libs.versions.toml` holds all dependency versions
-- **Relay config**: `RelayConfig.kt` holds default and fallback relay URLs
-- **ProGuard**: `app/proguard-rules.pro` holds keep rules for crypto, serialization, and native libs
-- **Lint**: no baseline file; `./gradlew lint` must report zero issues (`abortOnError = true`)
+> **Protect existing installs:** debug and release share `com.splitfree`, but normally use different signing certificates. Use a dedicated test device or emulator; separate work profiles do not bypass package-signature checks.
 
-### Local Relay (Optional)
+### Configuration map
 
-For development without hitting public relays, run a local Nostr relay:
+| Setting | Source |
+| --- | --- |
+| Dependencies and plugins | [`gradle/libs.versions.toml`](gradle/libs.versions.toml) |
+| SDK versions, signing, test options | [`app/build.gradle.kts`](app/build.gradle.kts) |
+| Default and fallback relays | [`RelayDefaults.kt`](app/src/main/java/com/splitfree/domain/util/RelayDefaults.kt) |
+| Release keep rules | [`app/proguard-rules.pro`](app/proguard-rules.pro) |
+| Formatting | [`.editorconfig`](.editorconfig) and [`build.gradle.kts`](build.gradle.kts) |
+| CI tasks | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+
+### Relay testing
+
+- Production relay URLs require `wss://`; a plain local WebSocket endpoint is not sufficient.
+- Custom group relays do **not** disable the built-in fallback pool.
+- Use fake transport fixtures for isolated tests, or explicitly configure a test-only relay setup.
+- Live-relay tests can publish events. Never use real financial data or production identities.
+
+## Development workflow
+
+| Step | Action |
+| --- | --- |
+| **1. Branch** | Start from current `mainline` and create a focused feature/fix branch. |
+| **2. Implement** | Keep the change scoped; preserve ledger, identity, and protocol invariants. |
+| **3. Test** | Add regression coverage for new behavior and failures. |
+| **4. Verify** | Run formatting checks, JVM tests, lint, and debug assembly. |
+| **5. Review the diff** | Check files being staged, generated output, credentials, and unrelated formatting. |
+| **6. Submit** | Open a pull request from your fork against `mainline`. |
 
 ```bash
-# Using nostr-rs-relay (Rust)
-docker run -p 8080:8080 scsibug/nostr-rs-relay
-
-# Then update RelayConfig.kt or use custom relays in Settings
+git checkout -b fix/describe-the-change
+./gradlew spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-## Development Workflow
+- Use `./gradlew spotlessApply` when formatting needs adjustment; review its changes before staging.
+- Git hooks are local configuration, not a substitute for CI or explicit diff review.
+- For release-specific changes, also follow [RELEASING.md](RELEASING.md).
+- Run `python3 -m unittest discover -s tools/release/tests -v` when changing release helpers or workflow signing steps.
+- CI uses `-PsplitfreeUnsignedRelease=true` to check release builds without release credentials.
 
-1. **Create a branch** from `mainline`:
-   ```bash
-   git checkout -b feat/your-feature-name   # feature
-   git checkout -b fix/bug-description      # bug fix
-   git checkout -b docs/what-changed        # documentation
-   ```
+## Code style
 
-2. **Make your changes** following the [code style](#code-style) guidelines
-
-3. **Write tests** for new functionality (see [Testing](#testing))
-
-4. **Verify locally**:
-   ```bash
-   ./gradlew test              # all tests pass
-   ./gradlew spotlessApply     # code formatted
-   ./gradlew lint              # no new lint errors
-   ```
-
-5. **Commit** using [Conventional Commits](#commit-messages)
-
-6. **Push** and open a Pull Request against `mainline`
-
-## Code Style
-
-The project enforces consistent formatting via **Spotless + ktlint**.
+| Convention | Requirement |
+| --- | --- |
+| Kotlin / Gradle formatting | Spotless with pinned ktlint. |
+| Kotlin line length | 120 characters. |
+| Indentation | Four spaces; YAML uses two. |
+| Imports | No wildcard imports. |
+| Text files | UTF-8, LF, final newline. |
+| Trailing whitespace | Follow `.editorconfig`; Markdown has its own exception. |
+| Public APIs | Document behavior, failure modes, and invariants with KDoc. |
 
 ```bash
-# Auto-format all Kotlin files
-./gradlew spotlessApply
-
-# Check formatting without modifying files
 ./gradlew spotlessCheck
+./gradlew spotlessApply
 ```
 
-### Key Rules
-
-- **Max line length**: 120 characters
-- **Indent**: 4 spaces (no tabs)
-- **Imports**: No wildcard imports
-- **Final newline**: Required in all files
-- **Trailing whitespace**: Trimmed
-
-The full configuration is in `.editorconfig` and `build.gradle.kts` (spotless block).
+- `spotlessCheck` does not rewrite files; `spotlessApply` does.
+- Android Lint must pass without errors. Warnings are reported but are not configured as fatal.
 
 ## Testing
 
-The project has comprehensive unit tests across every layer. New code should include tests.
+### Commands
 
-### Running Tests
+| Scope | Command |
+| --- | --- |
+| Ordinary debug JVM suite | `./gradlew :app:testDebugUnitTest` |
+| Both JVM variants | `./gradlew test` |
+| Coverage report | `./gradlew :app:testDebugUnitTest :app:createDebugUnitTestCoverageReport` |
+| One class | `./gradlew :app:testDebugUnitTest --tests 'com.splitfree.domain.crypto.nip.Nip44Test'` |
+| One method | `./gradlew :app:testDebugUnitTest --tests 'com.splitfree.domain.crypto.nip.Nip44Test.encrypt then decrypt round-trip'` |
+| Live-relay integration suite | `./gradlew :app:testDebugUnitTest -DREAL_RELAY_TEST=true --tests '*IntegrationTest*'` |
+| Include live tests with the debug suite | `./gradlew :app:testDebugUnitTest -DREAL_RELAY_TEST=true` |
 
-```bash
-# Unit tests only (integration tests excluded by default)
-./gradlew test
+- `*IntegrationTest*` classes are excluded unless `REAL_RELAY_TEST=true`.
+- Opt-in integration tests require network access and may write to public relays.
+- Test reports are under `app/build/reports/tests/`; Gradle reports the coverage output location.
+- Do not report excluded integration tests as passed device or live-network checks.
 
-# With coverage report (opens app/build/reports/coverage/test/debug/index.html)
-./gradlew testDebugUnitTest app:createDebugUnitTestCoverageReport
+### Test organization
 
-# Specific test class
-./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test"
+Paths below are relative to `app/src/test/java/com/splitfree/`.
 
-# Specific test method
-./gradlew test --tests "com.splitfree.domain.crypto.nip.Nip44Test.encrypt then decrypt round-trip"
+| Directory | Coverage |
+| --- | --- |
+| `domain/crypto/` | Nostr events, NIP-44/NIP-59, mnemonic encoding, signatures. |
+| `domain/crypto/integration/` | Crypto and relay round trips. |
+| `domain/money/`, `domain/usecase/expense/` | Parsing, rounding, splits, balances, settlements, snapshots. |
+| `domain/usecase/group/` | Invitations, membership, rotation, and revocation. |
+| `domain/usecase/export/` | Authenticated backups and identity/epoch recovery. |
+| `domain/usecase/integration/` | Multi-phone and expense-lifecycle integration scenarios. |
+| `domain/validation/` | Timestamps, bounds, authorization, and content checks. |
+| `data/local/`, `data/repository/` | Room storage, migrations, transaction and repository behavior. |
+| `data/nostr/` | Relay messages, connection lifecycle, and health. |
+| `data/ble/`, `sync/nearby/` | Nearby transport, authentication, reconciliation, and forwarding. |
+| `sync/event/`, `sync/worker/` | Ingestion, publication, deferred work, catch-up, and scheduling. |
+| `ui/` | ViewModels, Compose behavior, accessibility/layout fixtures. |
 
-# Integration tests (real Nostr relays; requires network)
-./gradlew test -DREAL_RELAY_TEST=true                             # All tests including integration
-./gradlew test -DREAL_RELAY_TEST=true --tests "*IntegrationTest"  # Integration tests only
+### Test conventions
+
+- Use descriptive backtick-quoted names, such as `` fun `rejects an expired invitation`() ``.
+- Use MockK for dependencies and Robolectric for Android framework behavior.
+- Prefer deterministic fixtures and explicit clocks where timing matters.
+- Exercise rejection, retry, and interruption paths, not only successful round trips.
+- Preserve tests for ledger identity, event ordering, group scope, and key recovery when refactoring.
+
+### Device acceptance
+
+| JVM coverage can verify | Requires device acceptance |
+| --- | --- |
+| Protocol state machines and deterministic recovery logic | Physical radios, SDK consent, permissions, and OEM behavior. |
+| Room-backed replay and injected storage failures | Real process death and Android Keystore persistence. |
+| Compose interactions and fixture renders | Keyboard/insets, TalkBack, and real-device navigation. |
+| Worker scheduling configuration | Actual Doze/background delivery timing. |
+
+Use the [signed-APK device checklist](RELEASING.md#4-test-the-exact-signed-apk) before making release claims.
+
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+type(optional-scope): short description
+
+- Explain the relevant change.
+- Note compatibility or recovery implications when needed.
 ```
 
-### Test Naming Convention
+| Type | Purpose |
+| --- | --- |
+| `feat` | New capability. |
+| `fix` | Bug correction. |
+| `docs` | Documentation-only change. |
+| `refactor` | Internal restructuring without an intended behavior change. |
+| `test` | Added or improved tests. |
+| `chore` | Build, CI, dependencies, or tooling. |
+| `perf` | Performance improvement. |
 
-- Unit tests: `*Test.kt`, run by default, no network required
-- Integration tests: `*IntegrationTest.kt`, excluded by default, require `-DREAL_RELAY_TEST=true`
-
-### Test Organization
-
-| Directory | Purpose |
-|-----------|---------|
-| `domain/crypto/` | Crypto primitives: NIP-01, NIP-44, NIP-59, BIP-39 |
-| `domain/crypto/integration/` | End-to-end crypto + relay round-trips |
-| `domain/usecase/expense/` | Balance computation, debt simplification, splits |
-| `domain/usecase/group/` | Group lifecycle: create, join, migrate, revoke |
-| `domain/usecase/export/` | Export/import with HMAC verification |
-| `domain/usecase/sync/` | Self-heal, constants |
-| `domain/usecase/integration/` | Full multi-phone simulation |
-| `domain/validation/` | Event validation: timestamps, rate limits, content safety |
-| `data/nostr/` | NostrClient, relay protocol, health monitor |
-| `data/ble/` | BLE binary protocol, transfer, handshake |
-| `data/repository/` | Repository implementations |
-| `sync/event/` | Event processing, publishing, notifications |
-| `sync/worker/` | SyncEngine, PowerManager, BootReceiver |
-
-### Test Conventions
-
-- Use backtick-quoted test names: `` fun `descriptive test name`() ``
-- Use `MockK` for mocking dependencies
-- Use `Robolectric` when Android framework classes are needed
-- Integration tests (`*IntegrationTest.kt`) hit live relays; they are excluded by default, run with `-DREAL_RELAY_TEST=true`
-
-## Commit Messages
-
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-<type>(<optional scope>): <description>
-
-[optional body]
-
-[optional footer]
+```text
+fix(sync): retry retained history after relay recovery
+docs: clarify Nearby completion and carriage limits
+test(nearby): cover interrupted envelope forwarding
 ```
 
-### Types
+## Pull request process
 
-| Type | When to Use |
-|------|-------------|
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `docs` | Documentation only |
-| `refactor` | Code change that neither fixes a bug nor adds a feature |
-| `test` | Adding or updating tests |
-| `chore` | Build, CI, tooling changes |
-| `perf` | Performance improvement |
+- **Title:** use the commit-message convention.
+- **Description:** explain the problem, approach, tests, and remaining limitations.
+- **Issue links:** reference related issues; use closing keywords only when the change resolves them.
+- **Scope:** separate unrelated behavior, formatting, and dependency updates.
+- **Review:** obtain at least one maintainer approval before merging.
 
-### Examples
+### PR checklist
 
-```
-feat: add multi-currency settlement support
-fix(sync): handle relay reconnection during gift wrap fetch
-docs: update architecture diagram
-refactor(crypto): extract HKDF into standalone utility
-test(ble): add fragmentation edge case for MTU boundary
-chore: bump Kotlin to 2.1.0
-```
+- [ ] Formatting, tests, lint, and debug assembly pass.
+- [ ] Regression tests cover new behavior and relevant failure paths.
+- [ ] Public APIs and user-visible behavior are documented.
+- [ ] Protocol, schema, invite, or backup compatibility changes are called out.
+- [ ] No secrets, real backups, or signing credentials appear in the diff.
+- [ ] Generated artifacts and unrelated local changes are excluded.
+- [ ] CI checks pass; any unperformed device/live tests are stated explicitly.
 
-## Pull Request Process
+## Architecture overview
 
-1. **Title**: Use the same Conventional Commits format as commit messages
-2. **Description**: Explain what changed and why. Link related issues with `Closes #123`
-3. **Scope**: Keep PRs focused on a single concern. Split large changes into multiple PRs
-4. **Tests**: Include tests for new functionality. Don't reduce existing coverage
-5. **CI**: All checks must pass (tests, lint, spotless)
-6. **Review**: At least one maintainer approval is required before merge
-
-### PR Checklist
-
-- [ ] Tests pass locally (`./gradlew test`)
-- [ ] Code is formatted (`./gradlew spotlessApply`)
-- [ ] Lint passes (`./gradlew lint`)
-- [ ] Commit messages follow Conventional Commits
-- [ ] New public APIs are documented with KDoc
-- [ ] No secrets, keys, or credentials in the diff
-
-## Architecture Overview
-
-The codebase follows **Clean Architecture** with clear layer separation:
-
-```
-UI (Compose) → ViewModel → Use Case → Repository → Data Source
+```text
+Compose UI → ViewModel → Use case → Repository contract → Data implementation
+                                     ↕
+                             Sync and event processing
 ```
 
-### Key Principles
+- The app is one Gradle module with UI, domain, data, and sync packages.
+- The domain boundary is package-level, not a separately enforced Android-free module.
+- Both transports use shared event validation and application logic.
+- Signed events remain immutable; corrections/deletions create new events.
+- Nostr protocol code lives here; underlying cryptography uses secp256k1-kmp and Bouncy Castle.
 
-- **Domain layer has no Android dependencies**: pure Kotlin, testable without Robolectric
-- **Repository pattern**: contracts (interfaces) in `domain/repository/`, implementations in `data/repository/`
-- **Use cases are single-responsibility**: one public `invoke()` method per use case
-- **Crypto is from scratch**: NIP-01, NIP-44, NIP-59, BIP-39 are implemented without third-party Nostr libraries
-- **Events are immutable**: Nostr events are signed and stored as-is; corrections/deletions are new events
+### Where to put new code
 
-### Where to Put New Code
+Paths below are relative to `app/src/main/java/com/splitfree/`.
 
-| What | Where |
-|------|-------|
-| New screen | `ui/screens/<feature>/` + route in `NavGraph.kt` |
-| New use case | `domain/usecase/<area>/` |
-| New domain model | `domain/model/<area>/` |
-| New Nostr protocol feature | `domain/crypto/nip/` or `data/nostr/protocol/` |
-| New data source | `data/<source>/` |
-| New DI binding | `di/` modules |
+| Change | Location |
+| --- | --- |
+| Screen / navigation | `ui/screens/`, `ui/navigation/` |
+| Screen state | `ui/viewmodels/` |
+| Reusable UI | `ui/components/` |
+| Use case / model | `domain/usecase/`, `domain/model/` |
+| Money rules | `domain/money/` |
+| Nostr crypto / wire messages | `domain/crypto/`, `data/nostr/protocol/` |
+| Nearby protocol | `sync/nearby/` |
+| Storage / repository | `data/local/`, `data/repository/` |
+| Dependency binding | `di/` |
 
-## Areas Where Help Is Needed
+## Areas where help is needed
 
-- 🌍 **Localization**: i18n support for multiple languages
-- 🧪 **UI tests**: Compose UI test coverage with `ComposeTestRule`
-- 📱 **iOS port**: Kotlin Multiplatform or native Swift implementation
-- 📖 **Documentation**: User guides, relay operator docs, API documentation
-- ♿ **Accessibility**: Screen reader support, content descriptions, focus management
-- 🎨 **Design**: App icon, screenshots, Play Store listing assets
-- 📊 **Analytics**: Privacy-respecting usage metrics (opt-in only)
-
----
-
-Thank you for helping make SplitFree better! 🎉
+| Area | Useful contributions |
+| --- | --- |
+| Device validation | Reproducible multi-phone, recovery, and upgrade checks. |
+| Accessibility | TalkBack, large text, focus, keyboard behavior. |
+| Localization | Translations and locale-sensitive formatting. |
+| Tests | Regression cases, Compose behavior, deterministic protocol coverage. |
+| Documentation | User guidance, relay behavior, protocol and release maintenance. |
+| Other platforms | Discuss an iOS or multiplatform design before starting a port. |
+| Release assets | Reviewed screenshots and store-listing materials. |

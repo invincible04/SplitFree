@@ -1,232 +1,358 @@
-# Nearby sync protocol (v3)
+# Nearby sync protocol
 
-This describes what two SplitFree phones do when they meet over Google Nearby Connections, what
-"up to date" means, and what the design deliberately does not promise. The implementation lives in
-`app/src/main/java/com/splitfree/sync/nearby/`.
+SplitFree's foreground, group-scoped synchronization over Google Nearby Connections.
+This guide describes the implemented **v3** protocol, including recovery behavior and limits.
+
+[Project overview](../../../../../../../../README.md) · [Nostr and relay sync](../../data/nostr/README.md) · [Privacy](../../../../../../../../PRIVACY.md)
+
+## At a glance
+
+| Property | Behavior |
+| --- | --- |
+| Transport | Google Nearby Connections, `P2P_CLUSTER`; the SDK selects Bluetooth, BLE, or Wi-Fi. |
+| Scope | One authorized group per peer session. |
+| Authentication | Mutual Schnorr signatures; channel binding uses the SDK token when supplied. See the missing-token limit below. |
+| Data | Signed ledger/control events and recipient-encrypted envelopes. |
+| Recovery | Reconnect, authenticate again, and reconcile against durable stored records. |
+| Lifecycle | Runs while the Nearby screen is open and the activity is foregrounded. |
+| Completion | The current exchange has no reported missing, failed, or pending work; see [completion limits](#known-limits). |
+
+## Contents
+
+- [Components](#components)
+- [Framing](#framing)
+- [Authentication](#authentication)
+- [Reconciliation](#reconciliation)
+- [Completion and retries](#completion-and-retries)
+- [Forwarding](#forwarding)
+- [Ledger rules that changed with this protocol](#ledger-rules-that-changed-with-this-protocol)
+- [Platform](#platform)
+- [Known limits](#known-limits)
+- [Testing](#testing)
 
 ## Components
 
-```
-NearbySyncScreen
-    │ observes
-NearbySyncViewModel            discovery / advertising, status text only
-    │
-NearbySessionCoordinator       one consumer of transport callbacks; owns sessions; forwards
-    ├── PeerSession            per-connection state machine: auth → scope → reconcile
-    ├── ReconciliationStore    Room-backed inventory, ingest (via EventProcessor), deliveries
-    └── NearbyTransport        NearbySync (Google Nearby Connections, P2P_CLUSTER)
+```text
+NearbySyncScreen / NearbySyncViewModel
+    │ discovery, advertising, and observable status
+    ▼
+NearbySessionCoordinator
+    ├── PeerSession               auth → group scope → reconciliation
+    ├── ReconciliationStore       inventory, ingestion, retained records
+    └── NearbyTransport           Google Nearby Connections adapter
 ```
 
-Everything a session does runs behind one lock in the coordinator, including timers. A session's
-coroutines are cancelled on close, so a timeout from an old connection cannot act on a new session
-that reuses the same endpoint id.
+| Component | Responsibility |
+| --- | --- |
+| [NearbySessionCoordinator](NearbySessionCoordinator.kt) | Owns peer sessions, serializes callbacks/timers, and observes durable inventory changes. |
+| [PeerSession](PeerSession.kt) | Implements authentication, group authorization, snapshots, receipts, retries, and session status. |
+| [NearbyWire](NearbyWire.kt) | Encodes/decodes frames and defines message types and bounds. |
+| [NearbyAuth](NearbyAuth.kt) | Builds and verifies role-specific authentication transcripts. |
+| [ReconciliationStore](ReconciliationStore.kt) | Defines group-scoped inventory and ingestion operations. |
+| [RoomReconciliationStore](RoomReconciliationStore.kt) | Implements storage, evidence upgrades, dependency recovery, and envelope carriage. |
+| [NearbyTransport](NearbyTransport.kt) / [NearbySync](../../data/ble/NearbySync.kt) | Adapts transport callbacks and byte payloads. |
+| [NearbySessionState](NearbySessionState.kt) | Defines observer-facing phases and transfer counters. |
 
-Nearby ingress and relay ingress use the same `EventProcessor`; nearby passes
-`IngestionContext.RECONCILIATION`, which lifts the age gate and the in-memory rate counters (the
-session bounds admission instead) while keeping every signature, membership, decryption and payload
-check.
+**Concurrency and ingestion**
+
+- Session work and watchdog callbacks run under one coordinator mutex.
+- Closing a session cancels its coroutines; stale timers cannot act on a replacement session.
+- Relay and Nearby ingress share [`EventProcessor`](../event/EventProcessor.kt).
+- Nearby uses `IngestionContext.RECONCILIATION`: historical age and in-memory rate gates are relaxed; signature, membership, decryption, and payload checks remain.
 
 ## Framing
 
-Every payload is `[0x7F][type][UTF-8 JSON]`. `0x7F` is outside the v1 type-byte range `0x01..0x04`, so a v1
-peer is recognised and closed with `unsupported_version` instead of being half-understood. Frames are
-at most 16 KiB; inventories are paged (≤ 256 entries and ≤ 16 KiB per page); records are chunked
-(≤ 12,000 characters per chunk, ≤ 64 chunks). These limits are far inside the pinned
-`ConnectionsClient.MAX_BYTES_DATA_SIZE` (1,047,552 bytes) and are asserted by tests.
+```text
+[0x7F][message type: 1 byte][UTF-8 JSON body]
+```
+
+- `0x7F` distinguishes current framing from legacy v1 type prefixes `0x01..0x04`.
+- Recognized legacy peers close with `unsupported_version`.
+- `Hello.v` must match **3**; v2 framing alone does not establish compatibility.
+- Decoding validates serialization; `PeerSession` checks field values and message ordering.
+
+### Bounds
+
+| Limit | Value | Enforced by |
+| --- | --- | --- |
+| Incoming encoded frame | 16 KiB, including header | `NearbyWire.decode` |
+| Inventory page | 256 entries and 16 KiB encoded | `NearbyWire.paginate` |
+| Inventory snapshot | 200,000 entries | `PeerSession` |
+| Record chunk | 12,000 characters | `NearbyWire.chunk` and receive validation |
+| Chunks per record | 64 | Chunking and receive validation |
+| Requested records in flight | 16 per peer | Request batching / `Want` validation |
+| Partially assembled records | 4 per peer | Receive validation, then `BUSY` |
+| Dependency-shaped rejections retained | 4,096 per session | `PeerSession` retry collection |
+
+> **Bytes and characters differ:** chunking limits characters. UTF-8 encoding and JSON escaping can increase byte size; `encode` and `chunk` do not themselves enforce the 16 KiB encoded-frame limit.
+
+### Messages
 
 | Type | Message | Purpose |
-|---|---|---|
-| 0x01 | `Hello` | version, capabilities, pubkey, fresh nonce, Nearby connection role |
-| 0x02 | `Auth` | Schnorr signature over the channel-bound transcript |
-| 0x03 | `OpenGroup` | the one group this session may sync (+ optional signed self-join) |
-| 0x04 | `OpenGroupResult` | ok, or `unauthorized` (unknown and unauthorized are indistinguishable) |
-| 0x05 | `InventoryPage` | one page of a snapshot: event ids, envelope ids with recipients, held ids |
-| 0x06 | `Want` | ids the consumer wants from that snapshot (≤ 16 outstanding) |
-| 0x07 | `Record` | one chunk of a record; `parts = 0` means "no longer available" |
-| 0x08 | `Result` | `APPLIED`, `ALREADY_APPLIED`, `DEFERRED`, `REJECTED`, `BUSY`, `CARRIED` |
-| 0x09 | `ReconcileResult` | consumer finished the snapshot; counts, unresolved and held |
-| 0x0A | `Close` | explicit terminal reason |
+| --- | --- | --- |
+| `0x01` | `Hello` | Protocol version, capabilities, public key, nonce, and connection role. |
+| `0x02` | `Auth` | Schnorr signature over the role-specific transcript. |
+| `0x03` | `OpenGroup` | Requested group and optional signed self-join. |
+| `0x04` | `OpenGroupResult` | Accepted or `unauthorized`; unknown groups are not distinguished from unauthorized ones. |
+| `0x05` | `InventoryPage` | Numbered inventory page with event, delivery, and held-record entries; includes pending count. |
+| `0x06` | `Want` | IDs requested from the advertised snapshot. |
+| `0x07` | `Record` | A record chunk; `parts = 0` means unavailable. |
+| `0x08` | `Result` | Per-record processing receipt. |
+| `0x09` | `ReconcileResult` | Snapshot completion report, including unresolved, pending, and held counts. |
+| `0x0A` | `Close` | Terminal reason. |
 
 ## Authentication
 
-Both phones send `Hello`. The initiator is the outgoing side of the Nearby connection; if both sides
-report the same role (simultaneous connection requests) the lexically smaller pubkey initiates. Both
-then sign:
+### Handshake
 
-```
-SHA-256( "splitfree-nearby-auth-v2" || 0x00 || version || role
-       || initiatorPubkey || responderPubkey || initiatorNonce || responderNonce
-       || SHA-256(rawAuthenticationToken) || SHA-256(sorted capabilities) )
+1. Both phones send `Hello` with a fresh 32-byte nonce.
+2. The outgoing connection side becomes initiator. If roles match, the lexically smaller public key initiates.
+3. Both sides agree on the intersection of offered capabilities.
+4. Each signs the transcript for its own role and verifies the peer's signature.
+5. The initiator requests one group; membership checks gate group opening.
+
+### Transcript
+
+```text
+SHA-256(
+    UTF8("splitfree-nearby-auth-v2") || 0x00
+    || version:1 || signer-role:1
+    || initiator-pubkey:32 || responder-pubkey:32
+    || initiator-nonce:32 || responder-nonce:32
+    || SHA-256(rawAuthenticationToken)
+    || SHA-256(UTF8(sorted-capabilities-joined-by-commas))
+)
 ```
 
-`rawAuthenticationToken` is Nearby's per-connection token, identical on both ends. A signature
-lifted from one connection therefore fails on any other, which is what defeats a relay between two
-separate connections. Nonces are generated once per session; duplicate `Hello`/`Auth` frames are
-idempotent; a conflicting one closes the session. Nothing about any group is sent before both
-signatures verify, and `OpenGroup` is only sent if the peer is a member (or creator) of the selected
-group. A freshly invited member may attach its signed self-join `group_meta` so it is not blocked by
-a phone that has not yet seen its join.
+- The domain string retains `v2`; the version byte is the current protocol version, **3**.
+- Signer roles are `0x01` for initiator and `0x02` for responder.
+- Channel-token binding prevents a signature from one connection authenticating a different connection.
+- `NearbySync` forwards the token captured at connection initiation. Its callback model permits a missing token.
+- `PeerSession` does not reject a missing token solely for absence; `NearbyAuth` hashes empty bytes instead. Identity proof remains, but **channel binding is absent**.
+- This is a source-level fallback, not evidence that the SDK normally omits tokens or that a device exploit has been reproduced.
+- Identical duplicate `Hello` / `Auth` messages are idempotent; conflicting ones close the session.
+- No group details are sent before mutual authentication.
+
+### Group authorization
+
+- `OpenGroup` is sent only to a known member or creator of the selected group.
+- A newly invited member may attach a signed self-join `group_meta` so the other phone can admit it before checking membership.
+- Group-scoped messages recheck local identity and both memberships while the session is open.
+- A group-scoped session cannot apply a received envelope to a different group the phone happens to know.
 
 ## Reconciliation
 
-After the group opens the protocol is symmetric. Each side advertises its inventory as a numbered
-snapshot; the other side asks for what it lacks, applies each record and answers with a `Result`, then
-sends `ReconcileResult`. Inventories list:
+Both peers act as provider and consumer after the group opens.
 
-- `e` entries: ledger and control events with a third-party-verifiable signature, applied or still
-  pending (a rotation this phone cannot apply yet is exactly what the next phone may be waiting
-  for). Rows that only hold a gift-wrap rumor (`seal:` signature) are not offered, because a peer
-  could not verify them; rows whose effect was permanently rejected here are not offered either.
-- `d` entries: recipient-encrypted envelopes (gift wraps, per-member key rotations) this phone holds,
-  with the recipient pubkey and, when known, the inner event id.
-- `h` entries: applied records this phone holds only as a gift-wrap rumor, money and control alike.
-  They cannot be offered (a peer could not verify them) and are never wanted; they are listed so a
-  peer that lacks one knows the two ledgers differ. Control records are listed too: the wire carries
-  no roster or epoch digest, so a rumor-only `group_meta` or `key_revocation` the peer never saw would
-  otherwise go unnoticed. The one exclusion is a rumor-only `key_rotation`: it is addressed to a
-  single recipient, another recipient's copy of the same epoch is a different event id, and a rotation
-  for someone else is carried as an envelope rather than stored as an event, so listing it would keep
-  two phones that both installed the epoch permanently incomplete. Epochs are not compared on the
-  wire: two recipients at different epochs with no other differing rows still report up to date.
+```text
+InventoryPage → Want → Record → Result → ReconcileResult
+     ↑                                       │
+     └──── changed / unacknowledged data ────┘
+```
 
-Key rotations and other control records are advertised first. A record refused for want of another
-record (undecryptable under any known epoch, or by an author whose join has not landed) is kept for the
-life of the session and requested again after a control record applies or the local store changes,
-whichever snapshot first offered it; the provider serves any id in its current inventory, acknowledged
-or not. Malformed and unauthorized records are not retried. A correction or delete that arrives before
-its original is stored pending, invisible to the ledger, and applied by `EventProcessor.retryDeferred`
-once the original lands; rows deferred on a missing epoch are re-driven the same way.
+### Inventory entry kinds
 
-A consumer wants: unknown verifiable events; a signed original for an event it only holds as a rumor
-(the row is upgraded in place, never duplicated); envelopes addressed to itself; and envelopes for
-other current members. Courier storage is bounded (512 envelopes / 4 MiB per group, 30-day retention
-for carried, 90 for authored) by evicting the oldest carried envelope when a new one arrives, never by
-refusing it: a full cache must not stop a key from propagating.
+| Kind | Content | How the consumer uses it |
+| --- | --- | --- |
+| `e` | Ledger/control event with a third-party-verifiable signature; applied or pending, but not failed. | Requests unknown events or a signed original that upgrades a rumor-only row. |
+| `d` | Available recipient-encrypted envelope, with recipient and optional inner-event ID. | Requests envelopes for itself or eligible carriage for current members. |
+| `h` | Applied record held only as a gift-wrap rumor (`seal:` evidence). | Counts missing records, but never requests or serves these entries. |
 
-Acknowledged baseline: the provider only treats an entry (kind and id) as known to the peer once a
-`ReconcileResult` for a snapshot that carried it has come back; a rumor upgraded to a signed event is
-a new entry and is offered again. Every later snapshot resends whatever is still
-unacknowledged, so a page lost in transit (a failed send) is simply sent again after the 30 s
-silence; it can never turn into an empty delta that both sides mistake for "done". A page that
-arrives out of order is ignored, not treated as a violation, for the same reason.
+**Ordering and evidence**
 
-Completion: a session is **up to date** only when both snapshots are consumed, every wanted record
-has a terminal `Result`, nothing was `REJECTED`, `BUSY` or unresolved, **neither side holds pending
-rows**, and neither side lacks a record the other holds as a rumor (`h` entries missing here are
-counted as `held`, reported back, and recounted when the local store changes). Such a record can only
-come from its author or a surviving signed copy; until then both phones show the round as incomplete. The pending count is read from durable storage (`applyState = PENDING`), so work left
-over from an earlier session or a process restart counts, and is re-driven when the screen opens and
-when a group opens, as well as during app startup recovery. The peer's count travels in its
-`InventoryPage` and `ReconcileResult`. Either side pending gives
-**waiting for a key or earlier update** on both. An unreadable pending count fails closed: inventory
-advertises at least one pending item and the round report at least one unresolved item until storage
-is readable again. Readability changes trigger a new report even when the stored count stays zero.
-Failures give **incomplete**. A dropped transport gives **interrupted** with the durable progress kept: a reconnect authenticates afresh and
-only transfers what is still missing. `CARRIED` is never shown as delivery to the recipient.
+- Control events and key-rotation envelopes are advertised before ordinary ledger data.
+- A signed original upgrades a rumor row in place; it does not duplicate the ledger effect.
+- Evidence is acknowledged by **entry kind + ID**, so upgrading a held rumor to a signed event creates a new offerable entry.
+- Rumor-only `group_meta` and `key_revocation` records participate in held-record accounting.
+- Rumor-only per-recipient `key_rotation` records are excluded: another recipient's copy has a different event ID.
 
-Retries: a record with no terminal result after 30 s of silence is re-requested once, then counted
-unresolved. A lost `ReconcileResult` or page is recovered by re-advertising the unacknowledged delta
-(twice at most). Duplicates are harmless everywhere.
+### Dependency recovery
+
+| Missing input | Recovery |
+| --- | --- |
+| Original expense for a correction/delete | Store pending and retry through `EventProcessor.retryDeferred` when the original arrives. |
+| Group-key epoch or author join | Retry after a control record applies or local storage changes. |
+| Previously deferred durable work | Retry on activation, group opening, relevant changes, and application recovery. |
+| Malformed or unauthorized record | Reject; do not classify as a dependency retry. |
+
+- Dependency-shaped rejections are retained for the session, within the bounded retry collection.
+- Retries can request an ID from the provider's current inventory even if it was previously acknowledged.
+- Pending rows stay out of balances until their effects apply.
+
+### Snapshot acknowledgments
+
+- A provider advances its acknowledged baseline only after `ReconcileResult` for the snapshot.
+- Later snapshots include everything still unacknowledged.
+- Out-of-order pages are ignored; missing inventory can be re-advertised.
+- A lost page must not become an empty delta that falsely implies completion.
+
+## Completion and retries
+
+### Per-record receipts
+
+| Result | Meaning |
+| --- | --- |
+| `APPLIED` | The record's local effect applied. For control events, durable state changed successfully. |
+| `ALREADY_APPLIED` | The effect was already present; evidence may have been upgraded. |
+| `DEFERRED` | Retained pending a dependency or retryable application step. |
+| `REJECTED` | Invalid, unauthorized, out-of-scope, or otherwise refused. Some dependency-shaped refusals may be retried internally. |
+| `BUSY` | A bounded resource limit prevented accepting the record. |
+| `CARRIED` | Envelope retained for another member. **Not proof of recipient delivery or application.** |
+
+### Observer-facing phases
+
+| Phase | Meaning |
+| --- | --- |
+| `AUTHENTICATING` / `OPENING_GROUP` | Establishing identity and authorized scope. |
+| `COMPARING` / `TRANSFERRING` | Inventories or requested records are still moving. |
+| `WAITING_DEPENDENCY` | Exchange finished without reported failures, but either side has durable pending work. |
+| `INCOMPLETE` | Reconciliation found rejected, busy, unresolved, or missing held records, or local pending state is unreadable. |
+| `UP_TO_DATE` | Both directions finished, no transfer remains, and no reported failure, pending work, or held-record gap remains. |
+| `INTERRUPTED` | Transport dropped or timed out; durable records remain for a later session. |
+| `UNSUPPORTED_PEER` / `AUTH_FAILED` / `UNAUTHORIZED` / `CLOSED` | Terminal protocol, authentication, authorization, or lifecycle outcome. |
+
+- `UP_TO_DATE`, `WAITING_DEPENDENCY`, and `INCOMPLETE` keep the connection open for later changes.
+- Pending counts come from durable storage, including work retained across sessions.
+- An unreadable pending count fails closed: advertise at least one pending item and report at least one unresolved item.
+- Readability changes trigger an updated report even if the last readable count was zero.
+- Failure status takes precedence over waiting for dependencies once the exchange finishes.
+- Counters describe transfer activity; retries may count a record more than once.
+
+### Retry timing
+
+| Condition | Policy |
+| --- | --- |
+| Authentication or group-open inactivity | 10-second idle limit. |
+| Requested record stalls | After 30 seconds of inactivity, retry in-flight requests once per snapshot; then count unresolved. |
+| Missing page or snapshot report | Re-advertise unacknowledged inventory at most twice. |
+| Provider awaiting record receipts | Allows the consumer's retry window before replacing its snapshot. |
+| Watchdog | Checks every 2.5 seconds. |
 
 ## Forwarding
 
-The author of a gift-wrapped event keeps every per-recipient envelope (`deliveries` table). A phone
-that receives an envelope for another member stores it opaque and offers it onward; the recipient
-opens it and verifies the original author's seal. The courier never sees the content and is never
-trusted as the author. Per-member key rotation events carry a `p` tag; a phone that cannot decrypt
-one carries it the same way, so a removed member's rotation reaches everyone without exposing the new
-key under the old shared key.
+### Envelope path
 
-An envelope addressed to this phone is opened by the same `EventProcessor` as relay traffic, with the
-session's group as the expected group: a wrap whose inner event belongs to another group the phone
-happens to know is rejected before anything is read or written, so a session authenticated for G
-cannot mutate H.
+1. An author keeps per-recipient envelopes in `deliveries`.
+2. An intermediate member retains an envelope as opaque ciphertext.
+3. A later session offers it to the recipient or another eligible carrier.
+4. The recipient opens it and verifies the original author's seal or signed key-rotation event.
 
-While the Nearby screen is open, any change to the offerable inventory (a ledger row applied from a
-peer or a relay, or an envelope that appeared without a new row, such as history re-wrapped for a new
-member) is re-advertised to every other connected peer, so an A–B–C chain propagates without a second
-button press. Records are identified by immutable ids, and a peer is never offered an id it has
-already acknowledged, so cycles converge. Room v3 maintains a per-group revision through SQL triggers
-on events, deliveries and group state. Evidence upgrades, pending-state changes, same-count replacements
-and delivery-only writes all advance it; no-op writes and sync timestamps do not.
+- A carrier is not trusted as the author and cannot decrypt another recipient's envelope.
+- Per-member key rotations carry a `p` recipient tag and can travel the same way.
+- Both outer routing and decrypted inner group scope are checked where applicable.
+- Room inventory revisions trigger re-advertisement across open peers, including an A-to-B-to-C chain.
+
+### Storage limits
+
+| Resource | Policy |
+| --- | --- |
+| Available carried envelopes | 512 per group, up to 4 MiB total. |
+| One carried envelope | At most 64 KiB UTF-8 JSON. |
+| Capacity recovery | Evict oldest available carried envelopes by local receipt time. |
+| Eviction work per insertion | At most 16 evictions, then `BUSY` if still over quota. |
+| Carried retention | 30 days by local receipt time, removed when pruning runs. |
+| Authored retention | 90 days by local receipt time, removed when pruning runs. |
+
+- These count/byte quotas apply to **available carried** envelopes, not all authored data.
+- A full cache can evict older carriage; it does not guarantee eventual delivery.
+- SQL revision triggers introduced in Room schema v3 cover events, deliveries, and group state; later schema versions retain them.
+- Evidence upgrades, pending-state changes, and delivery-only writes advance the revision; no-op writes and sync timestamps do not.
 
 ## Ledger rules that changed with this protocol
 
-- **Expense identity** is `(group, original author, uuid)`. A correction or deletion only affects the
-  original by the same author; two authors using one uuid are two expenses. List rows, detail sheets,
-  edit routes, restored drafts, delete confirmations and exclusions keep that exact identity. Missing
-  or non-owned identities fail closed; editing never falls back to a different author's entry.
-- **Independent orderings for group state:**
-  - *Rotations* are ordered by epoch. Applying one installs the epoch and the roster it defines in a
-    single statement and never touches the creator's metadata watermark.
-  - *Creator metas* are ordered by `(created_at, event id)`. A meta sealed under an epoch older than
-    the group's current one predates a rotation: it still updates name, relays and description, but
-    may not touch the roster. So a rotation delivered late cannot block a newer rename, and a stale
-    pre-rotation meta cannot re-add the removed member, in any arrival order.
-  - *A member's own join and display name* are ordered by that member's `(created_at, event id)`
-    clock. A creator meta older than a member's rename keeps the member's name. A self-join is any
-    meta sealed under the current key whose roster adds nobody but its author, so two members
-    joining concurrently, or a joiner unaware of a recent rename, are admitted in either order.
-  - Key revocation (an identity swap) has no epoch. It atomically derives the replacement roster
-    from current state, preserves concurrent names/joins and advances the metadata watermark to the
-    maximum event-clock tuple. A durable tombstone blocks the old identity from self-joining,
-    returning in creator snapshots, bootstrapping creator authority or appearing in a later rotation.
-  Creator metadata compares its authenticated creator to the live creator in the final write; all
-  metadata effects recheck epoch and authority when retried, not only at original ingestion.
-- **Control operations are journaled before publication.** Room v3 stores the immutable removal or
-  identity-revocation intent, then the exact signed events before any publication attempt. Recovery
-  reuses those events and epoch keys, finishes local projection and publishes follow-up metadata even
-  if the epoch already advanced before interruption. A different removal cannot reuse an unfinished
-  operation's key. Identity promotion checks the journal's replacement key and remains recoverable
-  after a secure-storage write commits then throws. A pending identity with no journaled intent is
-  preserved and blocked, never guessed from an empty outbox or an old timestamp; an unjournaled next-epoch
-  key is only reused when the creator's own stored rotation envelopes agree on the removal.
-- **A journaled operation can always finish**, whatever the roster did meanwhile. A removal that had
-  prepared nothing is rebased onto the live roster (same member removed, same epoch, same stored key).
-  A prepared removal keeps and re-publishes its signed envelopes; a member the snapshot did not know
-  (a join, or the successor of a revoked key) gets its own envelope for the same key, and a corrective
-  `group_meta` with the live roster is appended, dated strictly after the plan's so it wins on every
-  receiver in any arrival order. Everything that can refuse a revocation is checked before its intent
-  is journaled; its local projection records the tombstone even if a creator snapshot dropped the
-  user in between, re-adding nobody. Only a change of creator authority, or an epoch this device did
-  not produce, fails closed.
-- **A revoked key in someone else's roster resolves, it does not brick.** A creator that has not yet
-  seen a member's revocation still names the old key in its rotation and metadata. A device that has
-  seen it installs the recorded successor (or drops a key without one) and advances the epoch; a
-  device addressed only through its own revoked key advances without key material, exactly as if
-  removed, until the creator rotates again. Refusing would park the record as failed and leave the
-  device at the old epoch for good, since every later epoch is then a gap.
-- **Stored vs applied**: control events are stored pending until their effect lands (`applyState`),
-  and so is a correction or delete whose original has not arrived (bounded per author and group).
-  A missing dependency (epoch gap, a member whose join has not arrived, a missing original) or a
-  transient failure keeps the row pending and retried; an effect that can never apply on this device
-  (key material it cannot open, conflicting epoch key) parks the row as failed. A receipt of
-  `APPLIED` for a control record therefore means its durable effect landed. Only applied rows enter
-  balances.
-- **Historical authors** are admitted during reconciliation if the record decrypts under an epoch
-  older than the one that removed them.
+These rules are shared with relay ingestion and durable storage, not implemented solely by the transport.
+
+### Expense identity
+
+- Identity is `(group, original author, uuid)`.
+- Corrections and deletions affect only the same author's original expense.
+- Two authors using one UUID create two distinct expenses.
+- Lists, detail sheets, edit routes, drafts, deletion confirmation, and balance exclusions retain this identity.
+- Missing or non-owned edit identities fail closed; there is no fallback to another author's expense.
+
+### Group-state ordering
+
+| Operation | Ordering and effect |
+| --- | --- |
+| **Rotation** | Ordered by epoch; updates epoch and roster atomically without advancing the creator-metadata watermark. |
+| **Creator metadata** | Ordered by `(created_at, event ID)`; metadata from an old key epoch can update name, relays, and description, but not restore a stale roster. |
+| **Member self-join / name** | Uses that member's event clock. A self-join adds only its author under the current key; concurrent joins and newer names are preserved. |
+| **Identity revocation** | Has no independent epoch; replaces identity against live state, preserves concurrent membership/name changes, and advances the metadata watermark. |
+| **Revocation tombstone** | Blocks the old identity from returning through self-join, stale metadata, creator bootstrapping, or later rotation rosters. |
+
+- Creator authority and epoch are rechecked at the final write and on retries.
+- Rotation and creator-metadata orderings remain independent, so late rotation does not block newer descriptive metadata.
+
+### Journaled control operations
+
+| Stage / condition | Recovery behavior |
+| --- | --- |
+| Before publication | Persist immutable removal/revocation intent, then exact signed events. |
+| Interrupted operation | Reuse its signed events and epoch key; finish local effects and follow-up metadata. |
+| Removal not yet prepared | Rebase the roster onto live state while retaining the intended member removal and epoch/key. |
+| Prepared removal with roster changes | Preserve signed envelopes; add same-key envelopes for newly eligible members and newer corrective metadata. |
+| Identity promotion | Check the journal's replacement key; recover when secure storage committed before reporting failure. |
+| Pending identity without journal | Preserve and block it rather than guessing from outbox state or timestamps. |
+| Unjournaled next-epoch key | Reuse only when the creator's stored rotation envelopes agree on the removal. |
+| Changed creator authority / foreign epoch | Fail closed; journal existence is not an unconditional guarantee of completion. |
+
+- A different removal cannot reuse an unfinished operation's key.
+- Revocation preconditions are checked before journaling; a later roster change does not erase the revocation tombstone or re-add someone unintentionally.
+- If an incoming roster names a revoked identity, resolve its recorded successor or remove the key, then advance the epoch.
+- A device addressed only through its revoked key may advance without new key material and require a later creator rotation.
+
+### Stored versus applied
+
+| State | Ledger effect |
+| --- | --- |
+| `PENDING` | Awaiting a dependency or retryable application; excluded from balances. |
+| `APPLIED` | Durable effect applied; eligible for ledger computation. |
+| `FAILED` | Cannot apply on this device, such as conflicting epoch material; not offered as an ordinary event. |
+
+- Missing epochs, joins, and originals remain retryable within admission limits.
+- Historical authors may be accepted when the record decrypts under an epoch preceding their removal.
+- That historical rule has the old-key limitation below.
 
 ## Platform
 
-- Android 12 and below: fine and coarse location are requested in the same prompt.
-- Android 17 (target 37): `ACCESS_LOCAL_NETWORK` is declared and requested for the Wi-Fi LAN path;
-  denial does not by itself establish whether other transports work on a device.
-- Nearby sync is foreground only. Leaving the screen, or the activity stopping (Home, lock screen,
-  app switch), closes every session and stops advertising; durable records and envelopes remain for
-  the next session. `ON_PAUSE` is deliberately not used: the system consent dialog Nearby shows on a
-  first connection pauses the activity mid-handshake.
+| Condition | Behavior |
+| --- | --- |
+| Android 12L and earlier | Fine/coarse location requested together for discovery. |
+| Android 13+ | Nearby Wi-Fi permission used alongside relevant Bluetooth permissions. |
+| API 37 / Android 17+ | Local-network permission requested for Wi-Fi LAN. Denial alone does not establish whether other transports work. |
+| Leave screen / activity stops | Close sessions and stop discovery/advertising; keep durable data. |
+| Activity pauses for system consent | Do not tear down solely on `ON_PAUSE`; the first-connection consent flow can pause the activity. |
+
+See [NearbySyncScreen](../../ui/screens/nearby/NearbySyncScreen.kt) for lifecycle and permission handling.
 
 ## Known limits
 
-- A phone holding only an unsigned rumor cannot manufacture the envelope another member is missing;
-  recovery needs the author or a surviving original envelope. Such records are advertised as held and
-  keep both phones out of "up to date" until the record arrives.
-- A removed member holding an old key could backdate an event under that key. Admission of
-  pre-removal history relies on the epoch, not on a creator-signed checkpoint; that checkpoint is the
-  documented follow-up before any claim of tamper-proof historical membership.
-- The Nearby SDK reports diagnostics to Google under the device's Usage & diagnostics setting.
-- JVM tests cover the protocol and the Room-backed pipeline over an in-memory transport. File-backed
-  Room recreation tests inject control-operation failures; secure storage and publication are test
-  doubles, so these are not physical process-kill or Android Keystore durability tests. Actual
-  radio behaviour (transport selection, permission prompts, OEM differences) still needs the
-  three-phone matrix in the audit report before the mesh claim is made in release notes.
+| Limit | Implication |
+| --- | --- |
+| **No epoch/roster digest on the wire** | Two recipients at different epochs, with no other differing rows, can still report `UP_TO_DATE`. It is not proof of identical group state. |
+| **Rumor-only evidence** | A peer cannot recreate a missing signed original or recipient envelope from an unsigned inner event. Missing held records keep reconciliation incomplete. |
+| **Retained old group keys** | A removed member can backdate an event under an old key. Historical admission is epoch-based, not protected by a creator-signed membership checkpoint. |
+| **Missing channel token** | If the SDK token is absent, signatures still prove identity but are not bound to the physical connection. |
+| **Frame-size expansion** | Character-sized chunks can exceed the byte-frame limit after encoding; large records are not guaranteed to transfer. |
+| **Bounded carriage** | Quotas, pruning, and unavailable peers can prevent delivery; `CARRIED` is only local retention. |
+| **Foreground lifecycle** | No always-on background mesh. |
+| **SDK diagnostics** | Google Nearby has its own diagnostics under device Usage & diagnostics settings. |
+
+## Testing
+
+Run from the repository root with the [documented toolchain](../../../../../../../../README.md#build-from-source):
+
+```bash
+./gradlew :app:testDebugUnitTest --tests 'com.splitfree.sync.nearby.*'
+```
+
+| Suite | Coverage |
+| --- | --- |
+| `NearbyAuthTest` | Transcript roles, channel binding, and invalid signatures. |
+| `NearbyWireTest` | Frame parsing, paging, bounds, and compatibility. |
+| `NearbySessionCoordinatorTest` | Multiple simulated engines, retries, lifecycle, completion, and forwarding. |
+| `RoomReconciliationStoreTest` | Real Room-backed inventory, ingestion, evidence upgrades, and envelope carriage. |
+
+- JVM tests use simulated transport, not physical radios.
+- File-backed recovery tests use secure-storage/publication doubles; they do not certify OS process death or Keystore durability.
+- Run the [signed-APK device checklist](../../../../../../../../RELEASING.md#4-test-the-exact-signed-apk) before making release claims about three-phone forwarding.

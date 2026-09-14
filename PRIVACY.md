@@ -1,99 +1,187 @@
-# Privacy Policy
+# Privacy policy
 
-**Last updated:** September 13, 2026
+**Last updated:** September 14, 2026
 
-SplitFree is a decentralized expense-splitting app built on the [Nostr](https://nostr.com) protocol. It is designed from the ground up to protect your privacy. This policy explains what data exists, where it lives, and what we do (and don't) have access to.
+SplitFree stores your ledger locally and synchronizes encrypted events through Nostr relays or nearby phones.
+This policy explains what data exists and who can see it.
 
-## The Short Version
+[Project overview](README.md) · [Security policy](SECURITY.md) · [Nostr guide](app/src/main/java/com/splitfree/data/nostr/README.md) · [Nearby protocol](app/src/main/java/com/splitfree/sync/nearby/README.md)
 
-- SplitFree has no developer-operated service. Nothing you enter is sent to us; it is stored on your phone and, as encrypted events, on the Nostr relays you choose
-- We **do not** operate any servers; there is no "backend"
-- We **cannot** read your expenses, group names, or balances
-- SplitFree adds no analytics, tracking, or advertising SDKs. Google Play services (Nearby Connections, ML Kit code scanner) have their own diagnostics, described below
-- Expense payloads are encrypted end-to-end in transit and on relays; group metadata (names, member lists, relay lists) is stored unencrypted in the app's private database on your phone
+## Contents
 
-## Data Storage
+- [The short version](#the-short-version)
+- [Data storage](#data-storage)
+- [Network communication](#network-communication)
+- [Identity](#identity)
+- [Permissions](#permissions)
+- [Backups](#backups)
+- [Third-party services](#third-party-services)
+- [Children's privacy](#childrens-privacy)
+- [Changes to this policy](#changes-to-this-policy)
+- [Contact](#contact)
 
-The app keeps a local ledger on your device. The relays you choose also retain encrypted events for synchronization:
+## The short version
 
-| Data | Where | Encrypted |
-|------|-------|-----------|
-| Expense, settlement and group-metadata payloads | Room (SQLite) on-device, and on your relays | ✅ NIP-44 v2 ciphertext (ChaCha20 + HMAC-SHA256) |
-| Group names, descriptions, member public keys and display names, relay lists, member clocks; event authors, types and timestamps | Room (SQLite) on-device | Plaintext in an app-private database; protected by Android's app sandbox and your device lock, not by SplitFree's encryption |
-| Sealed envelopes (gift wraps, per-member key rotations) held for other members | Room (SQLite) on-device | Ciphertext addressed to the recipient. Dropped after 30 days when carried for someone else, 90 days when you authored them |
-| Private key | App-private encrypted storage | ✅ AES-256-GCM under an Android Keystore key; hardware backing depends on the device |
-| Group symmetric keys | App-private encrypted storage | ✅ AES-256-GCM under an Android Keystore key; hardware backing depends on the device |
-| User preferences (theme, gift-wrap toggle, your display name) | SharedPreferences on-device | Plain |
+- **No developer-operated service:** SplitFree operates no backend or relay to receive your financial records.
+- **Local ledger:** expenses live on your phone; encrypted events also reach configured relays and built-in fallbacks.
+- **Private content:** relays cannot read encrypted expense amounts, descriptions, group names, or balances without the relevant keys.
+- **Visible metadata:** local group metadata and public relay routing information are not hidden by payload encryption.
+- **No added analytics or advertising:** Google Play services modules have their own diagnostics, described below.
+- **Your backups:** keep both your identity recovery phrase and group exports; there is no developer-operated account recovery.
 
-SplitFree does **not** use cloud databases, Firebase, or any remote storage controlled by us.
+## Data storage
 
-## Network Communication
+| Data | Location | Protection |
+| --- | --- | --- |
+| Expense, settlement, and group-metadata event payloads | Room on-device; Nostr relays | NIP-44 v2 ciphertext. |
+| Group names/descriptions, members and display names, relay lists, member clocks | App-private Room database | Plaintext metadata protected by Android's sandbox and device security, not SplitFree database encryption. |
+| Event authors, types, and timestamps | App-private Room database | Plaintext metadata. |
+| Sealed envelopes retained for others | App-private Room database | Recipient-encrypted content. Carried and authored retention differ. |
+| Private identity key and group keys | App-private encrypted storage | AES-256-GCM under an Android Keystore key; hardware backing is device-dependent. |
+| Theme, gift-wrap preference, display name | SharedPreferences | Plaintext preferences. |
 
-### Nostr Relays
+**Envelope retention**
 
-SplitFree syncs encrypted events through public Nostr relays. Relays are third-party servers that store and forward messages, similar to email servers.
+- Carried envelopes are pruned after 30 days by local receipt time; authored envelopes after 90 days.
+- Available carried envelopes are bounded to 512 / 4 MiB per group; older carriage may be evicted sooner.
+- Pruning runs as part of app maintenance, not as a guaranteed deletion at an exact wall-clock deadline.
+- Other phones and third-party relays control their own retained copies.
 
-- **What relays see:** Ciphertext (encrypted blobs), the tags on each event, the signing public key, the event kind and timestamp, and connection metadata such as your IP address
-- **What relays cannot read:** Expense amounts, descriptions, group names, or balances. Public-key and tag metadata remain visible
-- **Gift Wrap (optional):** NIP-59 triple-layer encryption hides which member authored a wrapped expense or settlement. The wrap still carries the recipient's public key and the group tag, and group-metadata and key events are published directly under your own key
+SplitFree does not use Firebase, a developer-operated cloud database, or developer-controlled remote storage.
 
-To be precise about the metadata: direct events (kind 30078) carry the group id tag, an event type tag (`expense`, `settlement`, `group_meta`, ...), an expense id tag linking revisions of one expense, the author's public key, the `created_at` timestamp and, on per-member key rotations, the recipient's public key. Gift wraps (kind 1059) carry the recipient's public key, the group id tag, a one-time outer signing key and a randomized timestamp within the past two days; the inner event and its real author are encrypted. Relays also see the IP address you connect from. That is enough to learn that a set of keys belongs to the same group and when it is active, but not what any event says.
+## Network communication
 
-You can choose which relays to use. We do not operate any relays.
+### Nostr relays
+
+Nostr relays are third-party servers that store and forward encrypted events.
+
+| Event form | Public relay-visible information |
+| --- | --- |
+| **Direct event, kind `30078`** | Signing public key, event ID/signature, kind, timestamp, group and type tags, and revision/expense-routing tags where present. |
+| **Per-member key rotation** | Direct-event metadata plus the recipient's public key. |
+| **Gift wrap, kind `1059`** | Recipient key, group tag, event ID/signature, one-time outer signing key, kind, and a timestamp randomized within the previous two days. |
+| **Connection** | IP address and timing; subscription filters disclose what data the client requests. |
+| **Relay authentication (`AUTH`)** | When challenged, the client signs with your identity key; this can link wrapped traffic to that public identity. |
+
+**What encryption does and does not hide**
+
+- Encrypted content hides expense amounts, descriptions, group names, and balances from relays without keys.
+- Gift wrapping hides the author of the wrapped expense or settlement inside encrypted layers.
+- Group-metadata and key events are published directly under the relevant signing identity.
+- Tags, keys, and timing can reveal relationships and group activity. Encryption is not anonymity.
+
+**Relay selection**
+
+- You can configure each group's primary relays.
+- The managed connection pool also includes built-in fallback relays and other locally stored groups' primary relays.
+- Publication uses the connected relay pool; a custom group list is not an exclusive network boundary.
+- Defaults and fallbacks are defined in [`RelayDefaults.kt`](app/src/main/java/com/splitfree/domain/util/RelayDefaults.kt).
+- SplitFree does not operate these relays or control their retention policies.
 
 ### Nearby sync (Google Nearby Connections)
 
-When you use nearby sync, SplitFree communicates directly with other group members through Google Nearby Connections, which picks Bluetooth, Bluetooth Low Energy or Wi-Fi (including Wi-Fi LAN and Wi-Fi Direct) for the link. Your expense data travels only between the phones involved; no SplitFree server exists and no relay is involved.
+| Aspect | Behavior |
+| --- | --- |
+| Transport | The SDK selects Bluetooth, BLE, or Wi-Fi, including Wi-Fi LAN / Direct. |
+| Data path | Between participating phones; no SplitFree server or Nostr relay is required for the Nearby transfer. |
+| Identity proof | Mutual Schnorr challenge-response; the SDK connection token is included when supplied. |
+| Group scope | One group opens after membership checks. |
+| Transfer | Bounded frames, inventory pages, chunks, receipts, and durable reconciliation progress. |
+| Compatibility | Nearby protocol v3; incompatible peers are refused. |
+| Lifecycle | Stops when the Nearby screen closes or the activity stops. |
 
-Before anything about a group is disclosed, both phones prove ownership of their Nostr keys with a Schnorr signature over a challenge that is bound to that specific connection's Nearby authentication token, and exactly one group is opened only if the other phone is a member of it. Records are exchanged as small JSON frames (at most 16 KiB, with paged inventories and chunked records), each answered with a receipt; progress is kept in the local database, so an interrupted session re-authenticates and transfers only what is still missing. Every record you receive is verified against the original author's signature. Both phones must run a current SplitFree: the protocol is versioned (v3), and a phone speaking an older protocol is refused rather than partially understood.
+**Authentication and carriage boundaries**
 
-Nearby sync is foreground only: it runs while the Nearby sync screen is open, and stops when you leave it. A phone may carry sealed envelopes addressed to other members so it can hand them over later; these envelopes are encrypted to their recipient, the carrier cannot read or alter them, and they are dropped after 30 days (90 days for envelopes you authored). Data applied from one connected phone is re-offered to the other phones connected at the same time. Only records that carry a signature a third party can verify are forwarded; an expense a phone received only as a gift-wrapped rumor is not forwarded on the author's behalf.
+- Nearby discovery advertises a short public-key prefix; the handshake exchanges public keys before group authorization.
+- The current authentication helper hashes a missing connection token as empty bytes. It does not supply channel binding in that case.
+- Received event signatures are checked; a gift-wrap recipient verifies its encrypted author's seal.
+- A carrier verifies outer routing/signature information but cannot read or verify the encrypted inner content for another recipient.
+- Sealed envelopes can be handed to another member later; receiving an unsigned inner event alone does not allow forwarding it as a signed original.
+- Applied/retained data can be re-offered to other connected peers while Nearby remains active.
 
-The Nearby Connections SDK is part of Google Play services. Google documents that the Nearby SDK collects connection performance metrics and device information, including device model, country, build version and application package name; you can allow or deny this through Android Settings > Google > Usage & diagnostics. See [Google Nearby data collection](https://developers.google.com/nearby/connections/overview). This section describes Google's SDK documentation; we have not captured the SDK's network traffic to measure its actual diagnostics, and it is outside SplitFree's control. It does not include your expense data.
+### Google's Nearby diagnostics
+
+According to [Google's Nearby documentation](https://developers.google.com/nearby/connections/overview):
+
+- The SDK collects connection-performance metrics and device information.
+- Examples include device model, country, build version, and application package name.
+- Usage and diagnostics are controlled through **Android Settings → Google → Usage & diagnostics**.
+
+This summarizes Google's SDK documentation. We have not measured the SDK's actual network diagnostics through traffic capture; they are outside SplitFree's control. The documented metrics do not include expense content.
 
 ## Identity
 
-Your identity is a cryptographic keypair (secp256k1), not an email, phone number, or account. Your public key is your identifier. The app never sends your private key to relays or to other phones. You can deliberately reveal and copy it, or back up your identity as a 24-word BIP-39 mnemonic phrase, from Settings; anything you copy or write down is outside the app's protection and must be kept private.
+| Item | Meaning |
+| --- | --- |
+| Public key | Your identifier, rather than an email address or phone number. |
+| Private key | Signs your events and unlocks identity-encrypted data. |
+| Recovery phrase | A 24-word BIP-39 encoding of your private key. |
 
-We have no way to associate your keypair with your real-world identity.
+- The app does not send your private key to relays or other phones.
+- You can deliberately reveal/copy it or its recovery phrase from Settings.
+- Material copied or written outside the app is outside its protection.
+- SplitFree operates no identity-directory service. Public keys, display names, or information you share elsewhere may still identify you.
 
 ## Permissions
 
-| Permission | Why |
-|------------|-----|
-| Internet, network state | Connect to Nostr relays for sync; resume sync when connectivity returns |
-| Bluetooth (scan, advertise, connect on Android 12+; legacy Bluetooth on older versions) | Nearby Connections discovery and transport. Scanning is declared as never used for location |
-| Nearby Wi-Fi devices (Android 13+), Wi-Fi state | Nearby Connections Wi-Fi transport. Declared as never used for location |
-| Location (Android 12L and earlier) | Android requires it for Bluetooth and Wi-Fi discovery on those versions. SplitFree never reads or stores your location |
-| Local network (API 37 / Android 17 and later) | Nearby Connections Wi-Fi LAN transport |
-| Notifications (Android 13+) | Notify you of new expenses and settlements |
-| Receive boot completed | Reschedule background relay sync after a reboot |
+| Permission | Purpose |
+| --- | --- |
+| Internet and network state | Relay connections and synchronization when connectivity returns. |
+| Bluetooth scan / advertise / connect | Nearby discovery and transport; scanning is declared as never used for location. |
+| Legacy Bluetooth permissions | Discovery/transport on older Android versions. |
+| Nearby Wi-Fi devices, Wi-Fi state | Nearby Wi-Fi transport; nearby-device access is declared as never used for location. |
+| Fine/coarse location, Android 12L and earlier | Platform requirement for discovery; SplitFree does not read or store location coordinates. |
+| Local network, API 37+ | Nearby Wi-Fi LAN transport. |
+| Notifications, Android 13+ | New-expense and settlement notifications. |
+| Boot completed | Reschedule background synchronization after device startup. |
 
-QR code scanning uses Google's ML Kit Code Scanner (`GmsBarcodeScanning`), a Google Play services module that provides the scanner screen and camera access itself; SplitFree declares no camera permission.
+**QR scanning**
+
+- Google's ML Kit Code Scanner (`GmsBarcodeScanning`) supplies its own scanner screen and camera access.
+- SplitFree does not declare a camera permission.
+- Google Play services may download the barcode-scanner module requested by the app manifest.
 
 ## Backups
 
-SplitFree disables Android Auto Backup (`allowBackup="false"`) and explicitly excludes all app data from cloud backup and device-to-device transfer. The only way to back up your data is through the in-app export feature, which produces a `.splitfree` JSON file authenticated with HMAC-SHA256 under a key derived from your private key, so only the same identity can restore it. Inside the file, expense payloads remain NIP-44 ciphertext and the group keys are encrypted to your own key, but the group name, relay list, member public keys, event types and timestamps are readable by anyone who obtains the file. Treat it like the plaintext metadata described above.
+> **Keep identity and data backups:** a recovery phrase alone does not restore group keys or expense history.
 
-## Third-Party Services
+| Backup property | Behavior |
+| --- | --- |
+| Format | `.splitfree` JSON export, produced in-app. |
+| Authentication | HMAC-SHA256 over canonical exported fields, with a key derived from the exporting private identity. |
+| Restore identity | Must match the identity that created the export. |
+| Expense payloads | Remain NIP-44 ciphertext. |
+| Group keys | Encrypted to the exporting identity. |
+| Readable metadata | Group name, relay list, member public keys, event types, and timestamps. |
 
-SplitFree does **not** integrate with:
+- Treat exports as sensitive even though payloads and keys remain encrypted.
+- Keep recovery phrases separately from exported files.
+- Android Auto Backup is disabled; backup rules exclude app data from cloud backup and device transfer.
+- SplitFree has no remote password-reset or key-recovery service.
 
-- Analytics or crash reporting services
-- Advertising networks
-- Social login providers
-- Cloud storage providers
+## Third-party services
 
-Beyond the Nostr relays you choose, the app relies on two Google Play services modules: Nearby Connections (nearby sync, described above) and the ML Kit Code Scanner (QR scanning). The app's manifest asks Google Play services to install the barcode scanner module; Google Play services performs that download and handles its own diagnostics under your device's Google settings and Google's policies.
+| Service | Used for |
+| --- | --- |
+| Nostr relays | Encrypted-event storage and forwarding. |
+| Google Nearby Connections | Direct device discovery and synchronization. |
+| Google ML Kit Code Scanner | QR scanning and scanner-module delivery through Play services. |
 
-## Children's Privacy
+SplitFree adds no dedicated analytics/crash-reporting service, advertising network, social-login provider, or cloud-storage provider.
+Google Play services handles its own diagnostics and downloads under Google's policies and device settings.
 
-SplitFree does not knowingly collect any data from anyone, including children under 13, and has no developer-operated service that could. Expense descriptions, group names and display names entered by any user are still shared, encrypted, with their group members and the relays they choose.
+## Children's privacy
 
-## Changes to This Policy
+- SplitFree has no developer-operated service that collects children's records.
+- The project does not knowingly collect personal data from children under 13.
+- Data entered by any user can still be shared with group members and stored as ciphertext on configured/fallback relays.
 
-If this policy changes, the update will be reflected in this file with an updated date. Since SplitFree is open source, all changes are visible in the git history.
+## Changes to this policy
+
+- Policy changes update the date at the top of this file.
+- Changes remain visible in the repository's Git history.
 
 ## Contact
 
-If you have questions about this privacy policy, open an issue on [GitHub](https://github.com/invincible04/SplitFree/issues) or reach out via the contact methods listed in the repository.
+- For privacy questions, open a [GitHub issue](https://github.com/invincible04/SplitFree/issues) without sensitive data.
+- For vulnerabilities or unintended exposure, use the private route in [SECURITY.md](SECURITY.md).
