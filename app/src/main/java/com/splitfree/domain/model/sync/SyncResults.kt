@@ -3,13 +3,17 @@ package com.splitfree.domain.model.sync
 import com.splitfree.domain.crypto.NostrEvent
 
 /**
- * Outcome of one history fetch. [complete] is relative to the relays that were connected when the
- * request was sent and stayed connected until they answered EOSE; it says nothing about relays that
- * were unreachable at the time. When false, [events] may be missing history.
+ * History returned by a bounded fetch. [complete] requires EOSE coverage from every requested
+ * relay, including ones that could not connect. [completedRelays] records independent progress:
+ * other relays' unavailable history must never be certified by a fast fallback's EOSE.
  */
-data class FetchResult(val events: List<NostrEvent>, val complete: Boolean)
+data class FetchResult(
+    val events: List<NostrEvent>,
+    val complete: Boolean,
+    val completedRelays: Set<String> = emptySet()
+)
 
-/** Outcome of one pull for a group; the group's cursor advances only when [complete]. */
+/** Outcome of one pull for a group; relay cursors advance independently, even when [complete] is false. */
 data class PullResult(val stored: Int, val complete: Boolean)
 
 /**

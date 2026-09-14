@@ -74,6 +74,8 @@ class NostrClientFetchTest {
         val closed = mutableListOf<String>()
 
         init {
+            every { relay.connectionEpoch } returns java.util.concurrent.atomic.AtomicLong(1)
+            every { relay.droppedMessages } returns java.util.concurrent.atomic.AtomicLong(0)
             every { relay.url } returns url
             every { relay.state } returns state
             every { relay.messages } returns messages
@@ -269,10 +271,11 @@ class NostrClientFetchTest {
 
         assertEquals(setOf("from-a", "from-b"), result.events.map { it.id }.toSet())
         assertFalse("a relay that dropped during the fetch cannot certify its history", result.complete)
+        assertEquals(setOf(a.url), result.completedRelays)
     }
 
     @Test
-    fun `only connected relays are subscribed and only they gate the EOSE barrier`() = runTest(dispatcher) {
+    fun `excluded relay is not waited for but remains incomplete coverage`() = runTest(dispatcher) {
         val live = FakeRelay("wss://live")
         val down = FakeRelay("wss://down", Relay.State.DISCONNECTED)
         val client = clientWith(live, down)
@@ -287,7 +290,8 @@ class NostrClientFetchTest {
         val result = fetch.await()
 
         assertEquals(listOf("e1"), result.events.map { it.id })
-        assertTrue("EOSE from every connected relay completes the fetch", result.complete)
+        assertFalse("fallback cannot certify excluded history", result.complete)
+        assertEquals(setOf(live.url), result.completedRelays)
         assertEquals(listOf(subId), live.closed)
         assertEquals(emptyList<String>(), down.closed)
     }
@@ -331,8 +335,70 @@ class NostrClientFetchTest {
         a.messages.emit(RelayMessage.EoseMsg(subId))
         val result = withTimeoutOrNull(30_000) { fetch.await() }
 
-        assertEquals("fetch must complete on its own snapshot", FetchResult(emptyList(), complete = true), result)
+        assertEquals(
+            "fetch must complete on its own snapshot",
+            FetchResult(emptyList(), complete = true, completedRelays = setOf(a.url)),
+            result
+        )
         verify(exactly = 0) { late.relay.subscribe(any(), any<List<NostrFilter>>()) }
         assertEquals(emptyList<String>(), late.closed)
+    }
+
+    @Test
+    fun `per-relay windows retain old debt and independently widen gift-wrap timestamps`() = runTest(dispatcher) {
+        val a = FakeRelay("wss://a")
+        val b = FakeRelay("wss://b")
+        val client = clientWith(a, b)
+        val filtersA = io.mockk.slot<List<NostrFilter>>()
+        val filtersB = io.mockk.slot<List<NostrFilter>>()
+        every { a.relay.subscribe(any(), capture(filtersA)) } answers { a.subId = firstArg() }
+        every { b.relay.subscribe(any(), capture(filtersB)) } answers { b.subId = firstArg() }
+        val fetch = async { client.fetchEventsByRelay("g", mapOf(a.url to 0L, b.url to 500_000L), "pub") }
+        runCurrent()
+        assertEquals(null, filtersA.captured[0].since)
+        assertEquals(null, filtersA.captured[1].since)
+        assertEquals(500_000L, filtersB.captured[0].since)
+        assertEquals(327_200L, filtersB.captured[1].since)
+        a.messages.emit(RelayMessage.EoseMsg(requireNotNull(a.subId)))
+        b.messages.emit(RelayMessage.EoseMsg(requireNotNull(b.subId)))
+        assertTrue(fetch.await().complete)
+    }
+
+    @Test
+    fun `requested relay absent from socket pool is not certified by fallback EOSE`() = runTest(dispatcher) {
+        val a = FakeRelay("wss://a")
+        val client = clientWith(a)
+        val fetch = async { client.fetchEventsByRelay("g", mapOf(a.url to 100L, "wss://missing" to 0L), null) }
+        runCurrent()
+        a.messages.emit(RelayMessage.EoseMsg(requireNotNull(a.subId)))
+        val result = fetch.await()
+        assertFalse(result.complete)
+        assertEquals(setOf(a.url), result.completedRelays)
+    }
+
+    @Test
+    fun `rapid reconnect hidden by conflated state cannot certify narrowed historical request`() = runTest(dispatcher) {
+        val a = FakeRelay("wss://a")
+        val client = clientWith(a)
+        val fetch = async { client.fetchEvents("g", 0, null) }
+        runCurrent()
+        a.state.value = Relay.State.DISCONNECTED
+        a.relay.connectionEpoch.incrementAndGet()
+        a.state.value = Relay.State.CONNECTED
+        a.messages.emit(RelayMessage.EoseMsg(requireNotNull(a.subId)))
+        val result = fetch.await()
+        assertFalse(result.complete)
+        assertTrue(result.completedRelays.isEmpty())
+    }
+
+    @Test
+    fun `dropped buffered frame prevents coverage advancement even with EOSE`() = runTest(dispatcher) {
+        val a = FakeRelay("wss://a")
+        val client = clientWith(a)
+        val fetch = async { client.fetchEvents("g", 0, null) }
+        runCurrent()
+        a.relay.droppedMessages.incrementAndGet()
+        a.messages.emit(RelayMessage.EoseMsg(requireNotNull(a.subId)))
+        assertTrue(fetch.await().completedRelays.isEmpty())
     }
 }

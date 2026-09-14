@@ -1182,6 +1182,115 @@ class EventProcessorTest {
     // --- Remote payload rules exercised with a real EventValidator ---
 
     @Test
+    fun `known author expense waits for missing split participant membership`() = runBlocking {
+        assertParticipantMembershipRecovers("expense", expenseJson(splits = listOf(pubkey to 50L, bob to 50L)))
+    }
+
+    @Test
+    fun `known author expense waits for missing payer membership`() = runBlocking {
+        assertParticipantMembershipRecovers("expense", expenseJson(paidBy = bob))
+    }
+
+    @Test
+    fun `known author correction waits for missing participant membership`() = runBlocking {
+        coEvery { eventDao.getExpenseByAuthor("uuid1", groupId, pubkey) } returns
+            storedRow("original").copy(expenseUuid = "uuid1")
+        assertParticipantMembershipRecovers("expense_correction", expenseJson(splits = listOf(bob to 100L)))
+    }
+
+    @Test
+    fun `known author settlement waits for missing counterparty membership`() = runBlocking {
+        assertParticipantMembershipRecovers("settlement", settlementJson(id = "uuid1"))
+    }
+
+    private suspend fun assertParticipantMembershipRecovers(eventType: String, payload: String) {
+        val realProcessor = realValidatorProcessor()
+        val event = makeEvent(eventType = eventType)
+        every { encryption.decrypt(any(), groupKey) } returns payload
+
+        val rejected = realProcessor.process(event, context = IngestionContext.RECONCILIATION)
+        assertEquals(IngestOutcome.REJECTED, rejected.outcome)
+        assertEquals("missing participant", rejected.reason)
+        assertTrue(rejected.retryable)
+        assertFalse(rejected.stored)
+        coVerify(exactly = 0) { eventDao.insert(any()) }
+        coVerify(exactly = 0) { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) }
+
+        coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
+        val accepted = realProcessor.process(event, context = IngestionContext.RECONCILIATION)
+        assertEquals(IngestOutcome.APPLIED, accepted.outcome)
+        assertTrue(accepted.stored)
+        assertFalse(accepted.retryable)
+        coVerify(exactly = 1) { eventDao.insert(match { it.eventId == event.id }) }
+    }
+
+    @Test
+    fun `missing expense participant never makes malformed payload retryable`() = runBlocking {
+        val payloads = listOf(
+            "not-json",
+            expenseJson(amount = -1, splits = listOf(bob to 100L)),
+            expenseJson(currency = "usd", splits = listOf(bob to 100L)),
+            expenseJson(splits = listOf(bob to 90L)),
+            expenseJson(splits = listOf(bob to 0L, pubkey to 100L)),
+            expenseJson(splits = listOf(bob to 50L, bob to 50L)),
+            expenseJson(splits = listOf(bob to Long.MAX_VALUE, pubkey to 1L)),
+            expenseJson(id = "different", splits = listOf(bob to 100L))
+        )
+        val realProcessor = realValidatorProcessor()
+        for (eventType in listOf("expense", "expense_correction")) {
+            for (payload in payloads) {
+                every { encryption.decrypt(any(), groupKey) } returns payload
+                val result = realProcessor.process(
+                    makeEvent(eventType = eventType),
+                    context = IngestionContext.RECONCILIATION
+                )
+                assertEquals(payload, "invalid payload", result.reason)
+                assertEquals(IngestOutcome.REJECTED, result.outcome)
+                assertFalse(payload, result.retryable)
+                assertFalse(result.stored)
+            }
+        }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
+    }
+
+    @Test
+    fun `missing settlement participant never makes invalid payload or unrelated author retryable`() = runBlocking {
+        val payloads = listOf(
+            "not-json",
+            settlementJson(id = "uuid1", amount = 0),
+            settlementJson(id = "uuid1", currency = "usd"),
+            settlementJson(id = "uuid1", from = bob, to = bob),
+            settlementJson(id = "uuid1", from = bob, to = "cc".repeat(32)),
+            settlementJson(id = "different")
+        )
+        val realProcessor = realValidatorProcessor()
+        for (payload in payloads) {
+            every { encryption.decrypt(any(), groupKey) } returns payload
+            val result = realProcessor.process(
+                makeEvent(eventType = "settlement"),
+                context = IngestionContext.RECONCILIATION
+            )
+            assertEquals(payload, "invalid payload", result.reason)
+            assertEquals(IngestOutcome.REJECTED, result.outcome)
+            assertFalse(payload, result.retryable)
+            assertFalse(result.stored)
+        }
+        coVerify(exactly = 0) { eventDao.insert(any()) }
+    }
+
+    @Test
+    fun `missing participant does not bypass content safety`() = runBlocking {
+        every { encryption.decrypt(any(), groupKey) } returns
+            expenseJson(splits = listOf(bob to 100L)).replace("test", "x".repeat(65_537))
+        val result = realValidatorProcessor().process(makeEvent(), context = IngestionContext.RECONCILIATION)
+        assertEquals("unsafe content", result.reason)
+        assertEquals(IngestOutcome.REJECTED, result.outcome)
+        assertFalse(result.retryable)
+        assertFalse(result.stored)
+        coVerify(exactly = 0) { eventDao.insert(any()) }
+    }
+
+    @Test
     fun `process rejects expense whose shares do not sum to amount`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns twoMemberGroup
         every { encryption.decrypt(any(), groupKey) } returns
@@ -2019,7 +2128,8 @@ class EventProcessorTest {
 
         val live = realValidatorProcessor().process(makeEvent(), knownGroupKey = groupKey)
         assertEquals(IngestOutcome.REJECTED, live.outcome)
-        assertEquals("invalid payload", live.reason)
+        assertEquals("missing participant", live.reason)
+        assertTrue(live.retryable)
     }
 
     @Test

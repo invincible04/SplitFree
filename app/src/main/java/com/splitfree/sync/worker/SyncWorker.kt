@@ -57,7 +57,7 @@ constructor(
                 val pull = syncEngine.pullEvents(group.id, since, groupKey, notifyContext = applicationContext)
                 if (pull.stored > 0) Log.i(TAG, "Pulled ${pull.stored} new events for group ${group.name}")
                 if (!pull.complete) {
-                    Log.w(TAG, "Incomplete pull for group ${group.name}; cursor not advanced")
+                    Log.w(TAG, "Incomplete pull for group ${group.name}; missing relay coverage retained")
                     clean = false
                 }
             }

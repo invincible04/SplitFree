@@ -6,10 +6,12 @@ import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
+import com.splitfree.data.repository.RelaySyncCursors
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.sync.FetchResult
 import com.splitfree.domain.model.sync.FlushResult
 import com.splitfree.domain.model.sync.PullResult
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.IngestionContext
 import io.mockk.coEvery
@@ -34,6 +36,9 @@ class SyncEngineTest {
     private val nostrClient = mockk<NostrClient>()
     private val identity = mockk<IdentityManager>()
     private val eventProcessor = mockk<EventProcessor>()
+    private val cursors = mockk<RelaySyncCursors>(relaxed = true)
+    private val relayUrls = RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS
+    private val zeroWindows = relayUrls.associateWith { 0L }
     private lateinit var engine: SyncEngine
 
     private val groupId = "g1"
@@ -47,7 +52,10 @@ class SyncEngineTest {
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { identity.getPublicKeyHex() } returns myPub
         coEvery { eventProcessor.retryDeferred(any()) } returns 0
-        engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor)
+        every { nostrClient.currentRelayUrls() } returns emptyList()
+        coEvery { groupRepo.getById(any()) } returns null
+        coEvery { cursors.cursors(any(), any()) } returns emptyMap()
+        engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor, cursors)
     }
 
     @After
@@ -56,7 +64,8 @@ class SyncEngineTest {
     @Test
     fun `pullEvents skips already-known events`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns listOf("e1") // already known
 
         val result = engine.pullEvents(groupId, 0, groupKey)
@@ -67,7 +76,8 @@ class SyncEngineTest {
     @Test
     fun `pullEvents processes new events and returns count`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             com.splitfree.sync.event.EventProcessor.ProcessResult(
@@ -113,8 +123,8 @@ class SyncEngineTest {
             content = "x",
             sig = "s"
         )
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns
-            FetchResult(listOf(forOther, forThis, untagged), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(forOther, forThis, untagged), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
@@ -129,7 +139,8 @@ class SyncEngineTest {
 
     @Test
     fun `pullEvents advances the cursor after a complete fetch even with nothing new`() = runBlocking {
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(emptyList(), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(emptyList(), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
 
         val result = engine.pullEvents(groupId, 0, groupKey)
@@ -141,7 +152,8 @@ class SyncEngineTest {
     @Test
     fun `pullEvents leaves the cursor alone after an incomplete fetch even when events were stored`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = false)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), complete = false)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
@@ -156,12 +168,12 @@ class SyncEngineTest {
     fun `pullEvents writes the time the fetch began not the time processing ended`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
         var fetchEnteredAt = 0L
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } coAnswers {
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } coAnswers {
             // Hold the fetch until the wall-clock second rolls over (at most 1s): a "now after processing"
             // cursor is then >= fetchEnteredAt + 1 while the fetch-start cursor is <= fetchEnteredAt.
             fetchEnteredAt = System.currentTimeMillis() / 1000
             while (System.currentTimeMillis() / 1000 == fetchEnteredAt) Thread.sleep(5)
-            FetchResult(listOf(event), complete = true)
+            FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
         }
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
@@ -182,8 +194,8 @@ class SyncEngineTest {
         // Relays hand back newest-first; key_rotation must land in epoch order and group_meta is LWW.
         val newer = NostrEvent(id = "e2", pubkey = myPub, createdAt = 300, kind = 30078, content = "x", sig = "s")
         val older = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns
-            FetchResult(listOf(newer, older), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(newer, older), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         val processed = mutableListOf<String>()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } answers {
@@ -197,9 +209,10 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `pullEvents ingests a live pull in LIVE context`() = runBlocking {
+    fun `pullEvents ingests history in RECONCILIATION context even from foreground`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = false)
@@ -207,14 +220,15 @@ class SyncEngineTest {
         engine.pullEvents(groupId, 0, groupKey)
 
         coVerify {
-            eventProcessor.process(event, groupId, null, false, false, IngestionContext.LIVE)
+            eventProcessor.process(event, groupId, null, false, false, IngestionContext.RECONCILIATION)
         }
     }
 
     @Test
     fun `pullEvents ingests a lenient full pull in RECONCILIATION context`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = false)
@@ -224,6 +238,104 @@ class SyncEngineTest {
         coVerify {
             eventProcessor.process(event, groupId, null, false, true, IngestionContext.RECONCILIATION)
         }
+    }
+
+    @Test
+    fun `excluded relay keeps zero coverage while completed fallback advances independently`() = runBlocking {
+        val primary = relayUrls.first()
+        val fallback = relayUrls.last()
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(emptyList(), false, setOf(fallback))
+        assertFalse(engine.pullEvents(groupId, 99_000, groupKey).complete)
+        coVerify { cursors.advance(groupId, myPub, setOf(fallback), any()) }
+        coVerify { groupRepo.updateLastSync(groupId, any()) }
+
+        coEvery { cursors.cursors(groupId, myPub) } returns mapOf(fallback to 100_000L)
+        val windows = zeroWindows + (fallback to 96_400L)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, windows, myPub) } returns
+            FetchResult(emptyList(), false, setOf(primary, fallback))
+        engine.pullEvents(groupId, 96_400, groupKey)
+        coVerify { nostrClient.fetchEventsByRelay(groupId, windows, myPub) }
+        assertEquals(0L, windows[primary])
+    }
+
+    @Test
+    fun `older relay cursor widens incremental window and explicit full pull still starts at zero`() = runBlocking {
+        val primary = relayUrls.first()
+        coEvery { cursors.cursors(groupId, myPub) } returns relayUrls.associateWith { 100_000L } + (primary to 10_000L)
+        val windows = relayUrls.associateWith { 96_400L } + (primary to 6_400L)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, windows, myPub) } returns
+            FetchResult(emptyList(), true, relayUrls.toSet())
+        engine.pullEvents(groupId, 96_400, groupKey)
+        coVerify { nostrClient.fetchEventsByRelay(groupId, windows, myPub) }
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(emptyList(), true, relayUrls.toSet())
+        engine.pullEvents(groupId, 0, groupKey, true)
+        coVerify { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) }
+    }
+
+    @Test
+    fun `processing failure cannot advance any relay coverage`() = runBlocking {
+        val event = NostrEvent(id = "failure", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), true, relayUrls.toSet())
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } throws java.io.IOException("db")
+        val result = runCatching { engine.pullEvents(groupId, 0, groupKey) }
+        assertTrue(result.exceptionOrNull() is java.io.IOException)
+        coVerify(exactly = 0) { cursors.advance(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.updateLastSync(any(), any()) }
+    }
+
+    @Test
+    fun `unstored missing dependency retains history until next pull can accept it`() = runBlocking {
+        rejectedHistoryRecovers(
+            EventProcessor.ProcessResult(stored = false, retryable = true, reason = "undecryptable")
+        )
+    }
+
+    @Test
+    fun `unstored pending quota retains history even without retryable flag`() = runBlocking {
+        rejectedHistoryRecovers(
+            EventProcessor.ProcessResult(stored = false, retryable = false, reason = "pending quota")
+        )
+    }
+
+    private suspend fun rejectedHistoryRecovers(rejected: EventProcessor.ProcessResult) {
+        val event = NostrEvent(id = "old", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), true, relayUrls.toSet())
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns rejected
+        assertFalse(engine.pullEvents(groupId, 99_000, groupKey).complete)
+        coVerify(exactly = 0) { cursors.advance(any(), any(), match { it.isNotEmpty() }, any()) }
+        coVerify(exactly = 0) { groupRepo.updateLastSync(any(), any()) }
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = true)
+        assertTrue(engine.pullEvents(groupId, 99_000, groupKey).complete)
+        coVerify(exactly = 2) { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) }
+        coVerify(exactly = 1) { cursors.advance(groupId, myPub, relayUrls.toSet(), any()) }
+    }
+
+    @Test
+    fun `identity changing during fetch cannot certify old recipient history`() = runBlocking {
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } coAnswers {
+            every { identity.getPublicKeyHex() } returns "new-recipient"
+            FetchResult(emptyList(), true, relayUrls.toSet())
+        }
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        coVerify(exactly = 0) { cursors.advance(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `identity changing during processing cannot certify old recipient history`() = runBlocking {
+        val event = NostrEvent(id = "old", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), true, relayUrls.toSet())
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } answers {
+            every { identity.getPublicKeyHex() } returns "new-recipient"
+            EventProcessor.ProcessResult(stored = false)
+        }
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        coVerify(exactly = 0) { cursors.advance(any(), any(), match { it.isNotEmpty() }, any()) }
     }
 
     @Test
@@ -413,7 +525,8 @@ class SyncEngineTest {
 
     @Test
     fun `empty relay pull still recovers durable pending work`() = runBlocking {
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(emptyList(), complete = true)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(emptyList(), complete = true, completedRelays = relayUrls.toSet())
         engine.pullEvents(groupId, 0, groupKey)
         coVerify(atLeast = 2) { eventProcessor.retryDeferred(groupId) }
     }

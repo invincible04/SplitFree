@@ -12,7 +12,6 @@ import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -32,6 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -105,6 +105,15 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     private val _connectionState = MutableStateFlow(false)
     override val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
 
+    /** Advances on every socket open, even when another relay keeps connectionState true. */
+    private val _connectionGeneration = MutableStateFlow(0L)
+    override val connectionGeneration: StateFlow<Long> = _connectionGeneration.asStateFlow()
+
+    private fun relayOpened() {
+        _connectionGeneration.update { it + 1 }
+        refreshConnectionState()
+    }
+
     private fun refreshConnectionState() {
         val states = relays.values.map { it.state.value }
         val status =
@@ -152,7 +161,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     existing.resetReconnect()
                     if (existing.state.value == Relay.State.DISCONNECTED) existing.connect()
                 } else {
-                    val relay = Relay(url, scope, authSigner = authSigner)
+                    val relay = Relay(url, scope, authSigner = authSigner, onConnected = ::relayOpened)
                     relays[url] = relay
                     // Collect messages from this relay, verify signatures, and deduplicate
                     scope.launch {
@@ -288,14 +297,14 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      * Collectors are caller-scoped, so the returned list is a snapshot no coroutine can still
      * append to. Subscriptions are always closed, including on cancellation.
      *
-     * @return the collected events; `complete` is true only if every queried relay sent EOSE
-     *   before the timeout and stayed connected meanwhile; false with no connected relay
+     * @return the collected events and independently completed relay URLs. Completeness includes
+     *   requested relays excluded by the bounded connection wait; false with no connected relay
      * @throws IOException if the collectors do not attach
      *   within [READY_TIMEOUT_MS]; the fetch is failed rather than returning partial history
      */
     private suspend fun fetchWithFilters(
         subId: String,
-        filters: List<NostrFilter>,
+        filtersByRelay: Map<String, List<NostrFilter>>,
         timeoutMs: Long = 15_000,
         dedup: (NostrEvent, MutableList<NostrEvent>) -> Boolean = { event, list ->
             list.none { it.id == event.id }
@@ -307,17 +316,21 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         // are left out because waiting on one that may never connect only burns the timeout; a REQ
         // itself would not be lost, OkHttp queues frames and Relay re-sends its subs on open.
         withTimeoutOrNull(SETTLE_TIMEOUT_MS) {
-            relays.values.toList().forEach { relay -> relay.state.first { it != Relay.State.CONNECTING } }
+            filtersByRelay.keys.mapNotNull { relays[it] }.forEach { relay ->
+                relay.state.first { it != Relay.State.CONNECTING }
+            }
         }
         // Snapshot the relay set once. connect()/disconnect() can change it concurrently, and a
         // count taken separately from the relays actually collected would leave collectorsReady
         // and allEose permanently unreachable.
-        val live = relays.values.toList().filter { it.state.value == Relay.State.CONNECTED }
+        val live = filtersByRelay.keys.mapNotNull { relays[it] }.filter { it.state.value == Relay.State.CONNECTED }
         if (live.isEmpty()) return FetchResult(emptyList(), complete = false)
         val events = mutableListOf<NostrEvent>()
         val eoseFrom = ConcurrentHashMap.newKeySet<String>()
         val allEose = CompletableDeferred<Unit>()
-        val dropped = AtomicBoolean(false)
+        val dropped = ConcurrentHashMap.newKeySet<String>()
+        val epochs = live.associate { it.url to it.connectionEpoch.get() }
+        val drops = live.associate { it.url to it.droppedMessages.get() }
         val collectorsReady = CompletableDeferred<Unit>()
         val readyCount = AtomicInteger(0)
         try {
@@ -331,7 +344,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                 // A relay that reconnects mid-fetch re-REQs from its last delivered event, so
                                 // its EOSE no longer vouches for the older history it had not sent yet.
                                 relay.state.first { it != Relay.State.CONNECTED }
-                                dropped.set(true)
+                                dropped.add(relay.url)
                             }
                             launch {
                                 relay.messages
@@ -372,7 +385,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     // partial result the caller would trust. Cleanup still runs in the finally blocks.
                     withTimeoutOrNull(READY_TIMEOUT_MS) { collectorsReady.await() }
                         ?: throw IOException("Relay collectors did not become ready")
-                    live.forEach { it.subscribe(subId, filters) }
+                    live.forEach { it.subscribe(subId, filtersByRelay.getValue(it.url)) }
                     if (withTimeoutOrNull(timeoutMs) { allEose.await() } == null) {
                         val silent = live.map { it.url }.filterNot { it in eoseFrom }
                         Log.w(TAG, "Fetch $subId timed out after ${timeoutMs}ms without EOSE from $silent")
@@ -386,9 +399,16 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         } finally {
             live.forEach { it.closeSubscription(subId) }
         }
+        val completed = live.filter { relay ->
+            relay.url in eoseFrom && relay.url !in dropped &&
+                relay.connectionEpoch.get() == epochs[relay.url] &&
+                relay.droppedMessages.get() == drops[relay.url] &&
+                relay.state.value == Relay.State.CONNECTED
+        }.mapTo(HashSet()) { it.url }
         return FetchResult(
             synchronized(events) { events.toList() },
-            complete = allEose.isCompleted && !dropped.get()
+            complete = completed.containsAll(filtersByRelay.keys),
+            completedRelays = completed
         )
     }
 
@@ -400,11 +420,22 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      * @param groupId target group UUID
      * @param since unix timestamp; 0 to fetch all history
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
-     * @return deduplicated verified events plus whether the queried relays all finished sending
-     *   history and stayed connected while doing so
+     * @return verified events and relay coverage, including debt for unconnected relays
      */
-    override suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String?): FetchResult {
+    override suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String?): FetchResult =
+        fetchEventsByRelay(groupId, relays.keys.associateWith { since }, myPubkey)
+
+    /** Each relay resumes its own completed window; an absent socket remains incomplete. */
+    override suspend fun fetchEventsByRelay(
+        groupId: String,
+        sinceByRelay: Map<String, Long>,
+        myPubkey: String?
+    ): FetchResult {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
+        return fetchWithFilters(subId, sinceByRelay.mapValues { (_, since) -> groupFilters(groupId, since, myPubkey) })
+    }
+
+    private fun groupFilters(groupId: String, since: Long, myPubkey: String?): List<NostrFilter> {
         val sinceVal = if (since > 0) since else null
         val filters =
             mutableListOf(
@@ -424,7 +455,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                 )
             )
         }
-        return fetchWithFilters(subId, filters)
+        return filters
     }
 
     override suspend fun fetchEventIds(groupId: String, since: Long, myPubkey: String?): Set<String> {
@@ -437,7 +468,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                 since = sinceVal
             )
         )
-        val events = fetchWithFilters(subId, filters) { event, list ->
+        val events = fetchWithFilters(subId, relays.keys.associateWith { filters }) { event, list ->
             list.none { it.id == event.id }
         }.events
         return events.map { it.id }.toSet()
@@ -458,7 +489,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                 since = System.currentTimeMillis() / 1000 - 86400
             )
         )
-        return fetchWithFilters(subId, filters, timeoutMs = 10_000) { event, list ->
+        return fetchWithFilters(subId, relays.keys.associateWith { filters }, timeoutMs = 10_000) { event, list ->
             list.none { it.id == event.id }
         }.events
     }
@@ -470,7 +501,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         }
         if (relays.containsKey(url)) return
         connectRequested = true
-        val relay = Relay(url, scope, authSigner = authSigner)
+        val relay = Relay(url, scope, authSigner = authSigner, onConnected = ::relayOpened)
         relays[url] = relay
         scope.launch {
             relay.messages.collect { msg ->

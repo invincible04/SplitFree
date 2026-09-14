@@ -47,7 +47,9 @@ constructor(
 
         val primaryRelays = resolvePrimaryRelays()
         val onlineRelays = relayHealthMonitor.getOnlineRelays(primaryRelays).ifEmpty { primaryRelays }
-        val allRelays = (onlineRelays + RelayDefaults.FALLBACK_RELAYS).distinct()
+        // Health probes only order attempts. An offline primary can hold the sole accepted copy;
+        // excluding it would prevent its recovery from ever resolving history coverage debt.
+        val allRelays = (onlineRelays + primaryRelays + RelayDefaults.FALLBACK_RELAYS).distinct()
 
         // Take the reference before waiting: the sockets are opening from here on, and a caller
         // cancelled mid-wait would otherwise leave them open with activeUsers == 0 and nobody to
@@ -76,9 +78,10 @@ constructor(
     /** Resolve primary relays: group > default. */
     suspend fun resolvePrimaryRelays(): List<String> = primaryRelaysOf(groupRepo.getAll())
 
-    /** The primary relay set [groups] imply: their relays, or the defaults when none has any. */
+    /** The primary relay set [groups] imply: each group's relays, or defaults for a group with none. */
     fun primaryRelaysOf(groups: List<Group>): List<String> =
-        groups.flatMap { it.relays }.distinct().ifEmpty { RelayDefaults.DEFAULT_RELAYS }
+        groups.flatMap { it.relays.ifEmpty { RelayDefaults.DEFAULT_RELAYS } }.distinct()
+            .ifEmpty { RelayDefaults.DEFAULT_RELAYS }
 
     /** Get all relays that should be connected (primary + fallbacks). */
     suspend fun resolveAllRelays(): List<String> = (resolvePrimaryRelays() + RelayDefaults.FALLBACK_RELAYS).distinct()

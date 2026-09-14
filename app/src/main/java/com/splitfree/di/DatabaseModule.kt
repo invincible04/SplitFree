@@ -8,6 +8,7 @@ import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.dao.RelaySyncCursorDao
 import com.splitfree.data.local.dao.SyncRevisionDao
 import com.splitfree.data.repository.ControlOperationJournal
 import com.splitfree.domain.repository.ControlOperationJournalContract
@@ -23,9 +24,10 @@ import javax.inject.Singleton
  *
  * ## Schema migration
  *
- * Currently at **version 3** (`exportSchema = true`). Registered migrations:
+ * Currently at **version 4** (`exportSchema = true`). Registered migrations:
  * - [AppDatabase.MIGRATION_1_2]: additive columns on `events` / `groups` plus the `deliveries` table.
  * - [AppDatabase.MIGRATION_2_3]: control journal and persistent sync revisions (including change triggers).
+ * - [AppDatabase.MIGRATION_3_4]: relay- and recipient-scoped completed catch-up cursors.
  *
  * ### Do not use `fallbackToDestructiveMigration()`
  *
@@ -53,7 +55,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase = Room
         .databaseBuilder(context, AppDatabase::class.java, "splitfree.db")
-        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
         .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
         .build()
 
@@ -66,6 +68,8 @@ object DatabaseModule {
     @Provides fun provideControlOperationDao(db: AppDatabase): ControlOperationDao = db.controlOperationDao()
 
     @Provides fun provideSyncRevisionDao(db: AppDatabase): SyncRevisionDao = db.syncRevisionDao()
+
+    @Provides fun provideRelaySyncCursorDao(db: AppDatabase): RelaySyncCursorDao = db.relaySyncCursorDao()
 
     @Provides
     @Singleton

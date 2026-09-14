@@ -3,9 +3,13 @@ package com.splitfree.data.local
 import android.app.Application
 import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.repository.ControlOperationJournal
+import com.splitfree.data.repository.RelaySyncCursors
 import com.splitfree.di.DatabaseModule
 import com.splitfree.domain.repository.ControlOperation
 import java.io.File
@@ -23,19 +27,15 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.SQLiteMode
 
 /**
- * Builds a real **version 1** database file from the exact `CREATE TABLE` statements exported in
- * `schemas/com.splitfree.data.local.AppDatabase/1.json`, seeds it, then opens it through Room with
- * [AppDatabase.MIGRATION_1_2] and checks that every pre-existing row survives with the v2 defaults
- * and that the new `deliveries` table is usable.
- *
- * `androidx.room:room-testing` is not available offline, so the v1 fixture is written with the
- * framework `SQLiteDatabase` directly; Room's own schema validation on open then plays the role of
- * `MigrationTestHelper.validateMigration` (a column / index mismatch would throw).
+ * Opens seeded legacy database files through Room's schema validation. The v3 fixture uses the
+ * exported schema and production revision triggers; migration must retain every row and trigger.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
+@SQLiteMode(SQLiteMode.Mode.NATIVE)
 class MigrationTest {
     private val context: Application get() = RuntimeEnvironment.getApplication()
     private val dbName = "migration-test.db"
@@ -63,17 +63,17 @@ class MigrationTest {
 
     private fun openCurrent(name: String = dbName): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
             .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
             .allowMainThreadQueries()
             .build()
             .also { db = it }
 
     @Test
-    fun `migrated database reports version 3`() {
+    fun `migrated database reports version 4`() {
         val migrated = openCurrent()
 
-        assertEquals(3, migrated.openHelper.readableDatabase.version)
+        assertEquals(4, migrated.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -178,7 +178,7 @@ class MigrationTest {
 
     @Test
     fun `migration does not run the destructive fallback`() = runBlocking {
-        // Sanity check on the fixture: without the migration Room must refuse to open v1 as v2
+        // Sanity check on the fixture: without the migration Room must refuse to open v1 as the current version
         // rather than silently wiping it.
         val failure = runCatching {
             Room.databaseBuilder(context, AppDatabase::class.java, dbName)
@@ -216,7 +216,7 @@ class MigrationTest {
         assertEquals(EventEntity.APPLY_STATE_APPLIED, prod.eventDao().getEvent("e1")!!.applyState)
         assertEquals(1, prod.outboxDao().count())
         assertNull(prod.deliveryDao().get("nope"))
-        assertEquals(3, prod.openHelper.readableDatabase.version)
+        assertEquals(4, prod.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -266,6 +266,133 @@ class MigrationTest {
             ControlOperationJournal(reopened.controlOperationDao()).get(operation.id)!!.preparedJson
         )
     }
+
+    @Test
+    fun `v3 to v4 preserves every legacy table and revision trigger without trusting global sync`() = runBlocking {
+        val fixture = createV3Database(dbName)
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
+            .addMigrations(AppDatabase.MIGRATION_3_4)
+            .allowMainThreadQueries()
+            .build()
+            .also { db = it }
+        val sql = migrated.openHelper.writableDatabase
+
+        assertEquals(4, sql.version)
+        assertEquals(fixture.rows, tableRows(sql, fixture.rows.keys))
+        assertEquals(9, fixture.triggers.size)
+        assertEquals(fixture.triggers, triggerDefinitions(sql))
+        val cursors = RelaySyncCursors(migrated)
+        assertEquals(900L, migrated.groupDao().getById("g1")!!.lastSyncTimestamp)
+        assertTrue(cursors.cursors("g1", "alice").isEmpty())
+        assertEquals(0L, cursors.cursors("g1", "alice")[RELAY_URL] ?: 0L)
+
+        val before = migrated.syncRevisionDao().observeRevision("g1").first()
+        sql.execSQL("UPDATE events SET applyState = 0 WHERE eventId = 'e3'")
+        sql.execSQL("UPDATE deliveries SET state = 1 WHERE envelopeId = 'env3'")
+        sql.execSQL("UPDATE groups SET name = 'Renamed' WHERE groupId = 'g1'")
+        assertEquals(before + 3, migrated.syncRevisionDao().observeRevision("g1").first())
+        cursors.advance("g1", "alice", setOf(RELAY_URL), 500)
+        assertEquals(before + 3, migrated.syncRevisionDao().observeRevision("g1").first())
+
+        migrated.close()
+        db = null
+        val reopened = openCurrent()
+        val reopenedCursors = RelaySyncCursors(reopened)
+        assertEquals(mapOf(RELAY_URL to 500L), reopenedCursors.cursors("g1", "alice"))
+        assertTrue(reopenedCursors.cursors("g1", "bob").isEmpty())
+        assertEquals(fixture.triggers, triggerDefinitions(reopened.openHelper.readableDatabase))
+        assertEquals(before + 3, reopened.syncRevisionDao().observeRevision("g1").first())
+        reopenedCursors.advance("g1", "alice", setOf(RELAY_URL), 100)
+        assertEquals(mapOf(RELAY_URL to 500L), reopenedCursors.cursors("g1", "alice"))
+    }
+
+    @Test
+    fun `DatabaseModule registers direct v3 to v4 migration without data loss`() = runBlocking {
+        val fixture = createV3Database(PROD_DB_NAME)
+        val migrated = DatabaseModule.provideDatabase(context).also { db = it }
+        val sql = migrated.openHelper.readableDatabase
+
+        assertEquals(4, sql.version)
+        assertEquals(fixture.rows, tableRows(sql, fixture.rows.keys))
+        assertEquals(fixture.triggers, triggerDefinitions(sql))
+        assertTrue(migrated.relaySyncCursorDao().get("g1", "alice").isEmpty())
+    }
+
+    private fun createV3Database(name: String): V3Fixture {
+        deleteDatabase(name)
+        val schemaFile = listOf(
+            File("schemas/com.splitfree.data.local.AppDatabase/3.json"),
+            File("app/schemas/com.splitfree.data.local.AppDatabase/3.json")
+        ).first { it.exists() }
+        val schema = JSONObject(schemaFile.readText()).getJSONObject("database")
+        val entities = schema.getJSONArray("entities")
+        val tables = (0 until entities.length()).map { entities.getJSONObject(it).getString("tableName") }
+        val callback = object : SupportSQLiteOpenHelper.Callback(3) {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                for (i in 0 until entities.length()) {
+                    val entity = entities.getJSONObject(i)
+                    val table = entity.getString("tableName")
+                    db.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", table))
+                    val indices = entity.optJSONArray("indices") ?: continue
+                    for (j in 0 until indices.length()) {
+                        db.execSQL(indices.getJSONObject(j).getString("createSql").replace("\${TABLE_NAME}", table))
+                    }
+                }
+                val setup = schema.getJSONArray("setupQueries")
+                for (i in 0 until setup.length()) db.execSQL(setup.getString(i))
+                AppDatabase.SYNC_REVISION_CALLBACK.onCreate(db)
+            }
+
+            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                error("The fixture must be created directly at version 3")
+            }
+        }
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context).name(name).callback(callback).build()
+        )
+        return helper.use {
+            val sql = it.writableDatabase
+            sql.execSQL(
+                "INSERT INTO events VALUES " +
+                    "('e3', 'g1', 'author', 100, 30078, 'cipher', 'expense', 'uuid-3', " +
+                    "'sig-3', 101, '{\"id\":\"e3\"}', 2, 1)"
+            )
+            sql.execSQL(
+                "INSERT INTO groups VALUES ('g1', 'Trip', 'A trip', 'creator', 1000, " +
+                    "'[\"creator\",\"alice\"]', '[\"$RELAY_URL\"]', '{\"alice\":\"Alice\"}', " +
+                    "900, 500, 2, 'meta-3', '{\"alice\":\"400:self-3\"}')"
+            )
+            sql.execSQL("INSERT INTO outbox VALUES ('o3', '{\"id\":\"o3\"}', 200, 2, 201, 'expense')")
+            sql.execSQL(
+                "INSERT INTO deliveries VALUES ('env3', 'g1', 'alice', 'e3', '{\"id\":\"env3\"}', " +
+                    "'gift_wrap', 0, 1, 100, 101, 13)"
+            )
+            sql.execSQL("INSERT INTO operation_journal VALUES ('rotation:g1', 'rotation', 'intent', 'prepared')")
+            sql.execSQL("UPDATE sync_revisions SET revision = 42 WHERE groupId = 'g1'")
+            assertEquals(3, sql.version)
+            V3Fixture(tableRows(sql, tables), triggerDefinitions(sql))
+        }
+    }
+
+    private fun tableRows(db: SupportSQLiteDatabase, tables: Collection<String>): Map<String, List<List<String?>>> =
+        tables.associateWith { table ->
+            db.query("SELECT * FROM `$table` ORDER BY rowid").use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add((0 until cursor.columnCount).map { if (cursor.isNull(it)) null else cursor.getString(it) })
+                    }
+                }
+            }
+        }
+
+    private fun triggerDefinitions(db: SupportSQLiteDatabase): Map<String, String> =
+        db.query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name").use { cursor ->
+            buildMap {
+                while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+            }
+        }
+
+    private data class V3Fixture(val rows: Map<String, List<List<String?>>>, val triggers: Map<String, String>)
 
     // --- v1 fixture ---
 
@@ -330,6 +457,7 @@ class MigrationTest {
     private companion object {
         /** Production database name used by [DatabaseModule.provideDatabase]. */
         const val PROD_DB_NAME = "splitfree.db"
+        const val RELAY_URL = "wss://relay.damus.io"
 
         /** `identityHash` from `1.json`. */
         const val V1_IDENTITY_HASH = "42e63e49719e7b1c9f1cdd1952e96b97"

@@ -94,7 +94,7 @@ SplitFree is built entirely on the [Nostr](https://nostr.com) protocol, an open,
 
 4. **Expenses**: Expenses are signed Nostr events (kind 30078) with encrypted JSON content. Each expense records who paid, who owes, the split method, and the amount.
 
-5. **Sync**: The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. While the app is visible, `LiveSync` holds the relay connection, catches every group up from its cursor and streams live events; there is no background service or persistent notification. WorkManager handles the durable outbox drain, periodic catch-up and the daily full sync.
+5. **Sync**: The app connects to multiple Nostr relays via WebSocket, subscribes to group events, and processes them through validation → decryption → storage → post-processing. While the app is visible, `LiveSync` holds the relay connection, catches every group up from persisted per-relay history cursors and streams live events; there is no background service or persistent notification. A fallback relay cannot mark an unavailable relay's history complete. Incomplete catch-up retries on individual relay recovery and on a bounded foreground timer (30, 60 and 120 seconds), then hands off to a durable WorkManager job. WorkManager also handles the durable outbox drain, periodic catch-up and daily full sync. Android may defer background work; public relay retention and delivery are best effort.
 
 6. **Nearby sync**: When group members are together, they can sync directly through Google Nearby Connections (Bluetooth, BLE or Wi-Fi, chosen by the SDK). Before any group data is exchanged, both phones sign a Schnorr challenge bound to that specific connection's Nearby authentication token, and exactly one group is opened only after both sides pass a membership check. Records then flow as small JSON frames (16 KiB max, paged inventories, chunked records) with a per-record receipt and durable progress, so an interrupted session re-authenticates and transfers only what is still missing. A member can carry sealed envelopes (gift wraps, per-member key rotations) for other members and hand them over later, and data applied from one connected peer is re-offered to the other connected peers. Only records with a third-party-verifiable signature are forwarded; an expense a phone holds only as a gift-wrapped rumor is not. Both phones must speak the current protocol version (v3); an older peer is refused rather than half-understood. See `app/src/main/java/com/splitfree/sync/nearby/README.md`.
 
@@ -124,7 +124,7 @@ The codebase follows **Clean Architecture** with strict layer separation. The do
 │              content safety, author checks)                 │
 ├─────────────────────────────────────────────────────────────┤
 │                     Data Layer                              │
-│   Room DB v3 (events, groups, outbox, deliveries, journal)  │
+│   Room DB v4 (ledger, outbox, deliveries, relay cursors)       │
 │   Nostr: Relay (OkHttp WebSocket), NostrClient,             │
 │          RelayHealthMonitor, RelayConnectionManager         │
 │   Nearby: NearbySync, NearbySessionCoordinator, PeerSession │

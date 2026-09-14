@@ -18,13 +18,13 @@ import com.splitfree.sync.event.IngestOutcome
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -32,8 +32,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Live relay session held only while the app is visible: on `onStart` it connects, catches every
@@ -119,8 +118,7 @@ constructor(
             identity.observeHasIdentity().first { it }
             val initialGroups = connectWithBackoff()
             acquired = true
-            // ensureConnected returns without throwing when no relay came up within its timeout; the
-            // up-edge of connectionState below reports live_connected and re-pulls when one does.
+            // Acquisition may time out offline; later relay generations recover the missing history.
             ProcessHealthTracker.heartbeat(context, "live_acquired")
             coroutineScope {
                 // incomingEvents has no replay and NostrClient marks an id seen before emitting it, so an
@@ -135,60 +133,10 @@ constructor(
                 }
                 ready.await()
 
+                val initialGeneration = nostrClient.connectionGeneration.value
+                launch { observeConnection() }
                 flushOutboxQuietly()
-                val catchUp = Mutex()
-                // Unconditional even when nothing is connected yet: subscribe() also installs the live
-                // subscriptions, which Relay re-sends on open, and the up-edge re-pulls the history.
-                // Seeded from the result because the observer below may never see a down-edge: a pull that
-                // found no CONNECTED relay in its settle window, or lost one mid-fetch to Relay's own quick
-                // reconnect, is incomplete while connectionState has read true throughout.
-                val needsResync = AtomicBoolean(!catchUpAll(initialGroups, myPubkey, catchUp))
-
-                launch {
-                    // Both mutated only inside this collector; the resync below reads the repository afresh.
-                    var connectedRelays = relayConnectionManager.primaryRelaysOf(initialGroups).toSet()
-                    var subscribed = initialGroups.mapTo(HashSet()) { it.id }
-                    groupRepo.observeAll().collect { groups ->
-                        val fresh = groups.filter { it.id !in subscribed }
-                        val current = groups.mapTo(HashSet()) { it.id }
-                        for (gone in subscribed - current) nostrClient.unsubscribe(gone)
-                        val relays = relayConnectionManager.primaryRelaysOf(groups).toSet()
-                        val relaysChanged = relays != connectedRelays
-                        if (relaysChanged) {
-                            Log.i(TAG, "Relay set changed, reconnecting")
-                            reconnectRetainingSession()
-                            connectedRelays = relays
-                        }
-                        if (fresh.isNotEmpty()) flushOutboxQuietly()
-                        // Relays the reconnect added start with no subscriptions, so every group is redone.
-                        if (!catchUpAll(if (relaysChanged) groups else fresh, myPubkey, catchUp)) needsResync.set(true)
-                        subscribed = current
-                    }
-                }
-
-                launch {
-                    nostrClient.connectionState.collect { up ->
-                        if (!up) {
-                            needsResync.set(true)
-                            // Relay reopens each socket on its own with back-off and re-sends its subscriptions,
-                            // so only a drop that outlasts that gets a forced reconnect. Forcing one during a
-                            // slow first connect is harmless: connect() skips relays already CONNECTING.
-                            delay(RECONNECT_GRACE_MS)
-                            if (!nostrClient.isConnected) {
-                                Log.w(TAG, "All relays down, reconnecting")
-                                reconnectRetainingSession()
-                            }
-                        } else {
-                            ProcessHealthTracker.heartbeat(context, "live_connected")
-                            if (needsResync.getAndSet(false)) {
-                                // Whatever was published while nothing was connected is neither in the live
-                                // stream nor covered by a cursor that never advanced; the pull re-covers it.
-                                // Still incomplete: stay armed for the next up-edge rather than retry now.
-                                if (!catchUpAll(groupRepo.getAll(), myPubkey, catchUp)) needsResync.set(true)
-                            }
-                        }
-                    }
-                }
+                recoverHistory(initialGroups, myPubkey, initialGeneration)
             }
         } finally {
             if (acquired) releaseQuietly()
@@ -216,15 +164,100 @@ constructor(
         }
     }
 
-    /** Every group in turn, never short-circuiting: false if any pull was incomplete. */
-    private suspend fun catchUpAll(groups: List<Group>, myPubkey: String, lock: Mutex): Boolean {
-        var complete = true
-        for (group in groups) if (!catchUpAndSubscribe(group.id, myPubkey, lock)) complete = false
-        return complete
+    private suspend fun observeConnection() {
+        nostrClient.connectionState.collect { up ->
+            if (up) {
+                ProcessHealthTracker.heartbeat(context, "live_connected")
+            } else {
+                // Relay owns socket backoff. Only an aggregate outage that outlasts it needs help.
+                delay(RECONNECT_GRACE_MS)
+                if (!nostrClient.isConnected) {
+                    Log.w(TAG, "All relays down, reconnecting")
+                    reconnectRetainingSession()
+                }
+            }
+        }
     }
 
+    private data class CatchUpRetry(val attempts: Int, val retryAt: Long?)
+
+    private suspend fun recoverHistory(initialGroups: List<Group>, myPubkey: String, initialGeneration: Long): Unit =
+        coroutineScope {
+            // The signal is only a wake-up: authoritative snapshots below retain changes during a pull.
+            val changes = Channel<Unit>(Channel.CONFLATED)
+            launch { groupRepo.observeAll().collect { changes.trySend(Unit) } }
+            launch { nostrClient.connectionGeneration.collect { changes.trySend(Unit) } }
+            var connectedRelays = relayConnectionManager.primaryRelaysOf(initialGroups).toSet()
+            var subscribed = emptySet<String>()
+            var processedGeneration = initialGeneration
+            var generationNotBefore = 0L
+            var initial = true
+            var fallbackScheduled = false
+            val retries = mutableMapOf<String, CatchUpRetry>()
+
+            while (currentCoroutineContext().isActive) {
+                val groups = if (initial) initialGroups else groupRepo.getAll()
+                val current = groups.mapTo(HashSet()) { it.id }
+                for (gone in subscribed - current) nostrClient.unsubscribe(gone)
+                retries.keys.retainAll(current)
+                val fresh = current - subscribed
+                val relays = relayConnectionManager.primaryRelaysOf(groups).toSet()
+                val relaysChanged = relays != connectedRelays
+                if (relaysChanged) {
+                    Log.i(TAG, "Relay set changed, reconnecting")
+                    reconnectRetainingSession()
+                    connectedRelays = relays
+                }
+                if (!initial && fresh.isNotEmpty()) flushOutboxQuietly()
+
+                val now = SystemClock.elapsedRealtime()
+                val generation = nostrClient.connectionGeneration.value
+                val generationChanged = generation != processedGeneration && now >= generationNotBefore
+                val catchUpAll = initial || relaysChanged || generationChanged
+                // Mark only the generation observed BEFORE pulling, never one that arrived in flight.
+                if (catchUpAll) processedGeneration = generation
+                for (group in groups) {
+                    val retry = retries[group.id]
+                    val timerDue = retry?.retryAt?.let { it <= SystemClock.elapsedRealtime() } == true
+                    if (!catchUpAll && group.id !in fresh && !timerDue) continue
+                    if (catchUpAndSubscribe(group.id, myPubkey)) {
+                        retries.remove(group.id)
+                    } else if (retry == null || timerDue) {
+                        // An early generation retry must not replenish an incomplete group's timer budget.
+                        val attempts = if (retry == null) 0 else retry.attempts + 1
+                        val retryDelay = CATCH_UP_RETRY_DELAYS_MS.getOrNull(attempts)
+                        val finishedAt = SystemClock.elapsedRealtime()
+                        retries[group.id] = CatchUpRetry(attempts, retryDelay?.let { finishedAt + it })
+                        if (retryDelay == null && !fallbackScheduled) {
+                            fallbackScheduled = true
+                            generationNotBefore = maxOf(generationNotBefore, finishedAt + BACKOFF_CAP_MS)
+                            scheduleFallbackSync()
+                        }
+                    }
+                }
+                if (generationChanged) {
+                    val cooldown = if (retries.values.any { it.retryAt == null }) BACKOFF_CAP_MS else BACKOFF_STEP_MS
+                    generationNotBefore = SystemClock.elapsedRealtime() + cooldown
+                }
+                subscribed = current
+                initial = false
+
+                val generationAt = generationNotBefore.takeIf {
+                    nostrClient.connectionGeneration.value != processedGeneration
+                }
+                val retryAt = retries.values.mapNotNull { it.retryAt }.minOrNull()
+                val wakeAt = listOfNotNull(generationAt, retryAt).minOrNull()
+                if (wakeAt == null) {
+                    changes.receive()
+                } else {
+                    val waitMs = wakeAt - SystemClock.elapsedRealtime()
+                    if (waitMs > 0) withTimeoutOrNull(waitMs) { changes.receive() }
+                }
+            }
+        }
+
     /** Returns whether the group's history is now complete; a group without a key has nothing to pull. */
-    private suspend fun catchUpAndSubscribe(groupId: String, myPubkey: String, lock: Mutex): Boolean = lock.withLock {
+    private suspend fun catchUpAndSubscribe(groupId: String, myPubkey: String): Boolean {
         val startedAt = System.currentTimeMillis() / 1000
         val groupKey = groupRepo.getGroupKey(groupId)
         var complete = true
@@ -234,13 +267,12 @@ constructor(
             try {
                 val pull = syncEngine.pullEvents(groupId, since, groupKey, notifyContext = context)
                 if (pull.stored > 0) Log.i(TAG, "Caught up ${pull.stored} events for group $groupId")
-                if (!pull.complete) Log.w(TAG, "Incomplete catch-up for group $groupId; cursor not advanced")
+                if (!pull.complete) Log.w(TAG, "Incomplete relay coverage for group $groupId")
                 complete = pull.complete
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // The cursor is untouched, so the next entry re-covers this window; the live stream below
-                // still matters more while the user is looking at the screen.
+                // Completed relays retain their progress; uncovered history stays eligible for retry.
                 Log.w(TAG, "Catch-up failed for group $groupId: ${e.message}")
                 complete = false
             }
@@ -248,7 +280,7 @@ constructor(
         // From just before the pull began: anything published while it was in flight reaches the live
         // stream instead, and the processor drops what both paths deliver.
         nostrClient.subscribe(groupId, startedAt - SUBSCRIBE_OVERLAP_SECS, myPubkey)
-        complete
+        return complete
     }
 
     private suspend fun handleLive(event: NostrEvent, myPubkey: String) {
@@ -314,6 +346,7 @@ constructor(
         private const val BACKOFF_STEP_MS = 30_000L
         private const val BACKOFF_CAP_MS = 120_000L
         private const val RECONNECT_GRACE_MS = 5_000L
+        private val CATCH_UP_RETRY_DELAYS_MS = listOf(30_000L, 60_000L, 120_000L)
 
         /** A session that lived this long before failing resets the restart back-off. */
         private const val STABLE_SESSION_MS = 60_000L

@@ -112,8 +112,30 @@ class RelayConnectionManagerTest {
         assertEquals(RelayDefaults.DEFAULT_RELAYS, manager.primaryRelaysOf(emptyList()))
         assertEquals(RelayDefaults.DEFAULT_RELAYS, manager.primaryRelaysOf(listOf(group())))
         assertEquals(
+            RelayDefaults.DEFAULT_RELAYS + "wss://custom",
+            manager.primaryRelaysOf(listOf(group(), group("wss://custom")))
+        )
+        assertEquals(
             listOf("wss://a", "wss://b"),
             manager.primaryRelaysOf(listOf(group("wss://a", "wss://b"), group("wss://b")))
         )
+    }
+
+    @Test
+    fun `stale offline health cannot exclude a primary with unique history`() = runTest(dispatcher) {
+        coEvery { groupRepo.getAll() } returns listOf(
+            Group(
+                "g",
+                "Trip",
+                createdBy = "a",
+                createdAt = 1,
+                members = listOf("a"),
+                relays = listOf("wss://a", "wss://b")
+            )
+        )
+        every { healthMonitor.getOnlineRelays(any()) } returns listOf("wss://b")
+        anyRelayUp.value = true
+        assertEquals(listOf("wss://b", "wss://a") + RelayDefaults.FALLBACK_RELAYS, manager.ensureConnected(true))
+        coVerify { nostrClient.connect(listOf("wss://b", "wss://a") + RelayDefaults.FALLBACK_RELAYS) }
     }
 }

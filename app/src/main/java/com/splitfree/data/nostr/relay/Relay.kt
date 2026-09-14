@@ -43,13 +43,17 @@ class Relay(
     val url: String,
     private val scope: CoroutineScope,
     private val okHttpClient: OkHttpClient = sharedClient,
-    private val authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)? = null
+    private val authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)? = null,
+    private val onConnected: (() -> Unit)? = null
 ) {
     enum class State { DISCONNECTED, CONNECTING, CONNECTED }
 
     private var ws: WebSocket? = null
     private val _state = MutableStateFlow(State.DISCONNECTED)
     val state: StateFlow<State> = _state.asStateFlow()
+
+    /** Not conflated like state: a rapid drop/reopen cannot certify a narrowed historical REQ. */
+    val connectionEpoch = AtomicLong(0)
 
     private val _messages = MutableSharedFlow<RelayMessage>(extraBufferCapacity = MESSAGE_BUFFER_CAPACITY)
     val messages: SharedFlow<RelayMessage> = _messages.asSharedFlow()
@@ -91,7 +95,9 @@ class Relay(
                 request,
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
+                        connectionEpoch.incrementAndGet()
                         _state.value = State.CONNECTED
+                        onConnected?.invoke()
                         reconnectAttempt = 0
                         authAttempts = 0
                         // Re-send active subscriptions with updated since to cover reconnect gap

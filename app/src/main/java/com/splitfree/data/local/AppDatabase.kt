@@ -9,20 +9,22 @@ import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.dao.RelaySyncCursorDao
 import com.splitfree.data.local.dao.SyncRevisionDao
 import com.splitfree.data.local.entities.ControlOperationEntity
 import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.data.local.entities.OutboxEntity
+import com.splitfree.data.local.entities.RelaySyncCursorEntity
 import com.splitfree.data.local.entities.SyncRevisionEntity
 
 @Database(
     entities = [
         EventEntity::class, GroupEntity::class, OutboxEntity::class, DeliveryEntity::class,
-        ControlOperationEntity::class, SyncRevisionEntity::class
+        ControlOperationEntity::class, SyncRevisionEntity::class, RelaySyncCursorEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 /**
@@ -39,6 +41,7 @@ import com.splitfree.data.local.entities.SyncRevisionEntity
  * - v2: `events.applyState`, `groups.lastMetaEventId`, `groups.memberClocks`, new `deliveries`
  *   table ([MIGRATION_1_2], additive only)
  * - v3: immutable control-operation journal and trigger-maintained per-group sync revisions
+ * - v4: per-relay, per-recipient completed catch-up cursors
  */
 abstract class AppDatabase : RoomDatabase() {
     abstract fun eventDao(): EventDao
@@ -53,10 +56,22 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun syncRevisionDao(): SyncRevisionDao
 
+    abstract fun relaySyncCursorDao(): RelaySyncCursorDao
+
     companion object {
         val SYNC_REVISION_CALLBACK = object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 installSyncRevisionTriggers(db)
+            }
+        }
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS relay_sync_cursors (" +
+                        "groupId TEXT NOT NULL, relayUrl TEXT NOT NULL, recipientPubkey TEXT NOT NULL, " +
+                        "throughTimestamp INTEGER NOT NULL, PRIMARY KEY(groupId, relayUrl, recipientPubkey))"
+                )
             }
         }
 

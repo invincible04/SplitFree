@@ -73,7 +73,7 @@ constructor(
      * @property eventId id of the inner (unwrapped) event, once it is known
      * @property decrypted plaintext for notifications; omitted for already-deleted expense history
      * @property retryable true for a [IngestOutcome.REJECTED] whose cause is a record this device lacks
-     *   (the key epoch it was sealed under, or the author's join): the same event may be accepted once
+     *   (the key epoch it was sealed under, or an author's/participant's join): the same event may be accepted once
      *   that record lands, so a caller holding it should offer it again rather than discard it
      */
     data class ProcessResult(
@@ -251,8 +251,11 @@ constructor(
             } else {
                 group.members.toSet()
             }
-        if (!validatePayload(eventType, decrypted, authorHex, expenseUuid, participants, inner.id)) {
-            return rejected("invalid payload", inner.id, eventType, authorHex)
+        when (validatePayload(eventType, decrypted, authorHex, expenseUuid, participants, inner.id)) {
+            PayloadValidation.INVALID -> return rejected("invalid payload", inner.id, eventType, authorHex)
+            PayloadValidation.MISSING_PARTICIPANT ->
+                return rejected("missing participant", inner.id, eventType, authorHex)
+            PayloadValidation.VALID -> Unit
         }
         if (awaitsOriginal && eventDao.countPendingByAuthor(groupId, authorHex) >= MAX_PENDING_LEDGER_PER_AUTHOR) {
             // Bounded retention: a member cannot fill the database with corrections to nothing. The
@@ -712,6 +715,8 @@ constructor(
         return BusinessRules.OK
     }
 
+    private enum class PayloadValidation { VALID, INVALID, MISSING_PARTICIPANT }
+
     /**
      * Parse and validate the decrypted payload of expense/settlement events.
      * The `x` tag ([expenseUuid]) is required and must match the id embedded in the payload so a
@@ -725,7 +730,7 @@ constructor(
         expenseUuid: String?,
         members: Set<String>,
         eventId: String
-    ): Boolean {
+    ): PayloadValidation {
         when (eventType) {
             "expense", "expense_correction" -> {
                 val expense =
@@ -733,15 +738,20 @@ constructor(
                         json.decodeFromString<Expense>(decrypted)
                     } catch (_: Exception) {
                         Log.w(TAG, "Rejecting $eventType with unparseable content: $eventId")
-                        return false
+                        return PayloadValidation.INVALID
                     }
-                if (!eventValidator.isExpenseValid(expense, members)) {
-                    Log.w(TAG, "Rejecting $eventType with invalid payload: $eventId")
-                    return false
-                }
                 if (expense.id != expenseUuid) {
                     Log.w(TAG, "Rejecting $eventType: x tag $expenseUuid does not match payload id ${expense.id}")
-                    return false
+                    return PayloadValidation.INVALID
+                }
+                if (!eventValidator.isExpenseValid(expense, members)) {
+                    val parties = expense.splitAmong.mapTo(HashSet()) { it.pubkey }.also { it.add(expense.paidBy) }
+                    // Expanded parties diagnose missing membership only; they never authorize storage.
+                    if (!members.containsAll(parties) && eventValidator.isExpenseValid(expense, members + parties)) {
+                        return PayloadValidation.MISSING_PARTICIPANT
+                    }
+                    Log.w(TAG, "Rejecting $eventType with invalid payload: $eventId")
+                    return PayloadValidation.INVALID
                 }
             }
 
@@ -751,19 +761,25 @@ constructor(
                         json.decodeFromString<Settlement>(decrypted)
                     } catch (_: Exception) {
                         Log.w(TAG, "Rejecting settlement with unparseable content: $eventId")
-                        return false
+                        return PayloadValidation.INVALID
                     }
-                if (!eventValidator.isSettlementValid(settlement, authorHex, members)) {
-                    Log.w(TAG, "Rejecting settlement with invalid payload: $eventId")
-                    return false
-                }
                 if (settlement.id != expenseUuid) {
                     Log.w(TAG, "Rejecting settlement: x tag $expenseUuid does not match payload id ${settlement.id}")
-                    return false
+                    return PayloadValidation.INVALID
+                }
+                if (!eventValidator.isSettlementValid(settlement, authorHex, members)) {
+                    val parties = setOf(settlement.from, settlement.to)
+                    if (!members.containsAll(parties) &&
+                        eventValidator.isSettlementValid(settlement, authorHex, members + parties)
+                    ) {
+                        return PayloadValidation.MISSING_PARTICIPANT
+                    }
+                    Log.w(TAG, "Rejecting settlement with invalid payload: $eventId")
+                    return PayloadValidation.INVALID
                 }
             }
         }
-        return true
+        return PayloadValidation.VALID
     }
 
     private fun rejected(
@@ -795,8 +811,8 @@ constructor(
         /** Types that apply only once the same author's original expense is stored. */
         private val ORIGINAL_DEPENDENT_TYPES = setOf("expense_correction", "expense_delete")
 
-        /** Rejections a record this device lacks would lift: the sealing key's epoch, or the author's join. */
-        private val RETRYABLE_REASONS = setOf("undecryptable", "not a member")
+        /** Rejections a missing key epoch or author/participant membership record could lift. */
+        private val RETRYABLE_REASONS = setOf("undecryptable", "not a member", "missing participant")
 
         /** Rows one author may hold pending for missing originals in one group. */
         internal const val MAX_PENDING_LEDGER_PER_AUTHOR = 128

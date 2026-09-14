@@ -28,15 +28,13 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import java.io.IOException
 import java.time.Duration
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -66,29 +64,6 @@ class LiveSyncTest {
         override val lifecycle: Lifecycle get() = registry
     }
 
-    /**
-     * A connection state the test can deliver `true` on again without a down-edge in between, which
-     * a [MutableStateFlow] conflates away; models a relay coming up while others were never down.
-     */
-    private class ReplayableState(initial: Boolean) : StateFlow<Boolean> {
-        private val shared =
-            MutableSharedFlow<Boolean>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST).also {
-                it.tryEmit(initial)
-            }
-        override var value: Boolean = initial
-            set(next) {
-                field = next
-                shared.tryEmit(next)
-            }
-        override val replayCache: List<Boolean> get() = shared.replayCache
-
-        override suspend fun collect(collector: FlowCollector<Boolean>): Nothing = shared.collect(collector)
-
-        fun upEdge() {
-            value = true
-        }
-    }
-
     private val dispatcher = StandardTestDispatcher()
     private val testScope = TestScope(dispatcher)
     private val context = RuntimeEnvironment.getApplication()
@@ -96,6 +71,7 @@ class LiveSyncTest {
 
     private val incoming = MutableSharedFlow<NostrEvent>(extraBufferCapacity = 64)
     private val connectionState = MutableStateFlow(true)
+    private val connectionGeneration = MutableStateFlow(1L)
     private val hasIdentity = MutableStateFlow(true)
     private val nostrClient = mockk<NostrClient>(relaxed = true)
     private val identity = mockk<IdentityContract>(relaxed = true)
@@ -122,6 +98,7 @@ class LiveSyncTest {
         every { identity.getPublicKeyHex() } returns "alice"
         every { nostrClient.incomingEvents } returns incoming
         every { nostrClient.connectionState } returns connectionState
+        every { nostrClient.connectionGeneration } returns connectionGeneration
         every { nostrClient.isConnected } returns true
         coEvery { nostrClient.subscribe(any(), any(), any()) } answers {
             collectorsAtSubscribe += incoming.subscriptionCount.value
@@ -398,6 +375,7 @@ class LiveSyncTest {
 
             every { nostrClient.isConnected } returns true
             connectionState.value = true
+            connectionGeneration.value++
             runCurrent()
             coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
             coVerify(exactly = 2) { nostrClient.subscribe("g1", any(), "alice") }
@@ -412,6 +390,7 @@ class LiveSyncTest {
         connectionState.value = false
         runCurrent()
         connectionState.value = true
+        connectionGeneration.value++
         elapse(5_000)
 
         coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
@@ -436,6 +415,7 @@ class LiveSyncTest {
 
         every { nostrClient.isConnected } returns true
         connectionState.value = true
+        connectionGeneration.value++
         elapse(5_000)
 
         assertTrue(lastHeartbeat().contains("live_connected"))
@@ -447,61 +427,62 @@ class LiveSyncTest {
     }
 
     @Test
-    fun `an incomplete initial pull is retried on the first up-edge and not again once complete`() = testScope.runTest {
-        val state = ReplayableState(true)
-        every { nostrClient.connectionState } returns state
+    fun `an incomplete initial pull recovers on a timer without any connection edge`() = testScope.runTest {
         coEvery { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) } returns
             PullResult(0, false) andThen PullResult(0, true)
 
         start()
         runCurrent()
+        elapse(29_999)
+        coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
+        elapse(1)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", 10_000 - 3600, "key-g1", false, context) }
         coVerify(exactly = 2) { nostrClient.subscribe("g1", any(), "alice") }
+        elapse(600_000)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
 
-        state.upEdge()
+    @Test
+    fun `incomplete groups get three capped timer retries and one durable fallback`() = testScope.runTest {
+        groups.value = listOf(group, group("g2", relays = listOf("wss://test")))
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
         runCurrent()
+
+        for ((index, delayMs) in listOf(30_000L, 60_000L, 120_000L).withIndex()) {
+            elapse(delayMs - 1)
+            coVerify(exactly = index + 1) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+            verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+            elapse(1)
+            coVerify(exactly = index + 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+            coVerify(exactly = index + 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        }
+        verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
+        elapse(600_000)
+        coVerify(exactly = 4) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 4) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `a relay generation catches up completed groups while the fallback stays connected`() = testScope.runTest {
+        start()
+        runCurrent()
+        connectionGeneration.value++
+        runCurrent()
+
+        assertTrue(connectionState.value)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
+        coVerify(exactly = 2) { nostrClient.subscribe("g1", any(), "alice") }
+        coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
+        elapse(600_000)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
     }
 
     @Test
-    fun `a pull that stays incomplete is retried on every up-edge but never without one`() = testScope.runTest {
-        val state = ReplayableState(true)
-        every { nostrClient.connectionState } returns state
-        coEvery { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) } returns PullResult(0, false)
-
-        start()
-        elapse(120_000)
-        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
-
-        state.upEdge()
-        runCurrent()
-        coVerify(exactly = 3) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
-        state.upEdge()
-        runCurrent()
-        coVerify(exactly = 4) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
-    }
-
-    @Test
-    fun `complete pulls are not repeated on up-edges`() = testScope.runTest {
-        val state = ReplayableState(true)
-        every { nostrClient.connectionState } returns state
-
-        start()
-        runCurrent()
-        state.upEdge()
-        runCurrent()
-        state.upEdge()
-        runCurrent()
-
-        coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
-        coVerify(exactly = 1) { nostrClient.subscribe("g1", any(), "alice") }
-    }
-
-    @Test
-    fun `an incomplete pull for a newly observed group arms the next up-edge for every group`() = testScope.runTest {
-        val state = ReplayableState(true)
-        every { nostrClient.connectionState } returns state
+    fun `an incomplete newly observed group retries without rerequesting complete groups`() = testScope.runTest {
         start()
         runCurrent()
         val joined = group("g2", relays = listOf("wss://test"))
@@ -510,17 +491,278 @@ class LiveSyncTest {
 
         groups.value = listOf(group, joined)
         runCurrent()
+        elapse(30_000)
         coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
-        coVerify(exactly = 1) { syncEngine.pullEvents("g2", any(), "key-g2", any(), any()) }
-
-        state.upEdge()
-        runCurrent()
-        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), "key-g2", any(), any()) }
+        elapse(600_000)
+        coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
+        coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), "key-g2", any(), any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
 
-        state.upEdge()
+    @Test
+    fun `a generation after joining an incomplete group catches up every current group`() = testScope.runTest {
+        start()
         runCurrent()
-        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
+        val joined = group("g2", relays = listOf("wss://test"))
+        coEvery { syncEngine.pullEvents("g2", any(), any(), any(), any()) } returns
+            PullResult(0, false) andThen PullResult(0, true)
+        groups.value = listOf(group, joined)
+        runCurrent()
+        connectionGeneration.value++
+        runCurrent()
+
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        elapse(600_000)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `timer retries stop independently as each group completes`() = testScope.runTest {
+        groups.value = listOf(group, group("g2", relays = listOf("wss://test")))
+        coEvery { syncEngine.pullEvents("g1", any(), any(), any(), any()) } returns
+            PullResult(0, false) andThen PullResult(0, true)
+        coEvery { syncEngine.pullEvents("g2", any(), any(), any(), any()) } returns
+            PullResult(0, false) andThen PullResult(0, false) andThen PullResult(0, true)
+        start()
+        runCurrent()
+        elapse(30_000)
+        elapse(60_000)
+
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 3) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        elapse(120_000)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 3) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `generations during initial and ongoing catch-up are coalesced but never lost`() = testScope.runTest {
+        val initialPull = CompletableDeferred<Unit>()
+        val recoveryPull = CompletableDeferred<Unit>()
+        var pulls = 0
+        coEvery { syncEngine.pullEvents("g1", any(), any(), any(), any()) } coAnswers {
+            when (++pulls) {
+                1 -> initialPull.await()
+                2 -> recoveryPull.await()
+            }
+            PullResult(0, true)
+        }
+        start()
+        runCurrent()
+        repeat(5) {
+            connectionGeneration.value++
+            runCurrent()
+        }
+        assertEquals(1, pulls)
+        initialPull.complete(Unit)
+        runCurrent()
+        assertEquals(2, pulls)
+
+        repeat(5) {
+            connectionGeneration.value++
+            runCurrent()
+        }
+        assertEquals(2, pulls)
+        recoveryPull.complete(Unit)
+        runCurrent()
+        elapse(29_999)
+        assertEquals(2, pulls)
+        elapse(1)
+        assertEquals(3, pulls)
+        assertEquals(listOf(1, 1, 1), collectorsAtSubscribe)
+        elapse(120_000)
+        assertEquals(3, pulls)
+    }
+
+    @Test
+    fun `a generation arriving during a timer retry remains pending for complete groups too`() = testScope.runTest {
+        groups.value = listOf(group, group("g2", relays = listOf("wss://test")))
+        coEvery { syncEngine.pullEvents("g1", any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        val timerPull = CompletableDeferred<Unit>()
+        var retries = 0
+        coEvery { syncEngine.pullEvents("g1", any(), any(), any(), any()) } coAnswers {
+            if (++retries == 1) timerPull.await()
+            PullResult(0, true)
+        }
+        elapse(30_000)
+        connectionGeneration.value++
+        runCurrent()
+        assertEquals(1, retries)
+        coVerify(exactly = 1) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        timerPull.complete(Unit)
+        runCurrent()
+
+        assertEquals(2, retries)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        elapse(120_000)
+        assertEquals(2, retries)
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `group changes during a pull are reconciled after it without overlapping catch-ups`() = testScope.runTest {
+        val pull = CompletableDeferred<Unit>()
+        coEvery { syncEngine.pullEvents("g1", any(), any(), any(), any()) } coAnswers {
+            pull.await()
+            PullResult(0, true)
+        }
+        start()
+        runCurrent()
+        val joined = group("g2", relays = listOf("wss://test"))
+        groups.value = listOf(joined)
+        runCurrent()
+        coVerify(exactly = 0) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        pull.complete(Unit)
+        runCurrent()
+
+        coVerify(exactly = 1) { nostrClient.unsubscribe("g1") }
+        coVerify(exactly = 1) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        assertEquals(listOf(1, 1), collectorsAtSubscribe)
+    }
+
+    @Test
+    fun `generation flaps coalesce without resetting the incomplete retry budget`() = testScope.runTest {
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        repeat(5) {
+            connectionGeneration.value++
+            runCurrent()
+        }
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(30_000)
+        coVerify(exactly = 3) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(60_000)
+        coVerify(exactly = 4) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(120_000)
+        coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
+
+        repeat(10) {
+            connectionGeneration.value++
+            runCurrent()
+        }
+        elapse(119_999)
+        coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(1)
+        coVerify(exactly = 6) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        repeat(10) {
+            connectionGeneration.value++
+            runCurrent()
+        }
+        elapse(120_000)
+        coVerify(exactly = 7) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(600_000)
+        coVerify(exactly = 7) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `a later generation can recover an exhausted group without restarting its timers`() = testScope.runTest {
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        elapse(30_000)
+        elapse(60_000)
+        elapse(120_000)
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, true)
+        connectionGeneration.value++
+        runCurrent()
+        elapse(120_000)
+
+        coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(600_000)
+        coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `a failed pull is retried on the timer while live subscriptions stay installed`() = testScope.runTest {
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } throws
+            IOException("relay unavailable") andThen PullResult(0, true)
+        start()
+        runCurrent()
+        coVerify(exactly = 1) { nostrClient.subscribe("g1", any(), "alice") }
+        elapse(30_000)
+
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        assertEquals(listOf(1, 1), collectorsAtSubscribe)
+        verify(exactly = 0) { nostrClient.releaseConnection() }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `removing an incomplete group cancels its timer retries`() = testScope.runTest {
+        groups.value = listOf(group, group("g2", relays = listOf("wss://test")))
+        coEvery { syncEngine.pullEvents("g2", any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        groups.value = listOf(group)
+        runCurrent()
+        elapse(600_000)
+
+        coVerify(exactly = 1) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
+        coVerify(exactly = 1) { nostrClient.unsubscribe("g2") }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+    }
+
+    @Test
+    fun `stop cancels pending timer and generation recovery without touching a worker lease`() = testScope.runTest {
+        var references = 1 // An already running worker owns this reference.
+        coEvery { connectionManager.ensureConnected(any()) } coAnswers {
+            references++
+            listOf("wss://test")
+        }
+        every { nostrClient.releaseConnection() } answers {
+            references--
+            Unit
+        }
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        connectionGeneration.value++
+        runCurrent()
+        connectionGeneration.value++
+        runCurrent()
+        assertEquals(2, references)
+        stop()
+        runCurrent()
+        connectionGeneration.value++
+        elapse(600_000)
+
+        assertEquals(1, references)
+        verify(exactly = 1) { nostrClient.releaseConnection() }
+        verify(exactly = 0) { nostrClient.disconnect() }
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
+        assertEquals(0, groups.subscriptionCount.value)
+        assertEquals(0, connectionGeneration.subscriptionCount.value)
+        assertEquals(0, incoming.subscriptionCount.value)
+    }
+
+    @Test
+    fun `stop cancels an in-flight timer retry and releases only the live lease`() = testScope.runTest {
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } returns PullResult(0, false)
+        start()
+        runCurrent()
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any(), any()) } coAnswers { awaitCancellation() }
+        elapse(30_000)
+        stop()
+        runCurrent()
+        elapse(600_000)
+
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        coVerify(exactly = 1) { nostrClient.subscribe("g1", any(), "alice") }
+        verify(exactly = 1) { nostrClient.releaseConnection() }
+        verify(exactly = 0) { nostrClient.disconnect() }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
     }
 
     @Test

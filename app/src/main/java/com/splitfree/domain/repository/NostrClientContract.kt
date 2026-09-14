@@ -19,6 +19,9 @@ interface NostrClientContract {
     /** Reactive connection state; true whenever at least one relay is connected. */
     val connectionState: StateFlow<Boolean>
 
+    /** Monotonic socket-open generation, including recovery masked by another connected relay. */
+    val connectionGeneration: StateFlow<Long>
+
     /** Reactive connection status: connecting, connected, or offline. */
     val connectionStatus: StateFlow<ConnectionStatus>
 
@@ -69,10 +72,17 @@ interface NostrClientContract {
      * @param groupId target group UUID
      * @param since unix timestamp; 0 to fetch all history
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
-     * @return deduplicated verified events plus whether every queried relay finished sending history
+     * @return deduplicated verified events plus whether every requested relay finished sending history
      *   and stayed connected while doing so; see [FetchResult.complete]
      */
     suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): FetchResult
+
+    /** Fetch each requested relay from its own history window; unavailable URLs remain incomplete. */
+    suspend fun fetchEventsByRelay(
+        groupId: String,
+        sinceByRelay: Map<String, Long>,
+        myPubkey: String? = null
+    ): FetchResult
 
     /**
      * Fetch only direct-mode event IDs for self-heal comparison.
