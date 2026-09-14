@@ -400,7 +400,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             live.forEach { it.closeSubscription(subId) }
         }
         val completed = live.filter { relay ->
-            relay.url in eoseFrom && relay.url !in dropped &&
+            relay.url in eoseFrom &&
+                relay.url !in dropped &&
                 relay.connectionEpoch.get() == epochs[relay.url] &&
                 relay.droppedMessages.get() == drops[relay.url] &&
                 relay.state.value == Relay.State.CONNECTED
