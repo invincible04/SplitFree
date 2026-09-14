@@ -106,7 +106,7 @@ class EndToEndExpenseIntegrationTest {
         delay(2000)
 
         // Fetch back
-        val fetched = client.fetchEvents(groupId, 0, pubHex)
+        val fetched = client.fetchEvents(groupId, 0, pubHex).events
         println("Fetched ${fetched.size} events from relays")
 
         if (fetched.isNotEmpty()) {
@@ -153,7 +153,7 @@ class EndToEndExpenseIntegrationTest {
         client.publish(event)
         delay(2000)
 
-        val fetched = client.fetchEvents(groupId, 0, pubHex)
+        val fetched = client.fetchEvents(groupId, 0, pubHex).events
         println("Fetched ${fetched.size} settlement events")
 
         if (fetched.isNotEmpty()) {

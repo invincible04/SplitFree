@@ -199,9 +199,7 @@ class FullRealWorldSimulationIntegrationTest {
         assertTrue("Phone 2 connected", phone2.isConnected)
         println("   ✅ Both phones connected")
 
-        // Subscribe both to group (real-time, like ForegroundSyncService)
-        phone1.startListening()
-        phone2.startListening()
+        // Subscribe both to the group's live stream, as LiveSync does while the app is visible
         phone1.subscribe(groupId, now - 60)
         phone2.subscribe(groupId, now - 60)
         delay(1000)

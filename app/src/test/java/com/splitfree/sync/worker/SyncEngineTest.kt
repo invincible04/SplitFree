@@ -7,6 +7,9 @@ import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.sync.FetchResult
+import com.splitfree.domain.model.sync.FlushResult
+import com.splitfree.domain.model.sync.PullResult
 import com.splitfree.sync.event.EventProcessor
 import com.splitfree.sync.event.IngestionContext
 import io.mockk.coEvery
@@ -14,10 +17,13 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkAll
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -50,18 +56,18 @@ class SyncEngineTest {
     @Test
     fun `pullEvents skips already-known events`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns listOf("e1") // already known
 
-        val count = engine.pullEvents(groupId, 0, groupKey)
-        assertEquals(0, count)
+        val result = engine.pullEvents(groupId, 0, groupKey)
+        assertEquals(PullResult(stored = 0, complete = true), result)
         coVerify(exactly = 0) { eventProcessor.process(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `pullEvents processes new events and returns count`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             com.splitfree.sync.event.EventProcessor.ProcessResult(
@@ -71,8 +77,8 @@ class SyncEngineTest {
                 groupName = "Test"
             )
 
-        val count = engine.pullEvents(groupId, 0, groupKey)
-        assertEquals(1, count)
+        val result = engine.pullEvents(groupId, 0, groupKey)
+        assertEquals(PullResult(stored = 1, complete = true), result)
         coVerify { groupRepo.updateLastSync(groupId, any()) }
     }
 
@@ -107,7 +113,8 @@ class SyncEngineTest {
             content = "x",
             sig = "s"
         )
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(forOther, forThis, untagged)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns
+            FetchResult(listOf(forOther, forThis, untagged), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
@@ -121,12 +128,53 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `pullEvents does not update lastSync when no new events`() = runBlocking {
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns emptyList()
+    fun `pullEvents advances the cursor after a complete fetch even with nothing new`() = runBlocking {
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(emptyList(), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
 
-        engine.pullEvents(groupId, 0, groupKey)
+        val result = engine.pullEvents(groupId, 0, groupKey)
+
+        assertEquals(PullResult(stored = 0, complete = true), result)
+        coVerify(exactly = 1) { groupRepo.updateLastSync(groupId, any()) }
+    }
+
+    @Test
+    fun `pullEvents leaves the cursor alone after an incomplete fetch even when events were stored`() = runBlocking {
+        val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = false)
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
+
+        val result = engine.pullEvents(groupId, 0, groupKey)
+
+        assertEquals(PullResult(stored = 1, complete = false), result)
         coVerify(exactly = 0) { groupRepo.updateLastSync(any(), any()) }
+    }
+
+    @Test
+    fun `pullEvents writes the time the fetch began not the time processing ended`() = runBlocking {
+        val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        var fetchEnteredAt = 0L
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } coAnswers {
+            // Hold the fetch until the wall-clock second rolls over (at most 1s): a "now after processing"
+            // cursor is then >= fetchEnteredAt + 1 while the fetch-start cursor is <= fetchEnteredAt.
+            fetchEnteredAt = System.currentTimeMillis() / 1000
+            while (System.currentTimeMillis() / 1000 == fetchEnteredAt) Thread.sleep(5)
+            FetchResult(listOf(event), complete = true)
+        }
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = true, eventType = "expense", authorHex = myPub, groupName = "Test")
+        val cursor = slot<Long>()
+        coEvery { groupRepo.updateLastSync(groupId, capture(cursor)) } returns Unit
+
+        engine.pullEvents(groupId, 0, groupKey)
+
+        assertTrue(
+            "cursor ${cursor.captured} must not be later than fetch entry $fetchEnteredAt",
+            cursor.captured <= fetchEnteredAt
+        )
     }
 
     @Test
@@ -134,7 +182,8 @@ class SyncEngineTest {
         // Relays hand back newest-first; key_rotation must land in epoch order and group_meta is LWW.
         val newer = NostrEvent(id = "e2", pubkey = myPub, createdAt = 300, kind = 30078, content = "x", sig = "s")
         val older = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(newer, older)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns
+            FetchResult(listOf(newer, older), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         val processed = mutableListOf<String>()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } answers {
@@ -150,7 +199,7 @@ class SyncEngineTest {
     @Test
     fun `pullEvents ingests a live pull in LIVE context`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = false)
@@ -165,7 +214,7 @@ class SyncEngineTest {
     @Test
     fun `pullEvents ingests a lenient full pull in RECONCILIATION context`() = runBlocking {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns listOf(event)
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(listOf(event), complete = true)
         coEvery { eventDao.getEventIds(groupId) } returns emptyList()
         coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
             EventProcessor.ProcessResult(stored = false)
@@ -183,8 +232,8 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns true
 
-        val count = engine.flushOutbox()
-        assertEquals(1, count)
+        val result = engine.flushOutbox()
+        assertEquals(FlushResult(published = 1, failed = 0), result)
         coVerify { outboxDao.delete("e1") }
     }
 
@@ -194,8 +243,8 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns false
 
-        val count = engine.flushOutbox()
-        assertEquals(0, count)
+        val result = engine.flushOutbox()
+        assertEquals(FlushResult(published = 0, failed = 1), result)
         coVerify { outboxDao.incrementRetry("e1", any()) }
     }
 
@@ -214,8 +263,8 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns false
 
-        val count = engine.flushOutbox()
-        assertEquals(0, count)
+        val result = engine.flushOutbox()
+        assertEquals(FlushResult(published = 0, failed = 1), result)
         coVerify { outboxDao.incrementRetry("e1", any()) }
         coVerify(exactly = 0) { outboxDao.delete("e1") }
     }
@@ -240,9 +289,9 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns true
 
-        val count = engine.flushOutbox()
+        val result = engine.flushOutbox()
 
-        assertEquals(0, count)
+        assertEquals(FlushResult(published = 0, failed = 0), result)
         coVerify(exactly = 0) { nostrClient.publishJson(any()) }
         coVerify(exactly = 0) { outboxDao.delete(any()) }
         coVerify(exactly = 0) { outboxDao.incrementRetry(any(), any()) }
@@ -256,9 +305,9 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns true
 
-        val count = engine.flushOutbox()
+        val result = engine.flushOutbox()
 
-        assertEquals(1, count)
+        assertEquals(FlushResult(published = 1, failed = 0), result)
         coVerify(exactly = 1) { nostrClient.publishJson(any()) }
         coVerify { outboxDao.delete("e1") }
     }
@@ -287,9 +336,9 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns true
 
-        val count = engine.flushOutbox()
+        val result = engine.flushOutbox()
 
-        assertEquals(3, count)
+        assertEquals(FlushResult(published = 3, failed = 0), result)
         coVerify { outboxDao.delete("meta") }
         coVerify { outboxDao.delete("rot") }
         coVerify { outboxDao.delete("rev") }
@@ -313,13 +362,44 @@ class SyncEngineTest {
         coEvery { outboxDao.getAll() } returns pending
         coEvery { nostrClient.publishJson(any()) } returns true
 
-        assertEquals(1, engine.flushOutbox())
+        assertEquals(FlushResult(published = 1, failed = 0), engine.flushOutbox())
     }
 
     @Test
-    fun `flushOutbox returns 0 when outbox is empty`() = runBlocking {
+    fun `flushOutbox reports nothing when outbox is empty`() = runBlocking {
         coEvery { outboxDao.getAll() } returns emptyList()
-        assertEquals(0, engine.flushOutbox())
+        assertEquals(FlushResult(published = 0, failed = 0), engine.flushOutbox())
+    }
+
+    @Test
+    fun `flushOutbox counts published and failed rows of one pass separately`() = runBlocking {
+        val pending = listOf(
+            OutboxEntity("ok", """{"id":"ok"}""", 100),
+            OutboxEntity("bad", """{"id":"bad"}""", 100),
+            stuckRow("backed-off", lastRetryAt = System.currentTimeMillis() / 1000 - 60, eventType = "expense")
+        )
+        coEvery { outboxDao.getAll() } returns pending
+        coEvery { nostrClient.publishJson("""{"id":"ok"}""") } returns true
+        coEvery { nostrClient.publishJson("""{"id":"bad"}""") } returns false
+
+        assertEquals(FlushResult(published = 1, failed = 1), engine.flushOutbox())
+    }
+
+    @Test
+    fun `hasDueOutbox is false for an empty or fully backed-off outbox and true once a row is due`() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        coEvery { outboxDao.getAll() } returns emptyList()
+        assertFalse(engine.hasDueOutbox())
+
+        coEvery { outboxDao.getAll() } returns listOf(stuckRow("e1", lastRetryAt = now - 60, eventType = "expense"))
+        assertFalse(engine.hasDueOutbox())
+
+        coEvery { outboxDao.getAll() } returns
+            listOf(
+                stuckRow("e1", lastRetryAt = now - 60, eventType = "expense"),
+                OutboxEntity("e2", """{"id":"e2"}""", 100)
+            )
+        assertTrue(engine.hasDueOutbox())
     }
 
     private fun stuckRow(id: String, lastRetryAt: Long?, eventType: String) = OutboxEntity(
@@ -333,7 +413,7 @@ class SyncEngineTest {
 
     @Test
     fun `empty relay pull still recovers durable pending work`() = runBlocking {
-        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns emptyList()
+        coEvery { nostrClient.fetchEvents(groupId, 0, myPub) } returns FetchResult(emptyList(), complete = true)
         engine.pullEvents(groupId, 0, groupKey)
         coVerify(atLeast = 2) { eventProcessor.retryDeferred(groupId) }
     }

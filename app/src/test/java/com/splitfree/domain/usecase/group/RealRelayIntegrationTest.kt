@@ -259,7 +259,7 @@ class RealRelayIntegrationTest {
         val joinedGroup = joinUseCase(inviteLink)
 
         // ========== PHONE 2: Verify relay round-trip for group_meta ==========
-        val fetchedEvents = phone2Client.fetchEvents(groupId, 0, phone2PubKey)
+        val fetchedEvents = phone2Client.fetchEvents(groupId, 0, phone2PubKey).events
         println("Phone 2 fetched ${fetchedEvents.size} events from relays")
 
         if (fetchedEvents.isNotEmpty()) {

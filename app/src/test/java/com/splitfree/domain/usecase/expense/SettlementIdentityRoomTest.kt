@@ -91,6 +91,7 @@ class SettlementIdentityRoomTest {
             db.outboxDao(),
             db.deliveryDao(),
             mockk<EventThrottler>(relaxed = true),
+            mockk(relaxed = true),
             giftWrap,
             groupRepo,
             identity.contract,

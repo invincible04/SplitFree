@@ -87,8 +87,8 @@ data class GroupsListUiState(
  * which currency the user is looking at across process death.
  *
  * The relay status is mirrored as reported, with one exception: once [CONNECTING_GRACE_MS] have passed since
- * this ViewModel was created, a status that is still connecting is presented as offline, so a sync service that
- * never started cannot leave the screen saying "Connecting" forever.
+ * this ViewModel was created, a status that is still connecting is presented as offline, so a live session that
+ * has not connected yet cannot leave the screen saying "Connecting" forever.
  *
  * Balances are never partial: a group whose balances failed stays in the list marked unavailable, a failed
  * observation keeps the last list with every group unavailable, and [retryBalances] recomputes and, if the

@@ -66,7 +66,6 @@ We have no way to associate your keypair with your real-world identity.
 | Nearby Wi-Fi devices (Android 13+), Wi-Fi state | Nearby Connections Wi-Fi transport. Declared as never used for location |
 | Location (Android 12L and earlier) | Android requires it for Bluetooth and Wi-Fi discovery on those versions. SplitFree never reads or stores your location |
 | Local network (API 37 / Android 17 and later) | Nearby Connections Wi-Fi LAN transport |
-| Foreground service (data sync) | Keep relay connections alive for real-time sync |
 | Notifications (Android 13+) | Notify you of new expenses and settlements |
 | Receive boot completed | Reschedule background relay sync after a reboot |
 

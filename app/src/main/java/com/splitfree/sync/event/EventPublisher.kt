@@ -20,12 +20,14 @@ import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.OutboxFullException
+import com.splitfree.sync.worker.OutboxDrainScheduler
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Persists signed events and their complete delivery batch before attempting relay publication.
+ * Persists signed events and their complete delivery batch before attempting relay publication;
+ * see [dispatch] for how a committed batch reaches the relays.
  *
  * Gift-wrapped deliveries are additionally retained in the delivery store so a member met over a
  * nearby session can carry another member's envelope when the author is offline. The stored envelope
@@ -39,6 +41,7 @@ constructor(
     private val outboxDao: OutboxDao,
     private val deliveryDao: DeliveryDao,
     private val throttler: EventThrottler,
+    private val drainScheduler: OutboxDrainScheduler,
     private val giftWrap: GiftWrapService,
     private val groupRepo: GroupRepositoryContract,
     private val identity: IdentityContract,
@@ -129,7 +132,9 @@ constructor(
         expenseUuid: String?
     ) {
         val epoch = groupRepo.getById(groupId)?.keyEpoch ?: 0
-        commit(eventEntity(event, groupId, encrypted, eventType, expenseUuid, epoch), listOf(event))
+        if (commit(eventEntity(event, groupId, encrypted, eventType, expenseUuid, epoch), listOf(event))) {
+            requestDurableDrain()
+        }
     }
 
     private fun prepareDeliveries(
@@ -250,7 +255,13 @@ constructor(
         keyEpoch = epoch
     )
 
+    /**
+     * Post-commit delivery. The throttler is the immediate attempt; the drain request is what still
+     * attempts the rows with a network if this process dies first. Neither can fail the save: the
+     * drain retries a bounded number of times and the periodic sync covers whatever is left.
+     */
     private fun dispatch(deliveries: List<NostrEvent>) {
+        if (deliveries.isEmpty()) return
         deliveries.forEach { event ->
             try {
                 throttler.enqueue(event)
@@ -258,6 +269,15 @@ constructor(
                 // The outbox owns recovery; an opportunistic wake-up cannot undo a committed save.
                 Log.w(TAG, "Immediate dispatch unavailable; delivery remains queued: ${e.javaClass.simpleName}")
             }
+        }
+        requestDurableDrain()
+    }
+
+    private fun requestDurableDrain() {
+        try {
+            drainScheduler.requestDrain()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not schedule outbox drain; rows remain queued: ${e.javaClass.simpleName}")
         }
     }
 

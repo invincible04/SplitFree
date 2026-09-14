@@ -3,6 +3,7 @@ package com.splitfree.sync.worker
 import android.content.Context
 import android.os.BatteryManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,12 +37,14 @@ constructor(@ApplicationContext private val context: Context) {
         }
     }
 
-    /** @return periodic sync interval in hours for the current power mode */
-    fun syncIntervalHours(): Long = when (currentMode()) {
-        PowerMode.PERFORMANCE -> 1
-        PowerMode.BALANCED -> 6
-        PowerMode.POWER_SAVER -> 12
-        PowerMode.ULTRA_LOW_POWER -> 24
+    /**
+     * @return periodic background sync interval for the current power mode. 15 minutes is
+     *   WorkManager's minimum period; Android may still defer or batch the run.
+     */
+    fun syncInterval(): Duration = when (currentMode()) {
+        PowerMode.PERFORMANCE, PowerMode.BALANCED -> Duration.ofMinutes(15)
+        PowerMode.POWER_SAVER -> Duration.ofMinutes(60)
+        PowerMode.ULTRA_LOW_POWER -> Duration.ofHours(6)
     }
 
     /** @return max concurrent relay WebSocket connections for the current power mode */

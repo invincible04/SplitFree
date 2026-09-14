@@ -34,7 +34,7 @@ import org.junit.Test
 /**
  * Real relay integration test: two phones create expenses and verify cross-phone sync.
  *
- * Uses real-time subscriptions (like ForegroundSyncService) instead of fetchEvents
+ * Uses live subscriptions (as LiveSync does while the app is visible) instead of fetchEvents
  * to match the actual app behavior and avoid SharedFlow race conditions.
  *
  * Real: secp256k1 keys, NIP-44 encryption, Schnorr signatures, WebSocket relay connections
@@ -154,10 +154,9 @@ class RealRelayExpenseFlowIntegrationTest {
         assertTrue("Phone 2 connected", phone2Client.isConnected)
         println("Both phones connected to ${relays.size} relays")
 
-        // ========== Subscribe BOTH phones to the group (like ForegroundSyncService) ==========
-        // This is the real-time path the app uses: subscribe first, then events arrive via incomingEvents
-        phone1Client.startListening()
-        phone2Client.startListening()
+        // ========== Subscribe BOTH phones to the group (the live path LiveSync uses) ==========
+        // Events then arrive via incomingEvents; each phone below attaches its collector before the
+        // other publishes, so nothing falls into the no-replay gap.
         phone1Client.subscribe(groupId, now - 60)
         phone2Client.subscribe(groupId, now - 60)
         delay(2000) // let subscriptions settle

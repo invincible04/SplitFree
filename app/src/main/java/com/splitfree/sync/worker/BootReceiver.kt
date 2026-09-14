@@ -22,7 +22,7 @@ class BootReceiver : BroadcastReceiver() {
             if (!hasIdentity) return
 
             try {
-                // Android 15 prohibits starting a dataSync foreground service from boot.
+                // Nothing is visible after boot, so the live session cannot run; a one-time worker catches up.
                 SyncScheduler.scheduleImmediateSync(context)
             } catch (e: Exception) {
                 Log.w("BootReceiver", "Could not schedule boot sync: ${e.message}")

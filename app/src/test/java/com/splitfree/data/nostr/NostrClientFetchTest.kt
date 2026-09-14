@@ -4,6 +4,7 @@ import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
 import com.splitfree.data.nostr.relay.Relay
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.model.sync.FetchResult
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -15,19 +16,23 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
- * Regression tests for the [NostrClient.fetchEvents] collector lifecycle.
+ * Regression tests for the [NostrClient.fetchEvents] collector lifecycle and completeness flag.
  *
  * The collectors append to the list that is handed back to the caller, so they must not outlive
  * the fetch. A collector still running after the return is what let the caller's
@@ -60,15 +65,17 @@ class NostrClientFetchTest {
         return e
     }
 
-    /** A relay whose message flow is driven by the test. */
-    private class FakeRelay(val url: String) {
+    /** A relay whose message flow and connection state are driven by the test. */
+    private class FakeRelay(val url: String, initialState: Relay.State = Relay.State.CONNECTED) {
         val messages = MutableSharedFlow<RelayMessage>(extraBufferCapacity = 64)
+        val state = MutableStateFlow(initialState)
         val relay: Relay = mockk(relaxed = true)
         var subId: String? = null
         val closed = mutableListOf<String>()
 
         init {
             every { relay.url } returns url
+            every { relay.state } returns state
             every { relay.messages } returns messages
             every { relay.subscribe(any(), any()) } answers { subId = firstArg() }
             every { relay.closeSubscription(any()) } answers { closed += firstArg<String>() }
@@ -100,13 +107,14 @@ class NostrClientFetchTest {
         fake.messages.emit(RelayMessage.EventMsg(subId, event("e1")))
         fake.messages.emit(RelayMessage.EoseMsg(subId))
         val result = fetch.await()
-        assertEquals(1, result.size)
+        assertEquals(1, result.events.size)
+        assertTrue(result.complete)
 
         repeat(20) { fake.messages.emit(RelayMessage.EventMsg(subId, event("late-$it"))) }
         runCurrent()
 
-        assertEquals(1, result.size)
-        for (e in result) assertEquals("e1", e.id)
+        assertEquals(1, result.events.size)
+        for (e in result.events) assertEquals("e1", e.id)
     }
 
     @Test
@@ -161,7 +169,8 @@ class NostrClientFetchTest {
         b.messages.emit(RelayMessage.EoseMsg(subId))
         val result = fetch.await()
 
-        assertEquals(listOf("from-b"), result.map { it.id })
+        assertEquals(listOf("from-b"), result.events.map { it.id })
+        assertTrue(result.complete)
     }
 
     @Test
@@ -181,10 +190,130 @@ class NostrClientFetchTest {
     }
 
     @Test
-    fun `fetch with no relays returns empty without subscribing`() = runTest(dispatcher) {
+    fun `fetch with no relays is empty and incomplete without subscribing`() = runTest(dispatcher) {
         val client = NostrClient(CoroutineScope(SupervisorJob() + dispatcher))
-        assertEquals(emptyList<NostrEvent>(), client.fetchEvents("group-1", 0, null))
+        assertEquals(FetchResult(emptyList(), complete = false), client.fetchEvents("group-1", 0, null))
     }
+
+    @Test
+    fun `fetch with only disconnected relays is empty and incomplete without subscribing or waiting`() =
+        runTest(dispatcher) {
+            val down = FakeRelay("wss://down", Relay.State.DISCONNECTED)
+            val alsoDown = FakeRelay("wss://also-down", Relay.State.DISCONNECTED)
+            val client = clientWith(down, alsoDown)
+
+            val result = client.fetchEvents("group-1", 0, null)
+
+            assertEquals(FetchResult(emptyList(), complete = false), result)
+            assertEquals("a relay that is not handshaking is not waited for", 0L, currentTime)
+            verify(exactly = 0) { down.relay.subscribe(any(), any()) }
+            verify(exactly = 0) { alsoDown.relay.subscribe(any(), any()) }
+            assertEquals(emptyList<String>(), down.closed + alsoDown.closed)
+        }
+
+    @Test
+    fun `a relay stuck connecting is waited for until the settle window ends then left out`() = runTest(dispatcher) {
+        val stuck = FakeRelay("wss://stuck", Relay.State.CONNECTING)
+        val client = clientWith(stuck)
+
+        val result = client.fetchEvents("group-1", 0, null)
+
+        assertEquals(FetchResult(emptyList(), complete = false), result)
+        assertEquals(NostrClient.SETTLE_TIMEOUT_MS, currentTime)
+        verify(exactly = 0) { stuck.relay.subscribe(any(), any()) }
+        assertEquals(emptyList<String>(), stuck.closed)
+    }
+
+    @Test
+    fun `a relay that finishes its handshake inside the settle window is queried and gates completeness`() =
+        runTest(dispatcher) {
+            val live = FakeRelay("wss://live")
+            val primary = FakeRelay("wss://primary", Relay.State.CONNECTING)
+            val client = clientWith(live, primary)
+
+            val fetch = async { client.fetchEvents("group-1", 0, null) }
+            advanceTimeBy(500)
+            primary.state.value = Relay.State.CONNECTED
+            runCurrent()
+            val subId = requireNotNull(primary.subId) { "primary must be subscribed once connected" }
+            assertEquals(subId, live.subId)
+
+            live.messages.emit(RelayMessage.EoseMsg(subId))
+            runCurrent()
+            assertTrue("fetch must still wait for the primary's EOSE", fetch.isActive)
+            primary.messages.emit(RelayMessage.EventMsg(subId, event("from-primary")))
+            primary.messages.emit(RelayMessage.EoseMsg(subId))
+            val result = fetch.await()
+
+            assertEquals(listOf("from-primary"), result.events.map { it.id })
+            assertTrue(result.complete)
+        }
+
+    @Test
+    fun `a relay that drops mid-fetch poisons completeness but its events are kept`() = runTest(dispatcher) {
+        val a = FakeRelay("wss://a")
+        val b = FakeRelay("wss://b")
+        val client = clientWith(a, b)
+
+        val fetch = async { client.fetchEvents("group-1", 0, null) }
+        runCurrent()
+        val subId = requireNotNull(a.subId)
+        a.messages.emit(RelayMessage.EventMsg(subId, event("from-a")))
+        a.messages.emit(RelayMessage.EoseMsg(subId))
+        b.messages.emit(RelayMessage.EventMsg(subId, event("from-b")))
+        b.state.value = Relay.State.DISCONNECTED
+        runCurrent()
+        b.state.value = Relay.State.CONNECTED
+        b.messages.emit(RelayMessage.EoseMsg(subId))
+        val result = fetch.await()
+
+        assertEquals(setOf("from-a", "from-b"), result.events.map { it.id }.toSet())
+        assertFalse("a relay that dropped during the fetch cannot certify its history", result.complete)
+    }
+
+    @Test
+    fun `only connected relays are subscribed and only they gate the EOSE barrier`() = runTest(dispatcher) {
+        val live = FakeRelay("wss://live")
+        val down = FakeRelay("wss://down", Relay.State.DISCONNECTED)
+        val client = clientWith(live, down)
+
+        val fetch = async { client.fetchEvents("group-1", 0, null) }
+        runCurrent()
+        val subId = requireNotNull(live.subId)
+        verify(exactly = 0) { down.relay.subscribe(any(), any()) }
+
+        live.messages.emit(RelayMessage.EventMsg(subId, event("e1")))
+        live.messages.emit(RelayMessage.EoseMsg(subId))
+        val result = fetch.await()
+
+        assertEquals(listOf("e1"), result.events.map { it.id })
+        assertTrue("EOSE from every connected relay completes the fetch", result.complete)
+        assertEquals(listOf(subId), live.closed)
+        assertEquals(emptyList<String>(), down.closed)
+    }
+
+    @Test
+    fun `EOSE timeout returns what was collected flagged incomplete and names the silent relay`() =
+        runTest(dispatcher) {
+            val a = FakeRelay("wss://a")
+            val silent = FakeRelay("wss://silent")
+            val client = clientWith(a, silent)
+
+            val fetch = async { client.fetchEvents("group-1", 0, null) }
+            runCurrent()
+            val subId = requireNotNull(a.subId)
+            a.messages.emit(RelayMessage.EventMsg(subId, event("e1")))
+            a.messages.emit(RelayMessage.EoseMsg(subId))
+            runCurrent()
+            assertTrue("fetch must still be waiting for the silent relay", fetch.isActive)
+
+            val result = fetch.await()
+
+            assertEquals(listOf("e1"), result.events.map { it.id })
+            assertFalse("a relay that never sent EOSE makes the fetch incomplete", result.complete)
+            assertEquals(listOf(subId), silent.closed)
+            verify { android.util.Log.w("NostrClient", match<String> { "wss://silent" in it && "wss://a" !in it }) }
+        }
 
     @Test
     fun `a relay added after the snapshot is neither subscribed nor closed`() = runTest(dispatcher) {
@@ -202,7 +331,7 @@ class NostrClientFetchTest {
         a.messages.emit(RelayMessage.EoseMsg(subId))
         val result = withTimeoutOrNull(30_000) { fetch.await() }
 
-        assertEquals("fetch must complete on its own snapshot", emptyList<NostrEvent>(), result)
+        assertEquals("fetch must complete on its own snapshot", FetchResult(emptyList(), complete = true), result)
         verify(exactly = 0) { late.relay.subscribe(any(), any<List<NostrFilter>>()) }
         assertEquals(emptyList<String>(), late.closed)
     }

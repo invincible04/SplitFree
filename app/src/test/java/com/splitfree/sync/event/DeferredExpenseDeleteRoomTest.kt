@@ -566,6 +566,7 @@ class DeferredExpenseDeleteRoomTest {
             db.outboxDao(),
             db.deliveryDao(),
             mockk(relaxed = true),
+            mockk(relaxed = true),
             GiftWrapService(alice.contract, settings),
             groups,
             alice.contract,

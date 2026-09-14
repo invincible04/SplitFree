@@ -193,7 +193,7 @@ class EndToEndJoinFlowIntegrationTest {
         phone2Client.authSigner = { c, r -> phone2Signer.createAuthEvent(c, r) }
         phone2Client.connect(relays)
         delay(3000)
-        val fetched = phone2Client.fetchEvents(groupId, 0, phone2PubKey)
+        val fetched = phone2Client.fetchEvents(groupId, 0, phone2PubKey).events
         println("Phone 2 fetched ${fetched.size} events from relays")
 
         if (fetched.isNotEmpty()) {

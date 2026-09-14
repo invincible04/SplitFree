@@ -59,7 +59,6 @@ import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.settings.UserPreferences
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.usecase.group.JoinGroupUseCase
-import com.splitfree.sync.worker.ForegroundSyncService
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.SfListCard
 import com.splitfree.ui.components.SfPrimaryButton
@@ -79,7 +78,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Main activity. Handles deep link parsing for invite links and starts the foreground sync service.
+ * Main activity. Handles deep link parsing for invite links and asks for notification permission
+ * once an identity exists; relay sync is owned by `LiveSync`, bound to the process lifecycle.
  *
  * Declared `singleTask` so an external `ACTION_VIEW` invite arrives through [onNewIntent] on the
  * existing instance instead of stacking a second copy of the app.
@@ -118,12 +118,12 @@ class MainActivity : ComponentActivity() {
             savedInstanceState.getString(STATE_PENDING_INVITE)?.let(::offerInvite)
         }
 
-        // Start only while visible; repeat when returning after Android stops a timed-out service.
+        // The permission prompt must be launched from a started activity, so the identity wait only
+        // runs while STARTED; a stop cancels it and the next start re-arms it.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 // Suspends until onboarding generates or imports a key; returns at once if one exists.
                 identity.observeHasIdentity().first { it }
-                startSyncService()
                 maybeRequestNotificationPermission()
             }
         }
@@ -183,14 +183,6 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
         // Compose state on the Activity does not survive recreation; keep the open prompt alive.
         outState.putString(STATE_PENDING_INVITE, pendingInvite?.link)
-    }
-
-    private fun startSyncService() {
-        try {
-            startForegroundService(Intent(this, ForegroundSyncService::class.java))
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not start sync service: ${e.message}")
-        }
     }
 
     /**

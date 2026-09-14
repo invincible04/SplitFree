@@ -6,6 +6,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.model.sync.PullResult
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -176,7 +177,8 @@ class JoinGroupUseCaseTest {
     @Test
     fun `invoke runs initial sync via syncEngine with the invite key`() = runBlocking {
         every { nostrClient.isConnected } returns false
-        coEvery { syncEngine.pullEvents(any(), any(), any(), lenientTimestamp = true) } returns 3
+        coEvery { syncEngine.pullEvents(any(), any(), any(), lenientTimestamp = true) } returns
+            PullResult(stored = 3, complete = true)
 
         useCase(buildInviteUri())
         coVerify { syncEngine.pullEvents(groupId, 0, groupKey, lenientTimestamp = true) }

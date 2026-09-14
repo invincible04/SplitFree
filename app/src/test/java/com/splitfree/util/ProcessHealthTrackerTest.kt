@@ -99,13 +99,13 @@ class ProcessHealthTrackerTest {
 
     @Test
     fun `next launch does not erase the operation preceding a crash`() {
-        ProcessHealthTracker.heartbeat(context, "fg_connected")
+        ProcessHealthTracker.heartbeat(context, "live_connected")
         ProcessHealthTracker.recordCrash(context, Thread("sync-worker"), IllegalStateException("connection failed"))
         ProcessHealthTracker.heartbeat(context, "app_on_create")
 
         val report = ProcessHealthTracker.buildReport(context)
         assertTrue(report.contains("Source: app_on_create"))
-        assertTrue(report.contains("Heartbeat before crash: fg_connected"))
+        assertTrue(report.contains("Heartbeat before crash: live_connected"))
         assertTrue(report.contains("Thread: sync-worker"))
         assertTrue(report.contains("connection failed"))
         assertTrue(report.contains("Version at crash: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))

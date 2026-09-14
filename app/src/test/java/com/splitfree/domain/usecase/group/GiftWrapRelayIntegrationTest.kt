@@ -204,8 +204,6 @@ class GiftWrapRelayIntegrationTest {
 
         // ── TEST 3: Direct (non-gift-wrap) expense sync still works ──
         println("\n── TEST 3: Direct expense sync (gift wrap disabled path) ──")
-        phone1.startListening()
-        phone2.startListening()
         phone1.subscribe(groupId, now - 60)
         phone2.subscribe(groupId, now - 60)
         delay(2000)

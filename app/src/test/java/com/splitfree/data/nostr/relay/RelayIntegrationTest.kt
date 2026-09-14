@@ -214,7 +214,7 @@ class RelayIntegrationTest {
             assertTrue(client.isConnected)
 
             // Fetch recent events for a random group ID (will return empty but exercises the path)
-            val events = client.fetchEvents("nonexistent-group-${System.nanoTime()}", 0, pubKey)
+            val events = client.fetchEvents("nonexistent-group-${System.nanoTime()}", 0, pubKey).events
             // Should return empty list (no events for random group), not throw
             assertNotNull(events)
 

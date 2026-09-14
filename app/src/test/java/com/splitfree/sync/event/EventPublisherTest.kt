@@ -28,6 +28,7 @@ import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
 import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
+import com.splitfree.sync.worker.OutboxDrainScheduler
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -58,6 +59,7 @@ class EventPublisherTest {
     private lateinit var groupRepo: GroupRepository
     private lateinit var publisher: EventPublisher
     private val throttler = mockk<EventThrottler>(relaxed = true)
+    private val drainScheduler = mockk<OutboxDrainScheduler>(relaxed = true)
     private val giftWrap = mockk<GiftWrapService>()
     private val identity = mockk<IdentityManager>()
     private val keyStore = mockk<SecureStorage>(relaxed = true)
@@ -116,6 +118,7 @@ class EventPublisherTest {
                 db.outboxDao(),
                 db.deliveryDao(),
                 throttler,
+                drainScheduler,
                 giftWrap,
                 groupRepo,
                 identity,
@@ -173,6 +176,7 @@ class EventPublisherTest {
         assertTrue(db.outboxDao().getAll().all { it.eventType == "expense" })
         verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), myPub) }
         verify(exactly = 2) { throttler.enqueue(any()) }
+        verify(exactly = 1) { drainScheduler.requestDrain() }
     }
 
     @Test
@@ -184,12 +188,37 @@ class EventPublisherTest {
     }
 
     @Test
-    fun `publishDirect skips wrapping and saveAndQueue skips throttling`() = runBlocking {
-        publisher.publishDirect(event, "g1", "enc", "expense")
+    fun `publishDirect skips wrapping and saveAndQueue skips throttling but both request a durable drain`() =
+        runBlocking {
+            publisher.publishDirect(event, "g1", "enc", "expense")
+            publisher.saveAndQueue(event.copy(id = "snapshot"), "g1", "enc", "snapshot")
+            assertEquals(2, db.outboxDao().count())
+            verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), any()) }
+            verify(exactly = 1) { throttler.enqueue(any()) }
+            verify(exactly = 2) { drainScheduler.requestDrain() }
+        }
+
+    @Test
+    fun `a save that commits nothing does not request a drain`() = runBlocking {
+        assertTrue(publisher.publishExpense(event, group, "operation"))
+        assertFalse(publisher.publishExpense(event.copy(id = "retry-event"), group, "operation"))
         publisher.saveAndQueue(event.copy(id = "snapshot"), "g1", "enc", "snapshot")
-        assertEquals(2, db.outboxDao().count())
-        verify(exactly = 0) { giftWrap.wrapIfEnabled(any(), any()) }
-        verify(exactly = 1) { throttler.enqueue(any()) }
+        publisher.saveAndQueue(event.copy(id = "snapshot"), "g1", "enc", "snapshot")
+
+        verify(exactly = 2) { drainScheduler.requestDrain() }
+    }
+
+    @Test
+    fun `a failing drain scheduler does not undo or fail a committed save`() = runBlocking {
+        every { drainScheduler.requestDrain() } throws IllegalStateException("WorkManager is not initialized")
+
+        assertTrue(publisher.publishExpense(event, group, "operation"))
+        publisher.saveAndQueue(event.copy(id = "snapshot"), "g1", "enc", "snapshot")
+
+        assertNotNull(db.eventDao().getEvent(event.id))
+        assertNotNull(db.eventDao().getEvent("snapshot"))
+        assertEquals(3, db.outboxDao().count())
+        verify(exactly = 2) { throttler.enqueue(any()) }
     }
 
     @Test
@@ -867,6 +896,7 @@ class EventPublisherTest {
         assertEquals(0, db.eventDao().getEventCount("g1"))
         assertEquals(0, db.outboxDao().count())
         verify(exactly = 0) { throttler.enqueue(any()) }
+        verify(exactly = 0) { drainScheduler.requestDrain() }
     }
 
     private suspend inline fun <reified T : Throwable> expectFailure(block: suspend () -> Unit) {

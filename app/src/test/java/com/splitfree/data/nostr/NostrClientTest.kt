@@ -68,12 +68,6 @@ class NostrClientTest {
     }
 
     @Test
-    fun `startListening is a no-op`() {
-        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
-        client.startListening() // should not throw
-    }
-
-    @Test
     fun `subscribe uses wider since window for gift wrap p-tag filter`() = runBlocking {
         val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
         val relay = mockk<Relay>(relaxed = true)

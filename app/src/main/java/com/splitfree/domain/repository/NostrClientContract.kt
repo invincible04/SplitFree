@@ -2,6 +2,7 @@ package com.splitfree.domain.repository
 
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.sync.ConnectionStatus
+import com.splitfree.domain.model.sync.FetchResult
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -61,15 +62,17 @@ interface NostrClientContract {
     suspend fun publishJson(eventJson: String): Boolean
 
     /**
-     * Fetch events matching a group filter. Subscribes temporarily, collects until
-     * EOSE from all relays (or timeout), then closes the subscription.
+     * Fetch events matching a group filter. Subscribes temporarily on the relays that are connected
+     * when the request is sent, collects until each of them answers EOSE (or the timeout elapses),
+     * then closes the subscription.
      *
      * @param groupId target group UUID
      * @param since unix timestamp; 0 to fetch all history
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
-     * @return deduplicated list of verified events
+     * @return deduplicated verified events plus whether every queried relay finished sending history
+     *   and stayed connected while doing so; see [FetchResult.complete]
      */
-    suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): List<NostrEvent>
+    suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): FetchResult
 
     /**
      * Fetch only direct-mode event IDs for self-heal comparison.
@@ -98,7 +101,4 @@ interface NostrClientContract {
 
     /** Close all active subscriptions. */
     suspend fun unsubscribeAll()
-
-    /** No-op; messages flow automatically via [incomingEvents]. */
-    fun startListening()
 }

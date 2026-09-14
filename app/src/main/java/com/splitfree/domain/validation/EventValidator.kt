@@ -55,7 +55,7 @@ constructor() {
 
     /**
      * Lenient timestamp validation: only rejects future (>1h) events, allows any age.
-     * Used for initial sync and full midnight sync where historical events are expected.
+     * Used for initial sync and the daily full sync where historical events are expected.
      *
      * @param createdAtSecs event's `created_at` in unix seconds
      * @return true if not too far in the future

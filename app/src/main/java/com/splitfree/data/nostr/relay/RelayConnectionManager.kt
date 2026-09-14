@@ -2,11 +2,13 @@ package com.splitfree.data.nostr.relay
 
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.EventSigner
+import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -24,11 +26,16 @@ constructor(
     private val signer: EventSigner
 ) {
     /**
-     * Connect [NostrClient] to the resolved relay set if not already connected.
-     * Waits up to [CONNECT_TIMEOUT_MS] for at least one relay to reach CONNECTED state.
+     * Connect [NostrClient] to the resolved relay set if not already connected, waiting up to
+     * [CONNECT_TIMEOUT_MS] for at least one relay to reach CONNECTED. The caller holds exactly one
+     * connection reference when this returns and none when it throws. A timeout is logged, not
+     * thrown: the caller still holds its reference and [NostrClient.connectionState] tells it when
+     * a relay does come up.
      *
-     * @param forceReconnect if true, disconnects and reconnects even if already connected
-     * @return list of relay URLs that were connected
+     * @param forceReconnect if true, re-runs [NostrClient.connect] even when already connected
+     *   (relays no longer in the set are dropped, disconnected ones reopened)
+     * @return the relay URLs the client was asked to connect (primary + fallbacks), or on the
+     *   already-connected fast path [NostrClient.currentRelayUrls]; being listed does not mean connected
      */
     suspend fun ensureConnected(forceReconnect: Boolean = false): List<String> {
         if (nostrClient.isConnected && !forceReconnect) {
@@ -42,16 +49,23 @@ constructor(
         val onlineRelays = relayHealthMonitor.getOnlineRelays(primaryRelays).ifEmpty { primaryRelays }
         val allRelays = (onlineRelays + RelayDefaults.FALLBACK_RELAYS).distinct()
 
+        // Take the reference before waiting: the sockets are opening from here on, and a caller
+        // cancelled mid-wait would otherwise leave them open with activeUsers == 0 and nobody to
+        // release them. The catch below hands the reference back on that path.
         nostrClient.connect(allRelays)
+        nostrClient.acquireConnection()
 
-        // Wait for at least one relay to actually connect before returning
         if (!nostrClient.isConnected) {
-            withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                nostrClient.connectionState.first { it }
-            } ?: Log.w(TAG, "Timed out waiting for relay connection (${CONNECT_TIMEOUT_MS}ms)")
+            try {
+                withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                    nostrClient.connectionState.first { it }
+                } ?: Log.w(TAG, "Timed out waiting for relay connection (${CONNECT_TIMEOUT_MS}ms)")
+            } catch (e: CancellationException) {
+                nostrClient.releaseConnection()
+                throw e
+            }
         }
 
-        nostrClient.acquireConnection()
         Log.i(
             TAG,
             "Connected to ${allRelays.size} relays (${onlineRelays.size} primary + fallbacks), ready=${nostrClient.isConnected}"
@@ -60,10 +74,11 @@ constructor(
     }
 
     /** Resolve primary relays: group > default. */
-    suspend fun resolvePrimaryRelays(): List<String> {
-        val groupRelays = groupRepo.getAll().flatMap { it.relays }.distinct()
-        return groupRelays.ifEmpty { RelayDefaults.DEFAULT_RELAYS }
-    }
+    suspend fun resolvePrimaryRelays(): List<String> = primaryRelaysOf(groupRepo.getAll())
+
+    /** The primary relay set [groups] imply: their relays, or the defaults when none has any. */
+    fun primaryRelaysOf(groups: List<Group>): List<String> =
+        groups.flatMap { it.relays }.distinct().ifEmpty { RelayDefaults.DEFAULT_RELAYS }
 
     /** Get all relays that should be connected (primary + fallbacks). */
     suspend fun resolveAllRelays(): List<String> = (resolvePrimaryRelays() + RelayDefaults.FALLBACK_RELAYS).distinct()

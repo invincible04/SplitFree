@@ -121,6 +121,7 @@ class RoomReconciliationStoreTest {
                 db.outboxDao(),
                 deliveryDao,
                 mockk<EventThrottler>(relaxed = true),
+                mockk(relaxed = true),
                 giftWrap,
                 groupRepo,
                 identity.contract,

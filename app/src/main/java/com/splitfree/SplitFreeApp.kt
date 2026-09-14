@@ -19,6 +19,7 @@ import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.sync.event.EventProcessor
+import com.splitfree.sync.worker.LiveSync
 import com.splitfree.sync.worker.PowerManager
 import com.splitfree.sync.worker.SyncScheduler
 import com.splitfree.util.DebugLog as Log
@@ -29,8 +30,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Application entry point. Initializes sync scheduling, relay health checks, and battery-aware power management.
- * Registers a [ConnectivityManager.NetworkCallback] to trigger immediate sync when network is restored.
+ * Application entry point. Schedules the WorkManager sync jobs, binds [LiveSync] to the process
+ * lifecycle, starts relay health checks and battery-aware power management, and registers a
+ * [ConnectivityManager.NetworkCallback] to trigger immediate sync when network is restored.
  */
 @HiltAndroidApp
 class SplitFreeApp :
@@ -50,6 +52,8 @@ class SplitFreeApp :
 
     @Inject lateinit var eventProcessor: EventProcessor
 
+    @Inject lateinit var liveSync: LiveSync
+
     override val workManagerConfiguration: Configuration
         get() =
             Configuration
@@ -60,7 +64,7 @@ class SplitFreeApp :
     private val batteryStateReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                SyncScheduler.schedulePeriodicSync(this@SplitFreeApp, powerManager.syncIntervalHours())
+                SyncScheduler.schedulePeriodicSync(this@SplitFreeApp, powerManager.syncInterval())
             }
         }
 
@@ -69,8 +73,8 @@ class SplitFreeApp :
             override fun onAvailable(network: Network) {
                 try {
                     if (!::identity.isInitialized || !identity.hasIdentity()) return
-                    // Network availability is not an exemption from background FGS restrictions.
-                    // WorkManager coalesces the request and runs only with network connectivity.
+                    // This fires while invisible too, so only WorkManager is asked: it coalesces the
+                    // request and runs it once connectivity is really there.
                     SyncScheduler.scheduleImmediateSync(this@SplitFreeApp)
                 } catch (e: Exception) {
                     Log.w(TAG, "Could not schedule network sync: ${e.message}")
@@ -82,8 +86,9 @@ class SplitFreeApp :
         ProcessHealthTracker.install(this)
         super.onCreate()
         ProcessHealthTracker.heartbeat(this, "app_on_create")
-        SyncScheduler.schedulePeriodicSync(this, powerManager.syncIntervalHours())
-        SyncScheduler.scheduleMidnightSync(this)
+        SyncScheduler.schedulePeriodicSync(this, powerManager.syncInterval())
+        SyncScheduler.scheduleDailySync(this)
+        liveSync.bind(ProcessLifecycleOwner.get().lifecycle)
         registerBatteryStateReceiver()
         registerNetworkCallback()
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {

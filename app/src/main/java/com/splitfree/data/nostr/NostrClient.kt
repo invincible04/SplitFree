@@ -7,10 +7,12 @@ import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.sync.ConnectionStatus
+import com.splitfree.domain.model.sync.FetchResult
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -246,9 +249,6 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         activeSubscriptions.clear()
     }
 
-    /** Start listening is now a no-op; messages flow automatically via SharedFlow. */
-    override fun startListening() { /* messages already flowing via relay.messages collectors */ }
-
     override suspend fun publish(event: NostrEvent): Boolean {
         // Snapshot once: disconnect() clears the map concurrently, so an isEmpty() check followed
         // by a second read of relays.values could iterate a set that no longer matches the check.
@@ -282,11 +282,14 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     }
 
     /**
-     * Internal: subscribe with filters, collect events until EOSE from all relays, then cleanup.
+     * Internal: subscribe with filters on every connected relay, collect events until each of
+     * them answers EOSE (or [timeoutMs] elapses), then cleanup.
      *
      * Collectors are caller-scoped, so the returned list is a snapshot no coroutine can still
      * append to. Subscriptions are always closed, including on cancellation.
      *
+     * @return the collected events; `complete` is true only if every queried relay sent EOSE
+     *   before the timeout and stayed connected meanwhile; false with no connected relay
      * @throws IOException if the collectors do not attach
      *   within [READY_TIMEOUT_MS]; the fetch is failed rather than returning partial history
      */
@@ -297,35 +300,43 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         dedup: (NostrEvent, MutableList<NostrEvent>) -> Boolean = { event, list ->
             list.none { it.id == event.id }
         }
-    ): List<NostrEvent> {
+    ): FetchResult {
+        // ensureConnected returns once ANY relay is up. Querying right then would let a lone fallback
+        // EOSE and certify history that only the still-handshaking primary holds, so handshakes get a
+        // moment to finish (disconnected relays complete `first` at once). Relays still not connected
+        // are left out because waiting on one that may never connect only burns the timeout; a REQ
+        // itself would not be lost, OkHttp queues frames and Relay re-sends its subs on open.
+        withTimeoutOrNull(SETTLE_TIMEOUT_MS) {
+            relays.values.toList().forEach { relay -> relay.state.first { it != Relay.State.CONNECTING } }
+        }
         // Snapshot the relay set once. connect()/disconnect() can change it concurrently, and a
         // count taken separately from the relays actually collected would leave collectorsReady
         // and allEose permanently unreachable.
-        val targets = relays.values.toList()
-        if (targets.isEmpty()) return emptyList()
+        val live = relays.values.toList().filter { it.state.value == Relay.State.CONNECTED }
+        if (live.isEmpty()) return FetchResult(emptyList(), complete = false)
         val events = mutableListOf<NostrEvent>()
-        val eoseCount =
-            java.util.concurrent.atomic
-                .AtomicInteger(0)
+        val eoseFrom = ConcurrentHashMap.newKeySet<String>()
         val allEose = CompletableDeferred<Unit>()
+        val dropped = AtomicBoolean(false)
         val collectorsReady = CompletableDeferred<Unit>()
-        val readyCount =
-            java.util.concurrent.atomic
-                .AtomicInteger(0)
+        val readyCount = AtomicInteger(0)
         try {
             // Caller-scoped: collectors cannot outlive this call, so the caller never receives a
             // list that a collector is still appending to.
             coroutineScope {
                 val collectJob =
                     launch {
-                        targets.forEach { relay ->
+                        live.forEach { relay ->
                             launch {
-                                // Per-collector: a relay that repeats EOSE must not be able to
-                                // satisfy the barrier on behalf of relays still sending history.
-                                var eoseSeen = false
+                                // A relay that reconnects mid-fetch re-REQs from its last delivered event, so
+                                // its EOSE no longer vouches for the older history it had not sent yet.
+                                relay.state.first { it != Relay.State.CONNECTED }
+                                dropped.set(true)
+                            }
+                            launch {
                                 relay.messages
                                     .onSubscription {
-                                        if (readyCount.incrementAndGet() >= targets.size) {
+                                        if (readyCount.incrementAndGet() >= live.size) {
                                             collectorsReady.complete(Unit)
                                         }
                                     }.collect { msg ->
@@ -339,11 +350,13 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                             }
 
                                             is RelayMessage.EoseMsg -> {
-                                                if (msg.subId == subId && !eoseSeen) {
-                                                    eoseSeen = true
-                                                    if (eoseCount.incrementAndGet() >= targets.size) {
-                                                        allEose.complete(Unit)
-                                                    }
+                                                // Keyed by relay: one that repeats EOSE must not be able to
+                                                // satisfy the barrier on behalf of relays still sending history.
+                                                if (msg.subId == subId &&
+                                                    eoseFrom.add(relay.url) &&
+                                                    eoseFrom.size >= live.size
+                                                ) {
+                                                    allEose.complete(Unit)
                                                 }
                                             }
 
@@ -359,9 +372,11 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     // partial result the caller would trust. Cleanup still runs in the finally blocks.
                     withTimeoutOrNull(READY_TIMEOUT_MS) { collectorsReady.await() }
                         ?: throw IOException("Relay collectors did not become ready")
-                    targets.forEach { it.subscribe(subId, filters) }
-                    // Timeout waiting for EOSE; proceed with whatever events we collected
-                    withTimeoutOrNull(timeoutMs) { allEose.await() }
+                    live.forEach { it.subscribe(subId, filters) }
+                    if (withTimeoutOrNull(timeoutMs) { allEose.await() } == null) {
+                        val silent = live.map { it.url }.filterNot { it in eoseFrom }
+                        Log.w(TAG, "Fetch $subId timed out after ${timeoutMs}ms without EOSE from $silent")
+                    }
                 } finally {
                     // NonCancellable so the join still happens when the caller is cancelled;
                     // returning before collectors stop is what allows concurrent mutation.
@@ -369,21 +384,26 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                 }
             }
         } finally {
-            targets.forEach { it.closeSubscription(subId) }
+            live.forEach { it.closeSubscription(subId) }
         }
-        return synchronized(events) { events.toList() }
+        return FetchResult(
+            synchronized(events) { events.toList() },
+            complete = allEose.isCompleted && !dropped.get()
+        )
     }
 
     /**
-     * Fetch events matching a group filter. Subscribes temporarily, collects until
-     * EOSE from all relays (or timeout), then closes the subscription.
+     * Fetch events matching a group filter. Lets relays still handshaking settle briefly, then
+     * subscribes temporarily on the connected ones, collects until each of them answers EOSE (or the
+     * timeout elapses), then closes the subscription.
      *
      * @param groupId target group UUID
      * @param since unix timestamp; 0 to fetch all history
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
-     * @return deduplicated list of verified events
+     * @return deduplicated verified events plus whether the queried relays all finished sending
+     *   history and stayed connected while doing so
      */
-    override suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String?): List<NostrEvent> {
+    override suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String?): FetchResult {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
         val sinceVal = if (since > 0) since else null
         val filters =
@@ -419,7 +439,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         )
         val events = fetchWithFilters(subId, filters) { event, list ->
             list.none { it.id == event.id }
-        }
+        }.events
         return events.map { it.id }.toSet()
     }
 
@@ -427,7 +447,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      * Fetch kind-1059 gift wrap events addressed to a specific pubkey (last 24h).
      *
      * @param recipientPubHex 64-char hex public key of the recipient
-     * @return list of gift-wrapped events
+     * @return list of gift-wrapped events; completeness is not reported
      */
     override suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent> {
         val subId = "${subIdCounter.incrementAndGet()}:fetch:gw:${recipientPubHex.take(8)}"
@@ -440,7 +460,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         )
         return fetchWithFilters(subId, filters, timeoutMs = 10_000) { event, list ->
             list.none { it.id == event.id }
-        }
+        }.events
     }
 
     override fun addRelay(url: String) {
@@ -480,5 +500,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     companion object {
         private const val TAG = "NostrClient"
         private const val READY_TIMEOUT_MS = 5_000L
+
+        /** How long a fetch waits for relays still handshaking before deciding which ones to query. */
+        const val SETTLE_TIMEOUT_MS = 3_000L
     }
 }

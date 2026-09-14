@@ -171,9 +171,9 @@ constructor(
      * Pull all existing events for a newly joined group from relays.
      */
     private suspend fun initialSync(group: Group, groupKey: String) {
-        val count = syncEngine.pullEvents(group.id, 0, groupKey, lenientTimestamp = true)
-        if (count > 0) {
-            Log.i(TAG, "Initial sync stored $count events for group ${group.name}")
+        val stored = syncEngine.pullEvents(group.id, 0, groupKey, lenientTimestamp = true).stored
+        if (stored > 0) {
+            Log.i(TAG, "Initial sync stored $stored events for group ${group.name}")
         } else {
             Log.i(TAG, "Initial sync: no new events found")
         }

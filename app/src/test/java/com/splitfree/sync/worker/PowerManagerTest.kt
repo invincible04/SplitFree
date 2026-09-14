@@ -2,9 +2,9 @@ package com.splitfree.sync.worker
 
 import android.content.Context
 import android.os.BatteryManager
-import com.splitfree.sync.worker.PowerManager
 import io.mockk.every
 import io.mockk.mockk
+import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -70,20 +70,20 @@ class PowerManagerTest {
     }
 
     @Test
-    fun `syncIntervalHours varies by mode`() {
+    fun `syncInterval is WorkManager's 15 minute floor unless the battery is low`() {
         every { batteryManager.isCharging } returns true
         every { batteryManager.getIntProperty(any()) } returns 100
-        assertEquals(1L, pm.syncIntervalHours())
+        assertEquals(Duration.ofMinutes(15), pm.syncInterval())
 
         every { batteryManager.isCharging } returns false
         every { batteryManager.getIntProperty(any()) } returns 50
-        assertEquals(6L, pm.syncIntervalHours())
+        assertEquals(Duration.ofMinutes(15), pm.syncInterval())
 
         every { batteryManager.getIntProperty(any()) } returns 20
-        assertEquals(12L, pm.syncIntervalHours())
+        assertEquals(Duration.ofMinutes(60), pm.syncInterval())
 
         every { batteryManager.getIntProperty(any()) } returns 5
-        assertEquals(24L, pm.syncIntervalHours())
+        assertEquals(Duration.ofHours(6), pm.syncInterval())
     }
 
     @Test

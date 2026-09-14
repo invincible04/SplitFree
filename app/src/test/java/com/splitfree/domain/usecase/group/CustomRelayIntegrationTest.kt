@@ -149,7 +149,7 @@ class CustomRelayIntegrationTest {
         println("Published to $relayA: $published")
 
         // Fetch with fresh client (avoids dedup)
-        val fetched = freshClient(listOf(relayA)).fetchEvents(groupId, 0, pubKey)
+        val fetched = freshClient(listOf(relayA)).fetchEvents(groupId, 0, pubKey).events
         println("Fetched ${fetched.size} events from $relayA")
 
         if (fetched.isNotEmpty()) {
@@ -189,11 +189,11 @@ class CustomRelayIntegrationTest {
         println("Phase 1: Published ${events.size} events to $relayA")
 
         // Verify relay A accepted them (fresh client)
-        val onA = freshClient(listOf(relayA)).fetchEvents(groupId, 0, pubKey)
+        val onA = freshClient(listOf(relayA)).fetchEvents(groupId, 0, pubKey).events
         println("Phase 1: Relay A returned ${onA.size} events on fetch")
 
         // === Phase 2: Check relay B has nothing for this group ===
-        val onBBefore = freshClient(listOf(relayB)).fetchEvents(groupId, 0, pubKey)
+        val onBBefore = freshClient(listOf(relayB)).fetchEvents(groupId, 0, pubKey).events
         println("Phase 2: Relay B has ${onBBefore.size} events before migration")
 
         // === Phase 3: Connect to BOTH and re-publish all events (simulating self-heal) ===
@@ -203,7 +203,7 @@ class CustomRelayIntegrationTest {
         println("Phase 3: Re-published ${events.size} events to both relays")
 
         // === Phase 4: Verify relay B now has events ===
-        val onBAfter = freshClient(listOf(relayB)).fetchEvents(groupId, 0, pubKey)
+        val onBAfter = freshClient(listOf(relayB)).fetchEvents(groupId, 0, pubKey).events
         println("Phase 4: Relay B has ${onBAfter.size} events after migration")
 
         // Relay B should have more events than before (or at least the same if relay doesn't index #g)

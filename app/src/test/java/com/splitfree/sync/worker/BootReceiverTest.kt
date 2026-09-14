@@ -8,7 +8,6 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkObject
-import io.mockk.spyk
 import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.After
@@ -41,36 +40,33 @@ class BootReceiverTest {
         val intent = mockk<Intent>()
         every { intent.action } returns "some.other.action"
         receiver.onReceive(context, intent)
-        verify(exactly = 0) { context.startService(any()) }
-        verify(exactly = 0) { context.startForegroundService(any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(any()) }
     }
 
     @Test
     fun `does nothing when no identity flag`() {
-        val context = spyk(RuntimeEnvironment.getApplication() as Context)
+        val context: Context = RuntimeEnvironment.getApplication()
         // Flag not set: default is false
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
-        verify(exactly = 0) { context.startForegroundService(any()) }
-        verify(exactly = 0) { context.startService(any()) }
         verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(any()) }
     }
 
     @Test
     fun `does nothing when identity flag is explicitly false`() {
-        val context = spyk(RuntimeEnvironment.getApplication() as Context)
+        val context: Context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
             .edit().putBoolean("identity_created", false).commit()
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
-        verify(exactly = 0) { context.startForegroundService(any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(any()) }
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
             .edit().clear().commit()
     }
 
     @Test
-    fun `schedules work instead of foreground service when identity flag is set`() {
-        val context = spyk(RuntimeEnvironment.getApplication() as Context)
+    fun `schedules a one-time sync when the identity flag is set`() {
+        val context: Context = RuntimeEnvironment.getApplication()
         // Set the boot flag like IdentityManager would
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
             .edit()
@@ -78,7 +74,6 @@ class BootReceiverTest {
             .commit()
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
         receiver.onReceive(context, intent)
-        verify(exactly = 0) { context.startForegroundService(any()) }
         verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
         // Cleanup
         context.getSharedPreferences("splitfree_boot", Context.MODE_PRIVATE)
@@ -92,6 +87,6 @@ class BootReceiverTest {
         val intent = mockk<Intent>()
         every { intent.action } returns Intent.ACTION_BOOT_COMPLETED
         receiver.onReceive(context, intent)
-        verify(exactly = 0) { context.startForegroundService(any()) }
+        verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(any()) }
     }
 }
