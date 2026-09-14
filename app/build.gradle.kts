@@ -10,9 +10,17 @@ plugins {
     jacoco
 }
 
+// Explicit opt-in for CI: build without loading local signing credentials.
+val unsignedRelease = providers.gradleProperty("splitfreeUnsignedRelease")
+    .map { value ->
+        require(value == "true" || value == "false") { "splitfreeUnsignedRelease must be true or false" }
+        value.toBoolean()
+    }.getOrElse(false)
+
 android {
     namespace = "com.splitfree"
     compileSdk = 37
+    buildToolsVersion = "36.1.0"
 
     defaultConfig {
         applicationId = "com.splitfree"
@@ -22,15 +30,17 @@ android {
         versionName = "1.0.0"
     }
 
-    signingConfigs {
-        create("release") {
-            val localProps = rootProject.file("local.properties")
-            val props = Properties()
-            if (localProps.exists()) localProps.inputStream().use { props.load(it) }
-            storeFile = file("../splitfree-release.jks")
-            storePassword = props.getProperty("RELEASE_STORE_PASSWORD", "")
-            keyAlias = props.getProperty("RELEASE_KEY_ALIAS", "")
-            keyPassword = props.getProperty("RELEASE_KEY_PASSWORD", "")
+    if (!unsignedRelease) {
+        signingConfigs {
+            create("release") {
+                val localProps = rootProject.file("local.properties")
+                val props = Properties()
+                if (localProps.exists()) localProps.inputStream().use { props.load(it) }
+                storeFile = file("../splitfree-release.jks")
+                storePassword = props.getProperty("RELEASE_STORE_PASSWORD", "")
+                keyAlias = props.getProperty("RELEASE_KEY_ALIAS", "")
+                keyPassword = props.getProperty("RELEASE_KEY_PASSWORD", "")
+            }
         }
     }
 
@@ -49,7 +59,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
+            if (!unsignedRelease) signingConfig = signingConfigs.getByName("release")
         }
     }
 
