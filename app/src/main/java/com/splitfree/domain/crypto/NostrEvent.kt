@@ -136,6 +136,21 @@ data class NostrEvent(
 }
 
 /**
+ * True unless the event carries `p` tags and none of them names [pubkey]. An event with no `p` tag is for
+ * everyone; a `p`-tagged one (a per-member `key_rotation` envelope, a gift wrap) is addressed to the members
+ * it names and can only be decrypted by them.
+ */
+fun NostrEvent.isAddressedTo(pubkey: String): Boolean {
+    var addressed = false
+    for (tag in tags) {
+        if (tag.size < 2 || tag[0] != "p") continue
+        if (tag[1] == pubkey) return true
+        addressed = true
+    }
+    return !addressed
+}
+
+/**
  * Escape a string per NIP-01 JSON serialization rules.
  */
 internal fun escapeJson(s: String): String = buildString(s.length) {

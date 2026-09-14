@@ -138,6 +138,37 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `pullEvents skips another member's key_rotation envelope and still certifies coverage`() = runBlocking {
+        // The #g filter returns the creator's per-recipient envelopes for every member. Only the one
+        // naming this recipient can be opened here; the others are not this recipient's missing history.
+        val forOther = NostrEvent(
+            id = "r1",
+            pubkey = "0".repeat(64),
+            createdAt = 100,
+            kind = 30078,
+            tags = listOf(listOf("g", groupId), listOf("t", "key_rotation"), listOf("p", "bb".repeat(32))),
+            content = "x",
+            sig = "s"
+        )
+        val forMe = forOther.copy(
+            id = "r2",
+            tags = listOf(listOf("g", groupId), listOf("t", "key_rotation"), listOf("p", myPub))
+        )
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(forOther, forMe), complete = true, completedRelays = relayUrls.toSet())
+        coEvery { eventDao.getEventIds(groupId) } returns emptyList()
+        coEvery { eventProcessor.process(forMe, any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = true, eventType = "key_rotation", authorHex = "0".repeat(64))
+
+        val result = engine.pullEvents(groupId, 0, groupKey)
+
+        assertEquals(PullResult(stored = 1, complete = true), result)
+        coVerify(exactly = 0) { eventProcessor.process(forOther, any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { eventProcessor.process(forMe, groupId, any(), any(), any(), any()) }
+        coVerify(exactly = 1) { cursors.advance(groupId, myPub, relayUrls.toSet(), any()) }
+    }
+
+    @Test
     fun `pullEvents advances the cursor after a complete fetch even with nothing new`() = runBlocking {
         coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
             FetchResult(emptyList(), complete = true, completedRelays = relayUrls.toSet())

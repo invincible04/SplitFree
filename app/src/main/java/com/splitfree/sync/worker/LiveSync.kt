@@ -10,6 +10,7 @@ import com.splitfree.data.nostr.relay.RelayConnectionManager
 import com.splitfree.data.repository.GroupRepository
 import com.splitfree.di.ApplicationScope
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.domain.crypto.isAddressedTo
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.sync.event.EventProcessor
@@ -284,6 +285,9 @@ constructor(
     }
 
     private suspend fun handleLive(event: NostrEvent, myPubkey: String) {
+        // A `p`-tagged event is addressed to the members it names; another member's copy of a
+        // key_rotation cannot be decrypted here and would only fail the pipeline.
+        if (!event.isAddressedTo(myPubkey)) return
         try {
             // onStop cancels this collector mid-event; the row must still reach APPLIED or FAILED, or the
             // next start re-processes it as pending.

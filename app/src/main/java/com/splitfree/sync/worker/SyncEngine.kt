@@ -8,6 +8,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.RelaySyncCursors
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
+import com.splitfree.domain.crypto.isAddressedTo
 import com.splitfree.domain.model.sync.FlushResult
 import com.splitfree.domain.model.sync.PullResult
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -92,16 +93,15 @@ constructor(
         var count = 0
         for (event in events) {
             if (event.id in existingIds && event.id !in pendingIds) continue
+            // A `p` tag addresses an event to one member: the creator signs one key_rotation envelope
+            // per recipient, and a gift wrap names its recipient the same way. The #g filter returns
+            // every member's copy. Another member's copy cannot be decrypted here, so it is not this
+            // recipient's missing history and must not keep the relay cursor from advancing.
+            if (!event.isAddressedTo(recipient)) continue
             // The recipient filter returns this member's envelopes for every group. Those tagged for
             // another group are that group's pull to ingest; the processor would refuse them here anyway,
             // since the group an event belongs to is its own signed tag, never the pull's.
-            if (event.kind == NostrKind.GIFT_WRAP) {
-                if (event.groupTag()?.let { it != groupId } == true) continue
-                // The #g filter also returns envelopes for other members. They cannot be decrypted
-                // by this recipient and are not missing history for this recipient's cursor.
-                val recipients = event.tags.filter { it.size >= 2 && it[0] == "p" }.map { it[1] }
-                if (recipients.isNotEmpty() && recipient !in recipients) continue
-            }
+            if (event.kind == NostrKind.GIFT_WRAP && event.groupTag()?.let { it != groupId } == true) continue
             val result =
                 eventProcessor.process(
                     rawEvent = event,

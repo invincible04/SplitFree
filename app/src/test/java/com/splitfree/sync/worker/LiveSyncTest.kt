@@ -787,6 +787,23 @@ class LiveSyncTest {
     }
 
     @Test
+    fun `a live event addressed to another member never reaches the processor`() = testScope.runTest {
+        val forAnother = event("rotation-for-carol").copy(tags = listOf(listOf("g", "g1"), listOf("p", "carol")))
+        val forMe = event("rotation-for-alice").copy(tags = listOf(listOf("g", "g1"), listOf("p", "alice")))
+        coEvery { eventProcessor.process(forMe, any(), any(), any(), any(), any(), any()) } returns
+            processed(IngestOutcome.APPLIED)
+        start()
+        runCurrent()
+
+        incoming.tryEmit(forAnother)
+        incoming.tryEmit(forMe)
+        runCurrent()
+
+        coVerify(exactly = 0) { eventProcessor.process(forAnother, any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { eventProcessor.process(forMe, null, null, true, false, any(), null) }
+    }
+
+    @Test
     fun `an event that arrives while subscribe is still running is processed`() = testScope.runTest {
         val racing = event("racing")
         coEvery { nostrClient.subscribe(any(), any(), any()) } coAnswers { incoming.emit(racing) }
