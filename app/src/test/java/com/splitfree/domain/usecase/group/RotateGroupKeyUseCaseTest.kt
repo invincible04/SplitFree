@@ -143,7 +143,10 @@ class RotateGroupKeyUseCaseTest {
         )
     }
 
-    /** The legacy two-step path (epoch, then LWW meta) must never be used for a rotation. */
+    /**
+     * A rotation lands epoch and roster together through `applyKeyRotation`; it must never be written
+     * as a separate `updateKeyEpoch` followed by a last-writer-wins `updateFromMeta`.
+     */
     private fun assertNoLegacyTwoStepWrite() {
         coVerify(exactly = 0) { groupRepo.updateKeyEpoch(any(), any()) }
         coVerify(exactly = 0) { anyUpdateFromMeta() }

@@ -1032,8 +1032,8 @@ class RoomReconciliationStoreTest {
     }
 
     @Test
-    fun `an envelope filed under the wrong group by an older build is refiled, not vouched for`() {
-        // Rows written before outer-group checking may carry another group's label. A CARRIED receipt
+    fun `an envelope filed under the wrong group is refiled, not vouched for`() {
+        // A delivery row may carry another group's label than its signed outer tag. A CARRIED receipt
         // for H must mean H's inventory holds the envelope, so the mislabelled row is replaced.
         val author = Device(1)
         val courier = Device(2)

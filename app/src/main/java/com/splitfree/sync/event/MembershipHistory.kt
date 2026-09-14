@@ -19,12 +19,12 @@ import kotlinx.serialization.json.Json
  * holds the rotation envelopes addressed to it (NIP-44 from the creator; the creator addresses one
  * to itself too). Rows this device cannot open are ignored rather than trusted.
  *
- * Scope (NS-13, bounded): this admits *pre-removal* history for reconciliation only. A record is
+ * Scope (bounded): this admits *pre-removal* history for reconciliation only. A record is
  * considered pre-removal when it decrypts under a key epoch strictly older than the rotation that
  * removed its author, which is the strongest check available from local state: a removed member
  * still holding an old epoch key can backdate a record under that key and it would pass. Closing
- * that gap needs a creator-signed membership checkpoint (a follow-up design item); until then the
- * [IngestionContext.LIVE] path is unchanged and never consults this class.
+ * that gap needs a creator-signed membership checkpoint, which the protocol does not provide; the
+ * [IngestionContext.LIVE] path never consults this class.
  */
 @Singleton
 class MembershipHistory

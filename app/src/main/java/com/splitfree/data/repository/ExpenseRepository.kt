@@ -202,7 +202,7 @@ constructor(
         require(myPubkey in group.members) { "You are no longer a member of this group" }
         require(settlement.from in group.members) { "Payer is no longer a member of this group" }
         require(settlement.to in group.members) { "Recipient is no longer a member of this group" }
-        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Settlement.serializer(), settlement)
         val encrypted = encryption.encrypt(plaintext, groupKey)
@@ -234,7 +234,7 @@ constructor(
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
-        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(
             MapSerializer(String.serializer(), String.serializer()),
@@ -296,7 +296,7 @@ constructor(
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
         validateExpensePayload(corrected, group)
-        // Encrypt with the loaded group's current epoch key only, never a stale/legacy key.
+        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), corrected)
         val encrypted = encryption.encrypt(plaintext, groupKey)

@@ -15,7 +15,7 @@ interface SyncEngineContract {
      * @param groupId target group UUID
      * @param since requested unix timestamp; widened as needed to cover each relay's unresolved history
      * @param groupKey base64-encoded symmetric group key for decryption
-     * @param lenientTimestamp retained for callers; historical pulls always permit old events
+     * @param lenientTimestamp has no effect on admission: every pull is historical and always permits old events
      */
     suspend fun pullEvents(
         groupId: String,

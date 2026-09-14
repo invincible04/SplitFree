@@ -474,7 +474,7 @@ class DurableControlOperationsTest {
     }
 
     @Test
-    fun `legacy ambiguous pending identity cannot be discarded or silently replaced`() = runBlocking {
+    fun `unjournaled ambiguous pending identity cannot be discarded or silently replaced`() = runBlocking {
         val pending = identity.generatePendingKeyPair()
         identity.markRevocationStarted()
         reopen()

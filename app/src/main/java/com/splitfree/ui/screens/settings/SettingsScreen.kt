@@ -266,7 +266,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         SettingsActions(
             back = onBack,
             setDisplayName = { viewModel.setDisplayName(it.take(DISPLAY_NAME_MAX_LENGTH)) },
-            // Plain recomposition: the bitmap reveal was dropped for reliability (see the UI review).
+            // A theme change is a plain recomposition; there is deliberately no bitmap reveal animation.
             setThemeMode = { ThemePreference.set(context, it) },
             setGiftWrap = {
                 giftWrapEnabled = it

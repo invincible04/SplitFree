@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.export
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
@@ -644,7 +645,7 @@ class ExportImportUseCaseTest {
     private val strangerPubkey = NostrEvent.pubkeyFromPrivkey(strangerPrivKey)
     private val boundCreatedAt = 1_690_000_000L
 
-    /** A legacy import: group id derived from [memberPubkey], but the local row has no creator yet. */
+    /** A freshly imported group: id derived from [memberPubkey], but the local row has no creator yet. */
     private val boundGroupId = GroupIdentity.derive(memberPubkey, boundCreatedAt)
     private val legacyGroup =
         Group(
@@ -1180,7 +1181,7 @@ class ExportImportUseCaseTest {
     // --- ImportGroupUseCase: untrusted group metadata is sanitised on a fresh device ---
 
     @Test
-    fun `import keeps only wss relays of a sane length and at most ten of them`() = runBlocking {
+    fun `import keeps only relays an invite link can carry and at most ten of them`() = runBlocking {
         val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
         val store = FakeStore()
         wireFakeStore(gid, store)
@@ -1197,8 +1198,54 @@ class ExportImportUseCaseTest {
         val kept = store.group!!.relays
         assertEquals(10, kept.size)
         assertEquals("wss://ok.example", kept.first())
-        assertTrue(kept.all { it.startsWith("wss://") && it.length <= 256 })
+        assertTrue(kept.all(InviteLinkCodec::relayFits))
         assertEquals(kept.size, kept.distinct().size)
+    }
+
+    @Test
+    fun `import keeps a 254-byte relay and drops a 255-byte one`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val maximal = "wss://" + "a".repeat(240) + ".example"
+        val oneByteTooLong = "wss://" + "a".repeat(241) + ".example"
+        assertEquals(254, maximal.toByteArray(Charsets.UTF_8).size)
+        assertEquals(255, oneByteTooLong.toByteArray(Charsets.UTF_8).size)
+
+        newImport()(
+            buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = listOf(oneByteTooLong, maximal))
+        )
+
+        assertEquals(listOf(maximal), store.group!!.relays)
+    }
+
+    @Test
+    fun `import measures a relay in UTF-8 bytes so a short multi-byte URL over the budget is dropped`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        // 200 chars but 6 + 194 x 2 = 394 UTF-8 bytes, well past the 254-byte bound an invite link enforces.
+        val accented = "wss://" + "é".repeat(194)
+        assertEquals(200, accented.length)
+        assertEquals(394, accented.toByteArray(Charsets.UTF_8).size)
+
+        newImport()(
+            buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = listOf(accented, "wss://ok.example"))
+        )
+
+        assertEquals(listOf("wss://ok.example"), store.group!!.relays)
+    }
+
+    @Test
+    fun `import caps eleven valid relays at ten`() = runBlocking {
+        val gid = GroupIdentity.derive(strangerPubkey, 1_690_000_000L)
+        val store = FakeStore()
+        wireFakeStore(gid, store)
+        val relays = (1..11).map { "wss://relay$it.example" }
+
+        newImport()(buildFreshDeviceExport(emptyList(), gid, groupName = "Trip", relays = relays))
+
+        assertEquals(relays.take(10), store.group!!.relays)
     }
 
     @Test

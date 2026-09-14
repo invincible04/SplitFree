@@ -31,7 +31,7 @@ class NearbyWireTest {
     }
 
     @Test
-    fun `legacy discriminators are recognised as an incompatible peer and garbage is invalid`() {
+    fun `v1 type bytes 0x01 to 0x04 are recognised as an incompatible peer and garbage is invalid`() {
         for (b in 1..4) assertEquals(NearbyWire.Decoded.LegacyPeer, NearbyWire.decode(byteArrayOf(b.toByte(), 0x7b)))
         assertEquals(NearbyWire.Decoded.Invalid, NearbyWire.decode(byteArrayOf()))
         assertEquals(NearbyWire.Decoded.Invalid, NearbyWire.decode(byteArrayOf(0x55)))

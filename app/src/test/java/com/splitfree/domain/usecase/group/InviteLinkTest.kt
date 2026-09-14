@@ -217,6 +217,49 @@ class InviteLinkTest {
         assertFalse(InviteLinkCodec.fitsInviteLink(listOf(RelayDefaults.KNOWN_RELAYS[0], "")))
     }
 
+    // --- relayFits: the per-relay rule shared with import and group_meta ---
+
+    @Test
+    fun `relayFits accepts every known relay`() {
+        RelayDefaults.KNOWN_RELAYS.forEach { assertTrue(it, InviteLinkCodec.relayFits(it)) }
+    }
+
+    @Test
+    fun `relayFits accepts a 254-byte custom relay and refuses a 255-byte one`() {
+        assertTrue(InviteLinkCodec.relayFits(maximalRelay))
+
+        val oneByteTooLong = "wss://" + "a".repeat(241) + ".example"
+        assertEquals(255, oneByteTooLong.toByteArray(Charsets.UTF_8).size)
+        assertFalse(InviteLinkCodec.relayFits(oneByteTooLong))
+    }
+
+    @Test
+    fun `relayFits refuses an empty relay and a relay that is not wss`() {
+        assertFalse(InviteLinkCodec.relayFits(""))
+        assertFalse(InviteLinkCodec.relayFits("ws://plain.example"))
+        assertFalse(InviteLinkCodec.relayFits("https://not-a-relay.example"))
+    }
+
+    @Test
+    fun `relayFits measures a multi-byte URL in UTF-8 bytes not chars`() {
+        // 6 + 130 x 2 bytes = 266 bytes in 136 chars: too long for the region even though it is short in chars.
+        val accented = "wss://" + "é".repeat(130)
+        assertEquals(136, accented.length)
+        assertEquals(266, accented.toByteArray(Charsets.UTF_8).size)
+        assertFalse(InviteLinkCodec.relayFits(accented))
+
+        // 6 + 124 x 2 bytes = 254 bytes: exactly the maximum.
+        val maximalAccented = "wss://" + "é".repeat(124)
+        assertEquals(254, maximalAccented.toByteArray(Charsets.UTF_8).size)
+        assertTrue(InviteLinkCodec.relayFits(maximalAccented))
+    }
+
+    @Test
+    fun `fitsInviteLink applies relayFits to every entry`() {
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf(RelayDefaults.KNOWN_RELAYS[0], "http://evil.example")))
+        assertFalse(InviteLinkCodec.fitsInviteLink(listOf("wss://" + "é".repeat(130))))
+    }
+
     @Test
     fun `decode rejects a custom entry whose length overruns the region`() {
         val data = payloadWithCustomRegion(byteArrayOf(0x10) + "wss://x".toByteArray(Charsets.UTF_8))
@@ -369,9 +412,11 @@ class InviteLinkTest {
         InviteLinkCodec.decode("splitfree://join?foo=bar")
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun `decode rejects custom relay that is not wss`() {
-        InviteLinkCodec.decode(InviteLinkCodec.encode(testGroup(relays = listOf("http://evil.example")), testKey))
+    @Test
+    fun `encode refuses a custom relay that is not wss`() {
+        assertRejected("do not fit") {
+            InviteLinkCodec.encode(testGroup(relays = listOf("http://evil.example")), testKey)
+        }
     }
 
     // --- Name sanitisation ---

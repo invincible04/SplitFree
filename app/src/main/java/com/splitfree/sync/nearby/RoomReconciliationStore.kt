@@ -241,8 +241,8 @@ constructor(
         val existing = deliveryDao.get(event.id)
         if (existing != null) {
             // A receipt says this group's inventory holds the envelope for this recipient. A row that
-            // says otherwise was filed by an older session under the wrong group; the signed tags are
-            // the proof of scope, so it is refiled rather than vouched for.
+            // says otherwise is filed under the wrong group; the signed tags are the proof of scope,
+            // so it is refiled rather than vouched for.
             if (existing.groupId == groupId &&
                 existing.recipient == recipient
             ) {

@@ -530,7 +530,7 @@ class FullRealWorldSimulationIntegrationTest {
         println("   ✅ Both phones compute identical balances")
 
         // ══════════════════════════════════════════════════
-        // STEP 12: Verify event tag structure (the bug fix)
+        // STEP 12: Verify event tag structure (expense UUID travels in 'x', never in 'e')
         // ══════════════════════════════════════════════════
         println("\n── STEP 12: Verify event tag structure ──")
         // Expense events must use 'x' tag (not 'e') for expense UUID

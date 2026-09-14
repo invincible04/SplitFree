@@ -41,7 +41,7 @@ class RelaySyncCursorsTest {
     }
 
     @Test
-    fun `legacy global timestamp does not seed relay coverage`() = runBlocking {
+    fun `group-level lastSyncTimestamp does not seed relay coverage`() = runBlocking {
         db.groupDao().insert(
             GroupEntity(
                 groupId = "g1",

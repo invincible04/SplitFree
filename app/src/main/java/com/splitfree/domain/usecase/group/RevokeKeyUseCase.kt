@@ -75,7 +75,8 @@ constructor(
                 if (operation != null) {
                     finish(operation)
                 } else if (identity.hasPendingKeyPair()) {
-                    // Old builds wrote IDs only AFTER publishing: empty IDs/age/outbox absence prove nothing.
+                    // A pending key with no journaled intent has unknown publication state: empty tracking
+                    // IDs, its age or an empty outbox prove nothing about whether its revocation went out.
                     Log.w(TAG, "Preserving legacy pending identity with ambiguous publication state")
                 }
             }
@@ -105,7 +106,7 @@ constructor(
         ) {
             "Journaled replacement identity unavailable"
         }
-        // Tracking IDs are compatibility state, not proof of publication or authorization to discard a key.
+        // Tracking IDs are informational only: neither proof of publication nor authorization to discard a key.
         identity.setRevocationEventIds(prepared.events.map { it.event().id })
         prepared.events.filter { it.eventType == "key_revocation" }.forEach { it.publish(eventPublisher) }
         prepared.events.filter { it.eventType == "group_meta" }.forEach { it.publish(eventPublisher) }

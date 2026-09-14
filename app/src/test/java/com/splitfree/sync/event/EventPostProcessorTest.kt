@@ -407,7 +407,7 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle group_meta legacy group adopts creator whose meta is bound to the group id`() = runBlocking {
+    fun `handle group_meta creatorless group adopts creator whose meta is bound to the group id`() = runBlocking {
         val createdAt = 1_700_000_000L
         val boundId = GroupIdentity.derive(pubkey, createdAt)
         val legacy = group.copy(id = boundId, createdBy = "", createdAt = 12345)
@@ -615,7 +615,7 @@ class EventPostProcessorTest {
     }
 
     @Test
-    fun `handle group_meta legacy group does not adopt author whose meta is not bound to the group id`() = runBlocking {
+    fun `handle group_meta creatorless group rejects author whose meta is not bound to the group id`() = runBlocking {
         val createdAt = 1_700_000_000L
         val boundId = GroupIdentity.derive(pubkey, createdAt)
         val legacy = group.copy(id = boundId, createdBy = "")
@@ -769,7 +769,7 @@ class EventPostProcessorTest {
             """{"name":"Now","created_by":"$pubkey","members":["$pubkey","$stranger"],"relays":["wss://r"]}"""
 
         processor.handle("group_meta", meta, pubkey, groupId, 2000, false, eventId = "ev-now", keyEpoch = 2)
-        // Callers without an epoch (legacy / tests) default to "current or newer".
+        // A call that omits the epoch defaults to "current or newer".
         processor.handle("group_meta", meta, pubkey, groupId, 2001, false, eventId = "ev-default")
 
         coVerify(exactly = 1) {

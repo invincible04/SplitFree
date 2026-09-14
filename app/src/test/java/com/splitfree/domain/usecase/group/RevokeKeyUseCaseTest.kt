@@ -215,7 +215,7 @@ class RevokeKeyUseCaseTest {
     }
 
     @Test
-    fun `legacy pending state cannot be discarded because IDs are empty or untracked`() = runBlocking {
+    fun `unjournaled pending identity cannot be discarded because IDs are empty or untracked`() = runBlocking {
         pending = newPubkey
         useCase.resumeIfNeeded()
         assertTrue(runCatching { useCase() }.isFailure)

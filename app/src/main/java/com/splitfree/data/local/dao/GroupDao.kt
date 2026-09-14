@@ -204,7 +204,8 @@ interface GroupDao {
     suspend fun updateKeyEpoch(groupId: String, epoch: Int)
 
     /**
-     * Records the verified creator of a group whose `createdBy` was unknown (legacy import).
+     * Records the verified creator of a group whose `createdBy` is still empty (imported from a
+     * backup before its first creator-signed meta).
      * Deliberately leaves `lastMetaTimestamp` alone so historical `group_meta` replays still apply.
      */
     @Query(

@@ -30,7 +30,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.SQLiteMode
 
 /**
- * Opens seeded legacy database files through Room's schema validation. The v3 fixture uses the
+ * Opens seeded v1 and v3 fixture database files through Room's schema validation. The v3 fixture uses the
  * exported schema and production revision triggers; migration must retain every row and trigger.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -94,7 +94,7 @@ class MigrationTest {
         assertEquals(101L, event.receivedAt)
         assertEquals("""{"id":"e1"}""", event.originalEventJson)
         assertEquals(0, event.keyEpoch)
-        // Legacy rows are treated as applied, so they still feed projections.
+        // Rows migrated from v1 are treated as applied, so they still feed projections.
         assertEquals(listOf("e1"), migrated.eventDao().getEventsByGroup("g1").map { it.eventId })
         assertEquals(1, migrated.eventDao().getEventCount("g1"))
     }
@@ -124,7 +124,7 @@ class MigrationTest {
         val migrated = openCurrent()
         val dao = migrated.groupDao()
 
-        // Same timestamp as the legacy watermark, but any non-empty eventId beats the '' default.
+        // Same timestamp as the migrated v1 watermark, but any non-empty eventId beats the '' default.
         assertEquals(
             1,
             dao.updateMetaIfNewer("g1", "Trip", """["creator"]""", """["wss://r"]""", "", 5, "{}", null, "aaa")
@@ -268,7 +268,7 @@ class MigrationTest {
     }
 
     @Test
-    fun `v3 to v4 preserves every legacy table and revision trigger without trusting global sync`() = runBlocking {
+    fun `v3 to v4 preserves every v3 table and revision trigger without trusting global sync`() = runBlocking {
         val fixture = createV3Database(dbName)
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
             .addMigrations(AppDatabase.MIGRATION_3_4)

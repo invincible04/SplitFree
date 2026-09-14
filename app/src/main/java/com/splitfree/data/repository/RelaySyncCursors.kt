@@ -8,7 +8,7 @@ import javax.inject.Singleton
 
 @Singleton
 class RelaySyncCursors @Inject constructor(private val db: AppDatabase) {
-    // Missing relays start at zero; legacy group lastSyncTimestamp is not evidence of relay coverage.
+    // Missing relays start at zero; the group-level lastSyncTimestamp is not evidence of relay coverage.
     suspend fun cursors(groupId: String, recipientPubkey: String): Map<String, Long> =
         db.relaySyncCursorDao().get(groupId, recipientPubkey).associate { it.relayUrl to it.throughTimestamp }
 

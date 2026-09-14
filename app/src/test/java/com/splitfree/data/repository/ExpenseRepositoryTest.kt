@@ -380,7 +380,7 @@ class ExpenseRepositoryTest {
         repo().addSettlement(Settlement("s1", "bob", "alice", -1, "INR", timestamp = 1), "g1")
     }
 
-    // --- epoch key usage for new ciphertext (P1) ---
+    // --- epoch key usage for new ciphertext ---
 
     @Test
     fun `addSettlement encrypts with the loaded group's epoch key and never calls getGroupKey`() = runTest {

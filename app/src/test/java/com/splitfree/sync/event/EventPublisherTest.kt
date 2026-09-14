@@ -330,7 +330,7 @@ class EventPublisherTest {
     }
 
     @Test
-    fun `legacy publishing paths retain complete deliveries above expense admission threshold`() = runBlocking {
+    fun `control publishing paths retain complete deliveries above expense admission threshold`() = runBlocking {
         fillOutbox(5000)
         publisher.publishDirect(event.copy(id = "rotation"), "g1", "enc", "key_rotation")
         publisher.publishToGroup(event.copy(id = "metadata"), "g1", "enc", "group_meta")

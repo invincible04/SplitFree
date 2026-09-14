@@ -37,8 +37,8 @@ import org.junit.Test
  * Phone 1 creates expense → NIP-59 gift wraps it for Phone 2 → publishes kind 1059
  * Phone 2 receives kind 1059 → unwraps → decrypts → verifies expense
  *
- * This tests the exact bug: gift-wrapped events weren't being received because
- * the outer wrapper lacked a p tag for relay routing.
+ * The outer kind-1059 wrapper must carry a `p` tag naming the recipient: relays route gift
+ * wraps to the recipient's subscription by that tag, so without it nothing is ever delivered.
  */
 class GiftWrapRelayIntegrationTest {
     private lateinit var phone1: NostrClient
@@ -132,7 +132,7 @@ class GiftWrapRelayIntegrationTest {
         delay(3000)
         assertTrue("Both connected", phone1.isConnected && phone2.isConnected)
 
-        // ── TEST 1: Verify gift wrap tag structure (the fix) ──
+        // ── TEST 1: Verify gift wrap tag structure (p tag for recipient, g tag for group) ──
         println("\n── TEST 1: Verify gift wrap tag structure ──")
         val expense =
             Expense(

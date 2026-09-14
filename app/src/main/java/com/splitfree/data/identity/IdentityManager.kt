@@ -24,8 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * Keys stored in Android Keystore-backed encrypted storage.
  *
  * The private key (`nsec`) is the single source of truth. The public key is derived from it on
- * demand and memoised in [cachedPub]; the persisted `npub` is written only for backward
- * compatibility with older builds and is read solely if derivation fails. Every write path stores
+ * demand and memoised in [cachedPub]; the persisted `npub` is a mirror of the derived value,
+ * written on every key install and read solely if derivation fails. Every write path stores
  * the private key first, so a crash between the two writes can never leave a mismatched pair.
  */
 @Singleton
@@ -78,7 +78,7 @@ constructor(
                 derivePublicKeyHex(privHex).also { cachedPub = it }
             } catch (e: Exception) {
                 // Unreachable for a key this class wrote (every write path validates it first). Kept
-                // only so a corrupted legacy `nsec` degrades to the stored `npub` instead of crashing.
+                // only so a corrupted `nsec` degrades to the mirrored `npub` instead of crashing.
                 Log.w(TAG, "Could not derive public key from stored private key; using stored npub", e)
                 storage.getString(KEY_PUBLIC, "")!!
             }
@@ -248,7 +248,7 @@ constructor(
 
     /**
      * Persist a new active keypair. The private key is written FIRST because it is the single
-     * source of truth; `npub` is only a compatibility mirror for older builds, so a crash between
+     * source of truth; `npub` is only a mirror read when derivation fails, so a crash between
      * the two writes leaves a fully usable identity. The derived-pubkey cache is dropped under
      * [keyLock] so no reader can memoise a value computed from the previous key.
      */

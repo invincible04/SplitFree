@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.export
 import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.export.ExportedEvent
@@ -303,9 +304,9 @@ constructor(
     private fun sanitizeGroupName(raw: String): String =
         TextSanitizer.stripControlChars(raw).take(MAX_GROUP_NAME_LENGTH).trim().ifBlank { DEFAULT_GROUP_NAME }
 
-    /** Relay list from the file, restricted to plausible `wss://` URLs and bounded in count. */
+    /** Relay list from the file, restricted to relays an invite link can carry and bounded in count. */
     private fun sanitizeRelays(raw: List<String>): List<String> =
-        raw.filter { it.startsWith("wss://") && it.length <= MAX_RELAY_URL_LENGTH }.distinct().take(MAX_RELAYS)
+        raw.filter(InviteLinkCodec::relayFits).distinct().take(InviteLinkCodec.MAX_RELAYS)
 
     /**
      * A row from the export that passed authenticity and timestamp checks and is ready to store.
@@ -566,8 +567,6 @@ constructor(
         private const val TAG = "ImportGroupUseCase"
         private const val DEFAULT_GROUP_NAME = "Imported group"
         private const val MAX_GROUP_NAME_LENGTH = 100
-        private const val MAX_RELAYS = 10
-        private const val MAX_RELAY_URL_LENGTH = 256
 
         /** Length of a decoded symmetric group key, as [GroupEncryption] requires. */
         private const val GROUP_KEY_BYTES = 32

@@ -2,6 +2,7 @@ package com.splitfree.data.repository
 
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
+import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.SecureStorage
@@ -61,7 +62,7 @@ constructor(
     /**
      * Returns the key for the group's *current* epoch.
      *
-     * The un-epoched legacy key (stored under the plain `groupId`) is only a valid
+     * The un-epoched key entry stored under the plain `groupId` is only a valid
      * substitute for epoch 0. Falling back to it for a later epoch would silently
      * encrypt post-rotation traffic with a key the removed member still holds, so
      * callers get `null` instead and must treat the group as unusable until the
@@ -80,7 +81,7 @@ constructor(
     override suspend fun getMembers(groupId: String): List<String> = getById(groupId)?.members ?: emptyList()
 
     /**
-     * Remove every key stored for [groupId]: the un-epoched legacy entry plus `"$groupId:$epoch"`
+     * Remove every key stored for [groupId]: the un-epoched entry under the plain `groupId` plus `"$groupId:$epoch"`
      * for each epoch up to the group's current one. If the Room row is already gone the epoch is
      * unknown, so epochs `0..MAX_ORPHAN_EPOCH_SWEEP` are swept instead.
      *
@@ -103,7 +104,8 @@ constructor(
         // groupDao.insert and no Room row exists without a recoverable key behind it.
         lockFor(group.id).withLock {
             saveEpochKey(group.id, group.keyEpoch, groupKey)
-            // Also store under plain groupId for backward compat at epoch 0.
+            // At epoch 0 the key is also stored under the plain groupId, the un-epoched entry
+            // that getGroupKeyForEpoch accepts for epoch 0 only.
             if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
         }
         val safeMemberNames = sanitizeMemberNames(group.memberNames, group.members)
@@ -214,7 +216,8 @@ constructor(
                 val chosen = if (memberIsNewer) storedNames[member] else incomingNames[member]
                 if (chosen != null) merged[member] = chosen
             }
-            val safeRelays = relays.filter { it.startsWith("wss://") && it.length <= 256 }
+            // The roster's relay list must remain encodable in an invite link, so it is filtered and capped here.
+            val safeRelays = relays.filter(InviteLinkCodec::relayFits).take(InviteLinkCodec.MAX_RELAYS)
             // The conditional statement is kept as the final guard: the watermark, roster and names
             // land together or not at all, even if another writer slipped in between read and write.
             groupDao.updateMetaIfNewer(

@@ -234,7 +234,7 @@ class CreateSnapshotUseCaseTest {
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
     }
 
-    // --- Snapshot size (S3) ---
+    // --- Snapshot size ---
 
     @Test
     fun `event hashes are 24-char prefixes of sha256 of each event id`() = runBlocking {
@@ -279,7 +279,7 @@ class CreateSnapshotUseCaseTest {
         assertTrue(plaintext.captured.toByteArray(Charsets.UTF_8).size <= CreateSnapshotUseCase.MAX_SNAPSHOT_PLAINTEXT)
     }
 
-    // --- Concurrency guard (S4): the transaction re-reads the ledger head and the group ---
+    // --- Concurrency guard: the transaction re-reads the ledger head and the group ---
 
     @Test
     fun `aborts when a new snapshot appeared between the initial read and save`() = runBlocking {

@@ -27,7 +27,7 @@ import javax.crypto.spec.GCMParameterSpec
  *
  * Each value is encrypted with a hardware-backed key. The 12-byte IV is prepended
  * to the ciphertext and the result is Base64 (NO_WRAP) encoded into a plain
- * SharedPreferences file. The on-disk format is unchanged from earlier versions.
+ * SharedPreferences file.
  *
  * Failure handling is deliberately split into three classes:
  *

@@ -90,7 +90,7 @@ constructor(
                 relays = invite.relays,
                 keyEpoch = invite.keyEpoch
             )
-        // Stores the key under "<groupId>:<keyEpoch>" (and the legacy plain id only for epoch 0).
+        // Stores the key under "<groupId>:<keyEpoch>" (and under the plain group id only for epoch 0).
         groupRepo.save(group, groupKey)
 
         // Connect, sync existing events, publish our join, then release

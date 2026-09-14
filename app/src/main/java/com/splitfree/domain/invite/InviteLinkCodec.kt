@@ -62,9 +62,10 @@ data class InviteParams(
  *
  * Relay URLs in [RelayDefaults.KNOWN_RELAYS] are encoded as bits of the big-endian 16-bit bitmap (bit `i`
  * = index `i`). Any other relay travels inside the custom-relay region as `[len:1][utf8:len]`, one entry after
- * another with no separator, so a URL may contain any byte (`,` included). Each entry is at most
- * [MAX_RELAY_URL_LENGTH] UTF-8 bytes and the region as a whole at most [MAX_CUSTOM_RELAY_BYTES] bytes.
- * [fitsInviteLink] tells whether a relay list satisfies those budgets and [MAX_RELAYS].
+ * another with no separator, so a URL may contain any byte (`,` included). Each entry is a `wss://` URL of at
+ * most [MAX_RELAY_URL_LENGTH] UTF-8 bytes ([relayFits]) and the region as a whole at most
+ * [MAX_CUSTOM_RELAY_BYTES] bytes. [fitsInviteLink] tells whether a relay list satisfies those budgets and
+ * [MAX_RELAYS].
  */
 object InviteLinkCodec {
     private val KNOWN_RELAYS = RelayDefaults.KNOWN_RELAYS
@@ -98,14 +99,21 @@ object InviteLinkCodec {
     private const val EXPIRY_SIZE = 4
 
     /**
-     * True when [relays] can travel in an invite link: at most [MAX_RELAYS] entries, every relay outside
-     * [RelayDefaults.KNOWN_RELAYS] between 1 and [MAX_RELAY_URL_LENGTH] UTF-8 bytes, and their length-prefixed
-     * encoding at most [MAX_CUSTOM_RELAY_BYTES] bytes in total.
+     * True when [relays] can travel in an invite link: at most [MAX_RELAYS] entries, each satisfying [relayFits],
+     * and the length-prefixed encoding of those outside [RelayDefaults.KNOWN_RELAYS] at most
+     * [MAX_CUSTOM_RELAY_BYTES] bytes in total.
      */
     fun fitsInviteLink(relays: List<String>): Boolean = fits(relays, customRelays(relays))
 
+    /**
+     * True when [relay] can travel in an invite link: a `wss://` URL of 1..[MAX_RELAY_URL_LENGTH] UTF-8 bytes.
+     * Known relays always fit.
+     */
+    fun relayFits(relay: String): Boolean = relay in KNOWN_RELAYS ||
+        (relay.startsWith("wss://") && relay.toByteArray(Charsets.UTF_8).size in 1..MAX_RELAY_URL_LENGTH)
+
     private fun fits(relays: List<String>, custom: List<ByteArray>): Boolean = relays.size <= MAX_RELAYS &&
-        custom.all { it.size in 1..MAX_RELAY_URL_LENGTH } &&
+        relays.all(::relayFits) &&
         custom.sumOf { CUSTOM_RELAY_LEN_SIZE + it.size } <= MAX_CUSTOM_RELAY_BYTES
 
     /**
@@ -127,8 +135,8 @@ object InviteLinkCodec {
         require(group.keyEpoch in 0..MAX_EPOCH) { "Key epoch out of range" }
         val custom = customRelays(group.relays)
         require(fits(group.relays, custom)) {
-            "Relays do not fit in an invite link (max $MAX_RELAYS, each custom relay up to $MAX_RELAY_URL_LENGTH " +
-                "bytes, $MAX_CUSTOM_RELAY_BYTES bytes of custom relays in total)"
+            "Relays do not fit in an invite link (max $MAX_RELAYS, each custom relay a wss:// URL of up to " +
+                "$MAX_RELAY_URL_LENGTH bytes, $MAX_CUSTOM_RELAY_BYTES bytes of custom relays in total)"
         }
         val keyBytes = Base64.getDecoder().decode(groupKey)
         require(keyBytes.size == GROUP_KEY_SIZE) { "Group key must be $GROUP_KEY_SIZE bytes" }

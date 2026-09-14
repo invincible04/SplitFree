@@ -96,7 +96,7 @@ constructor(
      *   [expectedGroupId]. The group an event belongs to is always its own signed `g` tag: a relay pull
      *   for one group also returns this member's envelopes for every other group, and a valid rotation
      *   for one of those must not be able to advance the pulled group's epoch.
-     * @param knownGroupKey retained for caller compatibility; only stored, epoch-bound keys are trusted
+     * @param knownGroupKey ignored; decryption only ever uses stored, epoch-bound keys, never a caller-supplied one
      * @param nonCancellable if true, post-processing runs inside [NonCancellable]
      * @param lenientTimestamp if true, allows events older than 30 days (for initial/full sync)
      * @param context why the event is being ingested; [IngestionContext.RECONCILIATION] implies
@@ -672,7 +672,7 @@ constructor(
     private enum class BusinessRules { OK, REJECTED, MISSING_ORIGINAL }
 
     /**
-     * Expense identity is bound to its author (NS-15): a correction or delete only resolves against an
+     * Expense identity is bound to its author: a correction or delete only resolves against an
      * expense the same pubkey stored, and a replayed expense is only a tombstoned replay if the same
      * author deleted that uuid. Two members can therefore never collide on (or hijack) each other's ids.
      *

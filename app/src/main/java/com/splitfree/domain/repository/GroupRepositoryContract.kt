@@ -27,7 +27,7 @@ interface GroupRepositoryContract {
     suspend fun getMembers(groupId: String): List<String>
 
     /**
-     * Remove every stored key for [groupId] (the un-epoched legacy entry and each epoch key)
+     * Remove every stored key for [groupId] (the un-epoched entry under the plain group id and each epoch key)
      * from encrypted storage. Intended for a "leave group" flow; the Room row itself is not
      * touched, so callers must delete or hide the group separately.
      */
@@ -51,7 +51,8 @@ interface GroupRepositoryContract {
     suspend fun updateKeyEpoch(groupId: String, epoch: Int)
 
     /**
-     * Record the verified creator of a group whose creator was previously unknown (legacy import).
+     * Record the verified creator of a group whose creator is not yet recorded (imported from a
+     * backup before its first creator-signed meta).
      *
      * Callers must only pass a `(createdBy, createdAt)` pair for which
      * [com.splitfree.domain.model.group.GroupIdentity.matches] holds for [groupId]. Unlike
@@ -77,7 +78,8 @@ interface GroupRepositoryContract {
      * @param groupId target group UUID
      * @param name updated group name
      * @param members the roster the meta carries (ignored when [applyRoster] is false)
-     * @param relays updated relay URL list
+     * @param relays updated relay URL list; entries an invite link cannot carry are dropped and the
+     *   list is capped at [com.splitfree.domain.invite.InviteLinkCodec.MAX_RELAYS]
      * @param eventTimestamp the meta event's `created_at`; must be positive
      * @param createdBy trusted creator pubkey update, or empty string to preserve existing value
      * @param memberNames full snapshot of member display names; absent or empty entries clear a name

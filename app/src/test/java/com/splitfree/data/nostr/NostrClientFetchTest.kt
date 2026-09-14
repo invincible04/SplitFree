@@ -32,11 +32,11 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Regression tests for the [NostrClient.fetchEvents] collector lifecycle and completeness flag.
+ * Tests for the [NostrClient.fetchEvents] collector lifecycle and completeness flag.
  *
  * The collectors append to the list that is handed back to the caller, so they must not outlive
- * the fetch. A collector still running after the return is what let the caller's
- * `for (event in events)` loop hit ConcurrentModificationException.
+ * the fetch: a collector still running after the return would race the caller's
+ * `for (event in events)` loop into ConcurrentModificationException.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class NostrClientFetchTest {

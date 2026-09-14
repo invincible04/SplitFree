@@ -115,9 +115,10 @@ constructor(
             currentGroup != null &&
                 currentGroup.createdBy.isNotEmpty() &&
                 authorHex == currentGroup.createdBy
-        // Legacy/imported groups have no creator on record. The only author allowed to fill
-        // that gap is the one the group id was derived from, a claim anyone can verify, so a
-        // non-creator cannot promote themselves by publishing a group_meta.
+        // A group imported from a backup before its first creator-signed meta has no creator on
+        // record. The only author allowed to fill that gap is the one the group id was derived
+        // from, a claim anyone can verify, so a non-creator cannot promote themselves by
+        // publishing a group_meta.
         val bootstrapsCreator =
             currentGroup != null &&
                 currentGroup.createdBy.isEmpty() &&

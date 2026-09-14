@@ -195,7 +195,8 @@ constructor(
             }
             if (eventDao.getEvent(entity.eventId) != null) return@withTransaction false
             if (expectedGroup != null) {
-                // Legacy multi-event operations cannot safely fail admission after publishing their first event.
+                // Only money mutations are capped. A control operation (rotation, revocation, meta) publishes
+                // several events and could not safely fail admission after its first one has gone out.
                 val additionalRows = rows.size - outboxDao.countByEventIds(rows.map { it.eventId })
                 if (outboxDao.count() + additionalRows > MAX_EXPENSE_OUTBOX_SIZE) throw OutboxFullException()
             }

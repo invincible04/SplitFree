@@ -1773,7 +1773,7 @@ class ComputeBalancesUseCaseTest {
         assertEquals(50L, replayed.balances.single { it.pubkey == "alice" }.net)
     }
 
-    // --- Author-bound expense identity (NS-15): (author, uuid), never uuid alone ---
+    // --- Author-bound expense identity: (author, uuid), never uuid alone ---
 
     /** An expense/correction payload for uuid U paid by [payer] and split evenly with [other]. */
     private fun uPayload(payer: String, other: String, amount: Long, ts: Long): String = expenseJson(

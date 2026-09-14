@@ -45,7 +45,7 @@ constructor(
      * @param groupId target group UUID
      * @param since unix timestamp to fetch events after
      * @param groupKey base64-encoded symmetric group key for decryption
-     * @param lenientTimestamp retained for callers; historical reconciliation always permits old events
+     * @param lenientTimestamp has no effect on admission: every pull is reconciliation and always permits old events
      */
     override suspend fun pullEvents(
         groupId: String,
@@ -70,11 +70,11 @@ constructor(
         val cursors = relayCursors.cursors(groupId, recipient)
         val primary = groupRepo.getById(groupId)?.relays.orEmpty().ifEmpty { RelayDefaults.DEFAULT_RELAYS }
         // The configured relays remain relevant even when a health probe or socket is offline.
-        // Previously connected relays in the shared pool may also contain the only published copy.
+        // Relays this process has connected to in the shared pool may also hold the only published copy.
         val targets = (primary + RelayDefaults.FALLBACK_RELAYS + nostrClient.currentRelayUrls())
             .filter { it.startsWith("wss://") }.distinct()
         val windows = targets.associateWith { relay ->
-            // Never seed from the legacy group cursor: it may have advanced on fallback-only EOSE.
+            // Never seed from the group-level lastSyncTimestamp: it may have advanced on fallback-only EOSE.
             val coveredSince = ((cursors[relay] ?: 0L) - CURSOR_OVERLAP_SECS).coerceAtLeast(0)
             minOf(since.coerceAtLeast(0), coveredSince)
         }

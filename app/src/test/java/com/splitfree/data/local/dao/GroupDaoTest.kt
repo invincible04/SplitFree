@@ -348,7 +348,7 @@ class GroupDaoTest {
     }
 
     @Test
-    fun `a legacy row with an empty lastMetaEventId accepts a same-timestamp meta once`() = runBlocking {
+    fun `a migrated row with an empty lastMetaEventId accepts a same-timestamp meta once`() = runBlocking {
         // Migrated rows carry lastMetaEventId = '' so the first real meta at the same createdAt applies.
         assertEquals(1, dao.updateMetaIfNewer("g1", "Trip", entity.members, entity.relays, "", 500, "{}", null, "aaa"))
         assertEquals("aaa", dao.getById("g1")!!.lastMetaEventId)

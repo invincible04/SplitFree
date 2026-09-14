@@ -20,6 +20,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -113,17 +116,17 @@ class GroupRepositoryTest {
         assertNull(repo.getGroupKey("g1"))
     }
 
-    // --- epoch fallback (P1) ---
+    // --- epoch fallback: the un-epoched entry under the plain group id stands in for epoch 0 only ---
 
     @Test
-    fun `getGroupKey at epoch 0 falls back to legacy un-epoched key`() = runBlocking {
+    fun `getGroupKey at epoch 0 falls back to the un-epoched key under the plain group id`() = runBlocking {
         coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 0)
         keyStore.putString("g1", "legacyKey")
         assertEquals("legacyKey", repo.getGroupKey("g1"))
     }
 
     @Test
-    fun `getGroupKey at epoch 2 with only legacy key present returns null`() = runBlocking {
+    fun `getGroupKey at epoch 2 with only the un-epoched key present returns null`() = runBlocking {
         coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 2)
         keyStore.putString("g1", "legacyKey")
         // Falling back here would encrypt post-rotation traffic with a key the removed member still holds.
@@ -139,20 +142,20 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `getGroupKeyForEpoch 0 still falls back to legacy key`() = runBlocking {
+    fun `getGroupKeyForEpoch 0 falls back to the un-epoched key`() = runBlocking {
         keyStore.putString("g1", "legacyKey")
         assertEquals("legacyKey", repo.getGroupKeyForEpoch("g1", 0))
     }
 
     @Test
-    fun `getGroupKeyForEpoch non-zero does not fall back to legacy key`() = runBlocking {
+    fun `getGroupKeyForEpoch non-zero does not fall back to the un-epoched key`() = runBlocking {
         keyStore.putString("g1", "legacyKey")
         assertNull(repo.getGroupKeyForEpoch("g1", 1))
         keyStore.putString("g1:1", "epoch1Key")
         assertEquals("epoch1Key", repo.getGroupKeyForEpoch("g1", 1))
     }
 
-    // --- failed key write must not leave a Room row behind (P3) ---
+    // --- failed key write must not leave a Room row behind ---
 
     @Test
     fun `save does not insert group when key write fails`() = runBlocking {
@@ -200,7 +203,7 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `deleteGroupKey removes the legacy key and every epoch key up to the group's epoch`() = runBlocking {
+    fun `deleteGroupKey removes the un-epoched key and every epoch key up to the group's epoch`() = runBlocking {
         coEvery { groupDao.getById("g1") } returns groupEntity.copy(keyEpoch = 3)
         keyStore.putString("g1", "legacy")
         for (epoch in 0..3) keyStore.putString("g1:$epoch", "k$epoch")
@@ -579,6 +582,57 @@ class GroupRepositoryTest {
             )
         }
         assertEquals("""["wss://ok"]""", relaysJson.captured)
+    }
+
+    @Test
+    fun `updateFromMeta drops a relay an invite link cannot carry`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        val maximal = "wss://" + "a".repeat(240) + ".example"
+        val oneByteTooLong = "wss://" + "a".repeat(241) + ".example"
+        assertEquals(254, maximal.toByteArray(Charsets.UTF_8).size)
+        assertEquals(255, oneByteTooLong.toByteArray(Charsets.UTF_8).size)
+
+        assertEquals(
+            listOf(maximal),
+            capturedRelays { repo.updateFromMeta("g1", "name", listOf("pub1"), listOf(oneByteTooLong, maximal), 500) }
+        )
+    }
+
+    @Test
+    fun `updateFromMeta stores at most ten relays so the roster stays encodable in an invite link`() = runBlocking {
+        coEvery { groupDao.getById("g1") } returns groupEntity
+        stubMetaWrite(1)
+        val relays = (1..11).map { "wss://relay$it.example" }
+
+        assertEquals(relays.take(10), capturedRelays { repo.updateFromMeta("g1", "name", listOf("pub1"), relays, 500) })
+    }
+
+    /** Runs [write] and returns the relay list it handed to `updateMetaIfNewer`. */
+    private suspend fun capturedRelays(write: suspend () -> Unit): List<String> {
+        write()
+        val relaysJson = slot<String>()
+        coVerify {
+            groupDao.updateMetaIfNewer(
+                any(),
+                any(),
+                any(),
+                capture(relaysJson),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+
+                any(), any()
+            )
+        }
+        return Json.decodeFromString(ListSerializer(String.serializer()), relaysJson.captured)
     }
 
     @Test
@@ -1340,7 +1394,7 @@ class GroupRepositoryTest {
     }
 
     @Test
-    fun `epoch zero key cannot replace different legacy key material`() = runBlocking {
+    fun `epoch zero key cannot replace different un-epoched key material`() = runBlocking {
         keyStore.putString("g1", "legacy")
         val failure = runCatching { repo.saveGroupKeyForEpoch("g1", 0, "replacement") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)

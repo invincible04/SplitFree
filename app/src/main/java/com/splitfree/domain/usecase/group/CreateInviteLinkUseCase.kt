@@ -19,8 +19,8 @@ constructor(private val groupRepo: GroupRepositoryContract) {
      *
      * @param groupId target group UUID
      * @return `splitfree://join?d=...` deep link
-     * @throws IllegalStateException if the group is not found, has no known creator (legacy import
-     *   whose creator has not been recovered from a `group_meta`), or has no key for its current epoch
+     * @throws IllegalStateException if the group is not found, has no known creator (imported from a
+     *   backup and not yet given one by a creator-signed `group_meta`), or has no key for its current epoch
      */
     suspend operator fun invoke(groupId: String): String {
         val group = groupRepo.getById(groupId) ?: throw IllegalStateException("Group $groupId not found")

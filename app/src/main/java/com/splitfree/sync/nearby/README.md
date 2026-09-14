@@ -2,8 +2,7 @@
 
 This describes what two SplitFree phones do when they meet over Google Nearby Connections, what
 "up to date" means, and what the design deliberately does not promise. The implementation lives in
-`app/src/main/java/com/splitfree/sync/nearby/`; the previous audit is in
-the local-only `docs/nearby-audit-2026-09-12/` (not tracked).
+`app/src/main/java/com/splitfree/sync/nearby/`.
 
 ## Components
 
@@ -29,7 +28,7 @@ check.
 
 ## Framing
 
-Every payload is `[0x7F][type][UTF-8 JSON]`. `0x7F` is outside the legacy `0x01..0x04` range so a v1
+Every payload is `[0x7F][type][UTF-8 JSON]`. `0x7F` is outside the v1 type-byte range `0x01..0x04`, so a v1
 peer is recognised and closed with `unsupported_version` instead of being half-understood. Frames are
 at most 16 KiB; inventories are paged (≤ 256 entries and ≤ 16 KiB per page); records are chunked
 (≤ 12,000 characters per chunk, ≤ 64 chunks). These limits are far inside the pinned
@@ -179,8 +178,9 @@ and delivery-only writes all advance it; no-op writes and sync timestamps do not
   reuses those events and epoch keys, finishes local projection and publishes follow-up metadata even
   if the epoch already advanced before interruption. A different removal cannot reuse an unfinished
   operation's key. Identity promotion checks the journal's replacement key and remains recoverable
-  after a secure-storage write commits then throws. Ambiguous legacy state is preserved and blocked,
-  never guessed from an empty outbox or an old timestamp.
+  after a secure-storage write commits then throws. A pending identity with no journaled intent is
+  preserved and blocked, never guessed from an empty outbox or an old timestamp; an unjournaled next-epoch
+  key is only reused when the creator's own stored rotation envelopes agree on the removal.
 - **A journaled operation can always finish**, whatever the roster did meanwhile. A removal that had
   prepared nothing is rebased onto the live roster (same member removed, same epoch, same stored key).
   A prepared removal keeps and re-publishes its signed envelopes; a member the snapshot did not know

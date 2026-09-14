@@ -338,7 +338,7 @@ class GetExpensesUseCaseTest {
         assertEquals("pub2", result.single().authorPubkey)
     }
 
-    // --- Author-bound expense identity (NS-15) ---
+    // --- Author-bound expense identity ---
 
     private val alice = "alice"
     private val mallory = "mallory"

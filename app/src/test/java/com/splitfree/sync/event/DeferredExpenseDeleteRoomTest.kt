@@ -61,7 +61,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
-/** L2 regression: no DAO, signature, decryption, validation or ledger projection is mocked. */
+/** Real Room, crypto, validation and ledger projection: nothing on the ingestion path is mocked. */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
 class DeferredExpenseDeleteRoomTest {

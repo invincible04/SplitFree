@@ -308,8 +308,8 @@ class EventProcessorTest {
 
     @Test
     fun `process accepts expense created before the latest settlement`() = runBlocking {
-        // Regression for the removed backdating rule: clock skew between phones must not
-        // cause legitimate expenses to be silently dropped on peers.
+        // An expense timestamped before the latest settlement is still admitted: clock skew between
+        // phones must not cause legitimate expenses to be silently dropped on peers.
         val now = System.currentTimeMillis() / 1000
         coEvery { eventDao.getLatestEventByType(groupId, "settlement") } returns
             EventEntity("settle-evt", groupId, pubkey, now, 30078, "enc", "settlement", "s1", "sig", now)
@@ -739,8 +739,8 @@ class EventProcessorTest {
 
     @Test
     fun `process key_rotation exception is caught`() = runBlocking {
-        // Exception handling is now in EventPostProcessor, not EventProcessor.
-        // Verify EventProcessor delegates correctly.
+        // Post-processing exceptions are caught inside EventPostProcessor; EventProcessor only
+        // delegates. Verify the delegation and that the event is still stored.
         every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
         val result = processor.process(
             makeEvent(eventType = "key_rotation", expenseUuid = null),
@@ -1941,7 +1941,7 @@ class EventProcessorTest {
         assertEquals(EventEntity.APPLY_STATE_PENDING, store.getValue("rot").applyState)
     }
 
-    // --- Author-bound expense identity (NS-15) ---
+    // --- Author-bound expense identity ---
 
     @Test
     fun `process resolves a correction against the same author's expense only`() = runBlocking {
@@ -2000,7 +2000,7 @@ class EventProcessorTest {
         coVerify(exactly = 0) { eventDao.insert(any()) }
     }
 
-    // --- Historical authors during reconciliation (NS-13) ---
+    // --- Historical authors during reconciliation ---
 
     /** Bob was removed at epoch 1; the group is at epoch 1 with only `pubkey` left. */
     private fun bobRemovedAtEpochOne() {

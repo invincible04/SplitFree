@@ -249,7 +249,7 @@ class NearbySessionCoordinatorTest {
     }
 
     @Test
-    fun `legacy v1 frame closes as unsupported peer`() {
+    fun `v1 frame closes as unsupported peer`() {
         val (a, b) = twoMembers()
         a.activate()
         connect(a, b)

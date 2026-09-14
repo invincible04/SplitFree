@@ -68,8 +68,8 @@ interface IdentityContract {
 
     /**
      * Record that a key revocation has started (epoch seconds, now). Called immediately after
-     * [generatePendingKeyPair] so an interrupted revocation can be told apart from a pending
-     * key left behind by an older build that never recorded a start time.
+     * [generatePendingKeyPair], so a pending key that carries a start time is one whose revocation
+     * this device began; a pending key without one has unknown provenance.
      */
     fun markRevocationStarted()
 
