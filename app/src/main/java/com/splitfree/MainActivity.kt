@@ -57,7 +57,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.settings.UserPreferences
-import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.usecase.group.JoinGroupUseCase
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.SfListCard
@@ -70,6 +69,7 @@ import com.splitfree.ui.navigation.SplitFreeNavGraph
 import com.splitfree.ui.theme.SplitFreeTheme
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
+import com.splitfree.ui.util.decodeInviteForConfirmation
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
@@ -254,15 +254,12 @@ class MainActivity : ComponentActivity() {
      * deep link (CVE-2025-4957, USENIX 2017).
      */
     private fun offerInvite(link: String) {
-        if (!link.startsWith("splitfree://join")) return
-        // Compact invite links use ?d= parameter
-        if (link.toUri().getQueryParameter("d") == null) return
-        val invite =
-            runCatching { InviteLinkCodec.decode(link) }.getOrElse { e ->
-                Log.w(TAG, "Rejected invite link: ${e.message}")
-                Toast.makeText(this, R.string.invalid_invite_link, Toast.LENGTH_LONG).show()
-                return
-            }
+        val invite = decodeInviteForConfirmation(link)
+        if (invite == null) {
+            Log.w(TAG, "Rejected invalid invite input")
+            Toast.makeText(this, R.string.invalid_invite_link, Toast.LENGTH_LONG).show()
+            return
+        }
         val hosts = invite.relays.map { relay -> relay.toUri().host ?: relay }
         pendingInvite = PendingInvite(link = link, groupName = invite.name, relayHosts = hosts)
     }

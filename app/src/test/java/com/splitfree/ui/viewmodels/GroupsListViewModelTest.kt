@@ -14,6 +14,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -295,6 +296,114 @@ class GroupsListViewModelTest {
         assertEquals(2, vm.uiState.value.groups.size)
         assertNotNull(vm.uiState.value.myNet(flat))
         job.cancel()
+    }
+
+    @Test
+    fun `return after subscription timeout keeps rows and currency but withholds cached money`() =
+        runTest(testDispatcher) {
+            summaries.value = listOf(goa, flat)
+            val vm = viewModel()
+            val first = launch { vm.uiState.collect {} }
+            vm.selectCurrency("USD")
+            first.cancel()
+            advanceTimeBy(5_001)
+
+            val refreshed = MutableSharedFlow<List<GroupSummary>>()
+            every { observeSummaries.observe() } returns refreshed
+            val second = launch { vm.uiState.collect {} }
+            val pending = vm.uiState.value
+            assertFalse(pending.loading)
+            assertEquals(listOf("goa", "flat"), pending.groups.map { it.group.id })
+            assertEquals(listOf("INR", "USD"), pending.currencies)
+            assertEquals("USD", pending.selectedCurrency)
+            assertTrue(pending.observationUnavailable)
+            assertFalse(pending.balancesAvailable)
+            assertTrue(pending.groups.none { it.balancesAvailable })
+            assertNull(pending.myNet(pending.groups[1]))
+            assertNull(pending.error)
+
+            refreshed.emit(listOf(flat.copy(myBalances = mapOf("USD" to -2200L))))
+            val ready = vm.uiState.value
+            assertFalse(ready.loading)
+            assertFalse(ready.observationUnavailable)
+            assertTrue(ready.balancesAvailable)
+            assertEquals(listOf("flat"), ready.groups.map { it.group.id })
+            assertEquals(-2200L, ready.netMinor)
+            second.cancel()
+        }
+
+    @Test
+    fun `empty cached list is unavailable on restart rather than confidently empty`() = runTest(testDispatcher) {
+        val vm = viewModel()
+        val first = launch { vm.uiState.collect {} }
+        assertTrue(vm.uiState.value.balancesAvailable)
+        first.cancel()
+        advanceTimeBy(5_001)
+
+        val refreshed = MutableSharedFlow<List<GroupSummary>>()
+        every { observeSummaries.observe() } returns refreshed
+        val second = launch { vm.uiState.collect {} }
+        assertFalse(vm.uiState.value.loading)
+        assertTrue(vm.uiState.value.groups.isEmpty())
+        assertTrue(vm.uiState.value.observationUnavailable)
+        assertFalse(vm.uiState.value.balancesAvailable)
+        refreshed.emit(emptyList())
+        assertFalse(vm.uiState.value.observationUnavailable)
+        assertTrue(vm.uiState.value.balancesAvailable)
+        second.cancel()
+    }
+
+    @Test
+    fun `quick return keeps live subscription without invalidating balances`() = runTest(testDispatcher) {
+        summaries.value = listOf(goa)
+        val vm = viewModel()
+        val first = launch { vm.uiState.collect {} }
+        first.cancel()
+        advanceTimeBy(4_000)
+        val second = launch { vm.uiState.collect {} }
+        verify(exactly = 1) { observeSummaries.observe() }
+        assertFalse(vm.uiState.value.loading)
+        assertTrue(vm.uiState.value.balancesAvailable)
+        assertEquals(240000L, vm.uiState.value.netMinor)
+        second.cancel()
+    }
+
+    @Test
+    fun `retry retains cached rows as unavailable until fresh balances arrive`() = runTest(testDispatcher) {
+        summaries.value = listOf(goa)
+        val vm = viewModel()
+        val job = launch { vm.uiState.collect {} }
+        val refreshed = MutableSharedFlow<List<GroupSummary>>()
+        every { observeSummaries.observe() } returns refreshed
+        vm.retryBalances()
+
+        assertFalse(vm.uiState.value.loading)
+        assertEquals("goa", vm.uiState.value.groups.single().group.id)
+        assertTrue(vm.uiState.value.observationUnavailable)
+        assertFalse(vm.uiState.value.balancesAvailable)
+        assertNull(vm.uiState.value.myNet(vm.uiState.value.groups.single()))
+        refreshed.emit(listOf(goa.copy(balancesAvailable = false)))
+        assertFalse(vm.uiState.value.observationUnavailable)
+        assertFalse(vm.uiState.value.balancesAvailable)
+        job.cancel()
+    }
+
+    @Test
+    fun `failure after restart preserves cached rows without restoring stale balances`() = runTest(testDispatcher) {
+        summaries.value = listOf(goa)
+        val vm = viewModel()
+        val first = launch { vm.uiState.collect {} }
+        first.cancel()
+        advanceTimeBy(5_001)
+        every { observeSummaries.observe() } returns flow { throw IllegalStateException("db closed") }
+        val second = launch { vm.uiState.collect {} }
+
+        assertFalse(vm.uiState.value.loading)
+        assertEquals("goa", vm.uiState.value.groups.single().group.id)
+        assertTrue(vm.uiState.value.observationUnavailable)
+        assertFalse(vm.uiState.value.balancesAvailable)
+        assertEquals(UiMessage.Raw("db closed"), vm.uiState.value.error)
+        second.cancel()
     }
 
     private fun viewModel(handle: SavedStateHandle = SavedStateHandle()) =

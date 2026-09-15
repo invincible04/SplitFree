@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      BUILD_TOOLS_VERSION: '36.1.0' # must equal buildToolsVersion in app/build.gradle.kts
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -33,10 +34,14 @@ jobs:
           cmdline-tools-version: '15859902' # Command-line Tools 22.0, understands API 37.0 packages
           packages: '' # Install only the explicit SDK packages below
       - name: Install pinned Android SDK packages
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0'
+        run: sdkmanager 'platforms;android-37.0' "build-tools;$BUILD_TOOLS_VERSION"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           cache-read-only: true
+      - name: Check current source publication policy
+        run: |
+          python3 -B tools/release/publication_check.py --source worktree
+          python3 -B tools/release/publication_check.py --source index
       - name: Test release helpers
         run: python3 -m unittest discover -s tools/release/tests -v
       - name: Check both build variants without release credentials
@@ -44,6 +49,12 @@ jobs:
           ./gradlew --no-daemon --max-workers=2 -PsplitfreeUnsignedRelease=true \
             spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
             :app:assembleDebug :app:assembleRelease
+      - name: Verify compiled variant isolation
+        env:
+          SPLITFREE_VARIANT_BUILD_DIR: app/build
+        run: |
+          AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt2" \
+            python3 -B -m unittest discover -s tools/release/tests -p test_variants.py -v
       - name: Retain test and lint reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

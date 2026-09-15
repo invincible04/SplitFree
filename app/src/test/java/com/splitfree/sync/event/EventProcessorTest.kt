@@ -1377,7 +1377,7 @@ class EventProcessorTest {
         assertFalse(result.stored)
     }
 
-    // --- Ingestion outcomes and contexts (docs/nearby-repair-contract.md) ---
+    // --- Ingestion outcomes and contexts ---
 
     @Test
     fun `process reports APPLIED with the inner event id for a stored expense`() = runBlocking {

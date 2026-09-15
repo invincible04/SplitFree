@@ -1,6 +1,6 @@
 package com.splitfree.ui.screens.group
 
-import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,10 +37,12 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,7 +62,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.splitfree.R
 import com.splitfree.domain.model.sync.ConnectionStatus
 import com.splitfree.domain.usecase.group.GroupSummary
@@ -82,14 +90,19 @@ import com.splitfree.ui.components.SignedMoneyText
 import com.splitfree.ui.components.StatusPill
 import com.splitfree.ui.components.WarningCard
 import com.splitfree.ui.theme.splitFree
+import com.splitfree.ui.util.GoogleQrScanner
 import com.splitfree.ui.util.adaptiveLayoutInfo
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.GroupsListUiState
 import com.splitfree.ui.viewmodels.GroupsListViewModel
+import com.splitfree.ui.viewmodels.QrScanPhase
+import com.splitfree.ui.viewmodels.QrScanState
+import com.splitfree.ui.viewmodels.QrScanViewModel
 import com.splitfree.util.CurrencyFormatter
 import com.splitfree.util.DebugLog as Log
 import kotlin.math.abs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 private const val TAG = "GroupsListScreen"
@@ -118,7 +131,8 @@ data class GroupsListActions(
     val pasteInvite: () -> Unit = {},
     val scanQr: () -> Unit = {},
     val selectCurrency: (String) -> Unit = {},
-    val retryBalances: () -> Unit = {}
+    val retryBalances: () -> Unit = {},
+    val cancelScan: () -> Unit = {}
 )
 
 /**
@@ -147,6 +161,18 @@ fun GroupsListScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val noInviteMessage = stringResource(R.string.clipboard_no_invite)
+    val scanner: QrScanViewModel = viewModel(
+        factory = remember(context.applicationContext) {
+            viewModelFactory { initializer { QrScanViewModel(GoogleQrScanner(context.applicationContext)) } }
+        }
+    )
+    val scanState by scanner.state.collectAsStateWithLifecycle()
+    QrScanLifecycle(scanner, onScanResult)
+
+    val scanErrorText = scanState.error?.let { stringResource(it) }
+    LaunchedEffect(scanErrorText) {
+        if (scanErrorText != null) snackbarHostState.showSnackbar(scanErrorText)
+    }
 
     val errorText = state.error?.asString()
     LaunchedEffect(errorText) {
@@ -157,24 +183,65 @@ fun GroupsListScreen(
     }
 
     val actions =
-        remember(onGroupClick, onCreateGroup, onSettings, onScanResult, clipboard, context, noInviteMessage) {
+        remember(onGroupClick, onCreateGroup, onSettings, onScanResult, clipboard, context, noInviteMessage, scanner) {
             GroupsListActions(
                 openGroup = onGroupClick,
                 createGroup = onCreateGroup,
                 openSettings = onSettings,
                 pasteInvite = {
                     scope.launch {
-                        val link = extractInviteLink(clipboard)
-                        if (link != null) onScanResult(link) else snackbarHostState.showSnackbar(noInviteMessage)
+                        try {
+                            val link = extractInviteLink(clipboard)
+                            if (link != null) onScanResult(link) else snackbarHostState.showSnackbar(noInviteMessage)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            snackbarHostState.showSnackbar(noInviteMessage)
+                        }
                     }
                 },
-                scanQr = { startQrScan(context, onScanResult) },
+                scanQr = scanner::start,
+                cancelScan = scanner::cancelPreparation,
                 selectCurrency = viewModel::selectCurrency,
                 retryBalances = viewModel::retryBalances
             )
         }
 
-    GroupsListContent(state = state, actions = actions, snackbarHostState = snackbarHostState)
+    GroupsListContent(state = state, actions = actions, snackbarHostState = snackbarHostState, scanState = scanState)
+}
+
+/** Shared lifecycle boundary, exercised with real navigation owners in tests. */
+@Composable
+internal fun QrScanLifecycle(scanner: QrScanViewModel, onScanResult: (String) -> Unit) {
+    val scanState by scanner.state.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifecycleState by lifecycle.currentStateFlow.collectAsStateWithLifecycle()
+    val latestScanResult by rememberUpdatedState(onScanResult)
+    DisposableEffect(lifecycle, scanner) {
+        val observer = LifecycleEventObserver { _, _ ->
+            scanner.setResumed(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        }
+        lifecycle.addObserver(observer)
+        scanner.setResumed(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        onDispose {
+            lifecycle.removeObserver(observer)
+            scanner.setResumed(false)
+        }
+    }
+    BackHandler(enabled = scanState.phase == QrScanPhase.Preparing) { scanner.cancelPreparation() }
+    LaunchedEffect(scanState.result, lifecycleState) {
+        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
+            scanner.takeResult()?.let { result ->
+                try {
+                    latestScanResult(result)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    scanner.deliveryFailed()
+                }
+            }
+        }
+    }
 }
 
 // --- Route helpers: clipboard and QR scanner ---
@@ -199,24 +266,6 @@ private suspend fun extractInviteLink(clipboard: Clipboard): String? {
     return link
 }
 
-/** Launches the ML Kit barcode scanner for invite QR codes and forwards the raw value. */
-private fun startQrScan(context: Context, onScanResult: (String) -> Unit) {
-    val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
-        .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
-        .build()
-    com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options)
-        .startScan()
-        .addOnSuccessListener { barcode ->
-            barcode.rawValue?.let {
-                Log.i(TAG, "QR scanned (${it.length} chars)")
-                onScanResult(it)
-            }
-        }
-        .addOnFailureListener { e ->
-            Log.w(TAG, "QR scan failed: ${e.message}")
-        }
-}
-
 // --- Stateless content ---
 
 /**
@@ -231,7 +280,8 @@ internal fun GroupsListContent(
     state: GroupsListUiState,
     actions: GroupsListActions,
     modifier: Modifier = Modifier,
-    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+    scanState: QrScanState = QrScanState()
 ) {
     val tokens = adaptiveSizeTokens()
     val adaptive = adaptiveLayoutInfo()
@@ -241,7 +291,7 @@ internal fun GroupsListContent(
 
     Scaffold(
         modifier = modifier,
-        topBar = { HomeTopBar(actions, endInset = horizontal) },
+        topBar = { HomeTopBar(actions, endInset = horizontal, scanEnabled = !scanState.busy) },
         bottomBar = {
             SfBottomDock {
                 SfAccentButton(
@@ -279,6 +329,19 @@ internal fun GroupsListContent(
                             modifier = Modifier.padding(bottom = 13.dp).testTag("home_offline")
                         )
                     }
+                    if (scanState.busy || scanState.error != null) {
+                        Column(Modifier.padding(bottom = 12.dp).testTag("home_scan_status")) {
+                            val message = scanState.error ?: if (scanState.phase == QrScanPhase.Preparing) {
+                                R.string.qr_scan_preparing
+                            } else {
+                                R.string.qr_scan_opening
+                            }
+                            Text(stringResource(message), style = MaterialTheme.typography.bodyMedium)
+                            if (scanState.phase == QrScanPhase.Preparing) {
+                                SfTextButton(stringResource(R.string.cancel), actions.cancelScan)
+                            }
+                        }
+                    }
                     SfLargeTitleHeader(
                         eyebrow = stringResource(R.string.home_eyebrow),
                         title = stringResource(R.string.home_title)
@@ -297,7 +360,12 @@ internal fun GroupsListContent(
             }
             item(key = "invite-head") { SectionHead(title = stringResource(R.string.have_an_invite)) }
             item(key = "invite-grid") {
-                InviteQuickGrid(stacked = stackForLargeText, onScan = actions.scanQr, onPaste = actions.pasteInvite)
+                InviteQuickGrid(
+                    stacked = stackForLargeText,
+                    onScan = actions.scanQr,
+                    onPaste = actions.pasteInvite,
+                    scanEnabled = !scanState.busy
+                )
             }
         }
     }
@@ -353,13 +421,14 @@ private fun BalanceUnavailableNotice(onRetry: () -> Unit) {
 // --- Top bar ---
 
 @Composable
-private fun HomeTopBar(actions: GroupsListActions, endInset: Dp) {
+private fun HomeTopBar(actions: GroupsListActions, endInset: Dp, scanEnabled: Boolean) {
     SfTopBar(title = stringResource(R.string.app_name), onBack = null) {
         SfIconButton(
             icon = Icons.Outlined.QrCodeScanner,
             contentDescription = stringResource(R.string.scan_qr),
             onClick = actions.scanQr,
-            modifier = Modifier.testTag("home_scan")
+            modifier = Modifier.testTag("home_scan"),
+            enabled = scanEnabled
         )
         SfIconButton(
             icon = Icons.Outlined.ContentPaste,
@@ -702,10 +771,16 @@ private fun HomeEmpty(onCreate: () -> Unit) {
 
 /** Two invite shortcuts; stacked when large text leaves no room side by side. */
 @Composable
-private fun InviteQuickGrid(stacked: Boolean, onScan: () -> Unit, onPaste: () -> Unit) {
+private fun InviteQuickGrid(stacked: Boolean, onScan: () -> Unit, onPaste: () -> Unit, scanEnabled: Boolean) {
     if (stacked) {
         Column(verticalArrangement = Arrangement.spacedBy(CardSpacing)) {
-            QuickTile(Icons.Outlined.QrCodeScanner, stringResource(R.string.quick_scan_qr), onScan, "home_quick_scan")
+            QuickTile(
+                Icons.Outlined.QrCodeScanner,
+                stringResource(R.string.quick_scan_qr),
+                onScan,
+                "home_quick_scan",
+                enabled = scanEnabled
+            )
             QuickTile(
                 Icons.Outlined.ContentPaste,
                 stringResource(R.string.quick_paste_link),
@@ -720,7 +795,8 @@ private fun InviteQuickGrid(stacked: Boolean, onScan: () -> Unit, onPaste: () ->
                 stringResource(R.string.quick_scan_qr),
                 onScan,
                 "home_quick_scan",
-                Modifier.weight(1f)
+                Modifier.weight(1f),
+                enabled = scanEnabled
             )
             QuickTile(
                 Icons.Outlined.ContentPaste,
@@ -739,10 +815,12 @@ private fun QuickTile(
     label: String,
     onClick: () -> Unit,
     tag: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     SfCard(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier.heightIn(min = QuickTileMinHeight).semantics { role = Role.Button }.testTag(tag)
     ) {
         Row(

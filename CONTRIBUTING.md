@@ -69,7 +69,9 @@ cd SplitFree
 - On Windows, use `gradlew.bat`.
 - Debug builds do not require release signing credentials.
 
-> **Protect existing installs:** debug and release share `com.splitfree`, but normally use different signing certificates. Use a dedicated test device or emulator; separate work profiles do not bypass package-signature checks.
+> **Protect existing installs:** new debug builds use `com.splitfree.debug`, labelled **SplitFree Debug**, with their own private data. Production stays `com.splitfree`. Older same-ID debug installs still require a data-preserving migration plan; never uninstall or clear a real installation just to resolve a signature conflict.
+
+Debug intentionally does not register for external `splitfree://join` links. Its in-app Scan and Paste continue accepting the same invite format. Separate app IDs do not isolate relay/Bluetooth test traffic: use disposable identities and groups.
 
 ### Configuration map
 
@@ -110,6 +112,23 @@ git checkout -b fix/describe-the-change
 - For release-specific changes, also follow [RELEASING.md](RELEASING.md).
 - Run `python3 -m unittest discover -s tools/release/tests -v` when changing release helpers or workflow signing steps.
 - CI uses `-PsplitfreeUnsignedRelease=true` to check release builds without release credentials.
+
+### Before staging or sharing source
+
+```bash
+python3 -B tools/release/publication_check.py --source worktree
+python3 -B tools/release/publication_check.py --source index
+```
+
+The first command checks current tracked/untracked source and ignored files under
+`app/src`, `app/schemas` and `gradle`. The second checks the exact staged blobs,
+which may differ from working files. Both fail on findings and print only metadata,
+not matched values. Run the index check again after staging. Neither stages files.
+
+Keep credentials, personal data and generated artifacts out of source. Ignore rules
+are not protection for already tracked files. Do not bypass a rejection by renaming
+a private file or excluding a test directory. See the [publication checks](RELEASING.md#source-publication-checks)
+for narrow binary/fixture reviews, limitations and the separate history gate.
 
 ## Code style
 

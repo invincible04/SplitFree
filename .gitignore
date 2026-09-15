@@ -49,3 +49,50 @@ Thumbs.db
 
 # Project docs (local only)
 /docs/
+
+# Python release-helper bytecode
+__pycache__/
+*.py[cod]
+
+# Private configuration and key containers (public fingerprint stays tracked)
+.env.*
+*.p12
+*.pfx
+*.pem
+*.key
+*.der
+key.properties
+keystore.properties
+signing.properties
+credentials
+credentials.json
+service-account*.json
+service_account*.json
+google-services.json
+id_rsa
+id_ed25519
+id_ecdsa
+*-password.txt
+
+# Personal data, backups and local generated evidence
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.bak
+*.backup
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.gpg
+*.enc
+*.hprof
+*.heapdump
+mapping.txt
+
+# Held only while tools/release/distribute.py runs in this checkout
+/.local-distribution.lock/

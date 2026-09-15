@@ -31,7 +31,7 @@ object SfMotion {
     private val LayoutDirection.trailingSign: Int
         get() = if (this == LayoutDirection.Ltr) 1 else -1
 
-    private fun <T> spec() = tween<T>(durationMillis = Base, easing = Ease)
+    private fun <T> spec(durationMillis: Int = Base) = tween<T>(durationMillis = durationMillis, easing = Ease)
 
     /** New destination entering on forward navigation, from the trailing edge. */
     fun forwardEnter(direction: LayoutDirection): EnterTransition =
@@ -43,9 +43,9 @@ object SfMotion {
 
     /** Previous destination re-entering on back, from the leading edge. */
     fun popEnter(direction: LayoutDirection): EnterTransition =
-        slideInHorizontally(spec()) { -direction.trailingSign * it / 13 } + fadeIn(spec())
+        slideInHorizontally(spec(Fast)) { -direction.trailingSign * it / 13 }
 
     /** Popped destination leaving on back, towards the trailing edge. */
     fun popExit(direction: LayoutDirection): ExitTransition =
-        slideOutHorizontally(spec()) { direction.trailingSign * it / 11 } + fadeOut(spec())
+        slideOutHorizontally(spec(Fast)) { direction.trailingSign * it / 11 } + fadeOut(spec(Fast))
 }

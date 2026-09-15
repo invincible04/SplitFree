@@ -27,6 +27,14 @@ def signing_shell():
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
+    def test_current_source_checks_before_build_and_history_is_separate(self):
+        for path in (WORKFLOW, ROOT / '.github/workflows/ci.yml'):
+            text = path.read_text()
+            for source in ('worktree', 'index'):
+                check = text.index('publication_check.py --source ' + source)
+                self.assertLess(check, text.index(':app:assembleDebug :app:assembleRelease'))
+            self.assertNotIn('--source history', text)
+
     def test_signer_has_no_repository_code_or_build_cache(self):
         section = job(WORKFLOW.read_text(), 'sign')
         self.assertNotIn('actions/checkout@', section)
@@ -78,6 +86,25 @@ class WorkflowBoundaryTests(unittest.TestCase):
                              text.count("cmdline-tools-version: '15859902'"))
             self.assertEqual(text.count('uses: android-actions/setup-android@'),
                              text.count("packages: ''"))
+
+    def test_compiled_variant_check_runs_after_both_builds(self):
+        for path in (WORKFLOW, ROOT / '.github/workflows/ci.yml'):
+            text = path.read_text()
+            check = text.index('      - name: Verify compiled variant isolation')
+            self.assertGreater(check, text.index(':app:assembleDebug :app:assembleRelease'))
+            self.assertIn('SPLITFREE_VARIANT_BUILD_DIR: app/build', text[check:])
+            self.assertIn('AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt2"', text[check:])
+            self.assertIn('-p test_variants.py -v', text[check:])
+
+    def test_workflows_install_and_use_the_build_tools_gradle_compiles_with(self):
+        gradle = (ROOT / 'app/build.gradle.kts').read_text()
+        versions = re.findall(r'^\s*buildToolsVersion\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', gradle, re.M)
+        self.assertEqual(len(versions), 1, 'app/build.gradle.kts must pin exactly one buildToolsVersion')
+        for path in (WORKFLOW, ROOT / '.github/workflows/ci.yml'):
+            text = path.read_text()
+            self.assertEqual(re.findall(r"^\s*BUILD_TOOLS_VERSION: '([^']+)'", text, re.M), versions, path.name)
+            self.assertNotRegex(text, r"build-tools[;/][0-9]", f'{path.name} hardcodes a build-tools version')
+            self.assertIn('"build-tools;$BUILD_TOOLS_VERSION"', text)
 
     def test_unsigned_gradle_mode_is_explicit_and_local_signing_remains(self):
         source = (ROOT / 'app/build.gradle.kts').read_text()

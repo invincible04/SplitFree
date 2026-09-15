@@ -26,6 +26,14 @@
     <string name="no_groups_body">Create a group for a trip or a flat, then invite people.</string>
     <string name="paste_invite_link">Paste invite link</string>
     <string name="scan_qr">Scan QR code</string>
+    <string name="qr_scan_preparing">Preparing scanner…</string>
+    <string name="qr_scan_opening">Opening scanner… Close it to return here.</string>
+    <string name="qr_scan_services_unavailable">Scanning needs up-to-date, enabled Google Play services. Update or enable it in Android settings, or paste an invite link instead.</string>
+    <string name="qr_scan_no_camera">No camera is available on this device. Paste an invite link instead.</string>
+    <string name="qr_scan_download_failed">The scanner module could not be prepared. Try again, or paste an invite link.</string>
+    <string name="qr_scan_camera_denied">Google Play services could not access the camera. Check its camera permission and Android camera access setting, or paste an invite link.</string>
+    <string name="qr_scan_failed">The scanner could not open or complete the scan. Try again, or paste an invite link. If this continues, copy the diagnostics report in Settings.</string>
+    <string name="qr_scan_empty">This QR code has no readable text. Try a SplitFree invite QR or paste the invite link.</string>
     <string name="home_eyebrow">Shared expenses</string>
     <string name="home_title">Your groups.</string>
     <string name="status_connecting">Connecting</string>

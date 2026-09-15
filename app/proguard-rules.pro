@@ -37,3 +37,12 @@
 
 # ZXing QR
 -keep class com.google.zxing.** { *; }
+
+# ML Kit discovers these manifest-declared registrars through reflection.
+# Keep their names and public no-argument constructors in optimized APKs.
+-keep class com.google.mlkit.common.internal.CommonComponentRegistrar {
+    public <init>();
+}
+-keep class com.google.mlkit.vision.common.internal.VisionCommonRegistrar {
+    public <init>();
+}

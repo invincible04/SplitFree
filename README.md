@@ -290,11 +290,11 @@ cd SplitFree
 | `./gradlew spotlessApply` | Apply formatting locally |
 | `./gradlew :app:lintDebug :app:lintRelease` | Analyze both variants with Android Lint |
 
-> **Installation safety:** debug and release builds share the app ID `com.splitfree`.
+> **Installation safety:** debug is `com.splitfree.debug` (**SplitFree Debug**); production remains `com.splitfree` (**SplitFree**).
 
-- Differently signed builds cannot replace each other or coexist, even in separate user/work profiles.
-- Use a dedicated test device or emulator.
-- Do not uninstall a real installation without verified identity and group-data backups.
+- Debug and production can coexist with separate private data. Debug does not claim external production invite links; use its in-app Scan or Paste.
+- Older debug builds used the production ID. The new suffix does not migrate their data or make them replaceable by a differently signed release. Do not uninstall or clear them without verified backups.
+- Share only the exact signed APK produced by the [verified local distribution command](RELEASING.md#verified-local-distribution). A raw Gradle build is not installation acceptance.
 
 ### Release signing
 

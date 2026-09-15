@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -67,35 +68,41 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
         popEnterTransition = { SfMotion.popEnter(direction) },
         popExitTransition = { SfMotion.popExit(direction) }
     ) {
-        composable(Screen.Onboarding.route) {
+        composable(Screen.Onboarding.route) { entry ->
             OnboardingScreen(onComplete = {
-                navController.navigate(Screen.GroupsList.route) {
-                    popUpTo(Screen.Onboarding.route) { inclusive = true }
+                navController.navigateFrom(entry) {
+                    navigate(Screen.GroupsList.route) {
+                        popUpTo(Screen.Onboarding.route) { inclusive = true }
+                    }
                 }
             })
         }
-        composable(Screen.GroupsList.route) {
+        composable(Screen.GroupsList.route) { entry ->
             GroupsListScreen(
-                onGroupClick = { navController.navigate(Screen.GroupDetail.withId(it)) },
-                onCreateGroup = { navController.navigate(Screen.CreateGroup.route) },
-                onSettings = { navController.navigate(Screen.Settings.route) },
+                onGroupClick = { groupId ->
+                    navController.navigateFrom(entry) { navigate(Screen.GroupDetail.withId(groupId)) }
+                },
+                onCreateGroup = { navController.navigateFrom(entry) { navigate(Screen.CreateGroup.route) } },
+                onSettings = { navController.navigateFrom(entry) { navigate(Screen.Settings.route) } },
                 onScanResult = onScanResult
             )
         }
-        composable(Screen.CreateGroup.route) {
+        composable(Screen.CreateGroup.route) { entry ->
             CreateGroupScreen(
                 onGroupCreated = { groupId ->
-                    navController.navigate(Screen.GroupDetail.withId(groupId)) {
-                        popUpTo(Screen.GroupsList.route)
+                    navController.navigateFrom(entry) {
+                        navigate(Screen.GroupDetail.withId(groupId)) {
+                            popUpTo(Screen.GroupsList.route)
+                        }
                     }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.navigateFrom(entry) { popBackStack() } }
             )
         }
-        composable(Screen.Settings.route) {
+        composable(Screen.Settings.route) { entry ->
             SettingsScreen(
-                onBack = { navController.popBackStack() },
-                onDebugLog = { navController.navigate(Screen.DebugLog.route) }
+                onBack = { navController.navigateFrom(entry) { popBackStack() } },
+                onDebugLog = { navController.navigateFrom(entry) { navigate(Screen.DebugLog.route) } }
             )
         }
         composable(
@@ -107,14 +114,18 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
             GroupDetailScreen(
                 expenseSaved = expenseSaved,
                 onExpenseSavedConsumed = { entry.savedStateHandle["expenseSaved"] = false },
-                onAddExpense = { navController.navigate(Screen.AddExpense.withGroupId(it)) },
+                onAddExpense = { groupId ->
+                    navController.navigateFrom(entry) { navigate(Screen.AddExpense.withGroupId(groupId)) }
+                },
                 onEditExpense = { expenseIdentity ->
-                    navController.navigate(Screen.EditExpense.createRoute(groupId, expenseIdentity))
+                    navController.navigateFrom(entry) {
+                        navigate(Screen.EditExpense.createRoute(groupId, expenseIdentity))
+                    }
                 },
                 onNearbySync = { groupId ->
-                    navController.navigate(Screen.NearbySync.withGroupId(groupId))
+                    navController.navigateFrom(entry) { navigate(Screen.NearbySync.withGroupId(groupId)) }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.navigateFrom(entry) { popBackStack() } }
             )
         }
         composable(
@@ -133,23 +144,30 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
                     defaultValue = null
                 }
             )
-        ) {
+        ) { entry ->
             AddExpenseScreen(
                 onExpenseAdded = {
-                    navController.previousBackStackEntry?.savedStateHandle?.set("expenseSaved", true)
-                    navController.popBackStack()
+                    navController.navigateFrom(entry) {
+                        previousBackStackEntry?.savedStateHandle?.set("expenseSaved", true)
+                        popBackStack()
+                    }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.navigateFrom(entry) { popBackStack() } }
             )
         }
         composable(
             Screen.NearbySync.route,
             arguments = listOf(navArgument("groupId") { type = NavType.StringType })
-        ) {
-            NearbySyncScreen(onBack = { navController.popBackStack() })
+        ) { entry ->
+            NearbySyncScreen(onBack = { navController.navigateFrom(entry) { popBackStack() } })
         }
-        composable(Screen.DebugLog.route) {
-            DebugLogScreen(onBack = { navController.popBackStack() })
+        composable(Screen.DebugLog.route) { entry ->
+            DebugLogScreen(onBack = { navController.navigateFrom(entry) { popBackStack() } })
         }
     }
+}
+
+// Outgoing destinations remain composed during transitions. Their callbacks must not mutate the new top.
+internal inline fun NavHostController.navigateFrom(entry: NavBackStackEntry, action: NavHostController.() -> Unit) {
+    if (currentBackStackEntry === entry) action()
 }

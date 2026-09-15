@@ -16,6 +16,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
@@ -33,6 +34,8 @@ import com.splitfree.domain.model.sync.ConnectionStatus
 import com.splitfree.domain.usecase.group.GroupSummary
 import com.splitfree.ui.theme.SplitFreeTheme
 import com.splitfree.ui.viewmodels.GroupsListUiState
+import com.splitfree.ui.viewmodels.QrScanPhase
+import com.splitfree.ui.viewmodels.QrScanState
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -53,6 +56,44 @@ class GroupsListContentTest {
     private var state by mutableStateOf(readyState())
     private lateinit var contentView: View
     private var renderedFontScale = 1f
+
+    @Test
+    fun `both scan buttons disabled during preparation while paste stays usable`() {
+        var cancels = 0
+        compose.setContent {
+            SplitFreeTheme {
+                GroupsListContent(
+                    state = readyState(),
+                    actions = GroupsListActions(cancelScan = { cancels++ }),
+                    scanState = QrScanState(phase = QrScanPhase.Preparing)
+                )
+            }
+        }
+        compose.onNodeWithTag("home_scan").assertIsNotEnabled()
+        compose.onNodeWithTag("home_paste").assertIsEnabled()
+        compose.onNodeWithTag("home_scan_status").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.cancel)).performClick()
+        compose.runOnIdle { assertEquals(1, cancels) }
+        listNode("home_quick_scan").assertIsNotEnabled()
+        listNode("home_quick_paste").assertIsEnabled()
+    }
+
+    @Test
+    fun `scanner failure stays visible and scan is retryable`() {
+        var scans = 0
+        compose.setContent {
+            SplitFreeTheme {
+                GroupsListContent(
+                    state = readyState(),
+                    actions = GroupsListActions(scanQr = { scans++ }),
+                    scanState = QrScanState(error = R.string.qr_scan_services_unavailable)
+                )
+            }
+        }
+        compose.onNodeWithText(text(R.string.qr_scan_services_unavailable)).assertIsDisplayed()
+        compose.onNodeWithTag("home_scan").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, scans) }
+    }
 
     @Test
     fun `ready state shows net to receive with per currency totals`() {

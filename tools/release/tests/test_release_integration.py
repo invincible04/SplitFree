@@ -54,6 +54,26 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.assertTrue(api.release_list[0]['draft'])
         self.assertEqual(bundle.info['certificateSha256'], artifact_fixture.CERT)
 
+    def test_finalize_uses_shared_exact_file_validator_before_public_bundle(self):
+        a, f = artifact_fixture.a, self.fixture
+        args = f.final_args()
+        with patch.object(a, 'run', side_effect=f.runner), patch.object(a, 'inspect_signed_apk', wraps=a.inspect_signed_apk) as inspector:
+            a.finalize(args)
+        inspector.assert_called_once_with(args.apk, artifact_fixture.META, args.build_tools, artifact_fixture.CERT)
+        bundle = upload_fixture.release.load_bundle(args.output, artifact_fixture.META['tag'], artifact_fixture.META['commit'])
+        self.assertEqual(set(bundle.info), a.METADATA_KEYS | {'certificateSha256', 'artifacts'})
+
+    def test_signature_rejection_never_creates_an_uploadable_bundle(self):
+        a, f = artifact_fixture.a, self.fixture
+        args = f.final_args()
+        def rejected(*command):
+            if Path(command[0]).name == 'apksigner':
+                raise a.ReleaseError('DOES NOT VERIFY')
+            return f.runner(*command)
+        with patch.object(a, 'run', side_effect=rejected), self.assertRaisesRegex(a.ReleaseError, 'DOES NOT VERIFY'):
+            a.finalize(args)
+        self.assertFalse(args.output.exists())
+
     def test_publication_is_refused_for_a_completed_published_bundle(self):
         bundle = self.finalized_bundle()
         api = upload_fixture.FakeGitHub(bundle)

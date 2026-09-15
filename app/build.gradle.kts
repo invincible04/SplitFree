@@ -26,7 +26,9 @@ android {
         applicationId = "com.splitfree"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
+        // Keep the public version at 1.0.0 until the first approved GitHub release.
+        // Android update ordering is independent of the displayed version.
+        versionCode = 3
         versionName = "1.0.0"
     }
 
@@ -53,6 +55,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
             enableUnitTestCoverage = true
         }
         release {

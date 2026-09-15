@@ -65,6 +65,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           cache-disabled: true
+      - name: Check current source publication policy
+        run: |
+          python3 -B tools/release/publication_check.py --source worktree
+          python3 -B tools/release/publication_check.py --source index
       - name: Test release helpers
         run: python3 -m unittest discover -s tools/release/tests -v
       - name: Check and build without signing credentials
@@ -72,6 +76,12 @@ jobs:
           ./gradlew --no-daemon --max-workers=2 -PsplitfreeUnsignedRelease=true \
             spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
             :app:assembleDebug :app:assembleRelease
+      - name: Verify compiled variant isolation
+        env:
+          SPLITFREE_VARIANT_BUILD_DIR: app/build
+        run: |
+          AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt2" \
+            python3 -B -m unittest discover -s tools/release/tests -p test_variants.py -v
       - name: Verify unsigned APK and package exact source
         run: |
           python3 tools/release/artifacts.py prepare \

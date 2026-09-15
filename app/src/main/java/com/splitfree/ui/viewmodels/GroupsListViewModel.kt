@@ -43,8 +43,8 @@ import kotlinx.coroutines.launch
  * @property selectedCurrency the currency the hero and rows describe, or null when [currencies] is empty
  * @property connection relay status to show; starts as connecting so a fresh launch never reads as offline
  * @property error a non-fatal observation failure to surface; the list keeps its last good value
- * @property observationUnavailable true while the group observation itself has failed: [groups] is the last
- *   list seen with every balance marked unavailable, and an empty list is not a "no groups yet" state
+ * @property observationUnavailable true while the group observation has failed or is restarting: [groups]
+ *   is the last list seen with every balance marked unavailable, and an empty list is not a "no groups yet" state
  */
 data class GroupsListUiState(
     val loading: Boolean = true,
@@ -108,10 +108,10 @@ constructor(
     /** Bumped by [retryBalances]; each bump resubscribes to the group observation. */
     private val retryRequests = MutableStateFlow(0L)
 
-    /** Last list the observation produced; shown with every balance unavailable if the observation fails. */
-    private var lastGroups: List<GroupSummary> = emptyList()
+    /** Preserve list identity across resubscription without presenting cached balances as current. */
+    private var lastGroups: List<GroupSummary>? = null
 
-    /** One observation frame: `null` groups until the first list, [unavailable] after the stream failed. */
+    /** One observation frame: `null` groups until the first list, [unavailable] while no fresh list is known. */
     private data class Observation(val groups: List<GroupSummary>?, val unavailable: Boolean = false)
 
     /** True once [CONNECTING_GRACE_MS] have elapsed since creation. */
@@ -135,12 +135,21 @@ constructor(
                 lastGroups = groups
                 Observation(groups)
             }
-            .onStart { emit(Observation(null)) }
+            .onStart {
+                val cached = lastGroups
+                emit(
+                    if (cached == null) {
+                        Observation(null)
+                    } else {
+                        Observation(cached.map { it.copy(balancesAvailable = false) }, unavailable = true)
+                    }
+                )
+            }
             .catch { e ->
                 if (e is CancellationException || e !is Exception) throw e
                 Log.e(TAG, "Group observation failed: ${e.message}", e)
                 observationError.value = e.toUiMessage(R.string.group_observation_failed)
-                emit(Observation(lastGroups.map { it.copy(balancesAvailable = false) }, unavailable = true))
+                emit(Observation(lastGroups.orEmpty().map { it.copy(balancesAvailable = false) }, unavailable = true))
             }
     }
 

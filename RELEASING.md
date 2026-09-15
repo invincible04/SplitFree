@@ -4,6 +4,108 @@ A maintainer checklist for a signed Android release, not evidence that one has s
 
 [Project overview](README.md) · [Contributor guide](CONTRIBUTING.md) · [Security policy](SECURITY.md)
 
+## Version policy before the first release
+
+Keep the displayed production `versionName` at **`1.0.0`** until the first approved
+GitHub release. Uploading source does not itself release an APK or require a version
+bump. The debug label remains `1.0.0-debug` while this policy applies.
+
+Android's internal `versionCode` is independent of `versionName`. The current code
+is the `versionCode` literal in `app/build.gradle.kts`; every bundle in the
+[distribution ledger](#verified-local-distribution) records the code it was built
+with. Increase the code for each new distributed update, even while the displayed
+version stays `1.0.0`. Do not reset it to 1, weaken the ledger, rename an old APK
+as a new version, or move an existing release tag. Repeated local build checks are
+not new distributions. Earlier bundles in the ledger are historical, not candidates;
+they remain unchanged. The distribution command refuses a code that does not exceed
+the ledger's newest bundle, so a new distribution never needs a displayed-version
+bump.
+
+## What may be published on GitHub
+
+| Material | Git source repository | Public release or other handling |
+| --- | --- | --- |
+| Reviewed Kotlin/Python source, tests, manifests, Gradle files, workflows, license/docs and owned assets | Yes, after ownership, license and sensitive-data review | Corresponding source must match the released APK's exact commit. |
+| Public signing certificate SHA-256 (`release/signing-certificate.sha256`), APK/file checksums, source commit SHA and pinned Actions SHAs | Yes | Safe and useful verification metadata; hashes alone do not authenticate the publisher. |
+| Public signing certificate and APK signature | Public, but do not confuse a certificate with a private key | Already extractable from signed APKs. Review certificate subject metadata for privacy. |
+| Production-signed, verified APK | No, keep generated binaries out of source history | Attach only the accepted APK to the approved GitHub Release. |
+| `release-info.json`, `SHA256SUMS.txt`, exact-source archive, license and reviewed dependency notices | Generated release metadata need not be committed | These accompany the APK as the six allowlisted release assets. |
+| Keystore (`*.jks`, `*.keystore`, private PKCS#12), private signing key, passwords, tokens, recovery phrases, real user backups | **Never**, including private repositories or Git history | Never in releases, Actions uploads, logs, issues or chat. Use protected signing-environment secrets and encrypted offline backups. Base64 keystore data is equally secret. |
+| `local.properties`, credential-bearing `.env*`/key properties, SDK paths and local configuration | No | Keep local; publish only explicitly reviewed, secret-free examples. |
+| Debug/unsigned APKs and raw local distribution directories | No | Not public production releases. Local bundles include uncommitted source/logs and are not automatically release-approved. |
+| R8 `mapping.txt`, test reports, diagnostic logs and screenshots | No by default | Retain exact mapping for crash diagnosis; review for personal data and paths before any sharing. Actions artifacts are not a private vault. Mapping is not a signing secret, but is not one of the public release assets. |
+
+Only the final release bundle's explicit assets are uploaded to a draft. Do not
+upload a workspace, keystore directory, build cache, or the entire local evidence
+folder. `.gitignore` prevents ordinary accidental adds; it neither scans contents
+nor removes anything already tracked or present in history. A source-archive path
+allowlist does not detect a credential pasted inside an otherwise allowed file.
+Review Git history and file contents separately before public source publication.
+
+Never publish hashes of passwords, recovery phrases or other low-entropy secrets
+as diagnostic evidence. A public certificate fingerprint or binary checksum is a
+different kind of data. Commit/tag signatures also do not replace Android APK
+signing; never publish the private GPG/SSH key used for Git signing.
+
+The license gate remains closed (`approved: false`). Local signature/build checks
+do not approve employer open-source obligations, dependency redistribution terms,
+GitHub settings, device acceptance or public launch.
+
+## Source publication checks
+
+```bash
+python3 -B tools/release/publication_check.py --source worktree
+python3 -B tools/release/publication_check.py --source index
+python3 -B tools/release/publication_check.py --source history --refs refs/heads/mainline
+```
+
+The history example checks only the named local ref and its ancestors. Explicitly
+list **all branches/tags you intend to share**; cached remote-tracking refs describe
+a local cache, not live GitHub accessibility. History scanning never fetches,
+rewrites or pushes. It rejects shallow history and must finish without findings or
+limit errors. It does not inspect unrelated refs, reflogs, unreachable objects,
+commit messages, author metadata, server caches or forks. Review those separately
+when responding to an exposure. Current-source CI passing is not history approval.
+
+The shared [publication policy](tools/release/publication_policy.py) checks full
+paths, selected bytes and recognized credential formats before either source
+packager writes output. Ignored files below `app/src`, `app/schemas` and `gradle`
+are included because they may affect the build. Unsafe inputs fail the operation;
+they are not silently omitted. Source tar output is reconstructed from verified
+file bytes, not unchecked input archive comments or trailers: the release packager
+takes each entry's mode from the Git tree, while the local distribution archive
+records `gradlew` as executable and every other file as read-only. Symlinks,
+unresolved Git LFS pointers, generated outputs, credential files, unknown binaries
+and oversized inputs are rejected.
+Bounds are 16 MiB/file, 128 MiB/read set, 20,000 files and, for history, 2,000
+commits with a 180-second scanner deadline. Limit failures are incomplete scans,
+never success. Each file also caps findings at 1,000; the scanner caps aggregate
+findings at 20,000 and tree entries at 1,000,000. JSON findings contain path, line
+and rule, with commit/blob identity for history, never the matched value. Line 0 denotes a file/operation-level finding.
+
+Seven existing binary build/visual inputs are pinned by exact path and SHA-256.
+A pin recognizes existing bytes; it does not prove licensing, image privacy or the
+absence of hidden data. New/changed binaries need provenance, visual/privacy and
+license review before changing a pin. Synthetic exceptions identify exact matches
+at specific test paths. Never add a blanket test-directory skip or auto-accept a
+new finding. Public test vectors and certificate fingerprints are allowed; private
+signing keys and passwords are not.
+
+Do not edit the checkout while scanning or packaging. Per-read race checks and
+source-directory change checks are not an atomic filesystem snapshot.
+
+These checks reduce accidental exposure but cannot prove arbitrary source, encoded
+data, personal records or binaries contain no secrets. Independently review diffs
+and ownership before uploading. GitHub automatic source archives and direct Git
+uploads bypass the custom packagers. No local hook or remote setting is installed
+by these changes. The release license gate remains `approved: false`.
+
+If a secret exists in history, stop publication. Rotate its protection where
+appropriate, preserve a protected recovery copy and prepare an isolated,
+reviewed history-cleanup plan. Removing a current assignment or adding ignore
+rules cannot erase an old commit. Do not casually reset a working checkout or
+move public tags; coordinate any remote cleanup separately.
+
 ## Automated APK releases
 
 GitHub-hosted releases do not require GitHub authentication on your development laptop. Complete the [one-time GitHub setup](#one-time-github-setup) before triggering a release.
@@ -103,6 +205,38 @@ Unsigned output: `app/build/outputs/apk/release/app-release-unsigned.apk`. This 
 - Helper tests use disposable data and mocked network/SDK boundaries. They never upload release assets.
 - Do not run the upload helper with a real token as a dry run: its upload mode creates drafts and assets.
 - Local checks cannot certify GitHub environment approvals, token permissions, hosted SDK downloads, or the first remote workflow execution.
+
+### Verified local distribution
+
+Use this path for private APK handoffs, rather than copying a raw Gradle output. It runs the release-helper regressions, formatting, the JVM suite, both lint variants and debug/signed-release builds, then checks both compiled variants and uses the same APK validator as CI.
+
+```bash
+python3 -B tools/release/distribute.py --build-tools "$ANDROID_HOME/build-tools/36.1.0"
+```
+
+The tool keeps its data outside every checkout, under `$XDG_DATA_HOME/splitfree/` (default `~/.local/share/splitfree/`), so no `git clean`, re-clone or worktree removal can discard it:
+
+| Path | Contents |
+| --- | --- |
+| `distributions/` | The **ledger**: one immutable, hash-verified bundle per distributed build, named `SplitFree-v<versionName>-<versionCode>-<apk sha256 prefix>/`. Each holds the APK, its exact R8 mapping, the source archive and hash manifest that built it, the full build log, `local-release.json` and, when `--init-script` was given, `test-runtime.init.gradle`. `--directory` selects another ledger. |
+| `distribution-failures/` | The build log of every run that failed after its gates started; the error names the saved file. No bundle is produced. |
+
+The ledger is the record of what exists in the wild. **Back it up like the keystore**; a ledger you cannot restore means version ordering rests on memory. Finder's `.DS_Store` files are tolerated; every other unexpected entry, including an interrupted `.candidate-*` stage, stops the run for investigation rather than being deleted.
+
+Baseline rules, checked before any gate runs:
+
+- With history in the ledger, the candidate's `versionCode` must exceed the newest bundle. Nothing else needs to be supplied.
+- `--previous-apk FILE` additionally names a distributed production APK: a `com.splitfree` package with a verifying v2 signature from the single signer pinned in [`release/signing-certificate.sha256`](release/signing-certificate.sha256). If the ledger already holds that `versionCode`, the file must be byte-identical to that bundle's APK; two different builds may never share a code. The candidate's packaging policy (SDK levels, native ABIs, alignment) is not applied to a previous APK, so a later policy change never rejects the release it supersedes.
+- An empty ledger is refused unless you pass `--previous-apk` for the last build you handed out, or `--first-distribution` to declare that none exists. The two flags are mutually exclusive, and `--first-distribution` is refused once the ledger has history.
+
+The pin is a public certificate fingerprint, not a private key. Never replace the key or change the pin merely to make an update install. Local Gradle signing still uses the existing keystore setup below; there is no debug-key fallback.
+
+- The candidate must pass the shared checker: production identity, numeric minimum/target SDK 26/37, non-debuggable/non-test-only standalone packaging, all four supported native architectures, 16 KB native ZIP/64-bit ELF alignment and a fresh v2 signature check of the exact candidate bytes.
+- R8 mapping ID must match the marker embedded in the APK; the mapping body checksum is verified. Source files must remain unchanged across the build. This is recorded local provenance, not a claim of reproducible builds or a hermetic build environment. Published-release ordering remains separately enforced by the GitHub helper.
+- One run per checkout at a time (`.local-distribution.lock/` at the repository root, ignored) and one run per ledger at a time (`.distribution-lock/` inside it). Completed bundles are never overwritten. A lock left behind by an interrupted run requires investigation, not automatic deletion. Do not run another build or edit source while the distribution command is running.
+- Use `--offline` when dependencies are cached. `--init-script` accepts trusted local Gradle configuration, not downloaded/unreviewed scripts.
+
+These bundles are explicitly **not public-release approved** and **not device-install tested**. The license review and GitHub gates remain closed until completed. The [installation acceptance guide](tools/release/INSTALL_TESTING.md) covers emulator fresh installs, same-key upgrades and the separate identity/database-preservation checks. A successful build and signature check do not certify the phone's current package/signing state.
 
 ## Checklist
 

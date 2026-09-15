@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:label="SplitFree Debug"
+        tools:replace="android:label">
+        <activity
+            android:name="com.splitfree.MainActivity"
+            android:exported="true">
+            <!-- Intent filters have no merge key: replace the inherited set so debug cannot claim production invites. -->
+            <intent-filter tools:node="removeAll" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

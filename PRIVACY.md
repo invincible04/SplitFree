@@ -139,7 +139,7 @@ This summarizes Google's SDK documentation. We have not measured the SDK's actua
 
 - Google's ML Kit Code Scanner (`GmsBarcodeScanning`) supplies its own scanner screen and camera access.
 - SplitFree does not declare a camera permission.
-- Google Play services may download the barcode-scanner module requested by the app manifest.
+- When you tap Scan, SplitFree checks scanner availability and asks Google Play services to download the module if needed. Install-time downloads may also be requested by the app manifest.
 
 ## Backups
 

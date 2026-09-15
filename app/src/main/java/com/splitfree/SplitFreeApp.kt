@@ -107,7 +107,7 @@ class SplitFreeApp :
             } catch (e: Exception) {
                 Log.e(TAG, "Could not resume interrupted key rotation", e)
             }
-            eventProcessor.recoverPending()
+            recoverPendingAtStartup { eventProcessor.recoverPending() }
             try {
                 relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -152,5 +152,17 @@ class SplitFreeApp :
 
     companion object {
         private const val TAG = "SplitFreeApp"
+    }
+}
+
+/** A deferred inbox read must not terminate an otherwise usable app. Retain it for a later retry. */
+internal suspend fun recoverPendingAtStartup(recover: suspend () -> Unit) {
+    try {
+        recover()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        // Exception messages can contain event payloads. Log only the type, not the Throwable.
+        Log.w("SplitFreeApp", "Pending event recovery deferred: ${e.javaClass.simpleName}")
     }
 }
