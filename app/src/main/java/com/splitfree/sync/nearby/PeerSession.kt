@@ -12,17 +12,17 @@ import kotlinx.coroutines.launch
 /**
  * Authenticates and reconciles one transport connection within a single group.
  *
- * The owner serializes all entry points and [runSerialized] callbacks under the same lock.
- * This session owns [scope] and cancels it on close, isolating its timers from replacement sessions.
- * Each side provides local inventory and consumes peer inventory independently; only [ReconcileResult]
- * acknowledges a snapshot, and subsequent snapshots include every unacknowledged item.
- * [PeerPhase.UP_TO_DATE] requires both directions finished without failures, no durable pending work
- * reported by either side, and no applied history on either side that the other lacks and cannot be
- * given (rumor-only rows, advertised as [NearbyWire.KIND_HELD]). An unreadable local pending count
- * prevents that phase.
+ * - The owner serializes all entry points and [runSerialized] callbacks under the same lock.
+ * - This session owns [scope] and cancels it on close, isolating its timers from replacement sessions.
+ * - Each side provides local inventory and consumes peer inventory independently; only [ReconcileResult] acknowledges
+ *   a snapshot, and subsequent snapshots include every unacknowledged item.
+ * - [PeerPhase.UP_TO_DATE] describes the reported exchange: both directions finished without reported failures,
+ *   pending work or missing [NearbyWire.KIND_HELD] ids.
+ * - It does not compare group-state digests or prove identical ledgers.
+ * - Unreadable local pending state prevents that phase.
  */
 class PeerSession(
-    val endpointId: String,
+    val connection: NearbyConnection,
     val generation: Long,
     private val incoming: Boolean,
     private val channelToken: ByteArray?,
@@ -35,6 +35,8 @@ class PeerSession(
     private val runSerialized: suspend (suspend () -> Unit) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    val endpointId: String get() = connection.endpointId
+
     /** Owner callbacks; all are invoked while the owner's lock is held. */
     interface Listener {
         /** Publishes changed session progress while the session remains open. */
@@ -43,7 +45,7 @@ class PeerSession(
         /** Local data or evidence changes during reconciliation require other group sessions to re-advertise. */
         suspend fun onDataChanged(session: PeerSession)
 
-        /** Terminal. [reason] is a [NearbyWire] `CLOSE_*` constant; the session's scope is already cancelled. */
+        /** Terminal callback after scope cancellation; [reason] is local protocol text or the peer's close reason. */
         fun onClosed(session: PeerSession, reason: String)
     }
 
@@ -54,8 +56,12 @@ class PeerSession(
     private var peerAuth: Auth? = null
     private var isInitiator = false
     private var transcript: NearbyAuth.Transcript? = null
-    var peerPubkey: String? = null
-        private set
+
+    /** The key the peer claims in its [Hello]; trusted only once [authenticated]. */
+    private var peerPubkey: String? = null
+
+    /** The peer's key once its [Auth] signature verified; exposed through [progress] and kept after close. */
+    private var verifiedPeerPubkey: String? = null
     private var authenticated = false
     private var openSent = false
     private var groupOpen = false
@@ -65,9 +71,11 @@ class PeerSession(
     private var outSnap = 0
 
     /**
-     * Entries the peer has confirmed seeing, keyed by kind and id: the union of every snapshot it answered
-     * with a [ReconcileResult]. Keyed by kind so a record that changes kind (a rumor upgraded to a signed
-     * event) is offered again under its new kind.
+     * Entries the peer has confirmed seeing, keyed by kind and id: the union of every snapshot it answered with a
+     * [ReconcileResult].
+     *
+     * - Keyed by kind so a record that changes kind (a rumor upgraded to a signed event) is offered again under its
+     *   new kind.
      */
     private var outAcked: Set<String> = emptySet()
     private var outBaselineAcked = false
@@ -98,10 +106,12 @@ class PeerSession(
     private var outReadvertised = 0
 
     /**
-     * Records this session could not apply for want of another record (a key epoch, a join), kept for
-     * the life of the session rather than the snapshot: the provider still serves an acknowledged id on
-     * request, so they are asked for again after a control record lands or the local store changes.
-     * Malformed or unauthorized records are not kept; they stay rejected.
+     * Records awaiting a dependency, such as a key epoch or join.
+     *
+     * - Retained for the session's lifetime, not just the current snapshot.
+     * - Requested again after a control record arrives or the local store changes.
+     * - The provider still serves acknowledged ids on request.
+     * - Malformed or unauthorized records are not kept; they stay rejected.
      */
     private val dependencyRetry = LinkedHashMap<String, InventoryItem>()
     private var retriedDependencies = false
@@ -123,17 +133,32 @@ class PeerSession(
 
     val isUpToDate: Boolean get() = phase == PeerPhase.UP_TO_DATE
 
-    fun progress(): PeerProgress = PeerProgress(endpointId, peerPubkey, phase, groupId, stats, closeReason)
+    /** Observer snapshot; [PeerProgress.peerPubkey] is the verified key, or null before authentication completes. */
+    fun progress(): PeerProgress = PeerProgress(endpointId, verifiedPeerPubkey, phase, groupId, stats, closeReason)
 
-    /** Send [Hello] and arm the watchdog. Called once, immediately after construction. */
-    fun start() {
-        send(Hello(NearbyWire.PROTOCOL_VERSION, myPubkey, myNonce, incoming, CAPABILITIES.toList()))
+    /**
+     * Called once after the owner registers this session.
+     *
+     * - A synchronous exception while submitting [Hello] interrupts the session without arming a watchdog or sending
+     *   [Close].
+     * - Asynchronous transport outcomes arrive separately; a successful return from send is not a delivery receipt.
+     */
+    suspend fun start() {
+        try {
+            send(Hello(NearbyWire.PROTOCOL_VERSION, myPubkey, myNonce, incoming, CAPABILITIES.toList()))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Hello could not be handed to the transport for $endpointId: ${e.message}")
+            terminate(PeerPhase.INTERRUPTED, NearbyWire.CLOSE_TRANSPORT_ERROR, notifyPeer = false)
+            return
+        }
         setPhase(PeerPhase.AUTHENTICATING)
         watchdog =
             scope.launch {
                 while (true) {
                     delay(WATCHDOG_INTERVAL_MS)
-                    runSerialized { if (!closed) checkTimeouts() }
+                    runSerialized { runSafely { checkTimeouts() } }
                 }
             }
     }
@@ -141,8 +166,7 @@ class PeerSession(
     // -------------------------------------------------------------------- frames
 
     /** Route one raw transport payload. Frames arriving after close are ignored. */
-    suspend fun onFrame(data: ByteArray) {
-        if (closed) return
+    suspend fun onFrame(data: ByteArray) = runSafely {
         lastActivity = clock()
         when (val decoded = NearbyWire.decode(data)) {
             is NearbyWire.Decoded.LegacyPeer -> {
@@ -254,6 +278,7 @@ class PeerSession(
         }
         peerAuth = auth
         authenticated = true
+        verifiedPeerPubkey = peer
         setPhase(PeerPhase.OPENING_GROUP)
         if (isInitiator) openGroup()
     }
@@ -317,7 +342,7 @@ class PeerSession(
         advertise(force = true)
     }
 
-    /** An unreadable durable pending count prevents either side from reporting convergence. */
+    /** Failed reads retain the last count and advertise an unresolved sentinel instead of claiming convergence. */
     private suspend fun refreshPending() {
         val wasReadable = pendingReadable
         val pending =
@@ -340,11 +365,12 @@ class PeerSession(
 
     /**
      * Refreshes pending state and re-advertises changed data when the current provider snapshot completes.
-     * A local store change may also be the dependency a rejected record was waiting for (a key that came
-     * over a relay, say), so a finished consumer with retained records asks for them again.
+     *
+     * - A local store change may also be the dependency a rejected record was waiting for (a key that came over a
+     *   relay, say), so a finished consumer with retained records asks for them again.
      */
-    suspend fun markDirty() {
-        if (closed || !groupOpen || !requireGroupOpen()) return
+    suspend fun markDirty() = runSafely {
+        if (!groupOpen || !requireGroupOpen()) return@runSafely
         refreshPending()
         val heldChanged = refreshHeld()
         if (inDone && (outStateDirty || heldChanged)) sendReconcileResult()
@@ -446,7 +472,7 @@ class PeerSession(
             violation("inventory too large")
             return
         }
-        // A full (non-delta) snapshot replaces everything the peer advertised before.
+        // A full snapshot resets held-id accounting; deltas retain previously advertised held ids.
         if (page.page == 0 && !page.delta) inHeld.clear()
         val wellFormed = page.items.filter { it.isWellFormed() }
         inItems += wellFormed
@@ -521,9 +547,11 @@ class PeerSession(
     }
 
     /**
-     * Records the peer applied but cannot hand over: if any is missing here the two ledgers differ
-     * and neither side may call itself up to date. Recounted when the peer advertises and when the local
-     * store changes, since the record may arrive from its author meanwhile.
+     * Recounts advertised rumor-only ids absent from local storage.
+     *
+     * - Any gap prevents local convergence and is reported to the peer.
+     * - This tests row presence, not equal apply state; another sync path may supply a missing record without this
+     *   session transferring it.
      *
      * @return true when the count changed
      */
@@ -695,6 +723,19 @@ class PeerSession(
 
     // ----------------------------------------------------------------- lifecycle
 
+    /** Unexpected frame, dirty-work and watchdog failures end only this session; run cancellation is not a failure. */
+    private suspend fun runSafely(block: suspend () -> Unit) {
+        if (closed) return
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Session work failed for $endpointId: ${e.message}")
+            terminate(PeerPhase.INTERRUPTED, NearbyWire.CLOSE_SESSION_ERROR, notifyPeer = true)
+        }
+    }
+
     private suspend fun onPeerClose(close: Close) {
         val phase =
             when (close.reason) {
@@ -716,6 +757,16 @@ class PeerSession(
         terminate(PeerPhase.CLOSED, reason, notifyPeer = true)
     }
 
+    /**
+     * Retires a superseded session without a redundant [Close] or transport disconnect.
+     *
+     * - Connection handles already fence replacement links; the owner must also remove this session before its
+     *   terminal callback so obsolete progress cannot overwrite the replacement's state.
+     */
+    suspend fun retire() {
+        terminate(PeerPhase.CLOSED, NearbyWire.CLOSE_STOPPED, notifyPeer = false)
+    }
+
     private suspend fun violation(what: String) {
         violations++
         Log.w(TAG, "Protocol violation from $endpointId: $what ($violations)")
@@ -730,7 +781,7 @@ class PeerSession(
         closeReason = reason
         if (notifyPeer) {
             try {
-                transport.sendPayload(endpointId, NearbyWire.encode(Close(reason)))
+                transport.sendPayload(connection, NearbyWire.encode(Close(reason)))
             } catch (_: Exception) {
                 // Local cleanup must complete even if the close frame cannot be sent.
             }
@@ -782,7 +833,7 @@ class PeerSession(
     }
 
     private fun send(message: NearbyMessage) {
-        transport.sendPayload(endpointId, NearbyWire.encode(message))
+        transport.sendPayload(connection, NearbyWire.encode(message))
     }
 
     /** Acknowledgement key: an entry is the pair (kind, id), so a kind change is a new entry to offer. */
@@ -806,7 +857,7 @@ class PeerSession(
         /** Idle limit while authenticating or opening the group. */
         const val HANDSHAKE_TIMEOUT_MS = 10_000L
 
-        /** Idle limit after group open before in-flight work is retried once, then abandoned. */
+        /** Session receive-idle threshold for transfer recovery; checked at watchdog ticks, not per record. */
         const val TRANSFER_TIMEOUT_MS = 30_000L
 
         /** Period of the timeout check. */

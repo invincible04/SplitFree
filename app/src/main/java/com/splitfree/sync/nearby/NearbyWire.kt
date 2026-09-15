@@ -5,11 +5,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * Version 2 framing: `[0x7F][type byte][UTF-8 JSON body]`, with type bytes defined by the `TYPE_*` constants.
+ * Protocol v3 messages use `[0x7F][type byte][UTF-8 JSON body]`, retaining the framing introduced in v2.
  *
- * [decode] limits version 2+ frames to [MAX_FRAME_BYTES] and classifies v1 type prefixes `0x01..0x04`
- * as incompatible. Decoding validates serialization only; [PeerSession] enforces protocol state and fields.
- * [encode] and [chunk] do not enforce encoded byte size; callers must respect the frame limit.
+ * - [decode] bounds current-format frames and recognizes legacy v1 prefixes `0x01..0x04` as incompatible.
+ * - Framing does not negotiate a version: [PeerSession] validates [Hello.v], message order and field semantics.
+ * - [encode] and [chunk] do not enforce encoded byte size; callers must respect the frame limit.
  */
 object NearbyWire {
     const val PROTOCOL_VERSION = 3
@@ -26,7 +26,7 @@ object NearbyWire {
     const val TYPE_RECONCILE_RESULT: Byte = 0x09
     const val TYPE_CLOSE: Byte = 0x0A
 
-    /** Upper bound on one encoded frame including the two header bytes. */
+    /** Receive-side frame limit, also used when paginating inventory; includes the two header bytes. */
     const val MAX_FRAME_BYTES = 16 * 1024
 
     /** Upper bound on inventory entries per page; byte size is checked as well. */
@@ -52,14 +52,17 @@ object NearbyWire {
     const val KIND_DELIVERY = "d"
 
     /**
-     * An applied record (money or control) this phone holds only as a gift-wrap rumor: authenticated by
-     * the seal for this phone alone, so it cannot be forwarded, but a peer that lacks it is not up to date
-     * with this one. Advertised for accounting, never wanted or served. A rumor-only per-recipient
-     * `key_rotation` is not advertised: the peer's copy of that epoch is a different event id.
+     * An applied money or control record held only as a gift-wrap rumor.
+     *
+     * - The seal authenticates it for this phone alone; it cannot be forwarded.
+     * - A peer that lacks it is not up to date with this phone.
+     * - Advertised for accounting, never wanted or served.
+     * - A rumor-only per-recipient `key_rotation` is not advertised: the peer's copy of that epoch is a different
+     *   event id.
      */
     const val KIND_HELD = "h"
 
-    // Capabilities negotiated in Hello; the agreed set is bound into the auth transcript.
+    // The capability intersection is transcript-bound; the retained reconcile-v2 name is not a version selector.
     const val CAP_RECONCILE_V2 = "reconcile-v2"
     const val CAP_DELIVERIES = "deliveries"
 
@@ -72,6 +75,7 @@ object NearbyWire {
     const val CLOSE_STOPPED = "stopped"
     const val CLOSE_PEER_DISCONNECTED = "peer_disconnected"
     const val CLOSE_TRANSPORT_ERROR = "transport_error"
+    const val CLOSE_SESSION_ERROR = "session_error"
 
     /** The single refusal reason for [OpenGroupResult]; never distinguishes unknown from unauthorized. */
     const val OPEN_REFUSED = "unauthorized"
@@ -107,7 +111,7 @@ object NearbyWire {
         }
     }
 
-    /** Classifies input as a parsed message, an incompatible v1 prefix, or an invalid version 2 frame. */
+    /** Separates parsed current-format messages, incompatible v1 prefixes and invalid input. */
     sealed class Decoded {
         /** Parsed message whose protocol fields and session ordering still require validation. */
         data class Message(val message: NearbyMessage) : Decoded()
@@ -150,7 +154,9 @@ object NearbyWire {
 
     /**
      * Paginates [items] using entry-count and encoded-byte limits; empty inventory produces one final page.
-     * Each item must fit in a page by itself. [pending] carries the provider's durable pending count.
+     *
+     * - Each item must fit in a page by itself.
+     * - [pending] carries the provider's durable pending count.
      */
     fun paginate(snap: Int, delta: Boolean, items: List<InventoryItem>, pending: Int = 0): List<InventoryPage> {
         if (items.isEmpty()) {
@@ -176,7 +182,8 @@ object NearbyWire {
 
     /**
      * Splits record JSON by character count; UTF-8 encoding and JSON escaping can increase frame size.
-     * Empty input produces no frames.
+     *
+     * - Empty input produces no frames.
      *
      * @throws IllegalArgumentException if the record exceeds [MAX_RECORD_PARTS] chunks
      */
@@ -189,7 +196,7 @@ object NearbyWire {
     private fun fits(message: NearbyMessage): Boolean = encode(message).size <= MAX_FRAME_BYTES
 }
 
-/** Version 2 message body; [NearbyWire] supplies the type discriminator outside the JSON. */
+/** Protocol message body; [NearbyWire] supplies the type discriminator outside the JSON. */
 @Serializable
 sealed class NearbyMessage
 
@@ -229,7 +236,7 @@ data class OpenGroupResult(val groupId: String, val ok: Boolean, val reason: Str
 /**
  * One entry of a peer's inventory.
  *
- * @property id event id (for `t = "e"`) or envelope id (for `t = "d"`)
+ * @property id event id for `e`/`h`, envelope id for `d`
  * @property t [NearbyWire.KIND_EVENT] for a third-party-verifiable ledger event, [NearbyWire.KIND_DELIVERY]
  *   for a recipient-encrypted envelope the advertiser holds, [NearbyWire.KIND_HELD] for an applied event the
  *   advertiser cannot forward (rumor-only evidence)
@@ -241,8 +248,9 @@ data class InventoryItem(val id: String, val t: String, val r: String? = null, v
 
 /**
  * Advertises record availability with zero-based, contiguous page numbers within a provider snapshot.
- * [delta] marks additions to acknowledged inventory; [last] completes the snapshot's pages.
- * [pending] reports the provider's durable pending count on the final page; unreadable counts report at least one.
+ *
+ * - [delta] marks additions to acknowledged inventory; [last] completes the snapshot's pages.
+ * - [pending] reports the provider's durable pending count on the final page; unreadable counts report at least one.
  */
 @Serializable
 data class InventoryPage(
@@ -260,7 +268,9 @@ data class Want(val snap: Int, val ids: List<String>) : NearbyMessage()
 
 /**
  * Transfers one JSON chunk for a requested id; [part] is zero-based within [parts].
- * A zero [parts] value reports an unavailable record. Receivers enforce chunk-count and character limits.
+ *
+ * - A zero [parts] value reports an unavailable record.
+ * - Receivers enforce chunk-count and character limits.
  */
 @Serializable
 data class Record(val snap: Int, val id: String, val kind: String, val part: Int, val parts: Int, val data: String) :
@@ -272,9 +282,11 @@ data class Result(val snap: Int, val id: String, val outcome: RecordOutcome) : N
 
 /**
  * Acknowledges consumption of [snap]; failures and deferred work can remain after this message.
- * Counts describe the connection, except [deferred], which is the group's last readable durable pending count.
- * An unreadable pending count is signaled by a nonzero [unresolved] value. [held] counts the provider's
- * [NearbyWire.KIND_HELD] entries the consumer lacks: history that exists on one side and cannot cross.
+ *
+ * - Counts describe the connection, except [deferred], which is the group's last readable durable pending count.
+ * - An unreadable pending count is signaled by a nonzero [unresolved] value.
+ * - [held] counts the provider's [NearbyWire.KIND_HELD] entries the consumer lacks: history that exists on one side
+ *   and cannot cross.
  */
 @Serializable
 data class ReconcileResult(
@@ -289,13 +301,14 @@ data class ReconcileResult(
     val held: Int = 0
 ) : NearbyMessage()
 
-/** Terminates the session with a [NearbyWire] `CLOSE_*` reason. */
+/** Ends a session; local senders use [NearbyWire] `CLOSE_*` reasons, but unknown received reasons are retained. */
 @Serializable
 data class Close(val reason: String) : NearbyMessage()
 
 /**
  * Processing receipt for one transferred record; [DEFERRED] still requires local application.
- * [CARRIED] acknowledges local retention of an envelope for another recipient, never recipient delivery.
+ *
+ * - [CARRIED] acknowledges local retention of an envelope for another recipient, never recipient delivery.
  */
 @Serializable
 enum class RecordOutcome {

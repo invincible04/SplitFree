@@ -1,6 +1,7 @@
 # Security policy
 
-Report vulnerabilities privately. Do not include sensitive details in a public issue.
+- Report vulnerabilities privately.
+- Do not include sensitive details in a public issue.
 
 [Project overview](README.md) · [Privacy policy](PRIVACY.md) · [Nostr guide](app/src/main/java/com/splitfree/data/nostr/README.md) · [Nearby protocol](app/src/main/java/com/splitfree/sync/nearby/README.md)
 
@@ -12,7 +13,10 @@ Report vulnerabilities privately. Do not include sensitive details in a public i
 
 ## Reporting a vulnerability
 
-Use [GitHub private vulnerability reporting](https://github.com/invincible04/SplitFree/security/advisories/new).
+- Use [GitHub private vulnerability reporting](https://github.com/invincible04/SplitFree/security/advisories/new) when
+  available for the repository.
+- If that route is unavailable, request a private contact method in a public issue without disclosing the
+  vulnerability or sensitive data.
 
 | Include | Details |
 | --- | --- |
@@ -75,6 +79,8 @@ These are response targets, not guaranteed service levels.
 - Previously disclosed keys and history cannot be taken back.
 - Historical membership is not tamper-proof when a former member retains an old group key.
 - A Nearby receipt or “up to date” status is scoped to that exchange, not a global replication guarantee.
+- Local diagnostics can contain identifiers and exception text.
+  - Redaction covers specific patterns, not every secret; inspect reports before sharing.
 - JVM tests do not establish physical-radio behavior or real Keystore/process-death durability.
 
 See [PRIVACY.md](PRIVACY.md) for data storage, permissions, and third-party SDK diagnostics.

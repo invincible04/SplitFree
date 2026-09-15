@@ -13,9 +13,9 @@ import javax.inject.Singleton
 enum class PowerMode { PERFORMANCE, BALANCED, POWER_SAVER, ULTRA_LOW_POWER }
 
 /**
- * Adapts sync intervals, relay connections, and BLE scan duty cycles based on battery state.
+ * Supplies battery-based policy values; callers apply the sync interval through WorkManager.
  *
- * @see PowerMode for the four power tiers
+ * - Nearby discovery is controlled by the screen-owned run, not by this battery policy.
  */
 @Singleton
 class PowerManager
@@ -47,18 +47,10 @@ constructor(@ApplicationContext private val context: Context) {
         PowerMode.ULTRA_LOW_POWER -> Duration.ofHours(6)
     }
 
-    /** @return max concurrent relay WebSocket connections for the current power mode */
+    /** Suggested relay connection cap; no production caller currently applies it to WebSocket connections. */
     fun maxRelayConnections(): Int = when (currentMode()) {
         PowerMode.PERFORMANCE, PowerMode.BALANCED -> 8
         PowerMode.POWER_SAVER -> 2
         PowerMode.ULTRA_LOW_POWER -> 1
-    }
-
-    /** @return BLE scan duty cycle as (scanMs, pauseMs) for the current power mode */
-    fun bleScanDuty(): Pair<Long, Long> = when (currentMode()) {
-        PowerMode.PERFORMANCE -> 10_000L to 2_000L
-        PowerMode.BALANCED -> 5_000L to 5_000L
-        PowerMode.POWER_SAVER -> 3_000L to 10_000L
-        PowerMode.ULTRA_LOW_POWER -> 2_000L to 15_000L
     }
 }

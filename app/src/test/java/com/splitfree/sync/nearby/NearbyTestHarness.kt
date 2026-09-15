@@ -8,9 +8,13 @@ import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableSharedFlow
 
 /**
- * Deterministic in-memory transport pair. Frames are queued on [Router] and delivered only when the
- * test calls [Router.pump], so every assertion sees a stable state. Fault injection: [dropIf] drops
- * matching frames on send; [Router.disconnect] simulates a transport drop on both ends.
+ * In-memory session transport with per-link capabilities.
+ *
+ * - [Router] queues payload/disconnection events; tests drain them with pump/step and advance collectors separately.
+ * - Connected events are emitted immediately.
+ * - [dropIf] drops matching decoded frames after recording the send; [failNextSends] throws on current-link sends
+ *   before recording or queueing.
+ * - This fixture does not model SDK tasks or radio lifecycle fencing.
  */
 class FakeTransport(val name: String) : NearbyTransport {
     val flow = MutableSharedFlow<BleEvent>(extraBufferCapacity = 8192)
@@ -19,15 +23,31 @@ class FakeTransport(val name: String) : NearbyTransport {
     val sentFrames = mutableListOf<Pair<String, ByteArray>>()
     val disconnected = mutableListOf<String>()
     var dropIf: ((NearbyMessage) -> Boolean)? = null
+    var failNextSends = 0
+    private val connections = mutableMapOf<String, NearbyConnection>()
 
-    override fun sendPayload(endpointId: String, data: ByteArray) {
+    fun connection(endpointId: String): NearbyConnection = checkNotNull(connections[endpointId])
+
+    internal fun newConnection(endpointId: String): NearbyConnection = NearbyConnection(endpointId).also {
+        connections[endpointId] = it
+    }
+
+    override fun sendPayload(connection: NearbyConnection, data: ByteArray) {
+        val endpointId = connection.endpointId
+        if (connections[endpointId] !== connection) return
+        if (failNextSends > 0) {
+            failNextSends--
+            throw IllegalStateException("send refused for $endpointId")
+        }
         sentFrames += endpointId to data
         val decoded = NearbyWire.decode(data)
         if (decoded is NearbyWire.Decoded.Message && dropIf?.invoke(decoded.message) == true) return
         router.enqueue(this, endpointId, data)
     }
 
-    override fun disconnect(endpointId: String) {
+    override fun disconnect(connection: NearbyConnection) {
+        val endpointId = connection.endpointId
+        if (connections[endpointId] !== connection) return
         disconnected += endpointId
         router.disconnect(this, endpointId, notifyPeer = true)
     }
@@ -44,8 +64,11 @@ class Router {
     var delivered = 0
 
     /**
-     * Connect [a] and [b]. [aSeesB] is the endpoint id `a` uses for `b` and vice versa. Both sides get
-     * the same channel [token]; [aIncoming] is the Nearby role as seen by `a`.
+     * Connects both sides with fresh local capabilities and immediately emits Connected.
+     *
+     * - Endpoint ids are local to each side.
+     * - [token] and [bToken] supply channel-binding bytes independently; roles default to opposites but can be
+     *   overridden to exercise handshake disagreement.
      */
     fun connect(
         a: FakeTransport,
@@ -59,15 +82,19 @@ class Router {
     ) {
         links[End(a, aSeesB)] = End(b, bSeesA)
         links[End(b, bSeesA)] = End(a, aSeesB)
-        check(a.flow.tryEmit(BleEvent.Connected(aSeesB, aIncoming, token)))
-        check(b.flow.tryEmit(BleEvent.Connected(bSeesA, bIncoming, bToken)))
+        // Both ends must exist before an eager collector can send its first Hello.
+        val aConnection = a.newConnection(aSeesB)
+        val bConnection = b.newConnection(bSeesA)
+        check(a.flow.tryEmit(BleEvent.Connected(aConnection, aIncoming, token)))
+        check(b.flow.tryEmit(BleEvent.Connected(bConnection, bIncoming, bToken)))
     }
 
     fun enqueue(from: FakeTransport, endpointId: String, data: ByteArray) {
         val to = links[End(from, endpointId)] ?: return
+        val connection = to.transport.connection(to.endpointId)
         queue += {
             delivered++
-            check(to.transport.flow.tryEmit(BleEvent.PayloadReceived(to.endpointId, data)))
+            check(to.transport.flow.tryEmit(BleEvent.PayloadReceived(connection, data)))
         }
     }
 
@@ -75,11 +102,13 @@ class Router {
         val me = End(from, endpointId)
         val peer = links.remove(me) ?: return
         links.remove(peer)
-        queue += { check(from.flow.tryEmit(BleEvent.Disconnected(endpointId))) }
-        if (notifyPeer) queue += { check(peer.transport.flow.tryEmit(BleEvent.Disconnected(peer.endpointId))) }
+        val mine = from.connection(endpointId)
+        val theirs = peer.transport.connection(peer.endpointId)
+        queue += { check(from.flow.tryEmit(BleEvent.Disconnected(mine))) }
+        if (notifyPeer) queue += { check(peer.transport.flow.tryEmit(BleEvent.Disconnected(theirs))) }
     }
 
-    /** Deliver queued frames until nothing is left. Returns how many frames moved. */
+    /** Emits up to [maxFrames] queued payload/disconnection events; returns the number emitted. */
     fun pump(maxFrames: Int = 1_000_000): Int {
         var n = 0
         while (queue.isNotEmpty() && n < maxFrames) {
@@ -89,7 +118,7 @@ class Router {
         return n
     }
 
-    /** Deliver exactly one queued frame. */
+    /** Emits one queued payload/disconnection event, or returns false when the queue is empty. */
     fun step(): Boolean {
         val next = queue.removeFirstOrNull() ?: return false
         next()

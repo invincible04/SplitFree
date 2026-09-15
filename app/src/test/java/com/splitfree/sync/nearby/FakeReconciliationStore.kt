@@ -1,12 +1,15 @@
 package com.splitfree.sync.nearby
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * In-memory [ReconciliationStore] for protocol tests. Events are opaque JSON strings keyed by id;
- * deliveries are opaque envelopes addressed to a recipient. Behaviour can be scripted per id through
- * [outcomes] and [rejectIfUnauthorized].
+ * In-memory protocol fixture with opaque JSON records keyed by id.
+ *
+ * - All operations share one inventory; group ids do not partition it, and it performs no cryptographic validation or
+ *   durable storage.
+ * - [outcomes] scripts ingest results; [authorizedOverride] and [members] control authorization checks.
  */
 class FakeReconciliationStore(val me: String, val members: MutableSet<String>, val creator: String = "") :
     ReconciliationStore {
@@ -23,7 +26,7 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     val permanentRejects = HashSet<String>()
     var controlIds = HashSet<String>()
 
-    /** Durable pending rows: grows on a scripted DEFERRED ingest, shrinks by what [retryDeferred] reports. */
+    /** Simulated pending count: increases on scripted DEFERRED ingest and decreases by retryDeferred results. */
     var deferredPending = 0
     var pendingReadFails = false
     var retryReturns = 0
@@ -33,6 +36,12 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     val changes = MutableStateFlow(StoreVersion(0))
     var loadFailures = HashSet<String>()
     var pruned = 0
+
+    /** When set, [prune] suspends until it completes, so a test can hold activation maintenance open. */
+    var maintenanceGate: CompletableDeferred<Unit>? = null
+
+    /** When set, [retryDeferred] suspends until it completes, so a test can hold the coordinator lock open. */
+    var retryGate: CompletableDeferred<Unit>? = null
     var ownJoin: String? = null
     var admitJoinResult = false
     var authorizedOverride: ((String) -> Boolean)? = null
@@ -137,6 +146,7 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     }
 
     override suspend fun retryDeferred(groupId: String): Int {
+        retryGate?.await()
         retryCalls++
         val n = retryReturns
         retryReturns = 0
@@ -156,6 +166,7 @@ class FakeReconciliationStore(val me: String, val members: MutableSet<String>, v
     override suspend fun ownJoinEvent(groupId: String): String? = ownJoin
 
     override suspend fun prune() {
+        maintenanceGate?.await()
         pruned++
     }
 }

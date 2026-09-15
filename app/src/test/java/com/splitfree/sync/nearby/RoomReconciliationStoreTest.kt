@@ -50,6 +50,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -68,14 +69,15 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * End-to-end nearby reconciliation over the real stack: [RoomReconciliationStore] on an in-memory
- * Room database, the real [EventProcessor] pipeline, real NIP-44 / NIP-59 crypto and real BIP-340
- * signatures, driven by two or more [NearbySessionCoordinator]s over the deterministic in-memory
- * transport from [NearbyTestHarness].
+ * Room-backed reconciliation and ingestion with real [EventProcessor], NIP-44/NIP-59 crypto and BIP-340 signatures.
  *
- * Every device gets its own database, key store, identity and coordinator. Room is configured with
- * same-thread executors so that all DAO work completes inside [Router.pump], exactly like the
- * scripted-store tests in [NearbySessionCoordinatorTest].
+ * - Each device has an isolated in-memory database, test identity, [FakeSecureStorage] and coordinator; [Router]
+ *   carries frames without the production radio adapter.
+ * - Selected publication and post-processing dependencies are doubles, so this is not a complete production-stack
+ *   test.
+ * - Direct Room executors and eager test dispatch make the exercised exchanges reproducible.
+ * - These fixtures do not certify Android Keystore durability, process-death recovery or physical multi-phone
+ *   delivery.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -94,8 +96,7 @@ class RoomReconciliationStoreTest {
     private val direct = Executor { it.run() }
 
     /**
-     * One phone: identity, Room database, key store, the full ingestion pipeline, the Room-backed
-     * reconciliation store and a coordinator on the shared in-memory transport.
+     * Isolated device fixture with real storage/ingestion and explicit secure-storage/publication doubles.
      */
     private inner class Device(seed: Int) {
         val identity = TestIdentity(seed)
@@ -184,7 +185,9 @@ class RoomReconciliationStoreTest {
 
         fun stats(endpoint: String): TransferStats = checkNotNull(progress(endpoint)).stats
 
-        fun activate() = coordinator.activate(groupId)
+        fun activate() = scope.launch { coordinator.activate(groupId) }
+
+        fun deactivate() = scope.launch { coordinator.deactivate() }
 
         /** Store the shared group (same id, same epoch-0 key) as this device sees it. */
         fun join(members: List<String>, creator: String) = runBlocking {
@@ -252,7 +255,7 @@ class RoomReconciliationStoreTest {
 
     private fun NostrEvent.tag(name: String): String? = tags.firstOrNull { it.size >= 2 && it[0] == name }?.get(1)
 
-    /** Equal-ish split whose shares are all positive and sum exactly to [amount]. */
+    /** Assigns integer division's remainder to the first member so fixture shares sum to [amount]. */
     private fun splitAmong(members: List<String>, amount: Long): List<SplitEntry> {
         val base = amount / members.size
         return members.mapIndexed {
@@ -267,9 +270,10 @@ class RoomReconciliationStoreTest {
     }
 
     /**
-     * Author a real expense on [device]: encrypt under the device's current group key, sign with its
-     * key and persist through [EventPublisher.publishExpense], which also retains one gift-wrap
-     * envelope per other member. [createdAt] builds the event by hand so history can be backdated.
+     * Author a real expense on [device]: encrypt under the device's current group key, sign with its key and persist
+     * through [EventPublisher.publishExpense], which also retains one gift-wrap envelope per other member.
+     *
+     * - [createdAt] builds the event by hand so history can be backdated.
      */
     private fun authorExpense(device: Device, amount: Long, description: String, createdAt: Long? = null): NostrEvent =
         runBlocking {
@@ -327,8 +331,9 @@ class RoomReconciliationStoreTest {
     }
 
     /**
-     * A creator `group_meta` authored on [device] under the key for [epoch], optionally backdated. This
-     * is what the creator publishes on a rename or after a rotation.
+     * A creator `group_meta` authored on [device] under the key for [epoch], optionally backdated.
+     *
+     * - This is what the creator publishes on a rename or after a rotation.
      */
     private fun authorMeta(
         device: Device,
@@ -496,7 +501,7 @@ class RoomReconciliationStoreTest {
         assertEquals(DeliveryEntity.SOURCE_CARRIED, carried.source)
         assertEquals(DeliveryEntity.TYPE_GIFT_WRAP, carried.eventType)
         assertEquals(c.pub, carried.recipient)
-        // A courier stores the exact bytes it was handed and never learns the inner event.
+        // Opaque carriage preserves envelope JSON without extracting an inner id; B learns the signed event separately.
         assertEquals(envForC.envelopeJson, carried.envelopeJson)
         assertNull(carried.eventId)
         // B's own envelope is consumed, not carried.
@@ -504,7 +509,7 @@ class RoomReconciliationStoreTest {
         assertTrue(b.stats(ep(a)).carried >= 1)
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
 
-        a.coordinator.deactivate()
+        a.deactivate()
         router.pump()
         assertFalse(a.coordinator.state.value.active)
 
@@ -557,7 +562,7 @@ class RoomReconciliationStoreTest {
         assertEquals(rotationForC.toJson(), carriedRotation.envelopeJson)
         assertTrue(b.stats(ep(a)).carried >= 1)
 
-        a.coordinator.deactivate()
+        a.deactivate()
         router.pump()
 
         c.activate()
@@ -573,7 +578,7 @@ class RoomReconciliationStoreTest {
         assertEquals(a.pub, rotationRow.pubkey)
         // C never had to trust B for the key: the envelope was authored and signed by A.
         assertTrue(rotationRow.originalEventJson?.let { NostrEvent.fromJson(it) }?.verify() == true)
-        // The rotation for A and B's own rotation are opaque to C and carried onward, never applied.
+        // B's recipient-addressed rotation remains opaque to C and is carried, not applied.
         assertEquals(DeliveryEntity.STATE_AVAILABLE, c.delivery(rotationsFor(a, b.pub).single().id)?.state)
         assertNull(c.row(rotationsFor(a, b.pub).single().id))
         // The key install and the epoch-1 group_meta both apply in one round: key material is
@@ -601,16 +606,16 @@ class RoomReconciliationStoreTest {
         assertEquals(afterRotation.applied + 1, c.stats(ep(b)).applied)
         assertEquals(afterRotation.rejected, c.stats(ep(b)).rejected)
         assertEquals(0, c.stats(ep(b)).unresolved)
-        // D was excluded from the rotation: nobody holds a key or an envelope for D.
+        // D was excluded from this rotation: B and C have no available envelope addressed to D.
         assertTrue(c.availableDeliveries().none { it.recipient == dPub })
         assertTrue(b.availableDeliveries().none { it.recipient == dPub })
     }
 
     /**
-     * B applied C's identity revocation (C -> C2) before the creator A heard of it. A then rotates D out,
-     * so its signed roster and envelopes still name C. B must not refuse the rotation: that row would be
-     * parked as failed and B would sit at epoch 0 while every later epoch is a gap. B installs epoch 1
-     * with C resolved to C2, keeps the tombstone, and continues to author and sync under the new key.
+     * A recipient's revocation tombstone must survive a creator rotation signed against an older roster.
+     *
+     * - The fixture seeds revocation through the repository, then exercises real rotation ingestion and sync; it does
+     *   not exercise the revocation wire path.
      */
     @Test
     fun `a rotation naming an identity this device already saw revoked still installs the new epoch`() {
@@ -800,7 +805,7 @@ class RoomReconciliationStoreTest {
         a.join(members, creator = a.pub)
         val now = nowSecs()
 
-        // Sep 1 morning: a rename under epoch 0 that still lists C (authored before the removal).
+        // Older metadata was encrypted before removal and still lists C.
         val staleMeta = authorMeta(
             a,
             epoch = 0,
@@ -808,10 +813,10 @@ class RoomReconciliationStoreTest {
             members = members,
             createdAt = now - 200
         )
-        // Sep 1 noon: creator removes C (epoch 1).
+        // The rotation advances roster/epoch independently of metadata timestamps.
         runBlocking { a.rotateGroupKey(groupId, cPub) }
         val rotationForB = rotationsFor(a, bPub).single()
-        // Sep 2: creator renames again under the new key.
+        // Newer descriptive metadata uses the new key.
         val rename = authorMeta(
             a,
             epoch = 1,
@@ -1134,7 +1139,8 @@ class RoomReconciliationStoreTest {
 
     /**
      * A signed correction of [original] by its author on [device], persisted through the publisher.
-     * [amount] is the corrected amount.
+     *
+     * - [amount] is the corrected amount.
      */
     private fun authorCorrection(device: Device, original: NostrEvent, amount: Long): NostrEvent = runBlocking {
         val group = device.group()
@@ -1431,10 +1437,11 @@ class RoomReconciliationStoreTest {
     }
 
     /**
-     * A key rotation is addressed to one recipient: B's envelope for epoch 1 and C's are different event
-     * ids, and a rotation for someone else is carried as an envelope, never stored as an event row. Two
-     * phones that installed the same epoch from their own rumor-delivered envelopes hold nothing the
-     * other could ever obtain, so neither rotation row may count as held.
+     * A key rotation is addressed to one recipient: B's envelope for epoch 1 and C's are different event ids, and a
+     * rotation for someone else is carried as an envelope, never stored as an event row.
+     *
+     * - Two phones that installed the same epoch from their own rumor-delivered envelopes hold nothing the other could
+     *   ever obtain, so neither rotation row may count as held.
      */
     @Test
     fun `rumor-only rotations applied on both phones from their own envelopes still report up to date`() {
@@ -1559,8 +1566,8 @@ class RoomReconciliationStoreTest {
         assertEquals("gift only", decryptExpense(c, atC, groupKey).description)
         assertEquals(DeliveryEntity.STATE_CONSUMED, c.delivery(envForC.envelopeId)?.state)
         assertNull("the courier still never learns the inner event", b.row(e.id))
-        // C now holds an expense B lacks and cannot be given by anyone but the author: the pair is not
-        // up to date, and both sides say so.
+        // C cannot forward its rumor to B. B needs a signed original or an envelope addressed to B
+        // from another source before this held-record gap can close.
         assertEquals(PeerPhase.INCOMPLETE, c.phase(ep(b)))
         assertEquals(PeerPhase.INCOMPLETE, b.phase(ep(c)))
         assertEquals(1, b.stats(ep(c)).held)
@@ -1732,7 +1739,7 @@ class RoomReconciliationStoreTest {
             RoomReconciliationStore.MAX_CARRIED_PER_GROUP,
             runBlocking { b.deliveryDao.countCarried(groupId) }
         )
-        courier.coordinator.deactivate()
+        courier.deactivate()
         router.pump()
         // Keep only the real rotation for the onward leg: old fixture envelopes intentionally are not signed.
         runBlocking {

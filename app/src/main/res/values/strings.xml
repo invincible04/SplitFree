@@ -300,28 +300,57 @@
     <string name="settings_display_name_note">Shared with the groups you belong to. Optional.</string>
 
     <!-- NearbySyncScreen -->
-    <string name="nearby_explanation">Group members can exchange encrypted updates over Bluetooth, without internet.</string>
+    <string name="nearby_explanation">Keep this screen open on both phones. Either person can tap Sync to exchange encrypted updates for this group.</string>
     <string name="nearby_headline_idle">Sync over Bluetooth</string>
-    <string name="nearby_headline_scanning">Looking for members nearby</string>
+    <string name="nearby_headline_searching">Looking for phones nearby</string>
     <plurals name="nearby_headline_found">
-        <item quantity="one">A member is nearby</item>
-        <item quantity="other">%1$d members are nearby</item>
+        <item quantity="one">%1$d phone found nearby</item>
+        <item quantity="other">%1$d phones found nearby</item>
     </plurals>
+    <string name="nearby_headline_connecting">Connecting…</string>
     <string name="nearby_headline_syncing">Syncing…</string>
-    <string name="nearby_footer_note">Both people keep SplitFree open</string>
+    <string name="nearby_headline_starting">Getting ready…</string>
+    <string name="nearby_headline_failed">Nearby sync stopped</string>
+    <string name="nearby_footer_note">Nothing is shared until someone taps Sync</string>
     <string name="bluetooth_unavailable">Bluetooth unavailable</string>
     <string name="nearby_bluetooth_unavailable_hint">This device has no Bluetooth, so nearby sync is unavailable.</string>
     <string name="permissions_required">Grant permissions</string>
+    <string name="nearby_open_settings">Open settings</string>
     <string name="enable_bluetooth">Turn on Bluetooth</string>
-    <string name="scan_for_nearby">Scan for members</string>
-    <string name="stop_scanning">Stop scanning</string>
-    <string name="permissions_hint">Bluetooth and nearby-device permissions are needed to find members. Nothing is shared until you tap Sync.</string>
-    <string name="peer_name">Peer %1$s</string>
+    <string name="nearby_start">Start</string>
+    <string name="nearby_stop">Stop</string>
+    <string name="nearby_stopping">Stopping…</string>
+    <string name="nearby_try_again">Try again</string>
+    <string name="nearby_retry">Retry</string>
+    <string name="permissions_hint">Bluetooth and nearby-device permissions are needed to find phones nearby. Nothing is shared until you tap Sync.</string>
+    <string name="nearby_permission_settings_hint">Permissions were denied. Allow Nearby devices and Location for SplitFree in Android settings.</string>
+    <string name="nearby_bluetooth_off_hint">Bluetooth is off. Turn it on to find phones nearby.</string>
+    <string name="nearby_phone">Phone</string>
+    <!-- Identity authentication is separate from group authorization; this caption must not claim membership. -->
+    <string name="nearby_verified_identity">Verified identity</string>
+    <string name="nearby_recent">Recent</string>
     <string name="tap_sync">Tap Sync to exchange expenses</string>
     <string name="sync">Sync</string>
-    <string name="nearby_scanning">Scanning. Ask the other person to open Nearby sync in this group too.</string>
+    <string name="nearby_cd_sync_with">Sync with %1$s</string>
+    <string name="nearby_cd_cancel_for">Cancel connecting to %1$s</string>
+    <string name="nearby_cd_retry_with">Retry connecting to %1$s</string>
+    <string name="nearby_searching_hint">Open this group\'s Nearby screen on the other phone.</string>
+    <string name="nearby_search_long">No phones found yet. Open this group\'s Nearby screen on the other phone.</string>
+    <string name="nearby_notice_search_restarting">Other phones can find this one; the search is restarting.</string>
+    <string name="nearby_notice_advertise_restarting">Searching, but other phones may not find this one yet.</string>
+    <string name="nearby_notice_permission">Nearby permissions are missing, so this phone cannot search or be found.</string>
+    <string name="nearby_notice_location">Location must be on for Android to find phones nearby.</string>
+    <string name="nearby_notice_location_action">Open location settings</string>
+    <string name="nearby_notice_service">Google Play services is unavailable or out of date, so nearby sync cannot start.</string>
+    <string name="nearby_notice_radio">Nearby sync could not start: %1$s</string>
+    <string name="nearby_notice_transport">The connection was lost: %1$s</string>
+    <string name="nearby_notice_coordinator">This group could not be prepared for sync: %1$s</string>
     <string name="nearby_connecting">Connecting…</string>
+    <string name="nearby_connection_failed">Could not connect: %1$s</string>
+    <string name="nearby_connection_failed_unknown">Could not connect.</string>
+    <string name="nearby_attempt_timed_out">The other phone did not answer in time.</string>
     <string name="nearby_authenticating">Authenticating peer…</string>
+    <!-- CLOSED reports an ended session, not completed reconciliation; keep this copy neutral about success. -->
     <string name="nearby_sync_complete">Peer disconnected. Open the group to see any new expenses.</string>
     <string name="nearby_opening_group">Checking group membership…</string>
     <string name="nearby_comparing">Comparing history…</string>
@@ -343,8 +372,6 @@
     </plurals>
     <string name="nearby_handshake_timeout">Handshake timed out</string>
     <string name="nearby_peer_auth_failed">Peer authentication failed</string>
-    <string name="nearby_ble_error">BLE %1$s failed: %2$s</string>
-    <string name="nearby_scan_failed">Scan failed: %1$s</string>
 
     <!-- CreateGroupScreen -->
     <string name="create_group">Create group</string>

@@ -107,7 +107,7 @@ ksp {
 }
 
 dependencies {
-    // From-scratch Nostr implementation (NIP-01, NIP-44, NIP-59, relay client)
+    // Cryptographic primitives and WebSockets for the app-defined Nostr implementation.
     implementation(libs.secp256k1.android)
     implementation(libs.bouncycastle)
     implementation(libs.okhttp)
@@ -134,7 +134,7 @@ dependencies {
     implementation(libs.androidx.hilt.work)
     ksp(libs.androidx.hilt.compiler)
 
-    // Nearby Connections (BLE)
+    // Nearby Connections chooses Bluetooth, BLE or Wi-Fi transports.
     implementation(libs.play.services.nearby)
 
     // QR Code

@@ -2,14 +2,15 @@ package com.splitfree.sync.nearby
 
 /**
  * Observer-facing phase controlled by the session engine.
- * [UP_TO_DATE], [WAITING_DEPENDENCY] and [INCOMPLETE] keep the session open for further reconciliation.
- * [UNSUPPORTED_PEER], [AUTH_FAILED], [UNAUTHORIZED], [INTERRUPTED] and [CLOSED] are terminal.
+ *
+ * - [UP_TO_DATE], [WAITING_DEPENDENCY] and [INCOMPLETE] keep the session open for further reconciliation.
+ * - [UNSUPPORTED_PEER], [AUTH_FAILED], [UNAUTHORIZED], [INTERRUPTED] and [CLOSED] are terminal.
  */
 enum class PeerPhase {
     /** Transport connected, Hello sent, waiting for the peer's Hello/Auth. */
     AUTHENTICATING,
 
-    /** Mutual authentication complete, negotiating the group scope. */
+    /** The peer proof verified locally; negotiating group scope without a separate mutual-confirmation receipt. */
     OPENING_GROUP,
 
     /** Exchanging inventories. */
@@ -21,10 +22,10 @@ enum class PeerPhase {
     /** Both directions finished without failures; at least one side reports durable pending work. */
     WAITING_DEPENDENCY,
 
-    /** Both directions finished without failures or pending work, and the local pending count is readable. */
+    /** Exchange finished without reported failures, pending work or held-id gaps; not proof of equal ledgers. */
     UP_TO_DATE,
 
-    /** Reconciliation finished with failures on either side or an unreadable local pending count. */
+    /** Exchange finished with reported failures, missing held ids or an unreadable local pending count. */
     INCOMPLETE,
 
     /** Protocol versions are incompatible. */
@@ -36,7 +37,7 @@ enum class PeerPhase {
     /** Group authorization failed on either side, or the local identity changed. */
     UNAUTHORIZED,
 
-    /** Transport dropped or timed out mid-session; durable progress is kept. */
+    /** Transport loss, timeout or an operational exception ended the session; durable records remain. */
     INTERRUPTED,
 
     /** Session closed for another reason, including an explicit stop or protocol violation. */
@@ -45,7 +46,8 @@ enum class PeerPhase {
 
 /**
  * Transfer and outcome counters for one connection; retries can count a record more than once.
- * [deferred] is the last readable durable pending count for the group, including work across sessions.
+ *
+ * - [deferred] is the last readable durable pending count for the group, including work across sessions.
  */
 data class TransferStats(
     val sent: Int = 0,
@@ -72,7 +74,7 @@ data class PeerProgress(
     val phase: PeerPhase,
     val groupId: String?,
     val stats: TransferStats = TransferStats(),
-    /** Set on terminal phases: the [NearbyWire] close reason. */
+    /** Set on terminal phases: a local protocol reason or the peer's received close text. */
     val closeReason: String? = null
 )
 

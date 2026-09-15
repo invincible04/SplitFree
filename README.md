@@ -16,9 +16,10 @@
 <p align="center">
   <a href="#why-splitfree">Why SplitFree?</a> ·
   <a href="#features">Features</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#architecture">Architecture</a> ·
   <a href="#getting-started">Getting started</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#backups-and-recovery">Recovery</a> ·
+  <a href="#architecture">Architecture</a> ·
   <a href="#testing">Testing</a> ·
   <a href="#contributing">Contributing</a>
 </p>
@@ -46,57 +47,141 @@ Shared expenses should be simple to track, without a subscription or a new accou
 | **No proprietary backend** | Use third-party Nostr relays and direct Nearby connections rather than a SplitFree cloud service. |
 | **Private payloads** | Expense content is end-to-end encrypted. Routing metadata remains visible to relays. |
 | **Portable data** | Back up your identity and export group data instead of depending on account recovery from a provider. |
-| **Open source** | Inspect, build, and modify the app under GPL-3.0-or-later. No subscription or advertising SDKs. |
+| **Open source** | Inspect, build, and modify the app under GPL-3.0-or-later. No subscription or ad-network SDKs. |
 
-Nostr relays are third-party servers; Nearby and QR scanning use Google Play services.
-See [Privacy](#privacy) for what those dependencies can see.
+- Nostr relays are third-party servers; Nearby and QR scanning use Google Play services.
+- See [Privacy](#privacy) for what those dependencies can see.
 
 ## Features
 
 ### Expense management
 
-- **Flexible splitting:** divide an expense equally, by exact amounts, by percentages, or by shares.
-- **Multi-currency ledgers:** keep balances separate for each supported currency, with amounts stored
-  in integer minor units. SplitFree does not convert currencies or combine unlike totals.
-- **Corrections and settlements:** edit or delete your own expenses and record payments between members.
-  Corrections are new ledger events rather than edits to signed history.
-- **Debt simplification:** suggest a small set of payments that settles the group's balances.
-  The app records payments; it does not transfer money or connect to a bank.
-- **Balance snapshots:** creator-signed snapshots reduce repeated calculation while recording the
-  events they cover.
+| Capability | Behavior |
+| --- | --- |
+| Flexible splits | Equal shares, exact amounts, percentages, or weighted shares. |
+| Multiple currencies | Balances stay separate by currency; amounts use integer minor units. No exchange-rate conversion or combined cross-currency total. |
+| Corrections and settlements | Edit or delete your own expenses and record payments. Each change creates another ledger event rather than rewriting signed history. |
+| Debt simplification | Suggested debtor-to-creditor payments settle each currency's balances. The greedy algorithm does not guarantee the fewest possible payments. |
+| Balance snapshots | Creator-signed snapshots record covered events and can reduce repeated balance computation. |
 
-### Privacy and identity
+SplitFree records payments; it does not transfer money or connect to a bank.
 
-- **End-to-end payload encryption:** [NIP-44](https://nips.nostr.com/44) v2 protects expense,
-  settlement, and group-metadata content before it leaves the device.
-- **Optional gift wrapping:** [NIP-59](https://nips.nostr.com/59), enabled by default, hides the
-  author of wrapped expenses and settlements from relays. It does not hide all routing metadata.
-- **Recoverable identity:** export your private key as a 24-word BIP-39 recovery phrase.
-- **Member removal and identity replacement:** the group creator can remove a member and rotate
-  the group key; a member can revoke and replace their own identity. Neither erases history
-  already obtained by someone holding an older key.
+<a id="privacy-and-identity"></a>
 
-### Sync and connectivity
+### Identity and sharing
 
-- **Relay synchronization:** send and receive encrypted events over Nostr WebSockets, with a durable
-  outbox and persisted history cursors for recovery after interruptions.
-- **Nearby synchronization:** exchange updates without internet using Google Nearby Connections,
-  which selects Bluetooth, Bluetooth Low Energy, or Wi-Fi for the connection.
-- **Carry-forward delivery:** members can hold sealed updates addressed to other members and pass
-  them on during a later Nearby session, subject to the protocol's storage and forwarding limits.
-- **Private invitations:** share a compact, versioned link or QR code containing the group details
-  and current group key. Groups support up to 50 members.
-- **Battery-aware scheduling:** background relay sync and Nearby discovery duty cycles adapt to
-  battery state. Android still controls when background work can run.
+- A locally generated keypair identifies you without an email address or phone number.
+- A 24-word recovery phrase backs up that identity.
+  - Group exports back up available group data and keys separately.
+- Private links and QR codes carry the group's current key, relay list, and joining information.
+- NIP-44 v2 encrypts application payloads.
+  - Optional NIP-59 gift wrapping, enabled by default, conceals the author of wrapped money events inside
+    recipient-encrypted layers.
+- The creator can remove members and rotate group keys.
+  - A member can replace their own identity.
+  - Neither operation erases keys or history someone already obtained.
 
-### Everyday use
+<a id="sync-and-connectivity"></a>
+<a id="everyday-use"></a>
 
-- **Material 3 interface:** system, light, and dark themes with a consistent brand palette.
-- **Backup and restore:** export a group or all groups as `.splitfree` files and restore them with
-  the identity that created the backup.
-- **QR and link joining:** scan, open, or paste an invite instead of exchanging account details.
-- **Developer diagnostics:** debug builds include an in-app protocol log; release builds do not
-  expose that debug screen.
+### Sync and everyday use
+
+- **Relay sync:** foreground subscriptions, durable outgoing delivery rows, and per-relay history recovery.
+  - Android schedules background retries; relay acceptance is not a member-delivery receipt.
+- **Nearby sync:** foreground exchange over Google Nearby Connections without a Nostr relay or internet connection for
+  the transfer.
+  - The SDK chooses Bluetooth, BLE, or Wi-Fi.
+- **Carry-forward delivery:** members can retain recipient-encrypted envelopes and offer them to another member later,
+  within the protocol's storage and retention limits.
+- **Android UI:** Material 3, system/light/dark themes, QR scanning, invite pasting, and per-group or all-group
+  exports.
+- **Diagnostics:** a local report in Settings is available in both variants; debug builds also expose an in-app log.
+  - Review and redact diagnostics before sharing them.
+
+## Getting started
+
+### Use the app
+
+- **Android:** 8.0 (API 26) or newer.
+- **Google Play services:** required for Nearby sync and QR scanning.
+- **Installation:** build from source below; see the [release guide](RELEASING.md) for a signed APK build.
+
+| Step | Action |
+| --- | --- |
+| **1. Set up** | Create an identity and back up its recovery phrase. |
+| **2. Join a group** | Create your own group or use a privately shared invite. |
+| **3. Add expenses** | Enter the amount, choose who paid, and select the split. |
+| **4. Settle up** | Review balances and record payments. |
+| **5. Sync nearby** | Keep both phones on the group's Nearby screen, grant the requested permissions and enable Bluetooth. When a peer appears, tap its Sync action on either phone. |
+
+- Keep both your recovery phrase and `.splitfree` exports.
+- See [Backups and recovery](#backups-and-recovery).
+
+### Build from source
+
+| Requirement | Version / setup |
+| --- | --- |
+| JDK | **17** matches the repository CI configuration; select it with `JAVA_HOME` |
+| Android SDK | API **37**, installed as `platforms;android-37.0`; Build Tools **36.1.0** |
+| Gradle | Included wrapper; no separate Gradle installation needed |
+| Android Studio | Optional; use a version compatible with the pinned Android Gradle Plugin |
+
+```bash
+git clone https://github.com/invincible04/SplitFree.git
+cd SplitFree
+./gradlew :app:assembleDebug
+```
+
+- **SDK path:** set `ANDROID_HOME` or configure `sdk.dir` in untracked `local.properties`.
+- **Android Studio:** open the repository root, let Gradle sync, then select a device.
+- **Windows:** use `gradlew.bat` instead of `./gradlew`.
+- **Debug signing:** no release keystore or signing passwords needed.
+
+| Command | Result |
+| --- | --- |
+| `./gradlew :app:assembleDebug` | Debug APK at `app/build/outputs/apk/debug/app-debug.apk` |
+| `./gradlew :app:assembleRelease` | Signed, minified APK at `app/build/outputs/apk/release/app-release.apk`; requires signing setup |
+| `./gradlew spotlessCheck` | Check Kotlin and Gradle formatting without modifying files |
+| `./gradlew -PsplitfreeUnsignedRelease=true :app:assembleRelease` | Unsigned, minified release APK for build checks, not installation |
+| `./gradlew :app:lintDebug :app:lintRelease` | Analyze both variants with Android Lint |
+
+> - **Installation safety:** debug is `com.splitfree.debug` (**SplitFree Debug**); production remains `com.splitfree`
+>   (**SplitFree**).
+
+- Debug and production can coexist with separate private data.
+  - Debug does not claim external production invite links; use its in-app Scan or Paste.
+- Older debug builds used the production ID.
+  - The new suffix does not migrate their data or make them replaceable by a differently signed release.
+  - Do not uninstall or clear them without verified backups.
+- For a local handoff, use the [verified distribution command](RELEASING.md#verified-local-distribution) and preserve
+  its bundle.
+  - A successful build alone does not establish installation or device acceptance.
+
+### Release signing
+
+- For a locally signed release, follow the key setup in [RELEASING.md](RELEASING.md).
+- The build expects `splitfree-release.jks` at the repository root and these properties in untracked
+  `local.properties`:
+
+| Property | Value |
+| --- | --- |
+| `RELEASE_STORE_PASSWORD` | Keystore password |
+| `RELEASE_KEY_ALIAS` | Release-key alias |
+| `RELEASE_KEY_PASSWORD` | Key password |
+
+- **Keep credentials private:** both files are Git-ignored; back them up securely.
+- **Preserve update compatibility:** retain the signing identity and increase `versionCode` for updates.
+- **Configure the file:** the build reads these properties from `local.properties`, not environment variables.
+- **Verify the release:** follow [RELEASING.md](RELEASING.md) for signatures, checksums, source, notices, and device
+  acceptance.
+
+**CI scope:** formatting, JVM tests, release-helper tests, both lints, and debug/unsigned release builds.
+
+- **Release automation:** the checked-in workflow prepares a signed APK and draft GitHub Release only after its
+  source, license, version, and signing gates pass.
+- It does not publish the draft.
+- See the [release setup](RELEASING.md#automated-apk-releases); workflow configuration alone is not a completed
+  release.
 
 ## How it works
 
@@ -119,7 +204,7 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 | Group key and epoch | Let the recipient decrypt data under the included key version. |
 | Relay list, expiry, group name | Locate the group's relays, check link expiry, and display the group name. |
 
-> **Treat invitations as secrets:** the link itself grants access to the included group key.
+> - **Treat invitations as secrets:** the link itself grants access to the included group key.
 
 - Share invites in person or through a trusted private channel.
 - Use a fresh link after membership or relay changes.
@@ -130,14 +215,15 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 - **Event format:** expenses and settlements use Nostr kind `30078` with encrypted JSON payloads.
 - **Direct events:** signed by the original author.
 - **Gift-wrapped events:** authenticated through a signed seal; the inner event has no standalone signature.
-- **Expense identity:** group, original author, and UUID. Reusing a UUID cannot overwrite another member's expense.
+- **Expense identity:** group, original author, and UUID.
+  - Reusing a UUID cannot overwrite another member's expense.
 - **Balances:** computed from applied events, with snapshots reducing replay work.
 
 **Debt simplification**
 
 - Matches the largest creditor and debtor until balances settle.
 - Keeps each currency separate.
-- Produces at most **n − 1 transfers** among *n* members with non-zero balances.
+- Produces at most **n − 1 transfers per currency** among *n* members with non-zero balances in that currency.
 - Uses a greedy algorithm; the result is not guaranteed to use the mathematically fewest transfers.
 
 ### 4. Sync through relays
@@ -161,21 +247,91 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 
 | Stage | Behavior |
 | --- | --- |
-| **Connect** | Both phones open Nearby sync and remain in the foreground. |
+| **Discover** | Both phones keep the group's Nearby screen in the foreground. Once required permissions and Bluetooth are ready, advertising and discovery start without a separate Scan action. |
+| **Connect** | Either person taps Sync for a discovered peer. Incoming connections are handled while the run is active; the other person does not need to tap simultaneously. |
 | **Authenticate** | Each phone proves key ownership with a Schnorr challenge; channel binding uses the SDK connection token when supplied. |
 | **Authorize** | Membership checks permit the session to open one group. |
 | **Reconcile** | Bounded frames, paged inventories, and receipts track the records exchanged. |
-| **Resume** | Durable progress survives interruption; reconnecting authenticates again and resumes reconciliation. |
+| **Reconnect** | Already stored records and pending work remain local. A new connection authenticates again and reconciles fresh inventories; partial frame buffers and session counters are not resumed. |
 
-**Forwarding boundaries**
+**Lifecycle and forwarding**
 
+- Stop keeps Nearby off until Start for that screen owner.
+  - Screen disposal or lifecycle stop requests asynchronous cleanup; returning requests a fresh run if sync is still
+    enabled and prerequisites hold.
+- Discovery is continuous while its capability is running, not battery-duty-cycled.
+  - Capability failures can pause discovery for retries; neither Task success nor an empty peer list proves physical
+    discovery.
 - Sealed envelopes can be carried to their intended recipients.
 - Newly received records can be offered to other connected peers.
 - An unsigned inner event alone is not independently verifiable forwarding evidence.
-- Both phones must speak Nearby protocol **v3**.
+- Both phones must use Nearby protocol **v3**; their offered capability intersection is bound into authentication.
+- “Up to date” describes the exchange, not proof that every device has identical group state.
 - Forwarding is foreground-only and bounded by storage and retention limits.
 
 See the [Nearby protocol guide](app/src/main/java/com/splitfree/sync/nearby/README.md) for the wire format, recovery rules, and limits.
+
+## Backups and recovery
+
+- A recovery phrase restores your identity, not your group keys or expense history.
+- Keep both:
+
+| Backup | Purpose | Keep in mind |
+| --- | --- | --- |
+| **24-word recovery phrase** | Restore the original private key and identity | Anyone with it can act as you. It does not contain the group ledger. |
+| **`.splitfree` export** | Restore exported records and included epoch keys | Requires the exporting identity; readable metadata is not hidden by the file authentication. |
+
+**Backup format v2**
+
+- Includes the stored event records available on this device; it cannot recover records or keys already missing here.
+- Preserves encrypted event payloads rather than exporting decrypted expense text.
+- Encrypts group keys to the exporting identity.
+- Authenticates the recognized export fields with HMAC-SHA256 and an identity-derived key.
+- Import validates the backup and merges admissible records; it is not a complete app-storage image or outbox backup.
+
+**Recovery checklist**
+
+- Store your phrase separately from exports.
+- Refresh exports after important changes.
+- Restore using the same identity that created the export.
+- Do not rely on Android system backup; it is disabled for app data.
+- Neither SplitFree nor relays can reconstruct lost keys for you.
+
+## Security
+
+| Protection | Scope |
+| --- | --- |
+| **Event validation** | Checks signatures, group scope, author permissions, and payload bounds before applying updates. |
+| **Nearby authentication** | Binds proof of identity to the SDK connection token when supplied; a missing token does not provide channel binding. |
+| **Key storage** | Encrypts private and group keys with AES-256-GCM under an Android Keystore key. Hardware backing depends on the device. |
+| **Release hardening** | Enables R8 shrinking and obfuscation; these do not replace cryptographic checks. |
+
+- Previously shared keys and history cannot be taken back.
+- Historical membership has limits when a former member retains an old key; see [known
+  limits](app/src/main/java/com/splitfree/sync/nearby/README.md#known-limits).
+
+> - **Report vulnerabilities privately:** follow the reporting instructions and availability guidance in
+>   [SECURITY.md](SECURITY.md).
+
+Never post private keys, recovery phrases, usable invitations, or backup files in public issues.
+
+## Privacy
+
+- No developer-operated backend or relay.
+- No app-configured analytics, advertising, or remote crash-reporting service.
+  - Local diagnostics are still recorded.
+- Encryption protects payloads; the app is not anonymous and its entire database is not encrypted.
+
+**What remains visible**
+
+| Observer / storage | What remains visible |
+| --- | --- |
+| **Nostr relays** | Ciphertext, public event fields and tags, connection IP addresses, and activity timing. Gift wraps still expose recipient and group tags. |
+| **Local app storage** | Group names, member lists, relay lists, and event metadata. Expense payloads remain encrypted; Android's sandbox protects access to app files. |
+| **Local diagnostics** | Crash/heartbeat reports persist in app-private preferences; debug logs and Nearby diagnostic state can contain identifiers or exception text. Redaction is limited, not a guarantee of anonymity. |
+| **Google Play services** | Nearby and scanner modules have their own diagnostics and module downloads, governed by Google's policies and device settings. |
+
+Read [PRIVACY.md](PRIVACY.md) for storage, permissions, and third-party-services details.
 
 ## Architecture
 
@@ -200,7 +356,7 @@ flowchart LR
 | **UI** | Screens, navigation, observable state, and reusable controls | Compose, ViewModels, `StateFlow`, Material 3 |
 | **Domain** | Expense rules, balances, group operations, identity, and crypto | Use cases, models, repository contracts, `GroupEncryption`, `EventSigner` |
 | **Data** | Persistence, secure key storage, repositories, and transports | Room, Android Keystore-backed storage, `NostrClient`, `NearbySync` |
-| **Sync** | Validate and apply events, track delivery, recover history, and reconcile peers | `EventProcessor`, `EventPublisher`, `SyncEngine`, `LiveSync`, `PeerSession` |
+| **Sync** | Validate and apply events, track delivery, recover history, and own foreground Nearby runs | `EventProcessor`, `EventPublisher`, `SyncEngine`, `LiveSync`, `NearbySessionController`, `PeerSession` |
 
 ### Protocols and cryptography
 
@@ -243,78 +399,6 @@ Dependency versions are maintained in [`gradle/libs.versions.toml`](gradle/libs.
 | [Nearby protocol](app/src/main/java/com/splitfree/sync/nearby/README.md) | Authentication, reconciliation, forwarding, and completion limits. |
 | [Contributing](CONTRIBUTING.md) | Development workflow, test commands, and code organization. |
 | [Releasing](RELEASING.md) | Signing, APK verification, source/notices, and device acceptance. |
-
-## Getting started
-
-### Use the app
-
-- **Android:** 8.0 (API 26) or newer.
-- **Google Play services:** required for Nearby sync and QR scanning.
-- **Installation:** build from source below; see the [release guide](RELEASING.md) for a signed APK build.
-
-| Step | Action |
-| --- | --- |
-| **1. Set up** | Create an identity and back up its recovery phrase. |
-| **2. Join a group** | Create your own group or use a privately shared invite. |
-| **3. Add expenses** | Enter the amount, choose who paid, and select the split. |
-| **4. Settle up** | Review balances and record payments. |
-| **5. Sync nearby** | Open Nearby sync on both phones to exchange updates without internet. |
-
-Keep both your recovery phrase and `.splitfree` exports. See [Backups and recovery](#backups-and-recovery).
-
-### Build from source
-
-| Requirement | Version / setup |
-| --- | --- |
-| JDK | **17**; set `JAVA_HOME` accordingly |
-| Android SDK | Platform **37** for compilation; API **26+** device or emulator |
-| Gradle | Included wrapper; no separate Gradle installation needed |
-| Android Studio | Optional; use a version compatible with the pinned Android Gradle Plugin |
-
-```bash
-git clone https://github.com/invincible04/SplitFree.git
-cd SplitFree
-./gradlew :app:assembleDebug
-```
-
-- **SDK path:** set `ANDROID_HOME` or configure `sdk.dir` in untracked `local.properties`.
-- **Android Studio:** open the repository root, let Gradle sync, then select a device.
-- **Windows:** use `gradlew.bat` instead of `./gradlew`.
-- **Debug signing:** no release keystore or signing passwords needed.
-
-| Command | Result |
-| --- | --- |
-| `./gradlew :app:assembleDebug` | Debug APK at `app/build/outputs/apk/debug/app-debug.apk` |
-| `./gradlew :app:assembleRelease` | Signed, minified APK at `app/build/outputs/apk/release/app-release.apk`; requires signing setup |
-| `./gradlew spotlessCheck` | Check Kotlin and Gradle formatting without modifying files |
-| `./gradlew spotlessApply` | Apply formatting locally |
-| `./gradlew :app:lintDebug :app:lintRelease` | Analyze both variants with Android Lint |
-
-> **Installation safety:** debug is `com.splitfree.debug` (**SplitFree Debug**); production remains `com.splitfree` (**SplitFree**).
-
-- Debug and production can coexist with separate private data. Debug does not claim external production invite links; use its in-app Scan or Paste.
-- Older debug builds used the production ID. The new suffix does not migrate their data or make them replaceable by a differently signed release. Do not uninstall or clear them without verified backups.
-- Share only the exact signed APK produced by the [verified local distribution command](RELEASING.md#verified-local-distribution). A raw Gradle build is not installation acceptance.
-
-### Release signing
-
-Place `splitfree-release.jks` at the repository root and add these values to `local.properties`,
-preserving any `sdk.dir` entry:
-
-| Property | Value |
-| --- | --- |
-| `RELEASE_STORE_PASSWORD` | Keystore password |
-| `RELEASE_KEY_ALIAS` | Release-key alias |
-| `RELEASE_KEY_PASSWORD` | Key password |
-
-- **Keep credentials private:** both files are Git-ignored; back them up securely.
-- **Preserve update compatibility:** retain the signing identity and increase `versionCode` for updates.
-- **Configure the file:** the build reads these properties from `local.properties`, not environment variables.
-- **Verify the release:** follow [RELEASING.md](RELEASING.md) for signatures, checksums, source, notices, and device acceptance.
-
-**CI scope:** formatting, JVM tests, release-helper tests, both lints, and debug/unsigned release builds.
-
-**Release automation:** version tags can prepare a signed APK in a draft GitHub Release after signing-secret setup and license approval. Nothing is published automatically; follow the [release checklist and GitHub setup](RELEASING.md#automated-apk-releases).
 
 ## Project structure
 
@@ -382,12 +466,13 @@ For a single class or coverage report:
 | **Groups and backups** | Invitations, membership, key rotation/revocation, authenticated export/import, epoch-key recovery |
 | **Storage** | Room migrations, transaction boundaries, durable outbox, control-operation journals, deferred events |
 | **Relay sync** | Message parsing, WebSocket lifecycle, per-relay catch-up, retries, and worker scheduling |
-| **Nearby** | Channel-bound authentication, framing, reconciliation, interrupted sessions, and simulated multi-peer forwarding |
+| **Nearby** | Authentication and optional channel binding, framing, reconciliation, peer-scoped failures, simulated forwarding, and queued startup/cancellation with fake radios |
 | **UI** | ViewModel state, Compose interactions, large-text/layout cases, and native-graphics fixture renders |
 
 ### Live-relay integration tests
 
-Tests named `*IntegrationTest*` are excluded by default. Opt in explicitly:
+- Tests named `*IntegrationTest*` are excluded by default.
+- Opt in explicitly:
 
 ```bash
 ./gradlew :app:testDebugUnitTest -DREAL_RELAY_TEST=true --tests '*IntegrationTest*'
@@ -395,67 +480,18 @@ Tests named `*IntegrationTest*` are excluded by default. Opt in explicitly:
 
 - **Real network activity:** these tests contact relays and can publish events.
 - **Safe fixtures:** use disposable identities and sample data.
-- **JVM limits:** Robolectric and in-memory transports do not certify radios, Keystore durability, OS process death, or background timing.
-- **Release acceptance:** test the signed, minified APK using the [device checklist](RELEASING.md#4-test-the-exact-signed-apk).
-
-## Backups and recovery
-
-A recovery phrase restores your identity, not your group keys or expense history. Keep both:
-
-| Backup | Purpose | Keep in mind |
-| --- | --- | --- |
-| **24-word recovery phrase** | Restore the original private key and identity | Anyone with it can act as you. It does not contain the group ledger. |
-| **`.splitfree` export** | Restore group data and included epoch keys | Requires the same identity that made it; metadata in the file is readable. |
-
-**Backup format v2**
-
-- Preserves encrypted expense payloads.
-- Encrypts group keys to the exporting identity.
-- Authenticates canonical exported data and metadata with HMAC-SHA256 and an identity-derived key.
-
-**Recovery checklist**
-
-- Store your phrase separately from exports.
-- Refresh exports after important changes.
-- Restore using the same identity that created the export.
-- Do not rely on Android system backup; it is disabled for app data.
-- Neither SplitFree nor relays can reconstruct lost keys for you.
-
-## Security
-
-| Protection | Scope |
-| --- | --- |
-| **Event validation** | Checks signatures, group scope, author permissions, and payload bounds before applying updates. |
-| **Nearby authentication** | Binds proof of identity to the SDK connection token when supplied; a missing token does not provide channel binding. |
-| **Key storage** | Encrypts private and group keys with AES-256-GCM under an Android Keystore key. Hardware backing depends on the device. |
-| **Release hardening** | Enables R8 shrinking and obfuscation; these do not replace cryptographic checks. |
-
-- Previously shared keys and history cannot be taken back.
-- Historical membership has limits when a former member retains an old key; see [known limits](app/src/main/java/com/splitfree/sync/nearby/README.md#known-limits).
-
-> **Report vulnerabilities privately:** follow [SECURITY.md](SECURITY.md) and use [GitHub private reporting](https://github.com/invincible04/SplitFree/security/advisories/new).
-
-Never post private keys, recovery phrases, usable invitations, or backup files in public issues.
-
-## Privacy
-
-- No developer-operated backend or relay.
-- No added analytics, tracking, advertising, or remote crash-reporting SDKs.
-- Encryption protects payloads; the app is not anonymous and its entire database is not encrypted.
-
-**What remains visible**
-
-| Observer / storage | What remains visible |
-| --- | --- |
-| **Nostr relays** | Ciphertext, public event fields and tags, connection IP addresses, and activity timing. Gift wraps still expose recipient and group tags. |
-| **Local app storage** | Group names, member lists, relay lists, and event metadata. Expense payloads remain encrypted; Android's sandbox protects access to app files. |
-| **Google Play services** | Nearby and scanner modules have their own diagnostics and module downloads, governed by Google's policies and device settings. |
-
-Read [PRIVACY.md](PRIVACY.md) for storage, permissions, and third-party-services details.
+  - Offline cross-component tests should not use the `IntegrationTest` suffix, which is reserved by the build filter
+    for these opt-in classes.
+- **JVM limits:** Robolectric and in-memory transports do not certify radios, Keystore durability, OS process death,
+  or background timing.
+- **Release acceptance:** test the signed, minified APK using the [device
+  checklist](RELEASING.md#4-test-the-exact-signed-apk) and the [Nearby hardware validation
+  list](RELEASING.md#nearby-hardware-validation).
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Contributions are welcome.
+- Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 | Contribution | Useful starting point |
 | --- | --- |
@@ -475,4 +511,5 @@ Copyright © 2026 SplitFree Contributors.
 - **Project:** [GNU General Public License, version 3 or later](LICENSE) (`GPL-3.0-or-later`), without warranty.
 - **Binary redistribution:** include corresponding source and required notices; see the [release guide](RELEASING.md).
 - **Dependencies:** retain their own licenses.
-- **Inter typeface:** by The Inter Project Authors, licensed under the [SIL Open Font License 1.1](app/src/main/assets/licenses/Inter-OFL.txt).
+- **Inter typeface:** by The Inter Project Authors, licensed under the [SIL Open Font License
+  1.1](app/src/main/assets/licenses/Inter-OFL.txt).

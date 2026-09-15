@@ -10,13 +10,12 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * In-app log buffer that mirrors android.util.Log API.
- * Stores last [MAX_ENTRIES] log lines in a ring buffer for the debug screen.
- * Also forwards to Android logcat so adb logcat still works.
+ * Debug-only in-app buffer of the last [MAX_ENTRIES] entries, with Android logcat forwarding.
  *
- * Release hygiene: the in-app buffer and `d`/`i` logcat output are debug-only. `w`/`e` still reach
- * logcat in release builds (they are what a crash report needs) but go through [sanitize] first so
- * that 64-hex pubkeys / event ids and invite-link payloads never land in a world-readable log.
+ * - Debug/info output is debug-only; warning/error output reaches logcat in both build variants.
+ * - Warning/error message strings pass through [sanitize], but the debug buffer retains original text and throwable
+ *   overloads pass the throwable to logcat unchanged.
+ * - Callers must avoid sensitive data; pattern-based redaction is not a guarantee that logs are safe to share.
  */
 object DebugLog {
     private const val MAX_ENTRIES = 500
@@ -25,9 +24,10 @@ object DebugLog {
     private const val HEX_PREFIX_KEPT = 8
 
     /**
-     * A run of 64 or more hex characters: a secp256k1 pubkey, Nostr event id, raw private key, or
-     * (at 128) a Schnorr signature. Shorter runs such as the `take(8)` prefixes the code already logs
-     * are left untouched.
+     * A run of 64 or more hex characters: a secp256k1 pubkey, Nostr event id, raw private key, or (at 128) a Schnorr
+     * signature.
+     *
+     * - Shorter runs such as the `take(8)` prefixes the code already logs are left untouched.
      */
     private val HEX64 = Regex("[0-9a-fA-F]{64,}")
 
@@ -56,15 +56,16 @@ object DebugLog {
     /** Snapshot of current entries (newest last). */
     val entries: List<Entry> get() = buffer.toList()
 
-    /** Incremented on every write; collect as StateFlow trigger. */
+    /** Incremented on each debug-buffer append and clear; a polling hint, not an observable flow. */
     @Volatile
     var revision: Long = 0L
         private set
 
     /**
-     * Redacts identifiers that should never reach a release logcat: every 64-hex pubkey / event id
-     * is cut to its first [HEX_PREFIX_KEPT] chars plus `…`, and every `splitfree://join?d=…` invite
-     * link (a bearer credential carrying the group key) becomes [INVITE_LINK_REDACTED].
+     * Shortens runs of at least 64 hex characters to [HEX_PREFIX_KEPT] characters plus `…`, and replaces compact
+     * invite links with [INVITE_LINK_REDACTED].
+     *
+     * - Other text is unchanged, including recovery phrases, short identifiers and secrets outside those patterns.
      */
     fun sanitize(msg: String): String {
         val noInvites = INVITE_LINK.replace(msg, INVITE_LINK_REDACTED)

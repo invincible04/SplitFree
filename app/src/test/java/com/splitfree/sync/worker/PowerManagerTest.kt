@@ -101,23 +101,6 @@ class PowerManagerTest {
     }
 
     @Test
-    fun `bleScanDuty varies by mode`() {
-        every { batteryManager.isCharging } returns true
-        every { batteryManager.getIntProperty(any()) } returns 100
-        assertEquals(10_000L to 2_000L, pm.bleScanDuty())
-
-        every { batteryManager.isCharging } returns false
-        every { batteryManager.getIntProperty(any()) } returns 50
-        assertEquals(5_000L to 5_000L, pm.bleScanDuty())
-
-        every { batteryManager.getIntProperty(any()) } returns 20
-        assertEquals(3_000L to 10_000L, pm.bleScanDuty())
-
-        every { batteryManager.getIntProperty(any()) } returns 5
-        assertEquals(2_000L to 15_000L, pm.bleScanDuty())
-    }
-
-    @Test
     fun `PowerMode enum has 4 values`() {
         assertEquals(4, PowerMode.entries.size)
     }

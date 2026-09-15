@@ -47,7 +47,7 @@ Help improve the app through focused fixes, tests, documentation, and reproducib
 | Requirement | Setup |
 | --- | --- |
 | JDK | **17**, selected through `JAVA_HOME` or your IDE's Gradle JDK. |
-| Android SDK | Platform **37** for compilation; API **26+** device or emulator. |
+| Android SDK | Platform **37** (`platforms;android-37.0`), Build Tools **36.1.0**; API **26+** device or emulator. |
 | Gradle | Use the checked-in wrapper, not a system Gradle installation. |
 | Android Studio | Optional; use a version compatible with the pinned Android Gradle Plugin. |
 | Google Play services | Needed to exercise Nearby Connections and QR scanning. |
@@ -69,9 +69,15 @@ cd SplitFree
 - On Windows, use `gradlew.bat`.
 - Debug builds do not require release signing credentials.
 
-> **Protect existing installs:** new debug builds use `com.splitfree.debug`, labelled **SplitFree Debug**, with their own private data. Production stays `com.splitfree`. Older same-ID debug installs still require a data-preserving migration plan; never uninstall or clear a real installation just to resolve a signature conflict.
+> - **Protect existing installs:** new debug builds use `com.splitfree.debug`, labelled **SplitFree Debug**, with
+>   their own private data.
+> - Production stays `com.splitfree`.
+> - Older same-ID debug installs still require a data-preserving migration plan; never uninstall or clear a real
+>   installation just to resolve a signature conflict.
 
-Debug intentionally does not register for external `splitfree://join` links. Its in-app Scan and Paste continue accepting the same invite format. Separate app IDs do not isolate relay/Bluetooth test traffic: use disposable identities and groups.
+- Debug intentionally does not register for external `splitfree://join` links.
+- Its in-app Scan and Paste continue accepting the same invite format.
+- Separate app IDs do not isolate relay/Bluetooth test traffic: use disposable identities and groups.
 
 ### Configuration map
 
@@ -89,7 +95,8 @@ Debug intentionally does not register for external `splitfree://join` links. Its
 - Production relay URLs require `wss://`; a plain local WebSocket endpoint is not sufficient.
 - Custom group relays do **not** disable the built-in fallback pool.
 - Use fake transport fixtures for isolated tests, or explicitly configure a test-only relay setup.
-- Live-relay tests can publish events. Never use real financial data or production identities.
+- Live-relay tests can publish events.
+  - Never use real financial data or production identities.
 
 ## Development workflow
 
@@ -110,7 +117,8 @@ git checkout -b fix/describe-the-change
 - Use `./gradlew spotlessApply` when formatting needs adjustment; review its changes before staging.
 - Git hooks are local configuration, not a substitute for CI or explicit diff review.
 - For release-specific changes, also follow [RELEASING.md](RELEASING.md).
-- Run `python3 -m unittest discover -s tools/release/tests -v` when changing release helpers or workflow signing steps.
+- Run `python3 -m unittest discover -s tools/release/tests -v` when changing release helpers or workflow signing
+  steps.
 - CI uses `-PsplitfreeUnsignedRelease=true` to check release builds without release credentials.
 
 ### Before staging or sharing source
@@ -120,15 +128,18 @@ python3 -B tools/release/publication_check.py --source worktree
 python3 -B tools/release/publication_check.py --source index
 ```
 
-The first command checks current tracked/untracked source and ignored files under
-`app/src`, `app/schemas` and `gradle`. The second checks the exact staged blobs,
-which may differ from working files. Both fail on findings and print only metadata,
-not matched values. Run the index check again after staging. Neither stages files.
+- The first command checks current tracked/untracked source and ignored files under `app/src`, `app/schemas` and
+  `gradle`.
+- The second checks the exact staged blobs, which may differ from working files.
+- Both fail on findings and print only metadata, not matched values.
+- Run the index check again after staging.
+- Neither stages files.
 
-Keep credentials, personal data and generated artifacts out of source. Ignore rules
-are not protection for already tracked files. Do not bypass a rejection by renaming
-a private file or excluding a test directory. See the [publication checks](RELEASING.md#source-publication-checks)
-for narrow binary/fixture reviews, limitations and the separate history gate.
+- Keep credentials, personal data and generated artifacts out of source.
+- Ignore rules are not protection for already tracked files.
+- Do not bypass a rejection by renaming a private file or excluding a test directory.
+- See the [publication checks](RELEASING.md#source-publication-checks) for narrow binary/fixture reviews, limitations
+  and the separate history gate.
 
 ## Code style
 
@@ -148,7 +159,8 @@ for narrow binary/fixture reviews, limitations and the separate history gate.
 ```
 
 - `spotlessCheck` does not rewrite files; `spotlessApply` does.
-- Android Lint must pass without errors. Warnings are reported but are not configured as fatal.
+- Android Lint must pass without errors.
+  - Warnings are reported but are not configured as fatal.
 
 ## Testing
 
@@ -165,6 +177,7 @@ for narrow binary/fixture reviews, limitations and the separate history gate.
 | Include live tests with the debug suite | `./gradlew :app:testDebugUnitTest -DREAL_RELAY_TEST=true` |
 
 - `*IntegrationTest*` classes are excluded unless `REAL_RELAY_TEST=true`.
+  - Reserve this suffix for opt-in live tests; name offline cross-component tests so the ordinary suite includes them.
 - Opt-in integration tests require network access and may write to public relays.
 - Test reports are under `app/build/reports/tests/`; Gradle reports the coverage output location.
 - Do not report excluded integration tests as passed device or live-network checks.

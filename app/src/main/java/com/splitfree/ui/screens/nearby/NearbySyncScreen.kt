@@ -2,12 +2,18 @@ package com.splitfree.ui.screens.nearby
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -42,11 +48,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,21 +68,24 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.splitfree.R
-import com.splitfree.data.ble.NearbyPeer
+import com.splitfree.sync.nearby.RunPhase
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MemberAvatar
+import com.splitfree.ui.components.SectionHead
 import com.splitfree.ui.components.SfAccentButton
 import com.splitfree.ui.components.SfBottomDock
 import com.splitfree.ui.components.SfCard
@@ -82,127 +94,170 @@ import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.WarningCard
 import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.theme.splitFree
-import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
+import com.splitfree.ui.viewmodels.Headline
+import com.splitfree.ui.viewmodels.NearbyNotice
+import com.splitfree.ui.viewmodels.NearbyPeerRow
 import com.splitfree.ui.viewmodels.NearbySyncUiState
 import com.splitfree.ui.viewmodels.NearbySyncViewModel
+import com.splitfree.ui.viewmodels.NoticeAction
+import com.splitfree.ui.viewmodels.RowAction
 
 /**
- * What the platform lets the screen do right now; checked by the route, rendered by the content.
+ * Route-level permission and Bluetooth checks, not a guarantee that Nearby services can start.
  *
  * @property granted every runtime permission in [requiredNearbyPermissions] is granted.
- * @property bluetoothEnabled the adapter exists and is switched on.
+ * @property needsSettings settings recovery selected after repeated denial without a permission rationale.
+ * @property bluetoothEnabled the adapter is on and the app has permission to read its state.
  * @property bluetoothAvailable the device has a Bluetooth adapter at all.
  */
 data class NearbyPermissionState(
     val granted: Boolean = true,
+    val needsSettings: Boolean = false,
     val bluetoothEnabled: Boolean = true,
     val bluetoothAvailable: Boolean = true
-)
+) {
+    /** Passes the route's startup gate; service and location-setting failures are reported by the controller. */
+    val satisfied: Boolean
+        get() = granted && bluetoothEnabled && bluetoothAvailable
+}
 
 /**
- * Everything the nearby screen can ask its host to do. [startScan] is the dock button's single intent:
- * the route decides whether that means requesting permissions, turning Bluetooth on or actually scanning.
- * Defaults are no-ops so tests can pass only what they observe.
+ * Everything the nearby screen can ask its host to do.
+ *
+ * - Defaults are no-ops so tests can pass only what they observe.
  */
 data class NearbyActions(
     val back: () -> Unit = {},
-    val startScan: () -> Unit = {},
-    val stopScan: () -> Unit = {},
-    val connectToPeer: (String) -> Unit = {}
+    val start: () -> Unit = {},
+    val stop: () -> Unit = {},
+    val connect: (String) -> Unit = {},
+    val cancelAttempt: (String) -> Unit = {},
+    val requestPermissions: () -> Unit = {},
+    val openAppSettings: () -> Unit = {},
+    val enableBluetooth: () -> Unit = {},
+    val openLocationSettings: () -> Unit = {}
 )
 
 /**
- * Nearby-sync route: owns permission and Bluetooth-enable launchers, re-checks both on resume, stops the
- * scan when the screen leaves and renders [NearbySyncContent] from [NearbySyncViewModel.uiState].
+ * Owns platform launchers and forwards the destination lifecycle to the ViewModel.
+ *
+ * - Missing permissions are requested automatically once per saved screen entry; later requests require a tap.
+ * - Permission grants and Bluetooth state are rechecked on resume.
+ * - Bluetooth enablement is requested only on a tap.
  */
 @Composable
 fun NearbySyncScreen(onBack: () -> Unit, viewModel: NearbySyncViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val requiredPermissions = remember { requiredNearbyPermissions() }
     var permissionsGranted by remember { mutableStateOf(hasAllPermissions(context, requiredPermissions)) }
+    var needsSettings by rememberSaveable { mutableStateOf(false) }
+    var autoRequested by rememberSaveable { mutableStateOf(false) }
+    var requestCount by rememberSaveable { mutableIntStateOf(0) }
     val btAdapter = remember {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     }
     var bluetoothEnabled by remember { mutableStateOf(isBluetoothEnabled(context, btAdapter)) }
-    var pendingScanAfterEnable by remember { mutableStateOf(false) }
 
     val btEnableLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
-        if (pendingScanAfterEnable && permissionsGranted && bluetoothEnabled) {
-            viewModel.startScan()
-        }
-        pendingScanAfterEnable = false
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permissionsGranted = hasAllPermissions(context, requiredPermissions)
         bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
-        if (permissionsGranted && pendingScanAfterEnable) {
-            if (!bluetoothEnabled) {
-                btEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            } else {
-                viewModel.startScan()
-                pendingScanAfterEnable = false
+        if (permissionsGranted) {
+            needsSettings = false
+        } else if (requestCount > 1 && activity != null) {
+            val denied = requiredPermissions.filter {
+                ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
             }
+            if (denied.any { !ActivityCompat.shouldShowRequestPermissionRationale(activity, it) }) needsSettings = true
         }
     }
+    val requestPermissions = {
+        requestCount++
+        permissionLauncher.launch(requiredPermissions.toTypedArray())
+    }
 
-    // Nearby sync is foreground only. ON_STOP (Home, lock screen, app switch) ends every session and
-    // stops advertising/discovery; ON_PAUSE is deliberately not used because the system consent
-    // dialog Nearby shows on first connection pauses the activity mid-handshake.
+    // Bluetooth broadcasts can originate outside the system UID, so this receiver must be exported.
+    // It listens only for the protected state-change action and re-reads the adapter rather than trusting extras.
+    DisposableEffect(context, btAdapter) {
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                    if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                        bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
+                    }
+                }
+            }
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+    val permissions =
+        NearbyPermissionState(
+            granted = permissionsGranted,
+            needsSettings = needsSettings,
+            bluetoothEnabled = bluetoothEnabled,
+            bluetoothAvailable = btAdapter != null
+        )
+    LaunchedEffect(permissions.satisfied) { viewModel.onPrerequisites(permissions.satisfied) }
+
+    // - STARTED, not RESUMED, owns the run: a consent dialog can pause the destination without stopping it.
+    // - Stop or disposal requests cleanup; a later start may request a new run if intent and prerequisites allow.
+    // - Pause only suspends connection-attempt timeouts, not the protocol session's handshake/transfer watchdog.
     LifecycleStartEffect(Unit) {
-        onStopOrDispose { viewModel.stopScan() }
+        viewModel.onScreenStarted()
+        onStopOrDispose { viewModel.onScreenStopped() }
     }
 
     LifecycleResumeEffect(Unit) {
         permissionsGranted = hasAllPermissions(context, requiredPermissions)
         bluetoothEnabled = isBluetoothEnabled(context, btAdapter)
-        onPauseOrDispose { }
+        viewModel.setPaused(false)
+        onPauseOrDispose { viewModel.setPaused(true) }
     }
 
     LaunchedEffect(Unit) {
-        if (!permissionsGranted && requiredPermissions.isNotEmpty()) {
-            permissionLauncher.launch(requiredPermissions.toTypedArray())
+        if (!autoRequested && !permissionsGranted && requiredPermissions.isNotEmpty()) {
+            autoRequested = true
+            requestPermissions()
         }
     }
 
     NearbySyncContent(
         state = uiState,
-        permissions =
-        NearbyPermissionState(
-            granted = permissionsGranted,
-            bluetoothEnabled = bluetoothEnabled,
-            bluetoothAvailable = btAdapter != null
-        ),
+        permissions = permissions,
         actions =
         NearbyActions(
             back = {
-                viewModel.stopScan()
+                viewModel.leave()
                 onBack()
             },
-            startScan = {
-                when {
-                    !permissionsGranted -> {
-                        pendingScanAfterEnable = true
-                        permissionLauncher.launch(requiredPermissions.toTypedArray())
-                    }
-
-                    !bluetoothEnabled -> {
-                        pendingScanAfterEnable = true
-                        btEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                    }
-
-                    else -> {
-                        pendingScanAfterEnable = false
-                        viewModel.startScan()
-                    }
-                }
+            start = viewModel::start,
+            stop = viewModel::stop,
+            connect = viewModel::connect,
+            cancelAttempt = viewModel::cancelAttempt,
+            requestPermissions = requestPermissions,
+            openAppSettings = {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null)
+                    )
+                )
             },
-            stopScan = viewModel::stopScan,
-            connectToPeer = viewModel::connectToPeer
+            enableBluetooth = { btEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
+            openLocationSettings = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
         )
     )
 }
@@ -221,25 +276,11 @@ private const val RING_END_SCALE = 1.45f
 private const val PULSE_MAX_ALPHA = 0.7f
 private const val PULSE_STROKE_FACTOR = 1.5f
 
-/** Status resources the ViewModel uses for failures; everything else is progress or guidance. */
-/** Plural failure statuses (counts of records that did not apply). */
-private val FailurePluralIds = setOf(R.plurals.nearby_incomplete, R.plurals.nearby_interrupted)
-
-private val FailureStatusIds =
-    setOf(
-        R.string.nearby_peer_auth_failed,
-        R.string.nearby_handshake_timeout,
-        R.string.nearby_unsupported_peer,
-        R.string.nearby_unauthorized,
-        R.string.nearby_ble_error,
-        R.string.nearby_scan_failed
-    )
-
 /**
- * Stateless nearby-sync layout: top bar, a thin progress line while syncing, the
- * radar orbit (rings pulse only while scanning), a state-dependent headline over the explanation, the
- * ViewModel's status as a hint or warning, permission problems as warnings, one card per peer and the dock
- * with the single primary action.
+ * Renders projected state and forwards actions without owning platform or protocol work, so previews and content tests
+ * need no ViewModel.
+ *
+ * - Retained results are separated from the run's peer rows.
  */
 @Composable
 internal fun NearbySyncContent(
@@ -250,6 +291,7 @@ internal fun NearbySyncContent(
 ) {
     val tokens = adaptiveSizeTokens()
     val horizontal = tokens.screenPaddingHorizontal
+    val busy = state.headline == Headline.SYNCING || state.headline == Headline.CONNECTING
 
     Scaffold(
         modifier = modifier,
@@ -271,7 +313,7 @@ internal fun NearbySyncContent(
                 .padding(bottom = padding.calculateBottomPadding() + 12.dp)
                 .testTag("nearby_scroll")
         ) {
-            if (state.syncing) {
+            if (state.progressVisible) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth().testTag("nearby_progress"),
                     color = MaterialTheme.colorScheme.primary,
@@ -280,8 +322,8 @@ internal fun NearbySyncContent(
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = horizontal)) {
                 NearbyOrbit(
-                    scanning = state.scanning,
-                    syncing = state.syncing,
+                    scanning = state.searching,
+                    syncing = busy,
                     modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 28.dp, bottom = 19.dp)
                 )
                 Text(
@@ -307,20 +349,25 @@ internal fun NearbySyncContent(
                     modifier = Modifier.widthIn(max = ExplanationMaxWidth).align(Alignment.CenterHorizontally)
                 )
 
-                visibleStatus(state)?.let { status ->
+                state.notice?.let { notice ->
                     Spacer(Modifier.height(20.dp))
-                    StatusNotice(status)
+                    StatusNotice(notice, state.phase, permissions, actions)
                 }
                 PermissionNotice(permissions)
 
-                if (state.peers.isNotEmpty()) {
+                val live = state.rows.filter { !it.recent }
+                if (live.isNotEmpty()) {
                     Spacer(Modifier.height(23.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        state.peers.forEach { peer ->
-                            key(peer.endpointId) {
-                                PeerCard(peer = peer, syncing = state.syncing, onSync = actions.connectToPeer)
-                            }
-                        }
+                        live.forEach { row -> key(row.endpointId) { PeerCard(row = row, actions = actions) } }
+                    }
+                }
+                val recent = state.rows.filter { it.recent }
+                if (recent.isNotEmpty()) {
+                    SectionHead(stringResource(R.string.nearby_recent), modifier = Modifier.testTag("nearby_recent"))
+                    Spacer(Modifier.height(6.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        recent.forEach { row -> key(row.endpointId) { PeerCard(row = row, actions = actions) } }
                     }
                 }
             }
@@ -328,48 +375,69 @@ internal fun NearbySyncContent(
     }
 }
 
-/** Headline by state; syncing wins over a found peer, which wins over plain scanning. */
 @Composable
-private fun nearbyHeadline(state: NearbySyncUiState): String = when {
-    state.syncing -> stringResource(R.string.nearby_headline_syncing)
-    state.peers.isNotEmpty() ->
-        pluralStringResource(R.plurals.nearby_headline_found, state.peers.size, state.peers.size)
-    state.scanning -> stringResource(R.string.nearby_headline_scanning)
-    else -> stringResource(R.string.nearby_headline_idle)
+private fun nearbyHeadline(state: NearbySyncUiState): String = when (state.headline) {
+    Headline.SYNCING -> stringResource(R.string.nearby_headline_syncing)
+    Headline.CONNECTING -> stringResource(R.string.nearby_headline_connecting)
+    Headline.FOUND -> pluralStringResource(R.plurals.nearby_headline_found, state.peerCount, state.peerCount)
+    Headline.SEARCHING -> stringResource(R.string.nearby_headline_searching)
+    Headline.STARTING -> stringResource(R.string.nearby_headline_starting)
+    Headline.FAILED -> stringResource(R.string.nearby_headline_failed)
+    Headline.IDLE -> stringResource(R.string.nearby_headline_idle)
 }
 
 /**
- * The status to show: everything the ViewModel says, except the "ask the other person to open Nearby sync"
- * scanning hint once someone has actually been found, when the headline and peer card already say what to do.
+ * Renders run-level guidance or failure.
+ *
+ * - Suppresses the notice's retry action in FAILED because the dock already offers it; permission and location
+ *   recovery actions remain available.
  */
-private fun visibleStatus(state: NearbySyncUiState): UiMessage? {
-    val status = state.status ?: return null
-    val isScanningHint = status is UiMessage.Res && status.id == R.string.nearby_scanning
-    return if (isScanningHint && state.peers.isNotEmpty()) null else status
-}
-
-/** The ViewModel's status line: a [WarningCard] when the resource is one of its failure messages. */
 @Composable
-private fun StatusNotice(status: UiMessage) {
-    val isFailure =
-        (status is UiMessage.Res && status.id in FailureStatusIds) ||
-            (status is UiMessage.Plural && status.id in FailurePluralIds)
-    val text = status.asString()
+private fun StatusNotice(
+    notice: NearbyNotice,
+    phase: RunPhase,
+    permissions: NearbyPermissionState,
+    actions: NearbyActions
+) {
+    val text = notice.message.asString()
     val statusModifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
-    if (isFailure) {
+    if (notice.warning) {
         WarningCard(text = text, modifier = statusModifier.testTag("nearby_status_warning"))
     } else {
         HintCard(text = text, modifier = statusModifier.testTag("nearby_status_hint"))
     }
+    val (label, onClick) =
+        when (notice.action) {
+            NoticeAction.NONE -> return
+            NoticeAction.GRANT_PERMISSION ->
+                if (permissions.needsSettings) {
+                    R.string.nearby_open_settings to actions.openAppSettings
+                } else {
+                    R.string.permissions_required to actions.requestPermissions
+                }
+            NoticeAction.OPEN_LOCATION_SETTINGS ->
+                R.string.nearby_notice_location_action to actions.openLocationSettings
+            NoticeAction.RETRY ->
+                if (phase == RunPhase.FAILED) return else R.string.nearby_try_again to actions.start
+        }
+    Spacer(Modifier.height(10.dp))
+    SfSecondaryButton(
+        text = stringResource(label),
+        onClick = onClick,
+        modifier = Modifier.testTag("nearby_notice_action")
+    )
 }
 
-/** Missing hardware or permissions, stated in words under the copy. */
+/** Missing hardware, permissions or Bluetooth, stated in words under the copy. */
 @Composable
 private fun PermissionNotice(permissions: NearbyPermissionState) {
     val text =
         when {
             !permissions.bluetoothAvailable -> stringResource(R.string.nearby_bluetooth_unavailable_hint)
+            !permissions.granted && permissions.needsSettings ->
+                stringResource(R.string.nearby_permission_settings_hint)
             !permissions.granted -> stringResource(R.string.permissions_hint)
+            !permissions.bluetoothEnabled -> stringResource(R.string.nearby_bluetooth_off_hint)
             else -> return
         }
     Spacer(Modifier.height(14.dp))
@@ -377,10 +445,9 @@ private fun PermissionNotice(permissions: NearbyPermissionState) {
 }
 
 /**
- * Radar: three concentric hairline circles (185 / 125 / 65dp) around a 50dp `primary`
- * tile. While [scanning] the two inner rings expand from 0.6× to 1.45× and fade, 1.7 s apart with a 450 ms
- * stagger; when not scanning they are static and no animation exists at all. The tile shows the Bluetooth
- * mark, or the sync arrows while [syncing].
+ * Creates the infinite transition only while [scanning], avoiding animation work for an idle radar.
+ *
+ * - [syncing] changes the icon independently, since discovery can continue during a connection or transfer.
  */
 @Composable
 private fun NearbyOrbit(scanning: Boolean, syncing: Boolean, modifier: Modifier = Modifier) {
@@ -452,8 +519,7 @@ private fun NearbyOrbit(scanning: Boolean, syncing: Boolean, modifier: Modifier 
 }
 
 /**
- * A ring at rest ([progress] null: hairline in [restColor]) or mid-pulse: drawn in [pulseColor], scaled between
- * 0.6× and 1.45× and faded out as it grows, so a scanning radar reads differently from an idle one.
+ * Null [progress] draws a static outline; a value draws an expanding, fading pulse to distinguish searching.
  */
 private fun DrawScope.drawRing(restColor: Color, pulseColor: Color, diameter: Float, progress: Float?, stroke: Float) {
     if (progress == null) {
@@ -468,63 +534,139 @@ private fun DrawScope.drawRing(restColor: Color, pulseColor: Color, diameter: Fl
     )
 }
 
-/** One discovered peer: avatar, name, instruction and the Sync button. */
+/**
+ * Renders one peer row.
+ *
+ * - Shows an avatar, the unverified name (or "Phone"), a status line and one button.
+ * - Shows "Verified identity" after authenticating the peer's key.
+ * - Group membership is checked separately, later; the caption never claims membership.
+ * - Buttons carry the name in their description so a screen reader can tell rows apart.
+ */
 @Composable
-private fun PeerCard(peer: NearbyPeer, syncing: Boolean, onSync: (String) -> Unit) {
-    SfCard(modifier = Modifier.fillMaxWidth().testTag("nearby_peer_${peer.endpointId}")) {
+private fun PeerCard(row: NearbyPeerRow, actions: NearbyActions) {
+    val name = row.displayName.asString()
+    SfCard(modifier = Modifier.fillMaxWidth().testTag("nearby_peer_${row.endpointId}")) {
         Row(modifier = Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-            MemberAvatar(pubkey = peer.endpointId, name = peer.name, size = 40.dp)
+            MemberAvatar(pubkey = row.verifiedPubkey ?: row.endpointId, name = name, size = 40.dp)
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    stringResource(R.string.peer_name, peer.name),
+                    name,
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    stringResource(R.string.tap_sync),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (row.verifiedPubkey != null) {
+                    Text(
+                        stringResource(R.string.nearby_verified_identity),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("nearby_verified_${row.endpointId}")
+                    )
+                }
+                val status =
+                    row.status?.asString()
+                        ?: if (row.action == RowAction.SYNC) stringResource(R.string.tap_sync) else null
+                if (status != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier =
+                        Modifier
+                            .semantics { liveRegion = LiveRegionMode.Polite }
+                            .testTag("nearby_row_status_${row.endpointId}")
+                    )
+                }
             }
-            Spacer(Modifier.width(11.dp))
-            SfSecondaryButton(
-                text = stringResource(R.string.sync),
-                onClick = { onSync(peer.endpointId) },
-                enabled = !syncing,
-                modifier = Modifier.testTag("nearby_sync_${peer.endpointId}")
-            )
+            when (row.action) {
+                RowAction.SYNC, RowAction.RETRY -> {
+                    val retry = row.action == RowAction.RETRY
+                    val description =
+                        stringResource(if (retry) R.string.nearby_cd_retry_with else R.string.nearby_cd_sync_with, name)
+                    Spacer(Modifier.width(11.dp))
+                    SfSecondaryButton(
+                        text = stringResource(if (retry) R.string.nearby_retry else R.string.sync),
+                        onClick = { actions.connect(row.endpointId) },
+                        modifier =
+                        Modifier
+                            .semantics { contentDescription = description }
+                            .testTag("nearby_sync_${row.endpointId}")
+                    )
+                }
+
+                RowAction.CONNECTING -> {
+                    val description = stringResource(R.string.nearby_cd_cancel_for, name)
+                    Spacer(Modifier.width(11.dp))
+                    SfSecondaryButton(
+                        text = stringResource(R.string.cancel),
+                        onClick = { actions.cancelAttempt(row.endpointId) },
+                        modifier =
+                        Modifier
+                            .semantics { contentDescription = description }
+                            .testTag("nearby_cancel_${row.endpointId}")
+                    )
+                }
+
+                RowAction.BUSY, RowAction.DONE, RowAction.NONE -> Unit
+            }
         }
     }
 }
 
-/** Dock: the one primary action, labelled by what is missing, over a faint reminder. */
+/**
+ * Dock: the one primary action for the run state, over a faint reminder.
+ *
+ * - A running or starting run offers Stop; a stopping run waits; a failed run offers Try again; otherwise Start, or
+ *   whichever prerequisite is missing.
+ */
 @Composable
 private fun NearbyDock(state: NearbySyncUiState, permissions: NearbyPermissionState, actions: NearbyActions) {
     SfBottomDock {
-        if (state.scanning) {
-            SfSecondaryButton(
-                text = stringResource(R.string.stop_scanning),
-                onClick = actions.stopScan,
-                modifier = Modifier.fillMaxWidth().heightIn(min = DockButtonHeight).testTag("nearby_primary")
-            )
-        } else {
-            val label =
-                when {
-                    !permissions.bluetoothAvailable -> R.string.bluetooth_unavailable
-                    !permissions.granted -> R.string.permissions_required
-                    !permissions.bluetoothEnabled -> R.string.enable_bluetooth
-                    else -> R.string.scan_for_nearby
-                }
-            SfAccentButton(
-                text = stringResource(label),
-                onClick = actions.startScan,
-                enabled = permissions.bluetoothAvailable,
-                modifier = Modifier.testTag("nearby_primary")
-            )
+        val tag = Modifier.testTag("nearby_primary")
+        when (state.phase) {
+            RunPhase.STARTING, RunPhase.ACTIVE, RunPhase.WAITING_FOR_CLEANUP ->
+                SfSecondaryButton(
+                    text = stringResource(R.string.nearby_stop),
+                    onClick = actions.stop,
+                    modifier = tag.fillMaxWidth().heightIn(min = DockButtonHeight)
+                )
+
+            RunPhase.STOPPING ->
+                SfAccentButton(
+                    text = stringResource(R.string.nearby_stopping),
+                    onClick = {},
+                    enabled = false,
+                    modifier = tag
+                )
+
+            RunPhase.FAILED ->
+                SfAccentButton(
+                    text = stringResource(R.string.nearby_try_again),
+                    onClick = actions.start,
+                    modifier = tag
+                )
+
+            RunPhase.IDLE -> {
+                val (label, onClick) =
+                    when {
+                        !state.enabled -> R.string.nearby_start to actions.start
+                        !permissions.bluetoothAvailable -> R.string.bluetooth_unavailable to actions.start
+                        !permissions.granted && permissions.needsSettings ->
+                            R.string.nearby_open_settings to actions.openAppSettings
+                        !permissions.granted -> R.string.permissions_required to actions.requestPermissions
+                        !permissions.bluetoothEnabled -> R.string.enable_bluetooth to actions.enableBluetooth
+                        else -> R.string.nearby_start to actions.start
+                    }
+                SfAccentButton(
+                    text = stringResource(label),
+                    onClick = onClick,
+                    enabled = permissions.bluetoothAvailable || !state.enabled,
+                    modifier = tag
+                )
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -540,14 +682,16 @@ private fun NearbyDock(state: NearbySyncUiState, permissions: NearbyPermissionSt
 // --- Route helpers: permissions and Bluetooth -----------------------------------------------------------
 
 /**
- * Runtime permissions Nearby Connections needs on this API level.
+ * Permissions required by this route's startup gate for the device API level.
  *
- * Android 12 ignores a request for fine location that does not include coarse location in the same
- * request, so both are always requested together below API 33. API 37 (target) adds the local-network
- * permission for the Wi-Fi LAN path; without it Nearby still falls back to Bluetooth.
- *
- * The permission names are compile-time string constants, so they are safe to reference on any API
- * level; the [sdk] parameter (a test seam) is the guard lint's InlinedApi check cannot follow.
+ * - API 26–28 requests coarse location; API 29–32 requests fine and coarse together.
+ * - Android 12 requires that pairing when requesting fine location.
+ * - API 33+ uses Nearby Wi-Fi devices instead of location.
+ * - API 37 adds local-network access for the Wi-Fi LAN path.
+ * - The route requires every listed permission; it does not start a Bluetooth-only run when local-network access is
+ *   denied.
+ * - The permission names are compile-time string constants, so they are safe to reference on any API level; the [sdk]
+ *   parameter (a test seam) is the guard lint's InlinedApi check cannot follow.
  */
 @SuppressLint("InlinedApi")
 internal fun requiredNearbyPermissions(sdk: Int = Build.VERSION.SDK_INT): List<String> = buildList {
@@ -590,4 +734,10 @@ private fun isBluetoothEnabled(context: Context, adapter: BluetoothAdapter?): Bo
         return false
     }
     return adapter.isEnabled
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

@@ -15,7 +15,8 @@ Real Compose UI rendered with sample data by Robolectric native-graphics tests.
 | Data | Test fixtures, not real user records. |
 | Resolution | 390 × 844 pixels, displayed at 195 pixels wide in the root README (2× density). |
 
-These images illustrate the UI. They are **not device screenshots** or evidence of radio, background-delivery, or Keystore behavior.
+- These images illustrate the UI.
+- They are **not device screenshots** or evidence of radio, background-delivery, or Keystore behavior.
 
 ## Image map
 
@@ -40,7 +41,8 @@ Run from the repository root with the [documented toolchain](../../README.md#bui
 
 1. Confirm the selected test suites pass.
 2. Copy the three outputs to their public filenames above.
-3. Apply lossless PNG compression without resizing or color quantization; verify decoded RGBA pixels still match the test outputs.
+3. Apply lossless PNG compression without resizing or color quantization; verify decoded RGBA pixels still match the
+   test outputs.
 4. Update the source revision and generation date in this guide.
 5. Check the root README layout, image paths, and alt text.
 

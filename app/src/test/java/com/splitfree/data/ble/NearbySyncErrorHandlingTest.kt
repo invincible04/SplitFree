@@ -1,16 +1,32 @@
 package com.splitfree.data.ble
 
+import com.google.android.gms.common.api.Status
 import com.google.android.gms.nearby.Nearby
+import com.google.android.gms.nearby.connection.ConnectionInfo
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
+import com.google.android.gms.nearby.connection.Payload
 import com.splitfree.data.identity.IdentityManager
+import com.splitfree.sync.nearby.NearbyConnection
+import com.splitfree.sync.nearby.NearbyConnectionAttempt
+import com.splitfree.sync.nearby.RadioFailureKind
+import com.splitfree.sync.nearby.RadioOutcome
+import com.splitfree.sync.nearby.ScriptedConnectionsClient
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
@@ -21,9 +37,11 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Nearby refuses calls with a SecurityException once Bluetooth/location permission is revoked,
- * including mid-session. Teardown runs on screen exit and on Nearby callback threads, where an
- * escaping exception kills the process, so every call is guarded and reported instead.
+ * Exercises synchronous SecurityException handling for start, send, disconnect and teardown, including cancellation
+ * ownership when SDK cleanup is refused.
+ *
+ * - Also checks full-buffer drop accounting separately from emissions with no subscribers.
+ * - These stubs do not simulate every SDK failure or callback ordering.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class NearbySyncErrorHandlingTest {
@@ -88,13 +106,48 @@ class NearbySyncErrorHandlingTest {
 
     @Test
     fun `disconnect still forgets the endpoint when Nearby refuses`() = runTest {
+        val connection = connectedLink()
         every { client.disconnectFromEndpoint(any()) } throws SecurityException("denied")
 
-        val errors = collectEvents { nearbySync.disconnect("ep1") }
+        val events = collectEvents {
+            nearbySync.disconnect(connection)
+            nearbySync.disconnect(connection)
+        }
 
-        assertEquals(listOf("disconnect"), errors.map { (it as BleEvent.Error).operation })
-        // A second disconnect must behave the same: local state was cleared, not left stale.
-        nearbySync.disconnect("ep1")
+        assertEquals(
+            listOf(
+                BleEvent.Disconnected(connection),
+                BleEvent.Error("disconnect", "denied", "ep1", RadioFailureKind.PERMISSION)
+            ),
+            events
+        )
+        verify(exactly = 1) { client.disconnectFromEndpoint("ep1") }
+    }
+
+    @Test
+    fun `attempt cancellation stays revoked when the SDK disconnect is refused`() = runTest {
+        val attempt = NearbyConnectionAttempt("ep1")
+        val callback = slot<ConnectionLifecycleCallback>()
+        val task = ScriptedConnectionsClient.FakeTask()
+        every { client.requestConnection(any<String>(), "ep1", capture(callback)) } returns task.task
+        every { client.disconnectFromEndpoint("ep1") } throws SecurityException("denied")
+        val pending = async { nearbySync.requestConnection(attempt) }
+        runCurrent()
+        task.succeed()
+        assertEquals(RadioOutcome.Success, pending.await())
+
+        val events = collectEvents {
+            nearbySync.cancelConnectionAttempt(attempt)
+            nearbySync.cancelConnectionAttempt(attempt)
+            callback.captured.onConnectionInitiated("ep1", ConnectionInfo("aabbccdd", "token", false))
+        }
+
+        assertEquals(listOf(BleEvent.Error("disconnect", "denied", "ep1", RadioFailureKind.PERMISSION)), events)
+        assertEquals(RadioOutcome.Cancelled, nearbySync.requestConnection(attempt))
+        verify(exactly = 1) { client.disconnectFromEndpoint("ep1") }
+        verify(exactly = 1) { client.rejectConnection("ep1") }
+        verify(exactly = 0) { client.acceptConnection(any(), any()) }
+        verify(exactly = 1) { client.requestConnection(any<String>(), "ep1", any()) }
     }
 
     @Test
@@ -105,16 +158,32 @@ class NearbySyncErrorHandlingTest {
 
         nearbySync.stop()
         nearbySync.stopDiscovery()
-        nearbySync.disconnect("ep1")
+        nearbySync.cancelConnectionAttempt(NearbyConnectionAttempt("ep1"))
     }
 
     @Test
-    fun `startAdvertising failure surfaces as an error event`() = runTest {
+    fun `startAdvertising refused at submission settles as a permission failure`() = runTest {
         every { client.startAdvertising(any<String>(), any(), any(), any()) } throws SecurityException("denied")
 
-        val errors = collectEvents { nearbySync.startAdvertising() }
+        val outcome = nearbySync.startAdvertising()
 
-        assertEquals(listOf("advertise"), errors.map { (it as BleEvent.Error).operation })
+        assertEquals(RadioOutcome.Failure(RadioFailureKind.PERMISSION, null, "denied"), outcome)
+    }
+
+    @Test
+    fun `sendPayload on a connected link reports revoked permission without ending the link`() = runTest {
+        val connection = connectedLink()
+        every { client.sendPayload("ep1", any<Payload>()) } throws SecurityException("missing BLUETOOTH_CONNECT")
+
+        val events = collectEvents {
+            nearbySync.sendPayload(connection, byteArrayOf(1))
+            nearbySync.sendPayload(connection, byteArrayOf(2))
+        }
+
+        val expected = BleEvent.Error("send_payload", "missing BLUETOOTH_CONNECT", "ep1", RadioFailureKind.PERMISSION)
+        assertEquals(listOf(expected, expected), events)
+        verify(exactly = 2) { client.sendPayload("ep1", any<Payload>()) }
+        verify(exactly = 0) { client.disconnectFromEndpoint(any()) }
     }
 
     // --- Backpressure ---
@@ -152,14 +221,32 @@ class NearbySyncErrorHandlingTest {
     fun `nothing is counted as dropped without a subscriber`() = runTest {
         every { client.stopDiscovery() } throws SecurityException("denied")
 
-        // SharedFlow discards emissions with no collectors; that is by design, not a drop.
+        // With no collectors and no replay, events are discarded but do not increment the full-buffer counter.
         repeat(NearbySync.EVENT_BUFFER_CAPACITY + 5) { nearbySync.stopDiscovery() }
 
         assertEquals(0L, nearbySync.droppedEvents.get())
     }
 
+    private fun TestScope.connectedLink(): NearbyConnection {
+        val callback = slot<ConnectionLifecycleCallback>()
+        val requestTask = ScriptedConnectionsClient.FakeTask()
+        every { client.requestConnection(any<String>(), "ep1", capture(callback)) } returns requestTask.task
+        every { client.acceptConnection("ep1", any()) } returns ScriptedConnectionsClient.FakeTask().task
+        val connected = backgroundScope.async { nearbySync.events.filterIsInstance<BleEvent.Connected>().first() }
+        val request = async { nearbySync.requestConnection(NearbyConnectionAttempt("ep1")) }
+        runCurrent()
+        requestTask.succeed()
+        runCurrent()
+        assertEquals(RadioOutcome.Success, request.getCompleted())
+
+        callback.captured.onConnectionInitiated("ep1", ConnectionInfo("aabbccdd", "token", false))
+        callback.captured.onConnectionResult("ep1", ConnectionResolution(Status(ConnectionsStatusCodes.STATUS_OK)))
+        runCurrent()
+        return connected.getCompleted().connection
+    }
+
     /** Run [action] while collecting the events it emits. */
-    private suspend fun collectEvents(action: () -> Unit): List<BleEvent> = kotlinx.coroutines.coroutineScope {
+    private suspend fun collectEvents(action: suspend () -> Unit): List<BleEvent> = kotlinx.coroutines.coroutineScope {
         val seen = mutableListOf<BleEvent>()
         val collector = launch {
             nearbySync.events.collect { seen += it }
