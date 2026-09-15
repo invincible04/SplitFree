@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.font.FontWeight
 import org.junit.Assert.assertEquals
@@ -106,6 +108,49 @@ class ThemeTest {
     }
 
     @Test
+    fun `dark charcoal surfaces leave saturated green to the hero and actions`() {
+        val scheme = DarkColorScheme
+        val palette = DarkSplitFreeColors
+        assertTrue(
+            "Everyday cards must stay close to charcoal rather than becoming green panels",
+            greenness(scheme.surfaceContainerLowest) in 0.01f..0.025f
+        )
+        assertTrue("Background must stay near black", luminance(scheme.background) < 0.005)
+        assertTrue("Main action must be a saturated green", greenness(palette.action) >= 0.25f)
+        assertEquals(scheme.primary, palette.action)
+        assertEquals(scheme.onPrimary, palette.onAction)
+        assertEquals("Create actions keep their citron identity", LightSplitFreeColors.lime, palette.lime)
+        assertContrast("action/card", palette.action, scheme.surfaceContainerLowest, 4.5)
+        assertContrast("hero/gradientEnd", palette.hero, palette.heroGradientEnd, 1.5)
+        assertTrue("Hero fade ends darker", luminance(palette.heroGradientEnd) < luminance(palette.hero))
+    }
+
+    @Test
+    fun `dark hero text stays readable across the gradient and maximum glow`() {
+        val palette = DarkSplitFreeColors
+        // Check the full fade and the worst case where the glow overlaps a label at large text or in RTL.
+        for (step in 0..20) {
+            val fill = lerp(palette.hero, palette.heroGradientEnd, step / 20f)
+            val decorated = palette.heroAccent.copy(alpha = palette.heroAccentAlpha).compositeOver(fill)
+            for (background in listOf(fill, decorated)) {
+                assertContrast("onHero/gradient[$step]", palette.onHero, background, 4.5)
+                assertContrast("heroMuted/gradient[$step]", palette.heroMuted, background, 4.5)
+            }
+        }
+    }
+
+    @Test
+    fun `dark secondary copy remains readable on fields sheets and selected pills`() {
+        val scheme = DarkColorScheme
+        for (fill in listOf(scheme.surfaceContainerLow, scheme.surfaceContainer, scheme.surfaceContainerHigh)) {
+            assertContrast("onSurfaceVariant/container", scheme.onSurfaceVariant, fill, 4.5)
+            assertContrast("faint/container", DarkSplitFreeColors.faint, fill, 4.5)
+        }
+        assertContrast("selected tab label", scheme.onSurface, scheme.surfaceBright, 4.5)
+        assertContrast("unselected tab label", scheme.onSurfaceVariant, scheme.surfaceContainer, 4.5)
+    }
+
+    @Test
     fun `light palette keeps its ivory values`() {
         val scheme = LightColorScheme
         assertEquals(Color(0xFFF6F5EF), scheme.background)
@@ -122,6 +167,10 @@ class ThemeTest {
         assertEquals(Color(0xFFC9ED71), LightSplitFreeColors.lime)
         assertEquals(Color(0xFF687067), LightSplitFreeColors.faint)
         assertEquals(Color(0xFFDCDED5), LightSplitFreeColors.line)
+        assertEquals(scheme.inverseSurface, LightSplitFreeColors.action)
+        assertEquals(scheme.inverseOnSurface, LightSplitFreeColors.onAction)
+        assertEquals(LightSplitFreeColors.hero, LightSplitFreeColors.heroGradientEnd)
+        assertEquals(0.55f, LightSplitFreeColors.heroAccentAlpha)
     }
 
     @Test
@@ -194,6 +243,7 @@ class ThemeTest {
         assertContrast("onHero/hero", extended.onHero, extended.hero, 4.5)
         assertContrast("heroMuted/hero", extended.heroMuted, extended.hero, 4.5)
         assertContrast("onLime/lime", extended.onLime, extended.lime, 4.5)
+        assertContrast("onAction/action", extended.onAction, extended.action, 4.5)
         assertContrast("positive/surface", extended.positive, scheme.surface, 4.5)
         assertContrast("negative/surface", extended.negative, scheme.surface, 4.5)
         assertContrast("positive/surfaceContainerLowest", extended.positive, card, 4.5)

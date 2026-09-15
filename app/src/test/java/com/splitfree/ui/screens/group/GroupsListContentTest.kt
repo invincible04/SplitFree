@@ -4,10 +4,12 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
@@ -28,6 +30,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.unit.LayoutDirection
 import com.splitfree.R
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.sync.ConnectionStatus
@@ -56,6 +59,7 @@ class GroupsListContentTest {
     private var state by mutableStateOf(readyState())
     private lateinit var contentView: View
     private var renderedFontScale = 1f
+    private var renderedLayoutDirection = LayoutDirection.Ltr
 
     @Test
     fun `both scan buttons disabled during preparation while paste stays usable`() {
@@ -373,6 +377,30 @@ class GroupsListContentTest {
     }
 
     @Test
+    @Config(qualifiers = "en-rUS-w360dp-h800dp-mdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `dark hero and actions remain visible at 200 percent text`() {
+        RuntimeEnvironment.setFontScale(2f)
+        render(dark = true)
+        compose.runOnIdle { assertEquals(2f, renderedFontScale, 0f) }
+        compose.onNodeWithTag("home_hero").assertIsDisplayed().assertTextContains("₹2,500.00")
+        compose.onNodeWithTag("home_new_group").assertIsDisplayed().assertIsEnabled()
+        capture("home-dark-font200", expectedWidth = 360)
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-ldrtl-w390dp-h844dp-mdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `dark hero decoration stays behind its content in RTL`() {
+        render(dark = true, layoutDirection = LayoutDirection.Rtl)
+        compose.runOnIdle { assertEquals(LayoutDirection.Rtl, renderedLayoutDirection) }
+        compose.onNodeWithTag("home_hero").assertIsDisplayed().assertTextContains("₹2,500.00")
+        val currency = compose.onNodeWithTag("home_currency").fetchSemanticsNode().boundsInRoot
+        assertTrue("RTL currency picker must be on the left", currency.center.x < 195f)
+        capture("home-dark-rtl")
+    }
+
+    @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun `empty fixture captures the empty state`() {
         state = GroupsListUiState(loading = false, connection = ConnectionStatus.Connected)
@@ -417,11 +445,18 @@ class GroupsListContentTest {
         compose.runOnIdle { assertEquals(1, opened) }
     }
 
-    private fun render(actions: GroupsListActions = GroupsListActions(), dark: Boolean = false) {
+    private fun render(
+        actions: GroupsListActions = GroupsListActions(),
+        dark: Boolean = false,
+        layoutDirection: LayoutDirection? = null
+    ) {
         compose.setContent {
             contentView = LocalView.current
             renderedFontScale = LocalDensity.current.fontScale
-            SplitFreeTheme(darkTheme = dark) { GroupsListContent(state, actions) }
+            CompositionLocalProvider(LocalLayoutDirection provides (layoutDirection ?: LocalLayoutDirection.current)) {
+                renderedLayoutDirection = LocalLayoutDirection.current
+                SplitFreeTheme(darkTheme = dark) { GroupsListContent(state, actions) }
+            }
         }
     }
 

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.splitfree.R
+import com.splitfree.ui.theme.splitFree
 
 private val PrimaryButtonHeight = 56.dp
 private val SecondaryButtonHeight = 50.dp
@@ -40,11 +41,11 @@ private val IconButtonSize = 48.dp
 private const val DISABLED_CONTAINER_ALPHA = 0.35f
 
 /**
- * The single main action of a screen: "ink" fill (`inverseSurface` / `inverseOnSurface`), 56dp, full width,
+ * The single main action of a screen: theme `action` / `onAction` (ink in light, mint in dark), 56dp, full width,
  * `large` corners. While [loading] the label is hidden behind an 18dp ring and the button
  * is not clickable, but it keeps its full colour so the screen does not appear to have lost its action.
  * [containerColor] / [contentColor] exist for the destructive confirm in a sheet (`error` / `onError`);
- * every other caller keeps the ink default.
+ * every other caller keeps the theme default.
  */
 @Composable
 fun SfPrimaryButton(
@@ -54,8 +55,8 @@ fun SfPrimaryButton(
     enabled: Boolean = true,
     loading: Boolean = false,
     leadingIcon: ImageVector? = null,
-    containerColor: Color = MaterialTheme.colorScheme.inverseSurface,
-    contentColor: Color = MaterialTheme.colorScheme.inverseOnSurface
+    containerColor: Color = MaterialTheme.splitFree.action,
+    contentColor: Color = MaterialTheme.splitFree.onAction
 ) {
     SfFilledButton(
         text = text,

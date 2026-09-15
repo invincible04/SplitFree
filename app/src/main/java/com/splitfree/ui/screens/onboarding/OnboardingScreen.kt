@@ -303,7 +303,10 @@ internal fun OnboardingContent(
 }
 
 private const val PANE_RISE_DIVISOR = 40
-private const val TRUST_PILL_ALPHA = 0.55f
+
+// These translucent badges belong to the fixed night artwork, which is identical in light and dark mode.
+private val TrustPillFill = Color(0xFF101410).copy(alpha = 0.55f)
+private val TrustPillBorder = Color(0xFF3D493D)
 
 // --- Welcome ------------------------------------------------------------------------------------------
 
@@ -463,8 +466,8 @@ private fun LightSystemBarIcons() {
 private fun TrustPill(label: String) {
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = TRUST_PILL_ALPHA),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        color = TrustPillFill,
+        border = BorderStroke(1.dp, TrustPillBorder)
     ) {
         Text(
             label,

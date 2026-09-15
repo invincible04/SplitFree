@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,7 +20,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -45,7 +43,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
@@ -82,6 +79,7 @@ import com.splitfree.ui.components.SectionHead
 import com.splitfree.ui.components.SfAccentButton
 import com.splitfree.ui.components.SfBottomDock
 import com.splitfree.ui.components.SfCard
+import com.splitfree.ui.components.SfHeroBackdrop
 import com.splitfree.ui.components.SfIconButton
 import com.splitfree.ui.components.SfLargeTitleHeader
 import com.splitfree.ui.components.SfTextButton
@@ -498,14 +496,7 @@ private fun BalanceHero(state: GroupsListUiState) {
         contentColor = palette.onHero
     ) {
         Box {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 58.dp, y = (-40).dp)
-                    .size(125.dp)
-                    .clip(CircleShape)
-                    .background(palette.heroAccent.copy(alpha = 0.55f))
-            )
+            SfHeroBackdrop()
             Column(Modifier.padding(24.dp)) {
                 if (currency == null) {
                     MiniLabel(text = stringResource(R.string.nothing_to_settle_yet), color = palette.heroMuted)

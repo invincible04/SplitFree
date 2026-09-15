@@ -1,6 +1,5 @@
 package com.splitfree.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,12 +8,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -37,7 +34,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -410,14 +406,7 @@ private fun HeroCardSample() {
         contentColor = palette.onHero
     ) {
         Box {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 58.dp, y = (-40).dp)
-                    .size(125.dp)
-                    .clip(CircleShape)
-                    .background(palette.heroAccent.copy(alpha = 0.55f))
-            )
+            SfHeroBackdrop()
             Column(Modifier.padding(24.dp)) {
                 MiniLabel(text = "Net to receive · INR", color = palette.heroMuted)
                 Spacer(Modifier.height(12.dp))

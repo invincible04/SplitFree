@@ -13,8 +13,8 @@ import androidx.compose.ui.graphics.Color
 /*
  * Brand palette. Light: warm ivory surfaces, off-white cards, deep forest-green brand, citron/lime for the
  * primary create action, "ink" near-black for the main button and an inverted dark-green hero card.
- * Dark: the same warm green-black hue on a surface ladder that steps up clearly from background to card to
- * container to raised pill, so cards, tracks and washes never merge into one field.
+ * Dark: near-black charcoal surfaces with restrained green accents. The surface ladder separates cards
+ * and controls; the balance hero carries the richer forest-green fade and a soft, edge-free glow.
  *
  * Kit mapping: `surfaceContainerLowest` is the card fill in both themes; in dark it sits one clear step above
  * the background.
@@ -75,21 +75,23 @@ val LightColorScheme: ColorScheme =
 // ---- Dark ---------------------------------------------------------------------------------------
 
 // Surface ladder, darkest to brightest. Each step is far enough from its neighbours to read at a glance.
-private val DarkBackground = Color(0xFF101410)
-private val DarkCard = Color(0xFF1D251D)
-private val DarkContainerLow = Color(0xFF222B22)
-private val DarkContainer = Color(0xFF293229)
-private val DarkContainerHigh = Color(0xFF313C31)
-private val DarkContainerHighest = Color(0xFF3B473B)
-private val DarkRaised = Color(0xFF445244)
-private val DarkLine = Color(0xFF3D493D)
+private val DarkBackground = Color(0xFF090C0B)
+private val DarkCard = Color(0xFF181E1B)
+private val DarkContainerLow = Color(0xFF1E2621)
+private val DarkContainer = Color(0xFF252F29)
+private val DarkContainerHigh = Color(0xFF2C3931)
+private val DarkContainerHighest = Color(0xFF344239)
+private val DarkRaised = Color(0xFF405548)
+private val DarkLine = Color(0xFF303B34)
+
+// Keep shared welcome-screen text and citron values stable; saturation lives in the dark surfaces and accents.
 private val DarkInk = Color(0xFFF1F2EB)
 private val DarkMuted = Color(0xFFA7AFA5)
-private val DarkBrand = Color(0xFFA6DDB8)
+private val DarkBrand = Color(0xFF6BD99A)
 
-// Greener than the neutral ladder so the wash card and the hero each stand apart from plain cards.
-private val DarkBrandWash = Color(0xFF203829)
-private val DarkHero = Color(0xFF23492F)
+// More saturated than the surface ladder so balance summaries stand apart from ordinary cards.
+private val DarkBrandWash = Color(0xFF183B28)
+private val DarkHero = Color(0xFF1A5635)
 private val DarkNegative = Color(0xFFFFAAA0)
 
 val DarkColorScheme: ColorScheme =
@@ -141,8 +143,11 @@ val DarkColorScheme: ColorScheme =
  * @property negative money you owe (same hue as `error`, kept separate so error styling can diverge later).
  * @property warning offline / attention state; [warningContainer] is its soft wash.
  * @property hero inverted dark-green hero card background; [onHero] its text, [heroMuted] its eyebrow and
- *   stat labels, [heroAccent] the decorative citron blob.
- * @property lime the citron primary-action fill; [onLime] its text.
+ *   stat labels, [heroAccent] the soft dark glow or light citron circle.
+ * @property lime the citron create-action fill; [onLime] its text.
+ * @property action the main non-create button fill: ink in light, mint in dark; [onAction] its text.
+ * @property heroGradientEnd the hero fade endpoint; equal to [hero] for the flat light treatment.
+ * @property heroAccentAlpha maximum decoration opacity; dark uses a radial glow, light a flat circle.
  * @property faint the quietest readable text (eyebrows, footnotes). Readable on `surface` and on the card fill.
  * @property line hairline borders and dividers (same as `outlineVariant`).
  * @property avatarPalette deterministic member-avatar fills, indexed by pubkey hash.
@@ -161,11 +166,17 @@ data class SplitFreeColors(
     val onLime: Color,
     val faint: Color,
     val line: Color,
-    val avatarPalette: List<Color>
+    val avatarPalette: List<Color>,
+    val action: Color,
+    val onAction: Color,
+    val heroGradientEnd: Color = hero,
+    val heroAccentAlpha: Float = 0.55f
 )
 
 val LightSplitFreeColors =
     SplitFreeColors(
+        action = LightInk,
+        onAction = LightIvory,
         positive = Color(0xFF246744),
         negative = LightNegative,
         warning = Color(0xFF9B6328),
@@ -192,14 +203,18 @@ val LightSplitFreeColors =
 
 val DarkSplitFreeColors =
     SplitFreeColors(
-        positive = Color(0xFF8ED4A7),
+        action = DarkBrand,
+        onAction = Color(0xFF0F2A1B),
+        heroGradientEnd = Color(0xFF102B1E),
+        heroAccentAlpha = 0.10f,
+        positive = Color(0xFF79D99A),
         negative = DarkNegative,
         warning = Color(0xFFEFBE78),
         warningContainer = Color(0xFF3A2E1E),
         hero = DarkHero,
-        onHero = Color(0xFFF5F7ED),
-        heroMuted = Color(0xFFD0DDCF),
-        heroAccent = Color(0xFF8AA85A),
+        onHero = Color(0xFFF2FFF6),
+        heroMuted = Color(0xFFCEEBD8),
+        heroAccent = Color(0xFF91DF9D),
         lime = Citron,
         onLime = LightInk,
         faint = Color(0xFFA1AAA0),
