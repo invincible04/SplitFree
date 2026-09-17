@@ -1,0 +1,81 @@
+SplitFree Third-Party Software Notices and Licenses
+====================================================
+
+This document contains third-party software notices and licenses for libraries,
+dependencies, and components bundled with or used in the SplitFree application.
+
+--------------------------------------------------------------------------------
+1. AndroidX Libraries & Jetpack Compose
+   Copyright (c) The Android Open Source Project
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at:
+       http://www.apache.org/licenses/LICENSE-2.0
+
+2. Kotlin Standard Library, Coroutines, and Serialization
+   Copyright (c) 2010-2026 JetBrains s.r.o. and Kotlin Programming Language contributors.
+   Licensed under the Apache License, Version 2.0.
+
+3. Google Dagger / Hilt
+   Copyright (c) 2012 Google LLC.
+   Licensed under the Apache License, Version 2.0.
+
+4. OkHttp
+   Copyright (c) 2019 Square, Inc.
+   Licensed under the Apache License, Version 2.0.
+
+5. ACINQ secp256k1 (secp256k1-kmp)
+   Copyright (c) 2020 ACINQ SAS
+   Licensed under the Apache License, Version 2.0.
+   Includes libsecp256k1:
+   Copyright (c) 2013 Pieter Wuille
+   Licensed under the MIT License:
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+6. Bouncy Castle Crypto Package
+   Copyright (c) 2000-2024 The Legion of the Bouncy Castle Inc. (https://www.bouncycastle.org)
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+7. ZXing Core
+   Copyright (c) 2007 ZXing authors
+   Licensed under the Apache License, Version 2.0.
+
+8. lz4-java
+   Copyright (c) 2011 Adrien Grand
+   Licensed under the Apache License, Version 2.0.
+
+9. Google Play Services (Nearby Connections & Code Scanner Client Libraries)
+   Copyright (c) Google LLC
+   Used in accordance with Google APIs Terms of Service and
+   Google Play Services SDK terms:
+       https://developers.google.com/terms
+       https://developers.google.com/android/guides/setup
+
+--------------------------------------------------------------------------------
+Apache License, Version 2.0
+--------------------------------------------------------------------------------
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.

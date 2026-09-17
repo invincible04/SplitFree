@@ -28,7 +28,7 @@ android {
         targetSdk = 37
         // Keep the public version at 1.0.0 until the first approved GitHub release.
         // Android update ordering is independent of the displayed version.
-        versionCode = 3
+        versionCode = 4
         versionName = "1.0.0"
     }
 
