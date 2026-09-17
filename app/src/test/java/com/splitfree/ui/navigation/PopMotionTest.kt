@@ -46,25 +46,18 @@ class PopMotionTest {
     private var visible by mutableStateOf(false)
 
     @Test
-    fun `LTR back reveals from leading and exits towards trailing within fast budget`() = assertPop(LayoutDirection.Ltr)
+    fun `LTR back enters and exits instantly without slide or fade`() = assertPop(LayoutDirection.Ltr)
 
     @Test
-    fun `RTL back mirrors both slides within fast budget`() = assertPop(LayoutDirection.Rtl)
+    fun `RTL back enters and exits instantly without slide or fade`() = assertPop(LayoutDirection.Rtl)
 
     private fun assertPop(direction: LayoutDirection) {
         render(direction)
         changeVisibility(true)
-        val entering = position()
-        compose.mainClock.advanceTimeBy(SfMotion.Fast.toLong())
         val resting = position()
-        assertTrue(if (direction == LayoutDirection.Ltr) entering < resting else entering > resting)
-        compose.mainClock.advanceTimeBy(SfMotion.Base.toLong())
-        assertEquals("Enter must already be at rest after Fast", resting, position(), 0f)
+        assertEquals("Enter must be at rest immediately", 100f, resting, 1f)
 
         changeVisibility(false)
-        val leaving = position()
-        assertTrue(if (direction == LayoutDirection.Ltr) leaving > resting else leaving < resting)
-        compose.mainClock.advanceTimeBy(SfMotion.Fast.toLong())
         compose.onNodeWithTag(DESTINATION).assertDoesNotExist()
     }
 

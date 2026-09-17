@@ -151,4 +151,23 @@ class QrScanLifecycleTest {
             assertEquals(R.string.invalid_invite_link, vm.state.value.error)
         }
     }
+
+    @Test
+    fun `navigating away when error is present clears error`() {
+        preparation.complete(Unit)
+        render { throw IllegalArgumentException("invalid input") }
+        compose.runOnIdle {
+            vm.start()
+            result.complete("invite")
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(R.string.invalid_invite_link, vm.state.value.error)
+            nav.navigate("other")
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            org.junit.Assert.assertNull(vm.state.value.error)
+        }
+    }
 }

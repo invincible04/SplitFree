@@ -265,4 +265,36 @@ class QrScanViewModelTest {
         assertFalse(vm.state.value.busy)
         assertEquals(0, scans)
     }
+
+    @Test
+    fun `Google Play services cancellation status code 16 does not become user failure`() = runTest(dispatcher) {
+        class FakeApiException(val statusCode: Int) : Exception("Google Api status code $statusCode")
+        scan = { throw FakeApiException(16) }
+        val vm = model()
+        vm.start()
+        runCurrent()
+        assertEquals(QrScanState(), vm.state.value)
+    }
+
+    @Test
+    fun `dismissError clears error from scan state`() = runTest(dispatcher) {
+        scan = { throw IllegalStateException("failure") }
+        val vm = model()
+        vm.start()
+        runCurrent()
+        assertEquals(R.string.qr_scan_failed, vm.state.value.error)
+        vm.dismissError()
+        assertNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `onNavigatedAway cancels active attempt and clears transient error`() = runTest(dispatcher) {
+        scan = { throw IllegalStateException("failure") }
+        val vm = model()
+        vm.start()
+        runCurrent()
+        assertEquals(R.string.qr_scan_failed, vm.state.value.error)
+        vm.onNavigatedAway()
+        assertEquals(QrScanState(), vm.state.value)
+    }
 }

@@ -6,6 +6,7 @@ import com.google.mlkit.common.MlKitException
 import com.splitfree.R
 import com.splitfree.ui.util.QrScannerBackend
 import com.splitfree.ui.util.QrScannerException
+import com.splitfree.ui.util.isScannerCancellation
 import com.splitfree.util.DebugLog as Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -65,10 +66,17 @@ internal class QrScanViewModel(private val backend: QrScannerBackend) : ViewMode
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (isScannerCancellation(e)) {
+                    if (request == generation) mutableState.value = QrScanState()
+                    return@launch
+                }
                 // Only class and numeric code: scanned values and vendor exception messages may
                 // contain a bearer invite. Do not pass the Throwable to logcat.
                 Log.w(TAG, "Scanner failed: ${e.javaClass.simpleName}, code=${(e as? MlKitException)?.errorCode}")
-                if (request == generation) mutableState.value = QrScanState(error = errorMessage(e))
+                if (request == generation) {
+                    val msg = errorMessage(e)
+                    mutableState.value = if (msg != null) QrScanState(error = msg) else QrScanState()
+                }
             } finally {
                 if (request == generation && state.value.busy) mutableState.value = QrScanState()
             }
@@ -77,6 +85,20 @@ internal class QrScanViewModel(private val backend: QrScannerBackend) : ViewMode
 
     fun cancelPreparation() {
         if (state.value.phase != QrScanPhase.Preparing) return
+        ++generation
+        job?.cancel()
+        mutableState.value = QrScanState()
+    }
+
+    /** Clears transient scanner error feedback immediately (e.g. from user dismiss action). */
+    fun dismissError() {
+        if (state.value.error != null) {
+            mutableState.value = state.value.copy(error = null)
+        }
+    }
+
+    /** Invalidates active attempt and clears transient error when navigating away from Home. */
+    fun onNavigatedAway() {
         ++generation
         job?.cancel()
         mutableState.value = QrScanState()
@@ -94,16 +116,17 @@ internal class QrScanViewModel(private val backend: QrScannerBackend) : ViewMode
         mutableState.value = QrScanState(error = R.string.invalid_invite_link)
     }
 
-    private fun errorMessage(error: Exception): Int? = when (error) {
-        is QrScannerException -> error.messageRes
-        is MlKitException -> when (error.errorCode) {
+    private fun errorMessage(error: Exception): Int? = when {
+        isScannerCancellation(error) -> null
+        error is QrScannerException -> error.messageRes
+        error is MlKitException -> when (error.errorCode) {
             MlKitException.CODE_SCANNER_CANCELLED -> null
             MlKitException.CODE_SCANNER_CAMERA_PERMISSION_NOT_GRANTED -> R.string.qr_scan_camera_denied
             MlKitException.CODE_SCANNER_GOOGLE_PLAY_SERVICES_VERSION_TOO_OLD -> R.string.qr_scan_services_unavailable
             MlKitException.CODE_SCANNER_UNAVAILABLE -> R.string.qr_scan_download_failed
             else -> R.string.qr_scan_failed
         }
-        is SecurityException -> R.string.qr_scan_camera_denied
+        error is SecurityException -> R.string.qr_scan_camera_denied
         else -> R.string.qr_scan_failed
     }
 

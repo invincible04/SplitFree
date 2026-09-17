@@ -75,7 +75,14 @@ internal class GoogleQrScanner(
 
     override suspend fun scan(): String? {
         currentCoroutineContext().ensureActive()
-        val barcode = scanner.startScan().awaitResult() ?: return null
+        val barcode = try {
+            scanner.startScan().awaitResult() ?: return null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (isScannerCancellation(e)) return null
+            throw e
+        }
         return barcode.rawValue.orEmpty()
     }
 
@@ -144,4 +151,48 @@ internal class GoogleQrScanner(
             }
         }
     }
+}
+
+/** Google Play Services [CommonStatusCodes.CANCELED] without a compile-time GMS dependency. */
+private const val GMS_STATUS_CANCELED = 16
+
+/** Max cause-chain depth to inspect, preventing stack overflow on circular exception wrappers. */
+private const val MAX_CAUSE_DEPTH = 5
+
+/**
+ * Recognizes clean user cancellation across GMS Task cancellation, ML Kit
+ * and Play Services status codes. Inspects the cause chain up to [MAX_CAUSE_DEPTH]
+ * levels to catch wrapped cancellations without risking unbounded recursion.
+ */
+internal fun isScannerCancellation(e: Throwable, depth: Int = 0): Boolean {
+    if (e is CancellationException) return true
+    if (e is MlKitException && e.errorCode == MlKitException.CODE_SCANNER_CANCELLED) return true
+    val statusCode = try {
+        val method = e.javaClass.getMethod("getStatusCode")
+        method.invoke(e) as? Int
+    } catch (_: Throwable) {
+        null
+    }
+    if (statusCode == GMS_STATUS_CANCELED) return true
+    val status = try {
+        val method = e.javaClass.getMethod("getStatus")
+        method.invoke(e)
+    } catch (_: Throwable) {
+        null
+    }
+    if (status != null) {
+        val code = try {
+            val codeMethod = status.javaClass.getMethod("getStatusCode")
+            codeMethod.invoke(status) as? Int
+        } catch (_: Throwable) {
+            null
+        }
+        if (code == GMS_STATUS_CANCELED) return true
+    }
+    // Walk the cause chain with bounded depth to catch wrapped cancellations.
+    val cause = e.cause
+    if (cause != null && cause !== e && depth < MAX_CAUSE_DEPTH) {
+        return isScannerCancellation(cause, depth + 1)
+    }
+    return false
 }

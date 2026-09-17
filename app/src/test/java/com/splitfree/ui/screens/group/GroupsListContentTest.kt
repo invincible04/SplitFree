@@ -85,16 +85,22 @@ class GroupsListContentTest {
     @Test
     fun `scanner failure stays visible and scan is retryable`() {
         var scans = 0
+        var dismissed = 0
         compose.setContent {
             SplitFreeTheme {
                 GroupsListContent(
                     state = readyState(),
-                    actions = GroupsListActions(scanQr = { scans++ }),
+                    actions = GroupsListActions(
+                        scanQr = { scans++ },
+                        dismissScanError = { dismissed++ }
+                    ),
                     scanState = QrScanState(error = R.string.qr_scan_services_unavailable)
                 )
             }
         }
         compose.onNodeWithText(text(R.string.qr_scan_services_unavailable)).assertIsDisplayed()
+        compose.onNodeWithTag("dismiss_scan_error").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(1, dismissed) }
         compose.onNodeWithTag("home_scan").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, scans) }
     }

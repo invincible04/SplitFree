@@ -35,6 +35,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -286,8 +289,8 @@ class GroupDetailContentTest {
         render()
         scrollScreen(2_000f)
         compose.onNodeWithTag("group_see_all").assertIsDisplayed()
-        // The tabs have left the lazy viewport, so the switch happens from inside the pane.
-        compose.onNodeWithTag("group_tabs").assertDoesNotExist()
+        // With pinned tabs, the tab bar remains accessible at the top while scrolled down.
+        compose.onNodeWithTag("group_tabs").assertIsDisplayed()
 
         compose.onNodeWithTag("group_see_all").performClick()
         compose.waitForIdle()
@@ -297,6 +300,33 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
         compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertIsDisplayed()
         compose.onNodeWithTag("group_pane_summary").assertDoesNotExist()
+    }
+
+    @Test
+    fun `swiping horizontally switches between group tabs`() {
+        render()
+        compose.onNodeWithTag("group_pane_summary").assertIsDisplayed()
+
+        // Swipe left to switch from Summary to Expenses
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeLeft() }
+        compose.waitForIdle()
+
+        compose.runOnIdle { assertEquals(TAB_EXPENSES, selectedTab) }
+        compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
+
+        // Swipe left again to switch from Expenses to People
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeLeft() }
+        compose.waitForIdle()
+
+        compose.runOnIdle { assertEquals(TAB_PEOPLE, selectedTab) }
+        compose.onNodeWithTag("group_pane_people").assertIsDisplayed()
+
+        // Swipe right to switch back to Expenses
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeRight() }
+        compose.waitForIdle()
+
+        compose.runOnIdle { assertEquals(TAB_EXPENSES, selectedTab) }
+        compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
     }
 
     @Test

@@ -62,6 +62,7 @@ fun SegmentedTabs(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    positionProvider: (() -> Float)? = null,
     optionModifier: (index: Int) -> Modifier = { Modifier }
 ) {
     val scrollable = LocalDensity.current.fontScale >= SCROLLABLE_FONT_SCALE
@@ -71,6 +72,7 @@ fun SegmentedTabs(
         animationSpec = tween(SfMotion.Base, easing = SfMotion.Ease),
         label = "segmentPill"
     )
+    val pillPosition: () -> Float = positionProvider ?: { pillIndex }
     Box(
         modifier =
         modifier
@@ -79,7 +81,7 @@ fun SegmentedTabs(
             .background(MaterialTheme.colorScheme.surfaceContainer)
             .padding(TrackPadding)
     ) {
-        if (!scrollable) SelectionPill(pillIndex = { pillIndex }, count = count)
+        if (!scrollable) SelectionPill(pillIndex = pillPosition, count = count)
         Row(
             Modifier
                 .fillMaxWidth()

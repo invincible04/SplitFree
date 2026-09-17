@@ -41,11 +41,9 @@ object SfMotion {
     fun forwardExit(direction: LayoutDirection): ExitTransition =
         slideOutHorizontally(spec()) { -direction.trailingSign * it / 16 } + fadeOut(spec())
 
-    /** Previous destination re-entering on back, from the leading edge. */
-    fun popEnter(direction: LayoutDirection): EnterTransition =
-        slideInHorizontally(spec(Fast)) { -direction.trailingSign * it / 13 }
+    /** Previous destination re-entering on back: instant return without shrink, fade or slide. */
+    fun popEnter(direction: LayoutDirection = LayoutDirection.Ltr): EnterTransition = EnterTransition.None
 
-    /** Popped destination leaving on back, towards the trailing edge. */
-    fun popExit(direction: LayoutDirection): ExitTransition =
-        slideOutHorizontally(spec(Fast)) { direction.trailingSign * it / 11 } + fadeOut(spec(Fast))
+    /** Popped destination leaving on back: instant return without shrink, fade or slide. */
+    fun popExit(direction: LayoutDirection = LayoutDirection.Ltr): ExitTransition = ExitTransition.None
 }

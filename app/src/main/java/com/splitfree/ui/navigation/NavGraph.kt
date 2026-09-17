@@ -1,6 +1,8 @@
 package com.splitfree.ui.navigation
 
 import android.net.Uri
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -65,8 +67,12 @@ fun SplitFreeNavGraph(navController: NavHostController, startDestination: String
         startDestination = startDestination,
         enterTransition = { SfMotion.forwardEnter(direction) },
         exitTransition = { SfMotion.forwardExit(direction) },
-        popEnterTransition = { SfMotion.popEnter(direction) },
-        popExitTransition = { SfMotion.popExit(direction) }
+        popEnterTransition = { EnterTransition.None },
+        popExitTransition = { ExitTransition.None },
+        // Predictive-back gesture uses separate transitions in Navigation Compose 2.10+.
+        // Without explicit None here, the library's default includes scaleOut during edge swipes.
+        predictivePopEnterTransition = { EnterTransition.None },
+        predictivePopExitTransition = { ExitTransition.None }
     ) {
         composable(Screen.Onboarding.route) { entry ->
             OnboardingScreen(onComplete = {

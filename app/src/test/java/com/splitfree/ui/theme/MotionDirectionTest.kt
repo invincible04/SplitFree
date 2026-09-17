@@ -41,25 +41,25 @@ class MotionDirectionTest {
     val compose = createComposeRule(effectContext = durationScale)
 
     @Test
-    fun `forward enters from the trailing edge in LTR`() = assertSlide(LayoutDirection.Ltr, pop = false)
+    fun `forward enters from the trailing edge in LTR`() = assertSlide(LayoutDirection.Ltr)
 
     @Test
-    fun `forward enters from the trailing edge in RTL`() = assertSlide(LayoutDirection.Rtl, pop = false)
+    fun `forward enters from the trailing edge in RTL`() = assertSlide(LayoutDirection.Rtl)
 
     @Test
-    fun `back enters from the leading edge in LTR`() = assertSlide(LayoutDirection.Ltr, pop = true)
+    fun `back enters instantly in LTR`() = assertInstantPop(LayoutDirection.Ltr)
 
     @Test
-    fun `back enters from the leading edge in RTL`() = assertSlide(LayoutDirection.Rtl, pop = true)
+    fun `back enters instantly in RTL`() = assertInstantPop(LayoutDirection.Rtl)
 
-    private fun assertSlide(direction: LayoutDirection, pop: Boolean) {
+    private fun assertSlide(direction: LayoutDirection) {
         var visible by mutableStateOf(false)
         compose.setContent {
             Box(Modifier.padding(100.dp)) {
                 AnimatedVisibility(
                     visible,
-                    enter = if (pop) SfMotion.popEnter(direction) else SfMotion.forwardEnter(direction),
-                    exit = if (pop) SfMotion.popExit(direction) else SfMotion.forwardExit(direction)
+                    enter = SfMotion.forwardEnter(direction),
+                    exit = SfMotion.forwardExit(direction)
                 ) { Box(Modifier.size(180.dp).testTag("destination")) }
             }
         }
@@ -70,8 +70,7 @@ class MotionDirectionTest {
         val entering = compose.onNodeWithTag("destination").fetchSemanticsNode().positionInRoot.x
         compose.mainClock.advanceTimeBy(SfMotion.Base.toLong())
         val resting = compose.onNodeWithTag("destination").fetchSemanticsNode().positionInRoot.x
-        // Forward comes from the trailing edge, back from the leading edge; RTL swaps which side that is.
-        val fromRight = (direction == LayoutDirection.Ltr) != pop
+        val fromRight = (direction == LayoutDirection.Ltr)
         assertTrue(
             "Enter must slide in from the ${if (fromRight) "right" else "left"}",
             if (fromRight) entering > resting else entering < resting
@@ -84,6 +83,28 @@ class MotionDirectionTest {
             if (fromRight) leaving < resting else leaving > resting
         )
         compose.mainClock.advanceTimeBy(SfMotion.Base.toLong())
+        compose.onNodeWithTag("destination").assertDoesNotExist()
+    }
+
+    private fun assertInstantPop(direction: LayoutDirection) {
+        var visible by mutableStateOf(false)
+        compose.setContent {
+            Box(Modifier.padding(100.dp)) {
+                AnimatedVisibility(
+                    visible,
+                    enter = SfMotion.popEnter(direction),
+                    exit = SfMotion.popExit(direction)
+                ) { Box(Modifier.size(180.dp).testTag("destination")) }
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+
+        advanceVisibilityChange { visible = true }
+        val x = compose.onNodeWithTag("destination").fetchSemanticsNode().positionInRoot.x
+        assertEquals("Instant enter must place destination immediately at rest", 100f, x, 1f)
+
+        advanceVisibilityChange { visible = false }
         compose.onNodeWithTag("destination").assertDoesNotExist()
     }
 

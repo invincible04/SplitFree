@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.WifiOff
@@ -130,7 +131,8 @@ data class GroupsListActions(
     val scanQr: () -> Unit = {},
     val selectCurrency: (String) -> Unit = {},
     val retryBalances: () -> Unit = {},
-    val cancelScan: () -> Unit = {}
+    val cancelScan: () -> Unit = {},
+    val dismissScanError: () -> Unit = {}
 )
 
 /**
@@ -167,11 +169,6 @@ fun GroupsListScreen(
     val scanState by scanner.state.collectAsStateWithLifecycle()
     QrScanLifecycle(scanner, onScanResult)
 
-    val scanErrorText = scanState.error?.let { stringResource(it) }
-    LaunchedEffect(scanErrorText) {
-        if (scanErrorText != null) snackbarHostState.showSnackbar(scanErrorText)
-    }
-
     val errorText = state.error?.asString()
     LaunchedEffect(errorText) {
         if (errorText != null) {
@@ -183,9 +180,18 @@ fun GroupsListScreen(
     val actions =
         remember(onGroupClick, onCreateGroup, onSettings, onScanResult, clipboard, context, noInviteMessage, scanner) {
             GroupsListActions(
-                openGroup = onGroupClick,
-                createGroup = onCreateGroup,
-                openSettings = onSettings,
+                openGroup = { id ->
+                    scanner.onNavigatedAway()
+                    onGroupClick(id)
+                },
+                createGroup = {
+                    scanner.onNavigatedAway()
+                    onCreateGroup()
+                },
+                openSettings = {
+                    scanner.onNavigatedAway()
+                    onSettings()
+                },
                 pasteInvite = {
                     scope.launch {
                         try {
@@ -201,7 +207,8 @@ fun GroupsListScreen(
                 scanQr = scanner::start,
                 cancelScan = scanner::cancelPreparation,
                 selectCurrency = viewModel::selectCurrency,
-                retryBalances = viewModel::retryBalances
+                retryBalances = viewModel::retryBalances,
+                dismissScanError = scanner::dismissError
             )
         }
 
@@ -217,13 +224,20 @@ internal fun QrScanLifecycle(scanner: QrScanViewModel, onScanResult: (String) ->
     val latestScanResult by rememberUpdatedState(onScanResult)
     DisposableEffect(lifecycle, scanner) {
         val observer = LifecycleEventObserver { _, _ ->
-            scanner.setResumed(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+            val isResumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            scanner.setResumed(isResumed)
+            if (!isResumed && scanner.state.value.error != null) {
+                scanner.dismissError()
+            }
         }
         lifecycle.addObserver(observer)
         scanner.setResumed(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
         onDispose {
             lifecycle.removeObserver(observer)
             scanner.setResumed(false)
+            if (scanner.state.value.phase != QrScanPhase.Scanning) {
+                scanner.onNavigatedAway()
+            }
         }
     }
     BackHandler(enabled = scanState.phase == QrScanPhase.Preparing) { scanner.cancelPreparation() }
@@ -329,14 +343,34 @@ internal fun GroupsListContent(
                     }
                     if (scanState.busy || scanState.error != null) {
                         Column(Modifier.padding(bottom = 12.dp).testTag("home_scan_status")) {
-                            val message = scanState.error ?: if (scanState.phase == QrScanPhase.Preparing) {
-                                R.string.qr_scan_preparing
+                            if (scanState.error != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        stringResource(scanState.error),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    SfIconButton(
+                                        icon = Icons.Outlined.Close,
+                                        contentDescription = stringResource(R.string.dismiss),
+                                        onClick = actions.dismissScanError,
+                                        modifier = Modifier.testTag("dismiss_scan_error")
+                                    )
+                                }
                             } else {
-                                R.string.qr_scan_opening
-                            }
-                            Text(stringResource(message), style = MaterialTheme.typography.bodyMedium)
-                            if (scanState.phase == QrScanPhase.Preparing) {
-                                SfTextButton(stringResource(R.string.cancel), actions.cancelScan)
+                                val message = if (scanState.phase == QrScanPhase.Preparing) {
+                                    R.string.qr_scan_preparing
+                                } else {
+                                    R.string.qr_scan_opening
+                                }
+                                Text(stringResource(message), style = MaterialTheme.typography.bodyMedium)
+                                if (scanState.phase == QrScanPhase.Preparing) {
+                                    SfTextButton(stringResource(R.string.cancel), actions.cancelScan)
+                                }
                             }
                         }
                     }

@@ -34,6 +34,7 @@
     <string name="qr_scan_camera_denied">Google Play services could not access the camera. Check its camera permission and Android camera access setting, or paste an invite link.</string>
     <string name="qr_scan_failed">The scanner could not open or complete the scan. Try again, or paste an invite link. If this continues, copy the diagnostics report in Settings.</string>
     <string name="qr_scan_empty">This QR code has no readable text. Try a SplitFree invite QR or paste the invite link.</string>
+    <string name="dismiss">Dismiss</string>
     <string name="home_eyebrow">Shared expenses</string>
     <string name="home_title">Your groups.</string>
     <string name="status_connecting">Connecting</string>
