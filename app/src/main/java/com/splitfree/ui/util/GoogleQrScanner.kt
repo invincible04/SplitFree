@@ -11,6 +11,7 @@ import com.google.android.gms.common.moduleinstall.ModuleInstallClient
 import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate.InstallState
 import com.google.android.gms.tasks.Task
+import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanner
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions

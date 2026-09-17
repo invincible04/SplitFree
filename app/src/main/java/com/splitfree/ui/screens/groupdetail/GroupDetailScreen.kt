@@ -417,7 +417,6 @@ internal fun GroupDetailContent(
                         LazyColumn(
                             state = summaryListState,
                             contentPadding = listPadding,
-                            clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .then(
@@ -451,7 +450,6 @@ internal fun GroupDetailContent(
                         LazyColumn(
                             state = expensesListState,
                             contentPadding = listPadding,
-                            clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .then(
@@ -478,7 +476,6 @@ internal fun GroupDetailContent(
                         LazyColumn(
                             state = peopleListState,
                             contentPadding = listPadding,
-                            clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .then(
