@@ -56,10 +56,10 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,7 +78,6 @@ import com.splitfree.ui.components.SfTextButton
 import com.splitfree.ui.components.SfTopBar
 import com.splitfree.ui.components.SignedMoneyText
 import com.splitfree.ui.components.WarningCard
-import com.splitfree.ui.theme.SfMotion
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.GroupDetailUiState
@@ -421,7 +420,15 @@ internal fun GroupDetailContent(
                             clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .then(if (pagerState.currentPage == TAB_SUMMARY) Modifier.testTag("group_scroll") else Modifier)
+                                .then(
+                                    if (pagerState.currentPage ==
+                                        TAB_SUMMARY
+                                    ) {
+                                        Modifier.testTag("group_scroll")
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         ) {
                             item(key = "summary_content") {
                                 Column(
@@ -447,7 +454,15 @@ internal fun GroupDetailContent(
                             clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .then(if (pagerState.currentPage == TAB_EXPENSES) Modifier.testTag("group_scroll") else Modifier)
+                                .then(
+                                    if (pagerState.currentPage ==
+                                        TAB_EXPENSES
+                                    ) {
+                                        Modifier.testTag("group_scroll")
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         ) {
                             expenseItems(
                                 state = state,
@@ -466,7 +481,15 @@ internal fun GroupDetailContent(
                             clipToPadding = false,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .then(if (pagerState.currentPage == TAB_PEOPLE) Modifier.testTag("group_scroll") else Modifier)
+                                .then(
+                                    if (pagerState.currentPage ==
+                                        TAB_PEOPLE
+                                    ) {
+                                        Modifier.testTag("group_scroll")
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         ) {
                             item(key = "people_content") {
                                 Column(
