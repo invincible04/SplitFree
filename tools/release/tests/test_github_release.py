@@ -83,6 +83,7 @@ class FakeGitHub:
         self.contents = {}
         self.calls = []
         self.uploaded = []
+        self.deleted = []
         self.tag_commit = COMMIT
         self.annotated = False
         self.tag_cycle = False
@@ -136,6 +137,12 @@ class FakeGitHub:
         data = self.contents[asset["id"]]
         release.require(len(data) <= limit, "Invalid asset size")
         return data
+
+    def delete_asset(self, asset):
+        identifier = release.object_id(asset)
+        for release_id, assets in self.asset_lists.items():
+            self.asset_lists[release_id] = [a for a in assets if a["id"] != identifier]
+        self.deleted.append(identifier)
 
     def json(self, method, path, payload=None, *, upload=None):
         self.calls.append((method, path))
@@ -411,22 +418,27 @@ class UploadTest(BundleFixture):
             self.upload()
         self.assert_no_writes()
 
-    def test_unexpected_duplicate_or_starter_asset_refused(self):
-        for kind in ("unexpected", "duplicate", "starter"):
+    def test_unexpected_or_duplicate_asset_refused(self):
+        for kind in ("unexpected", "duplicate"):
             with self.subTest(kind=kind):
                 self.api = FakeGitHub(self.bundle)
                 self.api.add_draft()
                 if kind == "unexpected":
                     self.api.add_asset(10, "secrets.jks", b"never expose")
                 else:
-                    asset = self.api.add_asset(10, SOURCE, self.bundle.files[SOURCE])
-                    if kind == "duplicate":
-                        self.api.add_asset(10, SOURCE, self.bundle.files[SOURCE])
-                    else:
-                        asset["state"] = "starter"
+                    self.api.add_asset(10, SOURCE, self.bundle.files[SOURCE])
+                    self.api.add_asset(10, SOURCE, self.bundle.files[SOURCE])
                 with self.assertRaises(release.ReleaseError):
                     self.upload()
                 self.assert_no_writes()
+
+    def test_starter_asset_deleted_and_reuploaded(self):
+        self.api.add_draft()
+        asset = self.api.add_asset(10, SOURCE, self.bundle.files[SOURCE])
+        asset["state"] = "starter"
+        self.assertEqual(10, self.upload())
+        self.assertIn(asset["id"], self.api.deleted)
+        self.assertIn(SOURCE, self.api.uploaded)
 
     def test_reread_detects_publication_before_upload(self):
         draft = self.api.add_draft()
@@ -550,17 +562,23 @@ class TransportTest(NoNetworkTest):
         self.assertEqual(100, len(api.releases()))
         self.assertEqual(2, len(transport.calls))
 
-    def test_transport_api_has_no_publish_tag_delete_or_overwrite_paths(self):
+    def test_transport_api_has_no_publish_tag_or_overwrite_paths(self):
         api, transport = self.api(lambda *args: self.fail("Must reject before transport"))
         for method, suffix, payload in (
             ("PATCH", "/releases/10", {"draft": False}),
-            ("DELETE", "/releases/assets/10", None),
+            ("DELETE", "/releases/10", None),
             ("POST", "/git/refs", {"ref": "refs/tags/v1.0.0", "sha": COMMIT}),
             ("POST", "/releases", {"draft": False}),
         ):
             with self.subTest(method=method, suffix=suffix), self.assertRaises(release.ReleaseError):
                 api.json(method, api.prefix + suffix, payload)
         self.assertEqual([], transport.calls)
+
+    def test_asset_delete_allowed_at_transport_level(self):
+        api, transport = self.api(lambda *args: (204, {}, b""))
+        api.json("DELETE", api.prefix + "/releases/assets/10")
+        self.assertEqual(1, len(transport.calls))
+        self.assertEqual("DELETE", transport.calls[0][0])
 
     def test_duplicate_or_unbounded_pagination_fails_closed(self):
         api, _ = self.api(lambda *args: (200, {}, encoded([{"id": 1}])))

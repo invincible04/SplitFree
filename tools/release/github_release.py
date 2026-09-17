@@ -224,7 +224,10 @@ class GitHub:
         is_create = method == "POST" and path == self.prefix + "/releases" and upload is None
         is_upload = (method == "POST" and upload is not None
                      and re.fullmatch(re.escape(self.prefix) + r"/releases/[1-9][0-9]*/assets\?name=[A-Za-z0-9._-]+", path))
-        require(method == "GET" or is_create or is_upload, "Only reads, draft creation and asset uploads allowed")
+        is_asset_delete = (method == "DELETE" and upload is None and payload is None
+                           and re.fullmatch(re.escape(self.prefix) + r"/releases/assets/[1-9][0-9]*", path))
+        require(method == "GET" or is_create or is_upload or is_asset_delete,
+                "Only reads, draft creation, asset uploads and incomplete asset deletion allowed")
         if is_create:
             require(isinstance(payload, dict) and payload.get("draft") is True, "Only draft creation allowed")
         headers = self._headers()
@@ -238,6 +241,9 @@ class GitHub:
             if data is not None:
                 headers["Content-Type"] = "application/json"
         status, _, content = self.transport.request(method, url, headers, data, JSON_LIMIT)
+        if is_asset_delete:
+            require(status == 204, f"GitHub DELETE failed (HTTP {status}); inspect before retrying")
+            return None
         require(status == (200 if method == "GET" else 201),
                 f"GitHub {method} failed (HTTP {status}); inspect before retrying")
         return parse_json(content)
@@ -262,6 +268,10 @@ class GitHub:
     def assets(self, release_id):
         require(positive_int(release_id), "Invalid release id")
         return self.paginate(f"/releases/{release_id}/assets")
+
+    def delete_asset(self, asset):
+        identifier = object_id(asset)
+        self.json("DELETE", self.prefix + f"/releases/assets/{identifier}")
 
     def download(self, asset, limit):
         identifier = object_id(asset)
@@ -350,6 +360,9 @@ def verify_assets(api, release_id, files):
         name = asset.get("name")
         require(isinstance(name, str) and name in files, "Draft contains an unexpected asset")
         require(name not in existing, "Draft contains duplicate asset names")
+        if asset.get("state") != "uploaded":
+            api.delete_asset(asset)
+            continue
         require(api.download(asset, len(files[name])) == files[name], f"Existing asset bytes differ: {name}")
         existing[name] = asset
     return existing
