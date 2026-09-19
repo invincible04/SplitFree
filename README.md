@@ -200,7 +200,8 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 
 | Included in the link | Purpose |
 | --- | --- |
-| Group ID, creator's public key, creation time | Identify the group; the decoder checks that its ID matches the creator and creation time. |
+| Group ID, original creator's public key, creation time | Identify the group; the decoder verifies this immutable binding even after creator replacement. |
+| Creator replacement certificates, when needed | Verify current creator authority without sharing historical group keys. |
 | Group key and epoch | Let the recipient decrypt data under the included key version. |
 | Relay list, expiry, group name | Locate the group's relays, check link expiry, and display the group name. |
 
@@ -209,6 +210,7 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 - Share invites in person or through a trusted private channel.
 - Use a fresh link after membership or relay changes.
 - Expiry does not erase a disclosed key; previously copied links are not automatically revoked.
+- Compact invitations carry at most four creator replacement certificates (including known conflicting history). Longer histories show an explicit limit; authority proofs are never truncated.
 
 ### 3. Record expenses and compute balances
 
@@ -281,11 +283,13 @@ See the [Nearby protocol guide](app/src/main/java/com/splitfree/sync/nearby/READ
 | **24-word recovery phrase** | Restore the original private key and identity | Anyone with it can act as you. It does not contain the group ledger. |
 | **`.splitfree` export** | Restore exported records and included epoch keys | Requires the exporting identity; readable metadata is not hidden by the file authentication. |
 
-**Backup format v2**
+**Backup format v3**
 
 - Includes the stored event records available on this device; it cannot recover records or keys already missing here.
 - Preserves encrypted event payloads rather than exporting decrypted expense text.
 - Encrypts group keys to the exporting identity.
+- Retains the verified original creator binding and known creator replacement certificates, including when event history is empty.
+- Rejects prelaunch format-v2 files; create a fresh export with the current build.
 - Authenticates the recognized export fields with HMAC-SHA256 and an identity-derived key.
 - Import validates the backup and merges admissible records; it is not a complete app-storage image or outbox backup.
 
@@ -479,6 +483,14 @@ For a single class or coverage report:
 ```
 
 - **Real network activity:** these tests contact relays and can publish events.
+- **Strict results:** once opted in, relay rejection, timeout, incomplete history, or a missing expected event fails
+  the relevant probe. An unavailable relay is not silently treated as a successful round trip.
+- **Default offline coverage:** `RelayLedgerScenarioRoomTest` runs the shared create/join and money-flow scenarios
+  through separate Room stores with a simulated client boundary. Fault cases verify that false relay acceptance
+  and missing data cannot satisfy the scenario. `RelayProbeOptInTest` verifies safe JUnit skips without opt-in.
+- **Live ledger scope:** the two ledger scenarios use real relay clients, repositories, outbox/`SyncEngine`,
+  event processing and balances; key storage and Android scheduling remain test substitutes. They include the
+  production fallback relays, so completion requires those history requests too.
 - **Safe fixtures:** use disposable identities and sample data.
   - Offline cross-component tests should not use the `IntegrationTest` suffix, which is reserved by the build filter
     for these opt-in classes.
