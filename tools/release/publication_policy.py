@@ -25,6 +25,10 @@ ROOT_FILES = {
     'release/policy.json', 'release/signing-certificate.sha256',
     'release/THIRD-PARTY-NOTICES.txt',
     'app/src/test/resources/bip340-test-vectors.csv',
+    'website/index.html', 'website/package.json', 'website/package-lock.json',
+    'website/site.config.json', 'website/README.md', 'website/DESIGN.md',
+    'website/THIRD_PARTY_NOTICES.md', 'website/.gitignore', 'website/.prettierignore',
+    'website/.prettierrc.json', 'website/playwright.config.mjs',
 }
 PRIVATE_SUFFIXES = ('.jks', '.keystore', '.p12', '.pfx', '.pem', '.key', '.der',
                     '.db', '.sqlite', '.sqlite3', '.db-wal', '.db-shm', '.db-journal',
@@ -40,6 +44,7 @@ PRIVATE_NAMES = {'local.properties', 'key.properties', 'keystore.properties',
 GENERATED_DIRS = {'.git', '.gradle', '.kotlin', '.idea', '.cxx', '.externalnativebuild',
                   '__pycache__', 'build', 'bin', 'gen', 'out', 'node_modules',
                   'backups', 'backup', 'credentials', 'keystore'}
+WEBSITE_GENERATED_DIRS = {'dist', 'coverage', '.cache', '.vite', 'playwright-report', 'test-results'}
 
 # These seven pre-existing binary inputs were inventoried locally. A changed image,
 # font or wrapper needs a separate provenance/privacy review before updating a pin.
@@ -50,6 +55,15 @@ REVIEWED_BINARIES = {'app/src/main/res/drawable-nodpi/onboarding_backdrop.webp':
  'assets/screenshots/groups.png': '67809bb97906549dfefb9fc516cb7c406b4eda61df2b9e0a8f0e6a5a2b5241f5',
  'assets/splitfree-logo.png': '71db91bc83b27495ea61269dd2c14e440afd852591ffc5759e5cf0a61f513b0e',
  'gradle/wrapper/gradle-wrapper.jar': '2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046'}
+
+# Website delivery assets: existing v2 fonts/film and extracted poster.
+# Provenance and licenses: website/THIRD_PARTY_NOTICES.md.
+REVIEWED_BINARIES.update({
+    'website/public/assets/film-poster.webp': 'cb8e034a7fe12a932d28442ac27beff4aa90cda9ceb6f32cc45a6846fd0964b3',
+    'website/public/assets/inter-variable.woff2': '2f650c1e57db2cbe2a2a7b2388154e7578d2ba715d3bfa2ab33e327e56a9556a',
+    'website/public/assets/manrope-800.woff2': 'dd269e40d064e66ec335d0419f7a6b326f1c4b6d3cbed853c80ea88a2c2f3c28',
+    'website/public/assets/intro.mp4': '5984b90c96417aac57f74c8e0de32a935485871ac421ed6a5c8d76eed4816511',
+})
 
 # (source path, rule, SHA-256 of matched text). No suppression comments or wildcards.
 # Relay URL normalization uses fixed example userinfo. Signer tests use fake SDK
@@ -93,7 +107,9 @@ def safe_source_path(name: str) -> None:
                 or 'privatekey' in compact and not lower.endswith(('.kt', '.java', '.py', '.md'))
                 or lower.endswith('.properties') and name not in ROOT_FILES):
             reject(name, 'SensitiveSourcePath')
-    if any(p.lower() in GENERATED_DIRS for p in parts[:-1]):
+    if (any(p.lower() in GENERATED_DIRS for p in parts[:-1])
+            or name.startswith('website/')
+            and any(p.lower() in WEBSITE_GENERATED_DIRS for p in parts[:-1])):
         reject(name, 'GeneratedSourcePath')
     suffix = PurePosixPath(name).suffix
     allowed = name in ROOT_FILES or name in REVIEWED_BINARIES
@@ -105,6 +121,14 @@ def safe_source_path(name: str) -> None:
         allowed |= suffix in {'.md', '.svg'}
     if name.startswith('tools/release/'):
         allowed |= suffix in {'.py', '.md', '.sh'}
+    if name.startswith('website/src/'):
+        allowed |= suffix in {'.css', '.js'}
+    if name.startswith(('website/scripts/', 'website/tests/')):
+        allowed |= suffix == '.mjs'
+    if name.startswith('website/sections/'):
+        allowed |= suffix == '.html'
+    if name.startswith('website/public/'):
+        allowed |= suffix in {'.svg', '.txt', '.vtt'}
     if name.startswith('.github/workflows/'):
         allowed |= len(parts) == 3 and suffix in {'.yml', '.yaml'}
     if name.startswith('.github/ISSUE_TEMPLATE/'):

@@ -1,0 +1,13 @@
+{
+    "name": "SplitFree",
+    "repository": "https://github.com/invincible04/SplitFree",
+    "release": {
+        "version": "1.0.0",
+        "tag": "v1.0.0",
+        "apkUrl": "https://github.com/invincible04/SplitFree/releases/download/v1.0.0/SplitFree-v1.0.0.apk",
+        "pageUrl": "https://github.com/invincible04/SplitFree/releases/tag/v1.0.0",
+        "sizeBytes": 11925034,
+        "sha256": "e1f1fea669027c6ac4c03f4695c1af60e28de2c3f14ed24afc61b171c8b6c0fe",
+        "verifiedAt": "2026-09-19"
+    }
+}

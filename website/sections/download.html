@@ -1,0 +1,72 @@
+<section class="download-section" id="download" aria-labelledby="download-title">
+    <div class="container download-layout">
+        <div class="download-copy">
+            <img
+                class="download-logo"
+                src="assets/splitfree-logo.svg"
+                alt=""
+                width="50"
+                height="66"
+                loading="lazy"
+            />
+            <p class="eyebrow">LESS KEEPING SCORE. MORE MAKING MEMORIES.</p>
+            <h2 id="download-title">
+                The next one’s<br /><span class="mint">on all of you.</span>
+            </h2>
+            <p>Start your next shared plan with SplitFree.</p>
+            <a class="button button-mint" href="{{apkUrl}}" data-download
+                ><svg class="icon"><use href="#i-download" /></svg>Download for Android</a
+            >
+            <p class="download-meta">
+                <span data-release-version>v{{version}}</span> <span>·</span>
+                <span data-release-size>{{size}} MB</span> <span>·</span> Android 8.0+
+            </p>
+        </div>
+        <div class="release-card">
+            <span class="release-card-label"
+                ><span class="status-dot"></span> OFFICIAL GITHUB RELEASE</span
+            >
+            <h3>One download.<br />You’re in.</h3>
+            <p>No app store account needed.<br />Install the APK and make your first group.</p>
+            <a
+                class="inline-link"
+                href="{{releasePage}}"
+                data-release-page
+                target="_blank"
+                rel="noopener noreferrer"
+                >Release notes &amp; source <svg class="icon"><use href="#i-external" /></svg
+                ><span class="sr-only"> (opens in a new tab)</span></a
+            >
+            <p id="release-status" class="release-status" role="status" aria-live="polite">
+                Bundled release v{{version}}. Live GitHub check requires JavaScript.
+            </p>
+            <a
+                class="release-latest-link"
+                href="{{repository}}/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Check latest on GitHub<span class="sr-only"> (opens in a new tab)</span></a
+            >
+            <details class="checksum-details">
+                <summary>
+                    Verify your download <svg class="icon"><use href="#i-plus" /></svg>
+                </summary>
+                <div>
+                    <p>
+                        SHA-256 ·
+                        <span data-release-filename>SplitFree-v{{version}}.apk</span>
+                    </p>
+                    <p class="checksum-explanation">
+                        Compare this with your downloaded file. This is the published asset
+                        checksum, not a security audit.
+                    </p>
+                    <code id="apk-checksum">{{sha256}}</code
+                    ><button class="copy-checksum text-button" type="button" hidden>
+                        Copy checksum
+                        <svg class="icon"><use href="#i-plus" /></svg></button
+                    ><span id="copy-status" role="status" class="copy-status"></span>
+                </div>
+            </details>
+        </div>
+    </div>
+</section>

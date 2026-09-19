@@ -1,0 +1,127 @@
+/* A compact end to the story, not another oversized hero. */
+.site-footer {
+    border-top: 1px solid var(--line);
+    background: #0c100d;
+    padding: 52px 0 20px;
+}
+.footer-main {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 40px;
+    padding-bottom: 36px;
+}
+.footer-identity .brand {
+    display: inline-flex;
+    font-size: 26px;
+}
+.footer-tagline {
+    margin-top: 18px;
+    font:
+        800 clamp(25px, 2.5vw, 34px)/1.2 Manrope,
+        Inter,
+        sans-serif;
+    letter-spacing: -0.045em;
+    color: var(--ink);
+}
+.footer-tagline span {
+    color: var(--mint);
+}
+.footer-description,
+.footer-support-note {
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--muted);
+    margin-top: 12px;
+}
+.footer-support {
+    max-width: 350px;
+}
+.footer-support > p:first-child {
+    font-size: 16px;
+    color: var(--ink);
+    margin-bottom: 14px;
+}
+.github-star-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    max-width: 100%;
+    padding: 11px 18px;
+    border: 1px solid #58765d;
+    border-radius: 9px;
+    color: var(--mint);
+    background: #18291e;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.7;
+}
+.github-star-link .icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+}
+.github-star-link [data-star-label] {
+    overflow-wrap: anywhere;
+}
+.footer-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+.footer-meta nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 28px;
+}
+.footer-meta a {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 44px;
+    font-size: 12px;
+    color: #bac6b6;
+}
+.footer-back {
+    white-space: nowrap;
+}
+@media (hover: hover) {
+    .github-star-link:hover {
+        background: #233c2b;
+        border-color: var(--mint);
+    }
+    .footer-meta a:hover {
+        color: var(--mint);
+    }
+}
+@media (max-width: 699px) {
+    .site-footer {
+        padding-top: 32px;
+    }
+    .footer-main {
+        grid-template-columns: 1fr;
+        gap: 28px;
+        padding-bottom: 26px;
+    }
+    .footer-identity .brand {
+        font-size: 24px;
+    }
+    .footer-tagline {
+        font-size: 28px;
+    }
+    .footer-support {
+        max-width: 100%;
+    }
+    .footer-meta {
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .footer-meta nav {
+        gap: 4px 22px;
+    }
+}

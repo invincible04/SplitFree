@@ -1,0 +1,123 @@
+<div class="split-playground" aria-labelledby="demo-title">
+    <div class="demo-topline">
+        <span class="demo-tag"><span class="status-dot"></span> TRY A LITTLE SPLIT</span
+        ><span>Interactive preview</span>
+    </div>
+    <div class="demo-title-row">
+        <span class="demo-coffee"
+            ><svg class="icon"><use href="#i-coffee" /></svg
+        ></span>
+        <div>
+            <h3 id="demo-title">Dinner by the beach</h3>
+            <p>Good food. Four friends. One bill.</p>
+        </div>
+    </div>
+    <fieldset
+        id="split-demo"
+        class="demo-controls"
+        disabled
+        aria-label="Illustrative expense split"
+    >
+        <div class="currency-choice">
+            <label for="demo-currency">Example currency</label>
+            <div class="currency-select-wrap">
+                <select id="demo-currency" name="currency" aria-describedby="currency-help">
+                    <option value="USD">USD · US dollar</option>
+                    <option value="EUR">EUR · Euro</option>
+                    <option value="GBP">GBP · British pound</option>
+                    <option value="JPY">JPY · Japanese yen</option>
+                    <option value="CAD">CAD · Canadian dollar</option>
+                    <option value="AUD">AUD · Australian dollar</option>
+                    <option value="CHF">CHF · Swiss franc</option>
+                    <option value="CNY">CNY · Chinese yuan</option>
+                    <option value="INR" selected>INR · Indian rupee</option>
+                    <option value="BRL">BRL · Brazilian real</option>
+                    <option value="KRW">KRW · Korean won</option>
+                    <option value="KWD">KWD · Kuwaiti dinar</option>
+                </select>
+                <svg class="currency-chevron icon" aria-hidden="true" viewBox="0 0 24 24">
+                    <path d="m7 10 5 5 5-5" />
+                </svg>
+            </div>
+        </div>
+        <p id="currency-help" class="currency-help">
+            A sample bill in your chosen currency, not an exchange-rate conversion.
+        </p>
+        <div class="demo-amount-row">
+            <label for="bill-amount"
+                >The bill<span class="amount-input"
+                    ><span id="currency-symbol" aria-hidden="true">₹</span
+                    ><input
+                        id="bill-amount"
+                        name="amount"
+                        type="text"
+                        inputmode="decimal"
+                        value="1600"
+                        maxlength="10"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        enterkeyhint="done"
+                        aria-describedby="amount-help amount-error"
+                    /><span class="sr-only" id="currency-name">Indian rupees</span></span
+                ></label
+            ><span class="paid-by">Paid by <strong>Alex (you)</strong></span>
+        </div>
+        <p class="sr-only" id="amount-help">
+            Enter an amount from 1 to 999999.99 in the selected currency. Use a dot or comma for the
+            decimal separator, without grouping separators.
+        </p>
+        <p id="amount-error" class="input-error" role="alert" hidden></p>
+        <fieldset class="split-modes">
+            <legend>How would you split it?</legend>
+            <div class="mode-options">
+                <label
+                    ><input type="radio" name="mode" value="equal" checked /><span
+                        >Equal</span
+                    ></label
+                ><label><input type="radio" name="mode" value="exact" /><span>Exact</span></label
+                ><label
+                    ><input type="radio" name="mode" value="percent" /><span>Percent</span></label
+                ><label><input type="radio" name="mode" value="shares" /><span>Shares</span></label>
+            </div>
+        </fieldset>
+        <div class="demo-people">
+            <div class="demo-person">
+                <span class="avatar av-green">A</span
+                ><span class="person-name">Alex <small>You</small></span
+                ><span class="person-weight" data-weight="0">¼ each</span
+                ><output data-person="0" for="bill-amount">₹400.00</output>
+            </div>
+            <div class="demo-person">
+                <span class="avatar av-peach">J</span><span class="person-name">Jordan</span
+                ><span class="person-weight" data-weight="1">¼ each</span
+                ><output data-person="1" for="bill-amount">₹400.00</output>
+            </div>
+            <div class="demo-person">
+                <span class="avatar av-purple">C</span><span class="person-name">Casey</span
+                ><span class="person-weight" data-weight="2">¼ each</span
+                ><output data-person="2" for="bill-amount">₹400.00</output>
+            </div>
+            <div class="demo-person">
+                <span class="avatar av-gold">S</span><span class="person-name">Sam</span
+                ><span class="person-weight" data-weight="3">¼ each</span
+                ><output data-person="3" for="bill-amount">₹400.00</output>
+            </div>
+        </div>
+        <div class="demo-result">
+            <svg class="icon"><use href="#i-check" /></svg>
+            <p id="split-summary" role="status" aria-live="polite" aria-atomic="true">
+                ₹400.00 each. Nicely split.
+            </p>
+        </div>
+        <p class="demo-note" id="demo-note">
+            Illustrative split. Enable JavaScript to change the bill. Nothing is saved or sent.
+        </p>
+    </fieldset>
+    <noscript
+        ><p class="demo-note">
+            This is an illustrative equal split. Enable JavaScript to try other amounts and split
+            examples.
+        </p></noscript
+    >
+</div>

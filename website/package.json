@@ -1,0 +1,25 @@
+{
+    "name": "splitfree-website",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "build": "node scripts/build.mjs",
+        "dev": "node scripts/serve.mjs",
+        "preview": "node scripts/serve.mjs",
+        "test": "node --test tests/unit.test.mjs tests/release.test.mjs tests/stars.test.mjs",
+        "test:e2e": "playwright test",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "check": "npm run format:check && npm test && npm run build && npm run test:e2e",
+        "sync:release": "node scripts/sync-release.mjs"
+    },
+    "devDependencies": {
+        "@axe-core/playwright": "4.13.0",
+        "@playwright/test": "1.63.0",
+        "prettier": "3.9.8"
+    }
+}

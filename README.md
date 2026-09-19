@@ -500,6 +500,17 @@ For a single class or coverage report:
   checklist](RELEASING.md#4-test-the-exact-signed-apk) and the [Nearby hardware validation
   list](RELEASING.md#nearby-hardware-validation).
 
+## Product website
+
+The frontend-only product website lives in [`website/`](website/README.md), with a
+v2-film-inspired design, an interactive expense-split example, and direct links
+to the official Android APK. It has no backend or runtime third-party scripts.
+
+- **Local preview:** `npm --prefix website ci --ignore-scripts`, then `npm --prefix website run dev`.
+- **Build:** `npm --prefix website run build` produces the isolated `website/dist` folder.
+- **Self-deploy:** follow the [GitHub Pages guide](website/README.md#deploy-to-github-pages-yourself).
+  Deployment is manual, via the separate **Website · GitHub Pages** workflow.
+
 ## Contributing
 
 - Contributions are welcome.

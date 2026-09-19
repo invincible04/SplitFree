@@ -1,0 +1,31 @@
+<dialog id="film-dialog" aria-labelledby="film-title">
+    <div class="film-dialog-top">
+        <h2 id="film-title">A little less complicated.</h2>
+        <button type="button" class="film-close" aria-label="Close film">
+            <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+    </div>
+    <video
+        id="intro-film"
+        controls
+        aria-label="SplitFree intro film"
+        playsinline
+        preload="none"
+        poster="assets/film-poster.webp"
+        aria-describedby="film-description"
+    >
+        <source data-src="assets/intro.mp4" type="video/mp4" />
+        <track
+            kind="descriptions"
+            src="assets/film-description.vtt"
+            srclang="en"
+            label="English visual descriptions"
+        />
+        <p><a href="assets/intro.mp4">Download the intro film</a>.</p>
+    </video>
+    <p id="film-description" class="sr-only">SplitFree intro film. Music, no spoken audio.</p>
+    <p id="film-error" role="alert" hidden>
+        Couldn’t play the film.
+        <a href="assets/intro.mp4">Open the video directly</a>.
+    </p>
+</dialog>

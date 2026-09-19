@@ -1,0 +1,13 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+evidence/
+
+# Local coverage, tool caches and interrupted sync scratch files
+coverage/
+.cache/
+.vite/
+blob-report/
+playwright/.cache/
+.site-config-*.tmp

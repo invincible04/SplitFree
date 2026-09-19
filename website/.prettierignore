@@ -1,0 +1,12 @@
+dist/
+node_modules/
+evidence/
+test-results/
+playwright-report/
+public/
+coverage/
+.cache/
+.vite/
+blob-report/
+playwright/
+.site-config-*.tmp
