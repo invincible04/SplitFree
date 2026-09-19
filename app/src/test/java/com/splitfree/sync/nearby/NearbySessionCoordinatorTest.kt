@@ -257,7 +257,7 @@ class NearbySessionCoordinatorTest {
         router.connect(a.transport, "ep-m", mallory, "ep-a", token = tokenAM)
         router.connect(mallory, "ep-b", b.transport, "ep-m", token = tokenMB, aIncoming = false)
         router.pump()
-        // Mallory forwards everything A says to B and everything B says to A until both go quiet.
+        // Forward newly captured frames in both directions for six scripted rounds.
         var forwardedA = 0
         var forwardedB = 0
         repeat(6) {
@@ -320,6 +320,71 @@ class NearbySessionCoordinatorTest {
         router.pump()
         assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
         assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+    }
+
+    @Test
+    fun `an invited joiner is admitted when the roster holder initiates the connection`() {
+        // a is the creator with the roster; b joined offline and its announcement has not reached a.
+        val (a, b) = twoMembers()
+        a.store.members.remove(b.pub)
+        a.store.admitJoinResult = true
+        b.store.ownJoin = """{"join":"me"}"""
+        a.activate()
+        b.activate()
+        // a is the outgoing side and therefore the initiator; b can only respond.
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UP_TO_DATE, a.phase(ep(b)))
+        assertEquals(PeerPhase.UP_TO_DATE, b.phase(ep(a)))
+        assertTrue("the responder must have introduced itself", b.transport.sentMessages().any { it is Introduce })
+        assertTrue(b.pub in a.store.members)
+    }
+
+    @Test
+    fun `an initiator still refuses a responder whose introduction does not prove membership`() {
+        val (a, b) = twoMembers()
+        a.store.members.remove(b.pub)
+        a.store.admitJoinResult = false
+        b.store.ownJoin = """{"join":"forged"}"""
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UNAUTHORIZED, a.phase(ep(b)))
+        assertEquals(PeerPhase.UNAUTHORIZED, b.phase(ep(a)))
+        assertTrue(a.transport.sentMessages().none { it is OpenGroup })
+        val leaked = a.transport.sentFrames.any { String(it.second).contains(groupId) }
+        assertFalse("group id must not cross the wire to a peer that was never admitted", leaked)
+    }
+
+    @Test
+    fun `a responder with no join proof is refused promptly by an initiator that does not know it`() {
+        val (a, b) = twoMembers()
+        a.store.members.remove(b.pub)
+        b.store.ownJoin = null
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        assertEquals(PeerPhase.UNAUTHORIZED, a.phase(ep(b)))
+        assertEquals(PeerPhase.UNAUTHORIZED, b.phase(ep(a)))
+    }
+
+    @Test
+    fun `a responder never offers its join proof to an initiator it does not authorize`() {
+        // Neither side knows the other: the responder's proof, which names the group, must stay home.
+        val (a, b) = twoMembers()
+        a.store.members.remove(b.pub)
+        b.store.authorizedOverride = { false }
+        b.store.ownJoin = """{"join":"me"}"""
+        a.activate()
+        b.activate()
+        connect(a, b)
+        router.pump()
+        val introductions = b.transport.sentMessages().filterIsInstance<Introduce>()
+        assertEquals(1, introductions.size)
+        assertEquals(null, introductions.single().joinEvent)
+        assertEquals(PeerPhase.UNAUTHORIZED, a.phase(ep(b)))
     }
 
     @Test
@@ -1821,7 +1886,7 @@ class NearbySessionCoordinatorTest {
     fun `pending work from an earlier session is retried at activation and keeps both sides waiting`() {
         val (a, b) = twoMembers()
         seed(a, "pw", 2)
-        // B restarted with a rotation stored but its effect never applied.
+        // Model pending work from a prior run; no process or database restart occurs.
         b.store.deferredPending = 1
         a.activate()
         b.activate()

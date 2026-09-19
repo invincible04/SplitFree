@@ -67,6 +67,16 @@ class PeerSession(
     private var groupOpen = false
     private var violations = 0
 
+    /** Capabilities both sides advertised; fixed by [onHello] and bound into the authentication transcript. */
+    private var negotiatedCaps: Set<String> = emptySet()
+
+    /** Initiator only: the peer is not a known member yet and an [Introduce] may still admit it. */
+    private var awaitingIntroduction = false
+
+    /** One [Introduce] buffered before authentication; cleared before processing it after [Auth]. */
+    private var peerIntroduce: Introduce? = null
+    private var introduced = false
+
     // ---------------------------------- provider state (local inventory -> peer)
     private var outSnap = 0
 
@@ -186,6 +196,7 @@ class PeerSession(
             is Close -> onPeerClose(message)
             is OpenGroup -> if (requireAuthenticated()) onOpenGroup(message)
             is OpenGroupResult -> if (requireAuthenticated()) onOpenGroupResult(message)
+            is Introduce -> onIntroduce(message)
             is InventoryPage -> if (requireGroupOpen()) onInventoryPage(message)
             is Want -> if (requireGroupOpen()) onWant(message)
             is Record -> if (requireGroupOpen()) onRecord(message)
@@ -236,6 +247,7 @@ class PeerSession(
         peerPubkey = hello.pubkey
         isInitiator = NearbyAuth.localIsInitiator(myPubkey, incoming, hello.pubkey, hello.incoming)
         val caps = (CAPABILITIES intersect hello.caps.toSet())
+        negotiatedCaps = caps
         val t =
             if (isInitiator) {
                 NearbyAuth.Transcript(myPubkey, hello.pubkey, myNonce, hello.nonce, channelToken, caps)
@@ -280,7 +292,16 @@ class PeerSession(
         authenticated = true
         verifiedPeerPubkey = peer
         setPhase(PeerPhase.OPENING_GROUP)
-        if (isInitiator) openGroup()
+        if (isInitiator) {
+            openGroup()
+            // An Introduce that overtook the peer's Auth is applied now that the peer is verified.
+            peerIntroduce?.let { buffered ->
+                peerIntroduce = null
+                onIntroduce(buffered)
+            }
+        } else if (NearbyWire.CAP_INTRODUCE in negotiatedCaps) {
+            introduce(peer)
+        }
     }
 
     // --------------------------------------------------------------- group scope
@@ -288,12 +309,58 @@ class PeerSession(
     private suspend fun openGroup() {
         val peer = checkNotNull(peerPubkey)
         if (!store.isAuthorizedForGroup(groupId, peer)) {
+            if (NearbyWire.CAP_INTRODUCE in negotiatedCaps && !introduced) {
+                // The peer may be a member whose join has not reached this phone yet; it can still prove it.
+                awaitingIntroduction = true
+                return
+            }
             // The group id is never sent to a peer the local side cannot authorize for it.
             terminate(PeerPhase.UNAUTHORIZED, NearbyWire.CLOSE_UNAUTHORIZED, notifyPeer = true)
             return
         }
+        awaitingIntroduction = false
         openSent = true
         send(OpenGroup(groupId, joinEvent = store.ownJoinEvent(groupId)))
+    }
+
+    /**
+     * Offer a join proof only to an authorized peer: the proof reveals the group id.
+     * Otherwise send an empty [Introduce] so an awaiting initiator can refuse without a timeout.
+     */
+    private suspend fun introduce(peer: String) {
+        val proof = if (store.isAuthorizedForGroup(groupId, peer)) store.ownJoinEvent(groupId) else null
+        send(Introduce(proof))
+    }
+
+    /**
+     * Process one responder introduction after authentication. Only an initiator still awaiting
+     * membership proof applies it; an already-authorized peer needs no introduction.
+     */
+    private suspend fun onIntroduce(msg: Introduce) {
+        if (!authenticated) {
+            // Buffer at most one Introduce before Auth to tolerate transport reordering.
+            if (peerIntroduce == null) peerIntroduce = msg else violation("Introduce before authentication")
+            return
+        }
+        if (!isInitiator) {
+            violation("unexpected Introduce")
+            return
+        }
+        if (introduced) {
+            violation("conflicting Introduce")
+            return
+        }
+        introduced = true
+        if (!awaitingIntroduction) return
+        awaitingIntroduction = false
+        val peer = checkNotNull(peerPubkey)
+        val admitted = msg.joinEvent != null && store.admitJoin(groupId, peer, msg.joinEvent)
+        if (!admitted) {
+            terminate(PeerPhase.UNAUTHORIZED, NearbyWire.CLOSE_UNAUTHORIZED, notifyPeer = true)
+            return
+        }
+        Log.i(TAG, "Admitted $endpointId into ${groupId.take(8)} from its introduction")
+        openGroup()
     }
 
     private suspend fun onOpenGroup(msg: OpenGroup) {
@@ -871,6 +938,7 @@ class PeerSession(
         private const val MAX_RETAINED_DEPENDENCIES = 4_096
 
         /** Capabilities offered in [Hello]; the intersection with the peer's is bound into the auth transcript. */
-        val CAPABILITIES: Set<String> = setOf(NearbyWire.CAP_RECONCILE_V2, NearbyWire.CAP_DELIVERIES)
+        val CAPABILITIES: Set<String> =
+            setOf(NearbyWire.CAP_RECONCILE_V2, NearbyWire.CAP_DELIVERIES, NearbyWire.CAP_INTRODUCE)
     }
 }

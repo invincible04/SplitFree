@@ -25,6 +25,7 @@ object NearbyWire {
     const val TYPE_RESULT: Byte = 0x08
     const val TYPE_RECONCILE_RESULT: Byte = 0x09
     const val TYPE_CLOSE: Byte = 0x0A
+    const val TYPE_INTRODUCE: Byte = 0x0B
 
     /** Receive-side frame limit, also used when paginating inventory; includes the two header bytes. */
     const val MAX_FRAME_BYTES = 16 * 1024
@@ -66,6 +67,12 @@ object NearbyWire {
     const val CAP_RECONCILE_V2 = "reconcile-v2"
     const val CAP_DELIVERIES = "deliveries"
 
+    /**
+     * The responder sends [Introduce] after authentication so an initiator that does not yet know it as a
+     * member can admit it from its join proof; without this capability only the initiator can present one.
+     */
+    const val CAP_INTRODUCE = "introduce"
+
     // Close reasons: protocol constants, not user-facing text.
     const val CLOSE_UNSUPPORTED_VERSION = "unsupported_version"
     const val CLOSE_AUTH_FAILED = "auth_failed"
@@ -102,6 +109,7 @@ object NearbyWire {
                 is ReconcileResult ->
                     TYPE_RECONCILE_RESULT to json.encodeToString(ReconcileResult.serializer(), message)
                 is Close -> TYPE_CLOSE to json.encodeToString(Close.serializer(), message)
+                is Introduce -> TYPE_INTRODUCE to json.encodeToString(Introduce.serializer(), message)
             }
         val bytes = body.toByteArray(Charsets.UTF_8)
         return ByteArray(bytes.size + 2).also {
@@ -144,6 +152,7 @@ object NearbyWire {
                     TYPE_RESULT -> json.decodeFromString(Result.serializer(), body)
                     TYPE_RECONCILE_RESULT -> json.decodeFromString(ReconcileResult.serializer(), body)
                     TYPE_CLOSE -> json.decodeFromString(Close.serializer(), body)
+                    TYPE_INTRODUCE -> json.decodeFromString(Introduce.serializer(), body)
                     else -> return Decoded.Invalid
                 }
             } catch (_: IllegalArgumentException) {
@@ -232,6 +241,18 @@ data class OpenGroup(val groupId: String, val joinEvent: String? = null) : Nearb
 /** Accepts a group scope or refuses with [NearbyWire.OPEN_REFUSED] without revealing whether the group exists. */
 @Serializable
 data class OpenGroupResult(val groupId: String, val ok: Boolean, val reason: String? = null) : NearbyMessage()
+
+/**
+ * Sent once by the responder after both sides have authenticated, when [NearbyWire.CAP_INTRODUCE] was
+ * negotiated. Lets an initiator that has not yet seen the responder's join (a member who joined offline)
+ * admit it before deciding whether to open the group, so admission works in either direction.
+ *
+ * @property joinEvent the responder's signed self-join `group_meta` JSON, or null when it has none to offer or
+ *   does not itself authorize the initiator for the group (the proof names the group; it is never sent to a
+ *   peer the responder would refuse)
+ */
+@Serializable
+data class Introduce(val joinEvent: String? = null) : NearbyMessage()
 
 /**
  * One entry of a peer's inventory.
