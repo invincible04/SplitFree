@@ -33,7 +33,7 @@
 | [GiftWrapService](../../domain/crypto/GiftWrapService.kt), [Nip59](../../domain/crypto/nip/Nip59.kt) | Preference-controlled recipient envelopes and authenticated unwrapping. |
 | [EventPublisher](../../sync/event/EventPublisher.kt), [EventThrottler](EventThrottler.kt) | Prepare complete delivery batches, persist before sending, attempt immediate publication. |
 | [EventProcessor](../../sync/event/EventProcessor.kt), [EventPostProcessor](../../sync/event/EventPostProcessor.kt) | Membership/payload validation, decryption, durable application states, control effects. |
-| [SyncEngine](../../sync/worker/SyncEngine.kt), [RelaySyncCursors](../repository/RelaySyncCursors.kt) | Historical reconciliation, dependency retries, per-relay coverage, due outbox retries. |
+| [SyncEngine](../../sync/worker/SyncEngine.kt), [RelaySyncCursors](../repository/RelaySyncCursors.kt), [HistoryPaginator](HistoryPaginator.kt) | Bounded historical reconciliation, durable partition/debt progress, fair relay scheduling, due outbox retries. |
 | [LiveSync](../../sync/worker/LiveSync.kt), [SyncScheduler](../../sync/worker/SyncScheduler.kt), [OutboxWorker](../../sync/worker/OutboxWorker.kt) | Visible-app session and network-constrained WorkManager recovery. |
 
 ```text
@@ -58,6 +58,7 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 - Filters support `kinds`, `authors`, `ids`, tag maps, `since`, `until`, and `limit`.
   - Callers supply wire tag names such as `#g` and `#p`; the serializer does not add `#`.
 - `RelayMessage.parse` ignores malformed or unknown frames and checks event ID/pubkey/signature lengths before verification.
+  - `Relay` counts unparseable frames as dropped, conservatively preventing an in-flight historical fetch from certifying completeness.
   - The separate `NostrEvent.fromJson` parser does not impose that length gate.
   - Neither parser establishes authenticity.
 - The live client accepts kinds `30078` and `1059` and verifies signatures.
@@ -97,6 +98,7 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 | `group_meta` | Group-encrypted metadata, roster/name/relay updates. Creation, joins and subsequent updates publish directly regardless of gift-wrap preference. |
 | `key_rotation` | Creator-to-recipient NIP-44-encrypted rotation payload, one direct `30078` with `p` per target member. The payload includes individually encrypted new-key entries. |
 | `key_revocation` | Group-encrypted identity replacement record signed by the old identity; direct publication. Replaces/tombstones the identity, without rotating the group key or erasing old data. |
+| `identity_history` | Group-encrypted, successor-signed exact historical money-ID checkpoint pages, bound to an authenticated identity revocation; direct publication, including when gift wrapping is enabled. |
 | `snapshot` | Creator-authored, group-encrypted balance snapshot. [CreateSnapshotUseCase](../../domain/usecase/expense/CreateSnapshotUseCase.kt) initially queues it directly via `saveAndQueue`; authored-history redelivery can also wrap it. |
 
 - See [RotateGroupKeyUseCase](../../domain/usecase/group/RotateGroupKeyUseCase.kt) and [RevokeKeyUseCase](../../domain/usecase/group/RevokeKeyUseCase.kt) for control construction.
@@ -176,7 +178,8 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 2. **Deduplication and traffic limits.**
    - Check stored inner IDs before rate limits.
    - Re-drive pending effects.
-   - [EventValidator](../../domain/validation/EventValidator.kt) applies a 30-day age window and author/group rate counters to normal live traffic.
+   - [EventValidator](../../domain/validation/EventValidator.kt) retains author/group rate counters for live traffic. `LiveSync` permits old-authored arrivals: relay arrival time is not `created_at`.
+   - Other callers using default live timestamp validation still have a 30-day age window.
    - Reconciliation skips those counters and age limits, but rejects nonpositive or more-than-one-hour-future timestamps.
 3. **Membership and payloads.**
    1. Check membership.
@@ -194,6 +197,12 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 - This checks key-epoch eligibility, not authorship time.
   - A removed author retaining an old key can create a backdated record that passes.
 - No creator-signed membership checkpoint closes that gap.
+
+- Identity replacement has a separate exact-history admission path: successor-signed `identity_history` pages bind the group, old and successor identities, an exact authenticated `key_revocation`, and the sorted historical money-event IDs.
+  - Pages contain at most 128 IDs each, with at most 4,096 pages; complete pages must agree on one count/root. Conflicting revocations, roots or page contents, and cyclic or overlong successor chains remain unresolved rather than selecting the first arrival.
+  - An embedded revocation must still pass ordinary membership/epoch authority; a self-signed old/new pair is not membership evidence. Complete exact-history evidence separately authorizes the retired author’s listed IDs, including post-rejoin money: it does not use the removed-member latest-removal-epoch heuristic above. Original authentication, epoch-key decryptability, payload and same-author original-dependency checks still apply; unlisted IDs are not authorized.
+  - Missing pages, missing or unapplied referenced money, missing originals, and legacy revocations without complete evidence make balances unavailable. Held records survive restart/export/import; relay, Nearby and backup recovery can supply the missing evidence without using timestamps as proof.
+  - Local replacement captures verifiable authored expenses, corrections, deletions and settlements under the money-write transaction barrier. The durable operation retains the exact prepared checkpoint/delivery bytes before identity promotion; creation/join admission cannot add old-identity history behind that captured group set.
 
 ## Publication: what success means
 
@@ -253,65 +262,86 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 
 ### Query windows
 
+- `created_at` is authored time, **not relay arrival time**. A completed response at time T cannot exclude a later publication authored before T.
+- Ordinary reconciliation starts a full-history sweep or resumes its durable partitions. Group progress and per-relay completed timestamps never narrow that history.
+
 | Query | Filter / window |
 | --- | --- |
-| Main group history and live subscription | Kinds `30078` and `1059`, `#g = groupId`. Omit `since` when requesting all history. |
-| Additional recipient filter | Kind `1059`, `#p = myPubkey`; widen `since` by 48 hours, floored at zero, for randomized outer timestamps. |
+| Main group history | Kinds `30078` and `1059`, `#g = groupId`; bounded inclusive `since`/`until` partitions with `limit: 128`. |
+| Additional recipient history | Kind `1059`, `#p = myPubkey`, within the same sweep partitions. Both direct and wrapped old publication remain discoverable. |
+| Live subscriptions | The group and recipient filters above, with no `since`/`until` and `limit: 0`. NIP-01 limits stored replay, not subsequent arrivals. |
 | Self-heal ID fetch | Kind `30078`, `#g`; returns pooled IDs, not independently certified per-relay inventories. |
-| Standalone `fetchGiftWraps` helper | Kind `1059`, `#p`, last 24 hours, ten-second fetch timeout, events only. It is not the main widened group catch-up and can miss older randomized wraps. |
+| Standalone `fetchGiftWraps` helper | Kind `1059`, `#p`, last 24 hours, ten-second fetch timeout, events only. It is not the ordinary group sweep and can miss older wraps. |
 
 ### Fetch completion
 
-- Historical fetch proceeds in order:
-  1. Briefly settle connecting sockets.
-  2. Attach collectors **before** sending REQs.
-  3. Normally wait up to 15 seconds for EOSE.
+- Each historical page briefly settles connecting sockets and attaches collectors **before** sending REQs.
+  - It normally waits up to 15 seconds for EOSE; the whole per-relay pagination pass has a 20-second deadline.
   - Missing collector readiness fails the fetch.
+- [HistoryPaginator](HistoryPaginator.kt) subdivides a full page into disjoint older/newer authored-time partitions.
+  - A byte-saturated page with trustworthy EOSE also subdivides, even if fewer than 128 events fit locally.
+  - A saturated single second subdivides by hexadecimal event-ID prefix; no timestamp tie is skipped.
+  - Saturated parent pages are not treated as complete leaves or emitted as an unbounded batch.
 - EOSE is counted once per relay and subscription.
   - One relay cannot satisfy another's completion.
+  - Requested but unavailable or unselected relays remain incomplete even if others finish.
+- Rejected/missing EOSE, out-of-filter history, malformed frames, a changed socket epoch, or observed frame loss prevents certification.
+  - Valid duplicate events deduplicate without poisoning a response.
+  - Repeated prior-page events outside the newly requested partition cannot masquerade as a short completed page.
 - Cleanup closes temporary subscriptions and joins collectors, including on cancellation.
-- Completion excludes a relay that disconnected, reopened, dropped buffered frames, or was not connected when queried.
-  - Requested but unavailable relays remain incomplete even if others EOSE.
+  - A per-pass deadline returns completed progress and retains the unfinished partition.
+  - Caller cancellation or processing failure does not persist unprocessed progress.
+- A pass requests at most **16 pages per relay**, returns at most **2,048 events / 8 MiB** of serialized UTF-16 event strings, and retains at most **1,024 pending partitions**.
+  - At most four concurrent relay scans bound the merged batch to 8,192 events / 32 MiB, plus bounded page buffers and object overhead.
+  - Relay parsing rejects frames above one Mi-character; page verification is capped at 2,048 event frames.
+  - These accounting limits are not an exact JVM heap or TLS frame allocation bound.
+  - An irreducible over-limit event/prefix remains explicit debt rather than being skipped.
 - The 4,096-frame relay buffer can overflow.
-  - Dropped events trigger a delayed re-REQ covering the older of last-delivered/oldest-dropped timestamps minus 60 seconds.
-  - Reconnect replay uses the same mechanism.
-  - This is recovery effort, not lossless transport or proof of full history.
-- EOSE means the relay says it finished this request.
-  - A dishonest, retention-limited, or policy-filtered relay can omit events.
-  - The client has no global inventory proving otherwise.
-  - Main history fetches have no pagination loop; omitting `limit` does not guarantee unlimited results.
+  - Reconnect/drop replay preserves exact bounded history partitions and arrival-unbounded live filters.
+  - Legacy subscriptions without those bounds use the older last-delivered/oldest-dropped timestamp minus 60 seconds mechanism.
+  - Replay is recovery effort, not lossless transport.
+- EOSE means only that the relay says it finished this request.
+  - A dishonest, retention-limited, or policy-filtered relay can silently return shorter history.
+  - A client cannot distinguish that from genuinely short history or prove an absent global inventory.
+  - No completion claim establishes relay retention or absence of later old-authored publication.
 
 ### Durable coverage
 
-- [RelaySyncCursorEntity](../local/entities/RelaySyncCursorEntity.kt) keys coverage by `(groupId, relayUrl, recipientPubkey)`.
-- [RelaySyncCursorDao](../local/dao/RelaySyncCursorDao.kt) advances coverage monotonically.
-  - A missing entry starts at zero, never at the group's progress timestamp.
-
-- `SyncEngine` queries configured primaries, fallbacks, and the client's current pool.
-  - Each window starts at the earlier of the caller's `since` and that relay's cursor minus a one-hour overlap.
-- Received events are sorted by outer `created_at`, then ID.
+- [HistorySweepEntity](../local/entities/HistorySweepEntity.kt) stores `(groupId, relayUrl, recipientPubkey)`, pending partitions, `attemptedAt`, and `hadUnresolved` in additive Room schema 6.
+  - Least-recent durable attempts select at most four target relays per pass, including across process restarts.
+  - Targets include configured primaries, fallbacks and the client's shared pool; the latter has no global ten-relay cap.
+  - A completed healthy relay starts another genesis sweep independently of offline peers.
+- [RelaySyncCursorEntity](../local/entities/RelaySyncCursorEntity.kt) and `group.lastSyncTimestamp` retain diagnostic completion/progress times.
+  - Neither is a relay-arrival watermark or a lower bound for ordinary reconciliation.
+- Received batches are sorted by outer `created_at`, then ID.
   - Other recipients' copies and clearly other-group wraps are skipped.
-  - The processor checks the authenticated inner group again.
+  - The processor checks the authenticated inner group again and deduplicates persistent inner IDs.
 - All pulls use reconciliation admission.
-  - Deferred effects are retried before/after processing.
-  - Rejected dependency/quota records get up to eight progress-driven passes within the batch.
-- After processing, only completed relays advance to **fetch-start time**.
-  - Unstored retryable dependencies/quota failures conservatively hold every cursor because per-event relay provenance is not retained.
-  - An identity change during the pull prevents certifying the old recipient's window.
-- `group.lastSyncTimestamp` is a progress indicator, not proof that every relay was covered.
-  - Persisted pending effects may coexist with completed transport coverage; they have local recovery.
+  - Deferred effects, including awaiting-identity-history records, are retried before/after processing.
+  - Rejected dependency/quota records get up to eight progress-driven passes within the bounded batch.
+  - No unbounded raw rejected-event queue is stored.
+- Unresolved records mark the sweep dirty but **do not prevent its frontier advancing** to later controls/originals.
+  - Debt survives partial passes and restarts; it is not reset midway through a frontier.
+  - A finished dirty sweep reports incomplete. Its next genesis sweep can recover earlier quota/dependency rejections after later dependencies arrive.
+  - Unstored rejected records must still be retained by a relay; they are not claimed to be durable locally.
+- Completion requires clean finished state for every configured relay, not merely the selected four, and no local pending effects or unresolved identity history.
+  - A recipient change during the pull prevents saving the old recipient's progress.
+  - Global unresolved evidence conservatively makes selected sweeps dirty because per-event relay provenance is not retained.
 
 ### Visible-app recovery
 
 - [LiveSync](../../sync/worker/LiveSync.kt) runs while the app is visible:
   1. Attach its incoming collector before subscribing.
-  2. Catch up.
-  3. Subscribe from just before the pull with overlap.
-- New groups, relay-set changes, and socket-open generation changes signal recovery, even if another relay kept aggregate connectivity true.
+  2. Run bounded historical catch-up.
+  3. Subscribe to arrivals of any authored age without replaying stored history.
+- New groups, relay-set changes, and socket-open generations signal recovery even while another relay keeps aggregate connectivity true.
   - Signals are coalesced and recovery is rate-limited.
 - Incomplete catches get bounded 30/60/120-second retries and scheduled-sync fallback.
-- Hiding the app releases this session.
-- WorkManager timing can be deferred.
+- A healthy foreground session also reconciles every five minutes after the preceding pass, without requiring a reconnect or group change.
+  - This repairs publications missed between historical and live requests, dropped/rate-limited live arrivals, and old events published behind an existing sweep frontier.
+- Ordinary [SyncWorker](../../sync/worker/SyncWorker.kt) runs the same resumable sweeps on its periodic/boot/network schedule.
+  - [DailySyncWorker](../../sync/worker/DailySyncWorker.kt) adds maintenance; daily execution is not required for old-publication recovery.
+- Hiding the app releases its live session. WorkManager timing can still be deferred by Android.
 
 ## Durable recovery and its limits
 
@@ -332,10 +362,10 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
   - Exhaustion fails the chain but leaves rows for later saves/periodic sync.
 - `SyncEngine.flushOutbox` records failed attempts without evicting rows.
   - At 50 recorded failures, noncritical rows are due no more often than every six hours.
-  - `group_meta`, `key_rotation` and `key_revocation` remain due each pass.
+  - `group_meta`, `key_rotation`, `key_revocation` and `identity_history` remain due each pass.
   - The delay limits flushes, not every possible publication path.
 - [DailySyncWorker](../../sync/worker/DailySyncWorker.kt) removes noncritical outbox rows whose `COALESCE(lastRetryAt, createdAt)` is older than 90 days.
-  - The three control types above are exempt.
+  - The four control types above are exempt, including identity-history pages that have never been attempted.
   - This cleanup is based on inactivity, not demonstrated member delivery.
 
 ### Incoming effects and interrupted controls
@@ -396,6 +426,11 @@ Incoming: verify + decrypt + validate → Room event → apply pending effects �
 - [Nip44Test](../../../../../../test/java/com/splitfree/domain/crypto/nip/Nip44Test.kt) loads vendored vectors and checks encryption, MAC/padding, and invalid input cases.
 - [Nip59Test](../../../../../../test/java/com/splitfree/domain/crypto/nip/Nip59Test.kt) includes a spec example, round-trips, tampering, sender binding, rumor IDs, and routing tags.
 - [NostrClientFetchTest](../../../../../../test/java/com/splitfree/data/nostr/NostrClientFetchTest.kt) uses fake relays for EOSE, cancellation, disconnection, overflow and partial coverage.
+- [NostrClientLoopbackTest](../../../../../../test/java/com/splitfree/data/nostr/NostrClientLoopbackTest.kt) uses real loopback TLS/WebSockets for ties, byte saturation, malformed/rejected/missing/repeated pages, duplicates, reconnect and old live publication.
+  - Actual handshake callbacks check that production trust rejects the fixture certificate and test-only CA trust still verifies hostnames.
+- [LatePublicationLoopbackTest](../../../../../../test/java/com/splitfree/sync/worker/LatePublicationLoopbackTest.kt) exercises signed direct/NIP-59 events, Room balances, LiveSync/ordinary workers, periodic healthy recovery and duplicate notification behavior.
+- [HistoryPaginatorTest](../../../../../../test/java/com/splitfree/data/nostr/HistoryPaginatorTest.kt), [SyncEngineTest](../../../../../../test/java/com/splitfree/sync/worker/SyncEngineTest.kt), [MigrationTest](../../../../../../test/java/com/splitfree/data/local/MigrationTest.kt) and file-backed cursor tests cover deadlines, hard bounds, fair scheduling, dirty sweeps, additive migration and restart.
+  - Loopback fixtures listen only on `127.0.0.1`, trust generated certificates only through explicit test-client injection and do not enable public-relay tests.
 - [SyncEngineRotationCatchUpRoomTest](../../../../../../test/java/com/splitfree/sync/worker/SyncEngineRotationCatchUpRoomTest.kt) exercises database-backed rotation catch-up.
 - [Sync tests](../../../../../../test/java/com/splitfree/sync/) cover publisher admission, deferred application, live recovery, and worker retries.
 - [app/build.gradle.kts](../../../../../../../build.gradle.kts) excludes `*IntegrationTest*` unless `-DREAL_RELAY_TEST=true`.

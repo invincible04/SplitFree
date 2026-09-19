@@ -208,6 +208,7 @@ Share a QR code or a compact link: `splitfree://join?d=...`.
 > - **Treat invitations as secrets:** the link itself grants access to the included group key.
 
 - Share invites in person or through a trusted private channel.
+- A first-install invitation waits for identity setup to finish before showing Join. Failed or interrupted joins keep the invitation for retry; restoring saved screen state never joins automatically.
 - Use a fresh link after membership or relay changes.
 - Expiry does not erase a disclosed key; previously copied links are not automatically revoked.
 - Compact invitations carry at most four creator replacement certificates (including known conflicting history). Longer histories show an explicit limit; authority proofs are never truncated.
@@ -287,11 +288,13 @@ See the [Nearby protocol guide](app/src/main/java/com/splitfree/sync/nearby/READ
 
 - Includes the stored event records available on this device; it cannot recover records or keys already missing here.
 - Preserves encrypted event payloads rather than exporting decrypted expense text.
-- Encrypts group keys to the exporting identity.
+- Captures each group's metadata and retained events together, then reads keys by the captured epoch.
+- Encrypts every group in one backup file to one captured identity. Missing required keys or an identity change fail the export instead of producing a mixed backup.
 - Retains the verified original creator binding and known creator replacement certificates, including when event history is empty.
 - Rejects prelaunch format-v2 files; create a fresh export with the current build.
 - Authenticates the recognized export fields with HMAC-SHA256 and an identity-derived key.
 - Import validates the backup and merges admissible records; it is not a complete app-storage image or outbox backup.
+- Groups are streamed separately, not captured at one global instant. A failed or cancelled file write triggers best-effort deletion; a file provider may leave a partial document behind.
 
 **Recovery checklist**
 
