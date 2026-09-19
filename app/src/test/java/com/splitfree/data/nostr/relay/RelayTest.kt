@@ -138,10 +138,10 @@ class RelayTest {
         val collector = launch { relay.messages.collect { awaitCancellation() } }
         runCurrent()
 
-        // Two events are delivered (newest-first, as relays send stored history)...
+        // Buffer newer events first to model a newest-first history response.
         relay.handleIncoming(eventFrame("sub1", createdAt = 9000))
         relay.handleIncoming(eventFrame("sub1", createdAt = 8000))
-        // ...then the buffer fills and three older events are dropped.
+        // Fill the buffer, then drop three older events.
         repeat(Relay.MESSAGE_BUFFER_CAPACITY) { relay.handleIncoming("""["EOSE","sub1"]""") }
         for (ts in listOf(5000L, 4000L, 3000L)) relay.handleIncoming(eventFrame("sub1", createdAt = ts))
         assertTrue(relay.droppedMessages.get() >= 3)
@@ -281,17 +281,149 @@ class RelayTest {
     // --- helpers ---
 
     /** A relay whose WebSocket is a mock that accepts every frame; returns the relay and the socket. */
-    private fun connectedRelay(scope: TestScope): Pair<Relay, WebSocket> {
+    private fun connectedRelay(scope: TestScope): Pair<Relay, WebSocket> = connectedRelayWithListener(scope).let {
+        it.first to it.second
+    }
+
+    /** Like [connectedRelay], also returning the captured listener so tests can drive server-side closes. */
+    private fun connectedRelayWithListener(
+        scope: TestScope,
+        client: OkHttpClient = mockk()
+    ): Triple<Relay, WebSocket, WebSocketListener> {
         val ws = mockk<WebSocket>(relaxed = true)
         every { ws.send(any<String>()) } returns true
         val listener = slot<WebSocketListener>()
-        val client = mockk<OkHttpClient>()
         every { client.newWebSocket(any(), capture(listener)) } returns ws
         val relay = Relay("wss://test.relay", scope.backgroundScope, client)
         relay.connect()
         listener.captured.onOpen(ws, mockk<Response>())
         assertEquals(Relay.State.CONNECTED, relay.state.value)
-        return relay to ws
+        return Triple(relay, ws, listener.captured)
+    }
+
+    // --- server-initiated close vs. intentional disconnect ---
+
+    @Test
+    fun `a server closing with a normal 1000 code is reconnected`() = runTest {
+        val client = mockk<OkHttpClient>()
+        val (relay, ws, listener) = connectedRelayWithListener(this, client)
+
+        listener.onClosing(ws, 1000, "restarting")
+        listener.onClosed(ws, 1000, "restarting")
+        assertEquals(Relay.State.DISCONNECTED, relay.state.value)
+
+        // First back-off step is one second (plus jitter); the relay must come back on its own.
+        advanceTimeBy(1_500)
+        runCurrent()
+        assertEquals(Relay.State.CONNECTING, relay.state.value)
+        verify(exactly = 2) { client.newWebSocket(any(), any()) }
+    }
+
+    @Test
+    fun `an intentional disconnect is not reconnected whatever code the server echoes`() = runTest {
+        val client = mockk<OkHttpClient>()
+        val (relay, ws, listener) = connectedRelayWithListener(this, client)
+
+        relay.disconnect()
+        // Servers echo the close in different ways; none of them may resurrect the connection.
+        listener.onClosed(ws, 1001, "going away")
+        listener.onFailure(ws, java.io.EOFException(), null)
+
+        advanceTimeBy(120_000)
+        runCurrent()
+        assertEquals(Relay.State.DISCONNECTED, relay.state.value)
+        verify(exactly = 1) { client.newWebSocket(any(), any()) }
+    }
+
+    @Test
+    fun `a late callback from a replaced socket cannot disturb the live connection`() = runTest {
+        val client = mockk<OkHttpClient>()
+        val (relay, oldWs, listener) = connectedRelayWithListener(this, client)
+        relay.disconnect()
+
+        val newWs = mockk<WebSocket>(relaxed = true)
+        every { newWs.send(any<String>()) } returns true
+        val newListener = slot<WebSocketListener>()
+        every { client.newWebSocket(any(), capture(newListener)) } returns newWs
+        relay.connect()
+        newListener.captured.onOpen(newWs, mockk<Response>())
+        assertEquals(Relay.State.CONNECTED, relay.state.value)
+
+        // The old socket finally reports its close.
+        listener.onClosed(oldWs, 1000, "")
+        listener.onFailure(oldWs, java.io.EOFException(), null)
+
+        assertEquals(Relay.State.CONNECTED, relay.state.value)
+        advanceTimeBy(120_000)
+        runCurrent()
+        verify(exactly = 2) { client.newWebSocket(any(), any()) }
+    }
+
+    /**
+     * Deliver a callback synchronously before the mock socket factory returns. This selects the
+     * early-callback ordering without exercising OkHttp threads.
+     */
+    private fun TestScope.reconnectWithEarlyCallback(fail: Boolean): Pair<Relay, OkHttpClient> {
+        val client = mockk<OkHttpClient>()
+        val (relay, ws, listener) = connectedRelayWithListener(this, client)
+        val second = mockk<WebSocket>(relaxed = true)
+        every { second.send(any<String>()) } returns true
+        every { client.newWebSocket(any(), any()) } answers {
+            val newListener = secondArg<WebSocketListener>()
+            if (fail) {
+                newListener.onFailure(second, java.io.IOException("refused"), null)
+            } else {
+                newListener.onOpen(second, mockk<Response>())
+            }
+            second
+        }
+
+        listener.onClosed(ws, 1000, "server restart")
+        advanceTimeBy(1_500)
+        runCurrent()
+        verify(exactly = 2) { client.newWebSocket(any(), any()) }
+        return relay to client
+    }
+
+    @Test
+    fun `a reconnect whose onOpen arrives before the socket factory returns is connected`() = runTest {
+        val (relay, _) = reconnectWithEarlyCallback(fail = false)
+        assertEquals(Relay.State.CONNECTED, relay.state.value)
+        relay.disconnect()
+    }
+
+    @Test
+    fun `a reconnect whose onFailure arrives before the socket factory returns is disconnected and retried`() =
+        runTest {
+            val (relay, client) = reconnectWithEarlyCallback(fail = true)
+            assertEquals(Relay.State.DISCONNECTED, relay.state.value)
+            // The failure counted as an attempt: the next back-off step brings a third socket.
+            advanceTimeBy(3_000)
+            runCurrent()
+            verify(atLeast = 3) { client.newWebSocket(any(), any()) }
+            relay.disconnect()
+        }
+
+    @Test
+    fun `a callback from the first socket after an early-opened reconnect is ignored`() = runTest {
+        val client = mockk<OkHttpClient>()
+        val (relay, first, firstListener) = connectedRelayWithListener(this, client)
+        val second = mockk<WebSocket>(relaxed = true)
+        every { client.newWebSocket(any(), any()) } answers {
+            secondArg<WebSocketListener>().onOpen(second, mockk<Response>())
+            second
+        }
+        firstListener.onClosed(first, 1000, "server restart")
+        advanceTimeBy(1_500)
+        runCurrent()
+        assertEquals(Relay.State.CONNECTED, relay.state.value)
+
+        firstListener.onFailure(first, java.io.EOFException(), null)
+
+        assertEquals(Relay.State.CONNECTED, relay.state.value)
+        advanceTimeBy(120_000)
+        runCurrent()
+        verify(exactly = 2) { client.newWebSocket(any(), any()) }
     }
 
     private fun reqFrames(ws: WebSocket, subId: String): List<String> {
@@ -304,8 +436,8 @@ class RelayTest {
         NostrEvent(id = id, pubkey = "aa".repeat(32), createdAt = createdAt, kind = 30078, content = "", sig = "ss")
 
     /**
-     * An inbound frame must carry well-formed 64/64/128-hex id/pubkey/sig or `RelayMessage.parse`
-     * drops it before it reaches the buffer. The id is derived from [createdAt] so frames stay distinct.
+     * Parser-compatible field lengths (64/64/128); the signature is deliberately not valid hex.
+     * IDs vary with [createdAt]. These buffer tests do not verify event hashes or signatures.
      */
     private fun eventFrame(subId: String, createdAt: Long): String {
         val id = createdAt.toString(16).padStart(64, '0')

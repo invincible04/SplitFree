@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Domain contract for Nostr relay operations.
-
  *
  * Only `wss://` URLs are accepted to prevent unencrypted relay connections.
  */
@@ -31,7 +30,7 @@ interface NostrClientContract {
     /** NIP-42 AUTH signer; set before [connect] to enable relay authentication. */
     var authSigner: ((challenge: String, relayUrl: String) -> NostrEvent)?
 
-    /** @return current list of relay URLs this client is connected to */
+    /** @return configured relay URLs, including relays that are not currently connected */
     fun currentRelayUrls(): List<String>
 
     /** Increment the active-user ref count (prevents disconnect). */
@@ -45,6 +44,14 @@ interface NostrClientContract {
      * @param relayUrls list of `wss://` relay URLs; non-wss URLs are silently rejected
      */
     suspend fun connect(relayUrls: List<String>)
+
+    /**
+     * Reopens configured relays in the disconnected state, resetting their reconnect budget.
+     * Connected or connecting relays are left alone; aggregate connectivity can hide a disconnected peer.
+     *
+     * @return URLs asked to reconnect, not a guarantee that their sockets opened
+     */
+    suspend fun reopenDisconnectedRelays(): List<String>
 
     /** Disconnect all relays and clear state. */
     fun disconnect()
@@ -65,15 +72,13 @@ interface NostrClientContract {
     suspend fun publishJson(eventJson: String): Boolean
 
     /**
-     * Fetch events matching a group filter. Subscribes temporarily on the relays that are connected
-     * when the request is sent, collects until each of them answers EOSE (or the timeout elapses),
-     * then closes the subscription.
+     * Fetches matching events from the client's relay set until requested history completes or times out.
+     * Disconnected relays remain incomplete; available sockets use temporary subscriptions.
      *
      * @param groupId target group UUID
-     * @param since unix timestamp; 0 to fetch all history
-     * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
-     * @return deduplicated verified events plus whether every requested relay finished sending history
-     *   and stayed connected while doing so; see [FetchResult.complete]
+     * @param since Unix timestamp; 0 requests all available history
+     * @param myPubkey if non-null, also requests kind-1059 gift wraps addressed to this pubkey
+     * @return verified, deduplicated events and per-relay history coverage; see [FetchResult.complete]
      */
     suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): FetchResult
 

@@ -48,9 +48,8 @@ class NostrClientTest {
         client.acquireConnection()
         client.acquireConnection()
         client.releaseConnection()
-        // Still one user, so no disconnect
+        // One reference remains; this smoke test does not observe disconnect calls.
         client.releaseConnection()
-        // Now zero: disconnect called internally
     }
 
     @Test
@@ -74,7 +73,7 @@ class NostrClientTest {
         val capturedFilters = slot<List<NostrFilter>>()
         every { relay.subscribe(any(), capture(capturedFilters)) } just Runs
 
-        // Inject mock relay via reflection
+        // Inject a relay without opening a network connection.
         val relaysField = NostrClient::class.java.getDeclaredField("relays")
         relaysField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
@@ -118,6 +117,38 @@ class NostrClientTest {
         client.subscribe("group-1", 0, null)
 
         verify(exactly = 1) { relay.closeSubscription(subIds.first()) }
+    }
+
+    @Test
+    fun `reopenDisconnectedRelays reconnects only the dropped relays of the current set`() = runBlocking {
+        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        fun relayIn(state: Relay.State) = mockk<Relay>(relaxed = true) {
+            every { this@mockk.state } returns kotlinx.coroutines.flow.MutableStateFlow(state)
+        }
+        val up = relayIn(Relay.State.CONNECTED)
+        val dropped = relayIn(Relay.State.DISCONNECTED)
+        val opening = relayIn(Relay.State.CONNECTING)
+        val stale = relayIn(Relay.State.DISCONNECTED)
+
+        val relaysField = NostrClient::class.java.getDeclaredField("relays")
+        relaysField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val relays = relaysField.get(client) as MutableMap<String, Relay>
+        relays["wss://up"] = up
+        relays["wss://dropped"] = dropped
+        relays["wss://opening"] = opening
+        relays["wss://stale"] = stale
+        val currentField = NostrClient::class.java.getDeclaredField("currentRelays")
+        currentField.isAccessible = true
+        currentField.set(client, listOf("wss://up", "wss://dropped", "wss://opening"))
+
+        assertEquals(listOf("wss://dropped"), client.reopenDisconnectedRelays())
+
+        verify(exactly = 1) { dropped.resetReconnect() }
+        verify(exactly = 1) { dropped.connect() }
+        verify(exactly = 0) { up.connect() }
+        verify(exactly = 0) { opening.connect() }
+        verify(exactly = 0) { stale.connect() }
     }
 
     @Test

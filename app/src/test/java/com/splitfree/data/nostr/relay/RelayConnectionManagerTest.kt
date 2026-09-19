@@ -58,6 +58,8 @@ class RelayConnectionManagerTest {
         verify(exactly = 1) { nostrClient.acquireConnection() }
         verify(exactly = 0) { nostrClient.releaseConnection() }
         coVerify(exactly = 0) { nostrClient.connect(any()) }
+        // One relay being up says nothing about the others: dropped ones get another chance every cycle.
+        coVerify(exactly = 1) { nostrClient.reopenDisconnectedRelays() }
     }
 
     @Test

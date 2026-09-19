@@ -48,6 +48,7 @@ class Relay(
 ) {
     enum class State { DISCONNECTED, CONNECTING, CONNECTED }
 
+    @Volatile
     private var ws: WebSocket? = null
     private val _state = MutableStateFlow(State.DISCONNECTED)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -81,6 +82,21 @@ class Relay(
     private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
 
+    /**
+     * Distinguishes local disconnects from remote closes. Code 1000 can also mean a relay
+     * restart or idle timeout, so it must not suppress reconnects by itself.
+     */
+    @Volatile
+    private var closedIntentionally = false
+
+    /**
+     * Invalidates old connection-state callbacks before creating or disconnecting a socket.
+     * Compare attempts, not [ws]: OkHttp can invoke a callback before `newWebSocket` returns
+     * and assigns the new socket.
+     */
+    @Volatile
+    private var generation = 0L
+
     // At most one pending catch-up re-REQ after a drop; guarded by [resubscribeLock]
     private var resubscribeJob: Job? = null
     private val resubscribeLock = Any()
@@ -88,13 +104,19 @@ class Relay(
     fun connect() {
         if (_state.value != State.DISCONNECTED) return
         _state.value = State.CONNECTING
+        closedIntentionally = false
+        val mine = ++generation
 
         val request = Request.Builder().url(url).build()
         ws =
             okHttpClient.newWebSocket(
                 request,
                 object : WebSocketListener() {
+                    /** Callbacks from a socket [disconnect] or a later [connect] replaced must not touch the live state. */
+                    private fun stale(): Boolean = generation != mine
+
                     override fun onOpen(webSocket: WebSocket, response: Response) {
+                        if (stale()) return
                         connectionEpoch.incrementAndGet()
                         _state.value = State.CONNECTED
                         onConnected?.invoke()
@@ -118,14 +140,22 @@ class Relay(
                     }
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        if (stale()) return
                         _state.value = State.DISCONNECTED
-                        if (code != 1000) scheduleReconnect() // reconnect unless we closed intentionally
+                        if (closedIntentionally) return
+                        // The server closed on us (restart, idle timeout, policy), whatever code it chose.
+                        Log.i(
+                            TAG,
+                            "Relay $url closed the connection ($code${if (reason.isEmpty()) "" else ": $reason"})"
+                        )
+                        scheduleReconnect()
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        if (stale()) return
                         Log.w(TAG, "Connection failed to $url: ${t.message}")
                         _state.value = State.DISCONNECTED
-                        scheduleReconnect()
+                        if (!closedIntentionally) scheduleReconnect()
                     }
                 }
             )
@@ -134,8 +164,8 @@ class Relay(
     fun send(text: String): Boolean = ws?.send(text) ?: false
 
     /**
-     * Parse and dispatch one raw relay frame. Runs on the OkHttp reader thread, so it must never
-     * suspend or block; anything the collector cannot absorb is counted as a drop instead.
+     * Runs on the OkHttp reader thread. Forwarded frames use non-suspending emission so a slow
+     * collector cannot stall socket reads; AUTH signing is handled synchronously.
      */
     internal fun handleIncoming(text: String) {
         try {
@@ -163,7 +193,7 @@ class Relay(
      */
     private fun emitOrDrop(msg: RelayMessage) {
         if (_messages.tryEmit(msg)) {
-            // Only events the collector actually received count as "seen" for gap prevention.
+            // Advance on accepted emission, not durable processing; tryEmit also succeeds without collectors.
             if (msg is RelayMessage.EventMsg) {
                 lastEventTimestamp.merge(msg.subId, msg.event.createdAt) { old, new -> maxOf(old, new) }
             }
@@ -180,15 +210,10 @@ class Relay(
     }
 
     /**
-     * Schedule a single delayed catch-up re-REQ for every subscription that lost an EVENT.
-     *
-     * Trade-off: [MutableSharedFlow] exposes no buffer occupancy, so we cannot wait for "drained
-     * below 50%". Instead we wait a fixed [RESUBSCRIBE_DELAY_MS] and re-REQ with `since` moved
-     * back to the oldest dropped event. If the collector is still behind by then the re-REQ may
-     * itself drop and schedule another round, but rounds are serialised (one pending job), the
-     * relay replaces the old subscription on a same-id REQ, and duplicates are deduped downstream
-     * by event id, so the worst case is extra traffic, never lost events. The alternative, a
-     * suspending `emit`, would block the OkHttp reader thread and stall PING/PONG.
+     * Delays re-REQs because [MutableSharedFlow] exposes no buffer occupancy. One pending job
+     * batches dropped subscriptions; further drops can request another pass. Recovery depends
+     * on relay retention and successful delivery, so this is not a completeness guarantee.
+     * Non-suspending emission keeps a slow collector from blocking the OkHttp reader.
      */
     private fun scheduleResubscribe() {
         synchronized(resubscribeLock) {
@@ -289,6 +314,8 @@ class Relay(
     }
 
     fun disconnect() {
+        closedIntentionally = true
+        generation++
         reconnectJob?.cancel()
         synchronized(resubscribeLock) {
             resubscribeJob?.cancel()
@@ -303,12 +330,12 @@ class Relay(
         _state.value = State.DISCONNECTED
     }
 
-    /** NIP-42: respond to relay AUTH challenge. */
+    /** Limits AUTH challenge responses per connection, regardless of whether the relay accepts them. */
     @Volatile
     private var authAttempts = 0
 
     private fun handleAuth(challenge: String) {
-        if (authAttempts++ >= 3) return // give up after 3 failed attempts
+        if (authAttempts++ >= 3) return // Bound challenge responses, not relay-reported failures.
         val signer =
             authSigner ?: run {
                 Log.w(TAG, "AUTH required by $url but no signer configured")
@@ -356,7 +383,7 @@ class Relay(
         private const val TAG = "Relay"
         private const val MAX_RECONNECT_ATTEMPTS = 20
 
-        /** Buffered relay frames before [tryEmit] starts failing; a backfill can burst thousands. */
+        /** Buffer for slow active collectors; with no collectors, SharedFlow drops frames without buffering. */
         const val MESSAGE_BUFFER_CAPACITY = 4096
 
         /** Log every Nth drop rather than every drop. */

@@ -181,7 +181,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                     ) {
                                         _incomingEvents.emit(msg.event)
                                     } else {
-                                        // Duplicate from another relay, skip silently
+                                        // Ignore invalid signatures and already-seen events.
                                     }
                                 }
 
@@ -212,6 +212,21 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             refreshConnectionState()
             Log.i(TAG, "Connected to ${safeUrls.size} relays")
         }
+    }
+
+    override suspend fun reopenDisconnectedRelays(): List<String> = connectionMutex.withLock {
+        val reopened = currentRelays.filter { url ->
+            val relay = relays[url] ?: return@filter false
+            if (relay.state.value != Relay.State.DISCONNECTED) return@filter false
+            relay.resetReconnect()
+            relay.connect()
+            true
+        }
+        if (reopened.isNotEmpty()) {
+            Log.i(TAG, "Reopening ${reopened.size} disconnected relay(s)")
+            refreshConnectionState()
+        }
+        reopened
     }
 
     override suspend fun subscribe(groupId: String, since: Long, myPubkey: String?) {
@@ -291,8 +306,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     }
 
     /**
-     * Internal: subscribe with filters on every connected relay, collect events until each of
-     * them answers EOSE (or [timeoutMs] elapses), then cleanup.
+     * Queries connected relays requested by [filtersByRelay], stopping at their EOSE barrier
+     * or [timeoutMs]. Missing relays, reconnects and observed drops prevent complete coverage.
      *
      * Collectors are caller-scoped, so the returned list is a snapshot no coroutine can still
      * append to. Subscriptions are always closed, including on cancellation.
@@ -310,11 +325,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
             list.none { it.id == event.id }
         }
     ): FetchResult {
-        // ensureConnected returns once ANY relay is up. Querying right then would let a lone fallback
-        // EOSE and certify history that only the still-handshaking primary holds, so handshakes get a
-        // moment to finish (disconnected relays complete `first` at once). Relays still not connected
-        // are left out because waiting on one that may never connect only burns the timeout; a REQ
-        // itself would not be lost, OkHttp queues frames and Relay re-sends its subs on open.
+        // Give requested handshakes a bounded chance to finish. Disconnected relays do not block
+        // this wait; any relay still unavailable remains incomplete in the returned coverage.
         withTimeoutOrNull(SETTLE_TIMEOUT_MS) {
             filtersByRelay.keys.mapNotNull { relays[it] }.forEach { relay ->
                 relay.state.first { it != Relay.State.CONNECTING }
@@ -418,7 +430,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
      * subscribes temporarily on the connected ones, collects until each of them answers EOSE (or the
      * timeout elapses), then closes the subscription.
      *
-     * @param groupId target group UUID
+     * @param groupId target group identifier
      * @param since unix timestamp; 0 to fetch all history
      * @param myPubkey if non-null, also fetches kind-1059 gift wraps addressed to this pubkey
      * @return verified events and relay coverage, including debt for unconnected relays

@@ -39,6 +39,8 @@ constructor(
      */
     suspend fun ensureConnected(forceReconnect: Boolean = false): List<String> {
         if (nostrClient.isConnected && !forceReconnect) {
+            // One live relay must not hide disconnected peers, including those with exhausted retries.
+            nostrClient.reopenDisconnectedRelays()
             nostrClient.acquireConnection()
             return nostrClient.currentRelayUrls()
         }
