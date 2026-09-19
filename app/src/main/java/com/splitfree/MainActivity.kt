@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -57,7 +58,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.settings.UserPreferences
-import com.splitfree.domain.usecase.group.JoinGroupUseCase
+import com.splitfree.domain.usecase.group.JoinGroupCoordinator
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.SfListCard
 import com.splitfree.ui.components.SfPrimaryButton
@@ -74,6 +75,8 @@ import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -88,7 +91,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     @Inject lateinit var identity: IdentityManager
 
-    @Inject lateinit var joinGroup: JoinGroupUseCase
+    @Inject lateinit var joinCoordinator: JoinGroupCoordinator
 
     @Inject lateinit var prefs: UserPreferences
 
@@ -97,7 +100,12 @@ class MainActivity : ComponentActivity() {
 
     private var isJoining by mutableStateOf(false)
     private var pendingInvite by mutableStateOf<PendingInvite?>(null)
-    private var navController: NavHostController? = null
+
+    /**
+     * Null outside the navigation composition. Emitting controller changes retries a pending join
+     * outcome when navigation becomes available after Activity recreation.
+     */
+    private val navController = MutableStateFlow<NavHostController?>(null)
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -128,6 +136,17 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Joining outlives Activity recreation, not process death. Pair its state with navigation
+        // readiness so collecting before Compose supplies a controller does not consume the outcome.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                combine(joinCoordinator.state, navController) { state, nav -> state to nav }
+                    .collect { (state, nav) ->
+                        reflectJoinState(state, navigate = nav?.let { n -> { route -> n.navigate(route) } })
+                    }
+            }
+        }
+
         setContent {
             // System bar icon colours follow the app's ThemePreference (not only the OS dark-mode flag):
             // dark icons on the light ivory surface, light icons on the dark one.
@@ -151,7 +170,10 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val nav = rememberNavController()
-                    navController = nav
+                    DisposableEffect(nav) {
+                        navController.value = nav
+                        onDispose { navController.compareAndSet(nav, null) }
+                    }
                     val start =
                         remember {
                             if (identity.hasIdentity()) Screen.GroupsList.route else Screen.Onboarding.route
@@ -186,9 +208,8 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Ask for `POST_NOTIFICATIONS` (API 33+) exactly once per install. Without it every expense and
-     * settlement notification is silently dropped. Runs after onboarding so the first thing a new
-     * user sees is not a permission prompt.
+     * Ask for notification permission only after an identity exists. Persist the prompt flag before
+     * launching so a denial or Activity recreation does not trigger another request.
      */
     private fun maybeRequestNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -201,26 +222,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun processJoin(link: String) {
-        isJoining = true
-        lifecycleScope.launch {
-            val group =
-                try {
-                    joinGroup(link)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "Join failed: ${e.message}", e)
-                    Toast
-                        .makeText(this@MainActivity, getString(R.string.join_failed, e.message), Toast.LENGTH_LONG)
-                        .show()
-                    null
-                } finally {
-                    isJoining = false
-                }
-            if (group != null) {
-                Log.i(TAG, "Joined group: ${group.id} (${group.name})")
-                navController?.navigate(Screen.GroupDetail.withId(group.id))
+        joinCoordinator.join(link)
+    }
+
+    /**
+     * Leave a successful join unacknowledged until navigation is available. Acknowledge before the
+     * UI effect so later state collections do not replay it; this does not guarantee navigation succeeds.
+     */
+    @VisibleForTesting
+    internal fun reflectJoinState(state: JoinGroupCoordinator.State, navigate: ((String) -> Unit)?) {
+        isJoining = state is JoinGroupCoordinator.State.Joining
+        when (state) {
+            is JoinGroupCoordinator.State.Joined -> {
+                if (navigate == null) return
+                Log.i(TAG, "Joined group: ${state.group.id} (${state.group.name})")
+                joinCoordinator.acknowledge()
+                navigate(Screen.GroupDetail.withId(state.group.id))
             }
+
+            is JoinGroupCoordinator.State.Failed -> {
+                joinCoordinator.acknowledge()
+                Toast.makeText(this, getString(R.string.join_failed, state.message), Toast.LENGTH_LONG).show()
+            }
+
+            JoinGroupCoordinator.State.Idle, is JoinGroupCoordinator.State.Joining -> Unit
         }
     }
 
