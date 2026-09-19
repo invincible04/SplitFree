@@ -1,14 +1,17 @@
 package com.splitfree.domain.repository
 
 /**
- * Thrown when a [SecureStorage] operation cannot be completed reliably: the backing
- * key store is unavailable (transient), the write could not be committed, or the
- * encryption key has been lost and the implementation is not allowed to reset.
- *
- * Callers must treat this as "the value was NOT persisted / could NOT be read" and
- * abort any dependent work (e.g. never insert a group row whose key failed to store).
+ * A secure-storage operation could not be confirmed, including read, encryption or commit failures.
+ * Abort dependent work and reconcile before retrying: a failed write does not guarantee rollback.
  */
-class SecureStorageException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+open class SecureStorageException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
+/**
+ * The wrapping key is missing or permanently unusable and automatic reset is disabled.
+ * Recovery requires explicit [SecureStorage.resetAfterKeyLoss] and replacement data, such as an identity
+ * recovery phrase. A generic [SecureStorageException] alone is not evidence of key loss.
+ */
+class SecureStorageKeyLostException(message: String, cause: Throwable? = null) : SecureStorageException(message, cause)
 
 /** Abstraction over encrypted key-value storage for testability. */
 interface SecureStorage {
@@ -22,8 +25,8 @@ interface SecureStorage {
     /**
      * Encrypts and synchronously commits [value].
      *
-     * @throws SecureStorageException if encryption fails or the write is not committed.
-     *   When this is thrown the previous value (if any) is unchanged.
+     * @throws SecureStorageException if encryption or durable commit cannot be confirmed.
+     *   Callers must not assume a failed write preserved the previous value.
      */
     fun putString(key: String, value: String)
 
@@ -66,4 +69,15 @@ interface SecureStorage {
      * @throws SecureStorageException if the removal is not committed
      */
     fun clear()
+
+    /**
+     * Rechecks wrapping-key loss before deleting the unusable alias and clearing encrypted values.
+     * The next write creates a fresh key. Call only after confirmed key loss and validated replacement data.
+     *
+     * A usable key or inconclusive check prevents deletion. Reset is not atomic: failure after alias deletion
+     * can leave ciphertext behind for the next repair attempt.
+     *
+     * @throws SecureStorageException if loss cannot be confirmed or a reset step fails
+     */
+    fun resetAfterKeyLoss()
 }

@@ -9,6 +9,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.repository.SecureStorageException
+import com.splitfree.domain.repository.SecureStorageKeyLostException
 import com.splitfree.util.DebugLog as Log
 import java.io.IOException
 import java.security.GeneralSecurityException
@@ -25,27 +26,27 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * AES-256-GCM encrypted storage backed by Android Keystore.
  *
- * Each value is encrypted with a hardware-backed key. The 12-byte IV is prepended
- * to the ciphertext and the result is Base64 (NO_WRAP) encoded into a plain
- * SharedPreferences file.
+ * Each value uses an Android Keystore key; hardware backing depends on the device.
+ * The Base64 (NO_WRAP) value contains a 12-byte IV followed by ciphertext and its GCM tag
+ * in a plain SharedPreferences file.
  *
  * Failure handling is deliberately split into three classes:
  *
  * 1. **Transient / unknown** ([KeyStoreException], [ProviderException], [IllegalStateException],
  *    [UnrecoverableKeyException], other [GeneralSecurityException]s, [IOException]): the
- *    Keystore daemon hiccuped or is temporarily unavailable. Nothing on disk is touched; the
- *    error is rethrown as [SecureStorageException] so callers abort instead of proceeding as
- *    if the write/read had succeeded.
+ *    cause is not evidence of key loss. The error is wrapped as [SecureStorageException]
+ *    rather than triggering a reset or being treated as a successful read/write.
  * 2. **Single-value corruption** ([AEADBadTagException], or an [IllegalArgumentException] from
  *    a truncated / non-Base64 blob): only that one entry is unreadable. Reads return the
  *    caller's default for that key; every other key is left intact.
  * 3. **Lost key** ([KeyPermanentlyInvalidatedException], or the alias missing / not a
  *    `SecretKeyEntry` while encrypted values still exist): every stored value is
- *    permanently unreadable. This is the *only* case that resets the store, and only when
- *    [resetOnCorruption] is true; otherwise a [SecureStorageException] is thrown.
+ *    permanently unreadable. Automatic reset requires [resetOnCorruption]; otherwise
+ *    [SecureStorageKeyLostException] lets the caller validate replacement data before
+ *    explicitly requesting [resetAfterKeyLoss].
  *
- * All mutations use synchronous `commit()` and throw [SecureStorageException] if the write
- * does not land, so a caller never continues past a key write that silently failed.
+ * Mutations check synchronous `commit()` and throw if it reports failure. SharedPreferences
+ * may already have changed its in-memory values, so failure does not imply rollback.
  *
  * @param resetOnCorruption if true, an unrecoverable Keystore key wipes all data and a new
  *   key is generated lazily (suitable for re-syncable data like group keys). If false, the
@@ -62,7 +63,7 @@ class KeystoreEncryptedStorage(
 
     private val keyLock = Any()
 
-    /** Resolved Keystore key. Set once under [keyLock]; cleared by [handleLostKey] and on transient errors. */
+    /** Resolved under [keyLock]; invalidated on key loss, explicit repair or unknown Keystore failures. */
     @Volatile
     private var cachedKey: SecretKey? = null
 
@@ -99,7 +100,7 @@ class KeystoreEncryptedStorage(
      *
      * @return the plaintext, or null if THIS blob is definitively corrupt or the store was
      *   just reset. Other keys are never affected by a corrupt neighbour.
-     * @throws SecureStorageException for transient failures or non-resettable key loss
+     * @throws SecureStorageException for unknown Keystore failures, failed repair or non-resettable key loss
      */
     private fun readValue(key: String, encoded: String): String? = guardTransient("read '$key'") {
         try {
@@ -126,21 +127,71 @@ class KeystoreEncryptedStorage(
 
     override fun clear() = commitOrThrow("clear") { it.clear() }
 
+    /**
+     * Rechecks key usability before discarding ciphertext. A usable key or an inconclusive
+     * check refuses repair; a missing, wrong-type or permanently invalidated key permits it.
+     * Empty stores are also eligible so an unusable alias cannot block future writes.
+     */
+    override fun resetAfterKeyLoss() {
+        synchronized(keyLock) {
+            cachedKey = null
+            val usable = guardTransient("check key for '$keyAlias'") { keyIsUsable() }
+            if (usable) {
+                throw SecureStorageException(
+                    "Refusing to reset '$keyAlias': its Keystore key is still usable, so nothing has been lost"
+                )
+            }
+            Log.e(TAG, "Resetting '$keyAlias' after key loss: discarding ${prefs.all.size} unreadable value(s)")
+            wipeKeyAndValues()
+        }
+    }
+
+    /**
+     * Only a missing, wrong-type or permanently invalidated key returns false.
+     * Other failures propagate so an inconclusive check cannot authorize a reset.
+     */
+    private fun keyIsUsable(): Boolean {
+        val ks = loadKeyStore()
+        val entry = if (ks.containsAlias(keyAlias)) ks.getEntry(keyAlias, null) else null
+        if (entry !is KeyStore.SecretKeyEntry) return false
+        return try {
+            Cipher.getInstance(TRANSFORMATION).init(Cipher.ENCRYPT_MODE, entry.secretKey)
+            true
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            false
+        }
+    }
+
+    /**
+     * Caller holds [keyLock]. Delete the alias before clearing values so an alias-deletion
+     * failure leaves the ciphertext as evidence of key loss. If clearing reports failure,
+     * disk state is uncertain, but any surviving ciphertext still has no usable alias.
+     */
+    // UseKtx: the KTX edit(commit = true) {} discards commit()'s boolean, which the reset path must check.
+    @SuppressLint("UseKtx")
+    private fun wipeKeyAndValues() {
+        guardTransient("delete key for '$keyAlias'") {
+            val ks = loadKeyStore()
+            if (ks.containsAlias(keyAlias)) ks.deleteEntry(keyAlias)
+        }
+        if (!prefs.edit().clear().commit()) {
+            throw SecureStorageException("Failed to clear '$keyAlias' storage during key reset")
+        }
+    }
+
     private fun writeValue(key: String, plaintext: String) {
         val encoded = guardTransient("encrypt '$key'") {
             try {
                 encrypt(plaintext)
             } catch (_: KeyResetException) {
-                // The old key was unrecoverable and the store has been wiped. A fresh key is
-                // generated lazily on this retry; if that fails too it surfaces as a
-                // SecureStorageException rather than a silent no-op.
+                // Retry once after confirmed key loss; key generation remains lazy.
                 encrypt(plaintext)
             }
         }
         commitOrThrow("write '$key'") { it.putString(key, encoded) }
     }
 
-    /** Applies [edit] with a synchronous commit and throws if the write did not land. */
+    /** Checks the commit result; a reported failure does not undo SharedPreferences memory changes. */
     // UseKtx: the KTX edit(commit = true) {} discards commit()'s boolean, which this class must check.
     @SuppressLint("UseKtx")
     private fun commitOrThrow(op: String, edit: (SharedPreferences.Editor) -> SharedPreferences.Editor) {
@@ -235,19 +286,15 @@ class KeystoreEncryptedStorage(
     private fun loadKeyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
     /**
-     * The Keystore key is definitively unrecoverable. This is the ONLY path that wipes data.
-     *
-     * Always throws: [SecureStorageException] when [resetOnCorruption] is false, otherwise
-     * [KeyResetException] after deleting the alias and clearing the preferences so the next
-     * [getOrCreateKey] call generates a fresh key lazily.
+     * Confirmed key loss: report [SecureStorageKeyLostException] unless automatic reset is enabled.
+     * After a successful reset, [KeyResetException] lets reads return their default and writes
+     * retry with a fresh key. Reset failures propagate without claiming repair completed.
      */
-    // UseKtx: the KTX edit(commit = true) {} discards commit()'s boolean, which the reset path must check.
-    @SuppressLint("UseKtx")
     private fun handleLostKey(cause: Exception): Nothing {
         synchronized(keyLock) {
             cachedKey = null
             if (!resetOnCorruption) {
-                throw SecureStorageException(
+                throw SecureStorageKeyLostException(
                     "Keystore key '$keyAlias' is unrecoverable and reset is disabled; stored values cannot be decrypted",
                     cause
                 )
@@ -257,14 +304,7 @@ class KeystoreEncryptedStorage(
                 "Keystore key '$keyAlias' is unrecoverable; wiping ${prefs.all.size} value(s) and regenerating",
                 cause
             )
-            try {
-                loadKeyStore().deleteEntry(keyAlias)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not delete Keystore alias '$keyAlias' during reset", e)
-            }
-            if (!prefs.edit().clear().commit()) {
-                throw SecureStorageException("Failed to clear '$keyAlias' storage during key reset", cause)
-            }
+            wipeKeyAndValues()
             throw KeyResetException(cause)
         }
     }
@@ -272,9 +312,8 @@ class KeystoreEncryptedStorage(
     // ---------------------------------------------------------------- helpers
 
     /**
-     * Converts transient / unknown Keystore failures into [SecureStorageException] WITHOUT
-     * touching stored data. Single-value corruption and lost-key handling happen inside
-     * [block], before this wrapper sees anything.
+     * Wraps unknown Keystore failures without requesting a reset. [block] handles known
+     * corruption and key loss first; this wrapper does not roll back work already performed.
      */
     private inline fun <T> guardTransient(op: String, block: () -> T): T = try {
         block()

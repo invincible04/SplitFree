@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Bip39
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.repository.SecureStorageException
+import com.splitfree.domain.repository.SecureStorageKeyLostException
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.test.FakeSecureStorage
 import io.mockk.Runs
@@ -155,6 +157,107 @@ class IdentityManagerTest {
         assertEquals(listOf(false, true), seen)
     }
 
+    @Test
+    fun `active key observation is lazy and seeds from the durable private key`() {
+        val spy = spyk(FakeSecureStorage().also { it.putString("nsec", validPrivHex) })
+        val manager = IdentityManager(context, spy)
+        verify(exactly = 0) { spy.getString(any(), any()) }
+        assertEquals(validPubHex, manager.observeActivePublicKey().value)
+    }
+
+    @Test
+    fun `active key emits for imports staged switches and promotion but not same key or reads`() = runTest {
+        val seen = mutableListOf<String?>()
+        val state = mgr.observeActivePublicKey()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { state.toList(seen) }
+        mgr.importKey(validPrivHex)
+        val presence = mgr.observeHasIdentity()
+        mgr.importKey(otherPrivHex)
+        mgr.importKey(otherPrivHex)
+        repeat(3) { mgr.getPublicKeyHex() }
+        val staged = mgr.stageIdentitySwitch(validPrivHex)
+        mgr.commitIdentitySwitch(staged)
+        mgr.completeIdentitySwitch(staged)
+        storage.putString("nsec_pending", otherPrivHex)
+        mgr.finishPendingKeyPair(otherPubHex)
+        mgr.finishPendingKeyPair(otherPubHex)
+        assertTrue(presence.value)
+        assertEquals(listOf(null, validPubHex, otherPubHex, validPubHex, otherPubHex), seen)
+    }
+
+    @Test
+    fun `generated replacement updates active key even while presence stays true`() {
+        mgr.importKey(validPrivHex)
+        val state = mgr.observeActivePublicKey()
+        val replacement = mgr.generateKeyPair()
+        assertEquals(replacement, state.value)
+        assertTrue(mgr.observeHasIdentity().value)
+    }
+
+    @Test
+    fun `rejected or unwritten private key never announces the requested replacement`() {
+        mgr.importKey(validPrivHex)
+        val state = mgr.observeActivePublicKey()
+        assertThrows(IllegalArgumentException::class.java) { mgr.importKey("00".repeat(32)) }
+        storage.failNextPut = true
+        assertThrows(SecureStorageException::class.java) { mgr.importKey(otherPrivHex) }
+        assertEquals(validPubHex, state.value)
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+    }
+
+    @Test
+    fun `failed mirror write announces the authoritative private key once and retry is quiet`() = runTest {
+        storage.putString("nsec", validPrivHex)
+        var failMirror = true
+        val failing = object : SecureStorage by storage {
+            override fun putString(key: String, value: String) {
+                if (key == "npub" && failMirror) throw SecureStorageException("mirror write failed")
+                storage.putString(key, value)
+            }
+        }
+        val manager = IdentityManager(context, failing)
+        val seen = mutableListOf<String?>()
+        val state = manager.observeActivePublicKey()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { state.toList(seen) }
+        assertThrows(SecureStorageException::class.java) { manager.importKey(otherPrivHex) }
+        assertEquals(otherPubHex, state.value)
+        assertEquals(otherPubHex, manager.getPublicKeyHex())
+        failMirror = false
+        manager.importKey(otherPrivHex)
+        assertEquals(listOf(validPubHex, otherPubHex), seen)
+    }
+
+    @Test
+    fun `cold unavailable store seeds null then successful read recovers the same observer without looping`() =
+        runTest {
+            storage.putString("nsec", validPrivHex)
+            storage.transientFailure = SecureStorageException("temporarily locked")
+            val state = mgr.observeActivePublicKey()
+            val seen = mutableListOf<String?>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { state.toList(seen) }
+            assertNull(state.value)
+            storage.transientFailure = null
+            repeat(4) { assertEquals(validPubHex, mgr.getPublicKeyHex()) }
+            assertEquals(listOf(null, validPubHex), seen)
+        }
+
+    @Test
+    fun `unconfirmed promotion retains pending key and cached and observed active identity`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("nsec_pending", otherPrivHex)
+        val lying = object : SecureStorage by storage {
+            override fun putString(key: String, value: String) {
+                if (key != "nsec") storage.putString(key, value)
+            }
+        }
+        val manager = IdentityManager(context, lying)
+        val state = manager.observeActivePublicKey()
+        assertThrows(SecureStorageException::class.java) { manager.finishPendingKeyPair(otherPubHex) }
+        assertEquals(validPubHex, state.value)
+        assertEquals(validPubHex, manager.getPublicKeyHex())
+        assertEquals(otherPubHex, manager.getPendingPublicKeyHex())
+    }
+
     // --- getPublicKeyHex: derived from nsec, never trusted from npub ---
 
     @Test
@@ -229,7 +332,7 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `generateKeyPair stores a matching pair and clears pending`() {
+    fun `generateKeyPair stores a matching pair and preserves pending for coordination`() {
         storage.putString("nsec_pending", otherPrivHex)
         storage.putString("npub_pending", otherPubHex)
         val pub = mgr.generateKeyPair()
@@ -239,8 +342,8 @@ class IdentityManagerTest {
         assertEquals(NostrEvent.pubkeyFromPrivkey(priv.hexToBytes()), pub)
         assertEquals(pub, storage.getString("npub", null))
         assertEquals(pub, mgr.getPublicKeyHex())
-        assertFalse(storage.contains("nsec_pending"))
-        assertFalse(storage.contains("npub_pending"))
+        assertEquals(otherPrivHex, storage.getString("nsec_pending", null))
+        assertEquals(otherPubHex, storage.getString("npub_pending", null))
     }
 
     @Test
@@ -304,7 +407,9 @@ class IdentityManagerTest {
         }
         val manager = IdentityManager(context, failing)
         assertEquals(validPubHex, manager.getPublicKeyHex())
+        val state = manager.observeActivePublicKey()
         assertThrows(SecureStorageException::class.java) { manager.finishPendingKeyPair(otherPubHex) }
+        assertEquals(otherPubHex, state.value)
         assertEquals(otherPubHex, manager.getPublicKeyHex())
         manager.finishPendingKeyPair(otherPubHex)
         assertFalse(manager.hasPendingKeyPair())
@@ -410,7 +515,7 @@ class IdentityManagerTest {
     }
 
     @Test
-    fun `importKey clears pending keypair and revocation tracking`() {
+    fun `raw importKey preserves pending keypair and tracking for coordinated reconciliation`() {
         storage.putString("nsec", otherPrivHex)
         storage.putString("nsec_pending", otherPrivHex)
         storage.putString("npub_pending", otherPubHex)
@@ -420,11 +525,11 @@ class IdentityManagerTest {
         mgr.importKey(validPrivHex)
 
         assertEquals(validPrivHex, storage.getString("nsec", null))
-        assertFalse(mgr.hasPendingKeyPair())
-        assertFalse(storage.contains("nsec_pending"))
-        assertFalse(storage.contains("npub_pending"))
-        assertEquals(0L, mgr.getRevocationStartTime())
-        assertEquals(emptyList<String>(), mgr.getRevocationEventIds())
+        assertTrue(mgr.hasPendingKeyPair())
+        assertEquals(otherPrivHex, storage.getString("nsec_pending", null))
+        assertEquals(otherPubHex, storage.getString("npub_pending", null))
+        assertTrue(mgr.getRevocationStartTime() > 0)
+        assertEquals(listOf("e1", "e2"), mgr.getRevocationEventIds())
     }
 
     @Test
@@ -542,5 +647,360 @@ class IdentityManagerTest {
     @Test
     fun `getRevocationStartTime returns 0 when not set`() {
         assertEquals(0L, mgr.getRevocationStartTime())
+    }
+
+    // --- identity state and recovery after Keystore key loss ---
+
+    @Test
+    fun `identityState is ABSENT on a fresh store and READY once a key is stored`() {
+        assertEquals(IdentityState.ABSENT, mgr.identityState())
+        storage.putString("nsec", validPrivHex)
+        assertEquals(IdentityState.READY, mgr.identityState())
+    }
+
+    @Test
+    fun `identityState is RECOVERY_REQUIRED when the wrapping key is lost and UNAVAILABLE on a transient failure`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("npub", validPubHex)
+
+        storage.keyLost = true
+        assertEquals(IdentityState.RECOVERY_REQUIRED, mgr.identityState())
+        assertFalse(mgr.hasIdentity())
+
+        storage.keyLost = false
+        storage.transientFailure = SecureStorageException("daemon busy")
+        assertEquals(IdentityState.UNAVAILABLE, mgr.identityState())
+        assertFalse(mgr.hasIdentity())
+        assertEquals(0, storage.resets)
+    }
+
+    @Test
+    fun `identityState is RECOVERY_REQUIRED when the stored blob itself is unreadable`() {
+        val corrupt = mockk<SecureStorage>()
+        every { corrupt.contains("nsec") } returns true
+        every { corrupt.getString("nsec", null) } returns null
+        assertEquals(IdentityState.RECOVERY_REQUIRED, IdentityManager(context, corrupt).identityState())
+    }
+
+    @Test
+    fun `a valid phrase repairs a store whose wrapping key was lost and installs the identity`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.putString("npub", otherPubHex)
+        storage.putString("nsec_pending", "stale")
+        storage.keyLost = true
+        assertEquals(IdentityState.RECOVERY_REQUIRED, mgr.identityState())
+
+        mgr.importKey(Bip39.toMnemonic(validPrivHex.hexToBytes()).joinToString(" "))
+
+        assertEquals(1, storage.resets)
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+        assertFalse(storage.contains("nsec_pending"))
+        assertEquals(IdentityState.READY, mgr.identityState())
+        assertTrue(mgr.hasIdentity())
+        assertTrue(mgr.observeHasIdentity().value)
+    }
+
+    @Test
+    fun `an invalid phrase never touches a store whose wrapping key was lost`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.keyLost = true
+
+        assertThrows(IllegalArgumentException::class.java) { mgr.importKey("not a key at all") }
+        assertThrows(IllegalArgumentException::class.java) { mgr.importKey("00".repeat(32)) }
+
+        assertEquals(0, storage.resets)
+        assertTrue(storage.contains("nsec"))
+        assertTrue(storage.keyLost)
+        assertEquals(IdentityState.RECOVERY_REQUIRED, mgr.identityState())
+    }
+
+    @Test
+    fun `a transient storage failure during import is reported as such and resets nothing`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.transientFailure = SecureStorageException("daemon busy")
+
+        val failure = assertThrows(SecureStorageException::class.java) { mgr.importKey(validPrivHex) }
+
+        assertFalse(failure is SecureStorageKeyLostException)
+        assertEquals(0, storage.resets)
+        storage.transientFailure = null
+        // The previous identity is still there once the store answers again.
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(IdentityState.READY, mgr.identityState())
+    }
+
+    @Test
+    fun `a write that does not read back is reported instead of trusted`() {
+        val lying = object : SecureStorage by storage {
+            override fun putString(key: String, value: String) {
+                // Reports success without persisting the private key.
+                if (key != "nsec") storage.putString(key, value)
+            }
+        }
+        val manager = IdentityManager(context, lying)
+
+        assertThrows(SecureStorageException::class.java) { manager.importKey(validPrivHex) }
+
+        assertFalse(storage.contains("nsec"))
+        assertEquals("", manager.getPublicKeyHex())
+    }
+
+    @Test
+    fun `a fresh identity also repairs a store whose wrapping key was lost`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.keyLost = true
+
+        val pub = mgr.generateKeyPair()
+
+        assertEquals(1, storage.resets)
+        assertEquals(pub, mgr.getPublicKeyHex())
+        assertEquals(IdentityState.READY, mgr.identityState())
+    }
+
+    @Test
+    fun `a fresh identity does not replace a key behind a transient failure`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.transientFailure = SecureStorageException("daemon busy")
+
+        assertThrows(SecureStorageException::class.java) { mgr.generateKeyPair() }
+
+        storage.transientFailure = null
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(0, storage.resets)
+    }
+
+    @Test
+    fun `a single failed read never lets a fresh identity replace the stored key`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.putString("npub", otherPubHex)
+        var failReads = 1
+        val flaky = object : SecureStorage by storage {
+            override fun getString(key: String, default: String?): String? {
+                if (key == "nsec" && failReads > 0) {
+                    failReads--
+                    throw SecureStorageException("one decrypt failed")
+                }
+                return storage.getString(key, default)
+            }
+        }
+        val manager = IdentityManager(context, flaky)
+
+        assertThrows(SecureStorageException::class.java) { manager.generateKeyPair() }
+
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(otherPubHex, manager.getPublicKeyHex())
+        assertEquals(IdentityState.READY, manager.identityState())
+    }
+
+    @Test
+    fun `a single failed read never lets an import replace the stored key either`() {
+        storage.putString("nsec", otherPrivHex)
+        var failReads = 1
+        val flaky = object : SecureStorage by storage {
+            override fun getString(key: String, default: String?): String? {
+                if (key == "nsec" && failReads > 0) {
+                    failReads--
+                    throw SecureStorageException("one decrypt failed")
+                }
+                return storage.getString(key, default)
+            }
+        }
+        val manager = IdentityManager(context, flaky)
+
+        assertThrows(SecureStorageException::class.java) { manager.importKey(validPrivHex) }
+
+        assertEquals(otherPrivHex, storage.getString("nsec", null))
+        assertEquals(0, storage.resets)
+    }
+
+    @Test
+    fun `staging after wrapping key loss ignores cached owner and repairs only after valid input`() {
+        mgr.importKey(validPrivHex)
+        assertEquals(validPubHex, mgr.getPublicKeyHex())
+        mgr.generatePendingKeyPair()
+        storage.keyLost = true
+        assertThrows(IllegalArgumentException::class.java) { mgr.stageIdentitySwitch("not a key") }
+        assertEquals(0, storage.resets)
+        val target = mgr.stageIdentitySwitch(otherPrivHex)
+        assertNull(target.oldPubkey)
+        assertNull(target.pendingPubkey)
+        mgr.commitIdentitySwitch(target)
+        assertEquals(otherPubHex, mgr.getPublicKeyHex())
+        assertEquals(1, storage.resets)
+    }
+
+    @Test
+    fun `multiple possibly public successors for one owner are retained and restored by exact target`() {
+        mgr.importKey(validPrivHex)
+        val first = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("first-event"))
+        mgr.archivePendingKeyPair(validPubHex)
+        val second = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("second-event"))
+        mgr.archivePendingKeyPair(validPubHex)
+        assertEquals(first, mgr.getArchivedPendingPublicKeyHex(validPubHex, first))
+        assertEquals(second, mgr.getArchivedPendingPublicKeyHex(validPubHex, second))
+        assertNull(mgr.getArchivedPendingPublicKeyHex(validPubHex))
+        assertThrows(IllegalStateException::class.java) { mgr.restoreArchivedPendingKeyPair(validPubHex) }
+        mgr.restoreArchivedPendingKeyPair(validPubHex, first)
+        assertEquals(first, mgr.getPendingPublicKeyHex())
+        assertEquals(listOf("first-event"), mgr.getRevocationEventIds())
+        mgr.archivePendingKeyPair(validPubHex)
+        mgr.restoreArchivedPendingKeyPair(validPubHex, second)
+        assertEquals(second, mgr.getPendingPublicKeyHex())
+        assertEquals(listOf("second-event"), mgr.getRevocationEventIds())
+    }
+
+    /** Hides only nsec until it is rewritten; other fake-store values remain readable. */
+    private fun corruptActiveKey(): SecureStorage = object : SecureStorage by storage {
+        var repaired = false
+        override fun getString(key: String, default: String?): String? =
+            if (key == "nsec" && !repaired) default else storage.getString(key, default)
+        override fun canDecrypt(key: String): Boolean = getString(key, null) != null
+        override fun putString(key: String, value: String) {
+            storage.putString(key, value)
+            if (key == "nsec") repaired = true
+        }
+    }
+
+    @Test
+    fun `recovering the same identity keeps a readable pending successor and its tracking`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("npub", validPubHex)
+        val manager = IdentityManager(context, corruptActiveKey())
+        val pending = manager.generatePendingKeyPair()
+        manager.markRevocationStarted()
+        manager.setRevocationEventIds(listOf("maybe-published"))
+        assertEquals(IdentityState.RECOVERY_REQUIRED, manager.identityState())
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+
+        // The user re-enters the phrase of the identity that is already here.
+        manager.importKey(Bip39.toMnemonic(validPrivHex.hexToBytes()).joinToString(" "))
+
+        assertEquals(IdentityState.READY, manager.identityState())
+        assertEquals(validPubHex, manager.getPublicKeyHex())
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+        assertEquals(listOf("maybe-published"), manager.getRevocationEventIds())
+        assertTrue(manager.getRevocationStartTime() > 0)
+    }
+
+    @Test
+    fun `raw import of a different identity preserves a possibly public successor`() {
+        storage.putString("nsec", validPrivHex)
+        storage.putString("npub", validPubHex)
+        val manager = IdentityManager(context, corruptActiveKey())
+        val pending = manager.generatePendingKeyPair()
+        manager.setRevocationEventIds(listOf("e1"))
+
+        manager.importKey(otherPrivHex)
+
+        assertEquals(otherPubHex, manager.getPublicKeyHex())
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+        assertEquals(listOf("e1"), manager.getRevocationEventIds())
+    }
+
+    @Test
+    fun `re-importing the current identity keeps an in-flight replacement`() {
+        mgr.importKey(validPrivHex)
+        val pending = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("e1"))
+
+        mgr.importKey(validPrivHex)
+
+        assertEquals(pending, mgr.getPendingPublicKeyHex())
+        assertEquals(listOf("e1"), mgr.getRevocationEventIds())
+    }
+
+    @Test
+    fun `a comparison read that fails once must not delete an intact pending identity`() {
+        mgr.importKey(validPrivHex)
+        val pending = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("possibly-public"))
+        var nsecReads = 0
+        val flaky = object : SecureStorage by storage {
+            override fun getString(key: String, default: String?): String? {
+                // Fail the second nsec read, which verifies the newly written key.
+                if (key == "nsec" && ++nsecReads == 2) throw SecureStorageException("one decrypt failed")
+                return storage.getString(key, default)
+            }
+        }
+        val manager = IdentityManager(context, flaky)
+
+        try {
+            manager.importKey(validPrivHex)
+        } catch (_: SecureStorageException) {
+            // Refusing the import is acceptable; deleting the pending successor is not.
+        }
+
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+        assertEquals(listOf("possibly-public"), manager.getRevocationEventIds())
+    }
+
+    @Test
+    fun `an unreadable active identity with no public mirror keeps the pending successor`() {
+        mgr.importKey(validPrivHex)
+        val pending = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("possibly-public"))
+        storage.remove("npub")
+        val manager = IdentityManager(context, corruptActiveKey())
+        assertEquals(IdentityState.RECOVERY_REQUIRED, manager.identityState())
+
+        try {
+            manager.importKey(validPrivHex)
+        } catch (_: SecureStorageException) {
+            // Refusing the import is acceptable; deleting the pending successor is not.
+        }
+
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+        assertEquals(listOf("possibly-public"), manager.getRevocationEventIds())
+    }
+
+    @Test
+    fun `a public-mirror read that fails once during recovery keeps the pending successor`() {
+        mgr.importKey(validPrivHex)
+        val pending = mgr.generatePendingKeyPair()
+        mgr.setRevocationEventIds(listOf("possibly-public"))
+        var npubFailures = 1
+        val flaky = object : SecureStorage by storage {
+            var repaired = false
+            override fun getString(key: String, default: String?): String? {
+                if (key == "nsec" && !repaired) return default
+                if (key == "npub" && npubFailures > 0) {
+                    npubFailures--
+                    throw SecureStorageException("one decrypt failed")
+                }
+                return storage.getString(key, default)
+            }
+            override fun canDecrypt(key: String): Boolean = getString(key, null) != null
+            override fun putString(key: String, value: String) {
+                storage.putString(key, value)
+                if (key == "nsec") repaired = true
+            }
+        }
+        val manager = IdentityManager(context, flaky)
+        assertEquals(IdentityState.RECOVERY_REQUIRED, manager.identityState())
+
+        manager.importKey(validPrivHex)
+
+        assertEquals(pending, manager.getPendingPublicKeyHex())
+        assertEquals(listOf("possibly-public"), manager.getRevocationEventIds())
+        assertEquals(IdentityState.READY, manager.identityState())
+        assertEquals(validPubHex, manager.getPublicKeyHex())
+    }
+
+    @Test
+    fun `interrupted recovery leaves an empty store that the next import completes`() {
+        storage.putString("nsec", otherPrivHex)
+        storage.keyLost = true
+        // Model interruption after reset but before key installation; no process is restarted.
+        storage.resetAfterKeyLoss()
+        assertEquals(IdentityState.ABSENT, mgr.identityState())
+
+        mgr.importKey(validPrivHex)
+
+        assertEquals(validPrivHex, storage.getString("nsec", null))
+        assertEquals(IdentityState.READY, mgr.identityState())
     }
 }

@@ -1,20 +1,55 @@
 package com.splitfree.domain.repository
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.Serializable
 
 /**
- * Domain contract for cryptographic identity management.
- * Abstracts key storage so the domain layer has no Android dependency.
+ * Whether this device holds a usable identity, and if not, why. Drives the first screen the user sees.
  */
-interface IdentityContract {
-    /** @return true if a keypair has been generated or imported */
-    fun hasIdentity(): Boolean
+enum class IdentityState {
+    /** The stored private-key value can be decrypted. */
+    READY,
+
+    /** No active private-key entry exists. Onboarding may create or import an identity. */
+    ABSENT,
 
     /**
-     * Emits [hasIdentity] now and again whenever a keypair is generated, imported or committed, so
-     * callers can react to onboarding completing without polling.
+     * Stored identity data could not be read reliably. Offer a retry; do not overwrite it or infer key loss.
+     */
+    UNAVAILABLE,
+
+    /**
+     * The wrapping key is lost or the identity blob is corrupt. Restore the identity from a recovery phrase,
+     * or explicitly create a new identity. Key-loss repair discards unreadable storage before installation.
+     */
+    RECOVERY_REQUIRED
+}
+
+@Serializable
+data class IdentitySwitchTarget(
+    val id: String,
+    val oldPubkey: String?,
+    val newPubkey: String,
+    val pendingPubkey: String? = null,
+    val supersededSwitchId: String? = null
+)
+
+interface IdentityContract {
+    /** @return true if the active private-key entry exists and can be decrypted */
+    fun hasIdentity(): Boolean
+
+    /** Classifies identity presence and read failures; see [IdentityState]. */
+    fun identityState(): IdentityState
+
+    /**
+     * Initial identity availability, updated when this manager installs an active key.
+     * Equal values may be conflated; this is not a key-change stream or continuous Keystore health check.
      */
     fun observeHasIdentity(): Flow<Boolean>
+
+    /** Active public key, or null when unavailable; replacements emit even while presence stays true. */
+    fun observeActivePublicKey(): StateFlow<String?>
 
     /**
      * @return 64-char hex-encoded secp256k1 public key derived from the stored private key, or an
@@ -36,14 +71,16 @@ interface IdentityContract {
     fun getPublicKeyBytes(): ByteArray
 
     /**
-     * Generate and persist a new secp256k1 keypair, discarding any pending keypair.
+     * Generates and persists a new active keypair. Keeps readable pending-successor state; confirmed
+     * wrapping-key loss requires resetting unreadable storage first. Application callers reconcile journals
+     * through IdentitySwitchCoordinator.
      * @return hex public key of the new identity
      */
     fun generateKeyPair(): String
 
     /**
-     * Generate a pending keypair for key revocation.
-     * The current key is NOT overwritten until [commitPendingKeyPair].
+     * Returns the existing pending keypair or creates one without replacing the active identity.
+     * Promotion occurs through [commitPendingKeyPair].
      * @return hex public key of the pending key
      */
     fun generatePendingKeyPair(): String
@@ -63,7 +100,7 @@ interface IdentityContract {
     /** @return 64-char hex public key of the pending keypair, or null */
     fun getPendingPublicKeyHex(): String?
 
-    /** @return raw 32-byte pending private key, or null */
+    /** @return raw 32-byte pending private key, or null; caller must zero the returned bytes */
     fun getPendingPrivateKeyBytes(): ByteArray?
 
     /**
@@ -86,9 +123,33 @@ interface IdentityContract {
     fun exportAsMnemonic(): List<String>
 
     /**
-     * Import a key from hex string or BIP-39 mnemonic (space-separated words). Replaces the active
-     * identity and discards any pending keypair and revocation tracking state.
-     * @throws IllegalArgumentException if the key is invalid; nothing is written in that case
+     * Imports a hex private key or space-separated BIP-39 mnemonic, replacing the active identity.
+     * Keeps readable pending-successor and revocation state. Application callers reconcile journals through
+     * IdentitySwitchCoordinator.
+     *
+     * Input is validated before writing. Confirmed wrapping-key loss triggers [SecureStorage.resetAfterKeyLoss]
+     * before installation; other storage failures do not authorize a reset. The installed key is read back.
+     *
+     * @throws IllegalArgumentException if input is invalid; nothing is written
+     * @throws SecureStorageException if storage is unavailable or installation cannot be confirmed
      */
     fun importKey(input: String)
+
+    /** Persists a replacement key and recovery target before changing the active identity. */
+    fun stageIdentitySwitch(input: String? = null, supersededSwitchId: String? = null): IdentitySwitchTarget
+
+    fun stagedIdentitySwitch(): IdentitySwitchTarget?
+
+    /** Validates [target] against the staged key, then installs it; staged recovery data remains. */
+    fun commitIdentitySwitch(target: IdentitySwitchTarget)
+
+    /** Removes staged recovery data only after confirming the target identity is active. */
+    fun completeIdentitySwitch(target: IdentitySwitchTarget)
+
+    /** Saves the pending key and revocation tracking under [owner] before clearing the active pending slot. */
+    fun archivePendingKeyPair(owner: String)
+
+    fun restoreArchivedPendingKeyPair(owner: String, expectedPubkey: String? = null)
+
+    fun getArchivedPendingPublicKeyHex(owner: String, expectedPubkey: String? = null): String?
 }
