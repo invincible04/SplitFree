@@ -166,11 +166,13 @@ class CreatorInviteProofTest {
             if (matrix[index % matrix.width, index / matrix.width]) 0xff000000.toInt() else 0xffffffff.toInt()
         }
         val source = com.google.zxing.RGBLuminanceSource(matrix.width, matrix.height, pixels)
-        val decoded = com.google.zxing.MultiFormatReader().decode(
+        // Production scanning accepts QR only. A dense random matrix can fool a 1D barcode reader.
+        val decoded = com.google.zxing.qrcode.QRCodeReader().decode(
             com.google.zxing.BinaryBitmap(
                 com.google.zxing.common.HybridBinarizer(source)
             )
         )
+        assertEquals(com.google.zxing.BarcodeFormat.QR_CODE, decoded.barcodeFormat)
         assertEquals(link, decoded.text)
         assertEquals(proofs, InviteLinkCodec.decode(decoded.text).creatorTransitions)
     }
