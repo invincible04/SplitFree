@@ -16,7 +16,7 @@ import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.GroupProjection
 import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.model.sync.PullResult
-import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
@@ -101,8 +101,8 @@ class JoinGroupBackupRoomTest {
 
     @After fun cleanup() = databases.forEach { it.close() }
 
-    private fun join(repository: GroupRepositoryContract = groups) = JoinGroupUseCase(
-        repository, active, mockk(relaxed = true), EventSigner(active), encryption, publisher,
+    private fun join(publication: EventPublisherContract = publisher) = JoinGroupUseCase(
+        groups, active, mockk(relaxed = true), EventSigner(active), encryption, publication,
         mockk(relaxed = true), sync, settings, events
     )
 
@@ -277,18 +277,10 @@ class JoinGroupBackupRoomTest {
 
     @Test fun `concurrent removal between signing and local admission cannot report join success`() = runBlocking {
         groups.save(group.copy(members = listOf(creator, member)), key)
-        val guarded = object : GroupRepositoryContract by groups {
-            override suspend fun applyAuthenticatedMeta(
-                groupId: String,
-                meta: GroupMeta,
-                author: String,
-                timestamp: Long,
-                eventId: String,
-                epoch: Int,
-                expectedGroup: Group?
-            ): Boolean {
-                assertTrue(groups.applyIdentityRevocation(groupId, member, "", timestamp, "revocation"))
-                return groups.applyAuthenticatedMeta(groupId, meta, author, timestamp, eventId, epoch, expectedGroup)
+        val guarded = object : EventPublisherContract by publisher {
+            override suspend fun publishJoinedGroup(event: NostrEvent, expectedGroup: Group, meta: GroupMeta): Boolean {
+                assertTrue(groups.applyIdentityRevocation(groupId, member, "", event.createdAt, "revocation"))
+                return publisher.publishJoinedGroup(event, expectedGroup, meta)
             }
         }
 
@@ -298,22 +290,15 @@ class JoinGroupBackupRoomTest {
 
         assertFalse(member in groups.getMembers(groupId))
         assertTrue(events.getEventsByGroup(groupId).isEmpty())
+        assertEquals(0, db.outboxDao().count())
     }
 
     @Test fun `concurrent rotation between signing and admission cannot apply a stale epoch join`() = runBlocking {
         groups.save(group, key)
-        val guarded = object : GroupRepositoryContract by groups {
-            override suspend fun applyAuthenticatedMeta(
-                groupId: String,
-                meta: GroupMeta,
-                author: String,
-                timestamp: Long,
-                eventId: String,
-                epoch: Int,
-                expectedGroup: Group?
-            ): Boolean {
+        val guarded = object : EventPublisherContract by publisher {
+            override suspend fun publishJoinedGroup(event: NostrEvent, expectedGroup: Group, meta: GroupMeta): Boolean {
                 assertTrue(groups.applyKeyRotation(groupId, 1, listOf(creator), emptyMap()))
-                return groups.applyAuthenticatedMeta(groupId, meta, author, timestamp, eventId, epoch, expectedGroup)
+                return publisher.publishJoinedGroup(event, expectedGroup, meta)
             }
         }
 
@@ -324,6 +309,7 @@ class JoinGroupBackupRoomTest {
         assertEquals(1, groups.getById(groupId)!!.keyEpoch)
         assertFalse(member in groups.getMembers(groupId))
         assertTrue(events.getEventsByGroup(groupId).isEmpty())
+        assertEquals(0, db.outboxDao().count())
     }
 
     @Test fun `retained historical rotations never downgrade the current epoch or roster`() = runBlocking {

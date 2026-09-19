@@ -13,6 +13,7 @@ import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
@@ -93,10 +94,31 @@ class JoinGroupUseCaseTest {
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>(), any()) } returns 0
 
+        every { identity.identityState() } returns IdentityState.READY
         every { identity.getPublicKeyHex() } returns pubkey
+        every { signer.createSignedEvent(any(), any(), any(), any(), any(), any()) } answers {
+            NostrEvent("join-event", identity.getPublicKeyHex(), 1, 30078, emptyList(), "enc", "sig")
+        }
         every { settings.displayNameFor(pubkey) } returns ""
         coEvery { groupRepo.getById(any()) } answers { savedGroup }
         coEvery { groupRepo.save(any(), any()) } answers { savedGroup = firstArg() }
+        coEvery { eventPublisher.prepareJoinedGroup(any(), any(), any()) } coAnswers {
+            val candidate = firstArg<Group>()
+            groupRepo.getById(candidate.id) ?: candidate.also { groupRepo.save(it, secondArg()) }
+        }
+        coEvery { eventPublisher.publishJoinedGroup(any(), any(), any()) } coAnswers {
+            val event = firstArg<NostrEvent>()
+            val current = secondArg<Group>()
+            groupRepo.applyAuthenticatedMeta(
+                current.id,
+                thirdArg(),
+                event.pubkey,
+                event.createdAt,
+                event.id,
+                current.keyEpoch,
+                current
+            )
+        }
         coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns groupKey
         coEvery { groupRepo.nameClockFloor(any(), any()) } returns 0
         coEvery { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
@@ -111,6 +133,51 @@ class JoinGroupUseCaseTest {
     @After
     fun teardown() {
         unmockkStatic(android.util.Log::class)
+    }
+
+    @Test
+    fun `all non-ready identities fail before any persistence or network call`() = runBlocking {
+        for (state in IdentityState.entries.filter { it != IdentityState.READY }) {
+            every { identity.identityState() } returns state
+            assertTrue(runCatching { useCase(buildInviteUri()) }.exceptionOrNull() is IllegalStateException)
+        }
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
+        coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
+        verify(exactly = 0) { identity.getPublicKeyHex() }
+        verify(exactly = 0) { identity.generateKeyPair() }
+    }
+
+    @Test
+    fun `ready identity still requires canonical public key before saving`() = runBlocking {
+        for (key in listOf("", " ", "AA".repeat(32), "ab".repeat(31), "gg".repeat(32))) {
+            every { identity.getPublicKeyHex() } returns key
+            assertTrue(runCatching { useCase(buildInviteUri()) }.exceptionOrNull() is IllegalStateException)
+        }
+        coVerify(exactly = 0) { groupRepo.save(any(), any()) }
+        coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
+    }
+
+    @Test
+    fun `publication failure is retryable rather than a successful join`() = runBlocking {
+        coEvery { eventPublisher.publishJoinedGroup(any(), any(), any()) } throws IllegalStateException("disk full")
+        assertEquals("disk full", runCatching { useCase(buildInviteUri()) }.exceptionOrNull()?.message)
+        coEvery { eventPublisher.publishJoinedGroup(any(), any(), any()) } returns true
+        assertEquals(groupId, useCase(buildInviteUri()).id)
+    }
+
+    @Test
+    fun `identity loss during initial history fails before signing and applying membership`() = runBlocking {
+        coEvery { syncEngine.pullEvents(any(), any(), any(), any()) } answers {
+            every { identity.identityState() } returns IdentityState.UNAVAILABLE
+            PullResult(0, complete = true)
+        }
+        assertTrue(runCatching { useCase(buildInviteUri()) }.exceptionOrNull() is IllegalStateException)
+        verify(exactly = 0) { signer.createSignedEvent(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test
@@ -145,7 +212,7 @@ class JoinGroupUseCaseTest {
         useCase(buildInviteUri())
         // Check the saved creator binding and publication request; payload contents are not inspected here.
         coVerify { groupRepo.save(match { it.createdBy == creatorPubkey && it.createdAt == createdAt }, groupKey) }
-        coVerify { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+        coVerify { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) }
     }
 
     @Test
@@ -156,7 +223,7 @@ class JoinGroupUseCaseTest {
         val result = useCase(buildInviteUri())
         assertEquals("Existing", result.name)
         coVerify(exactly = 0) { groupRepo.save(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
         coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
     }
 
@@ -187,7 +254,7 @@ class JoinGroupUseCaseTest {
         coVerify(exactly = 0) { groupRepo.save(any(), any()) }
         coVerify { syncEngine.pullEvents(groupId, 0, groupKey, true) }
         coVerify { groupRepo.applyAuthenticatedMeta(groupId, any(), pubkey, any(), any(), 0, saved) }
-        coVerify(exactly = 1) { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+        coVerify(exactly = 1) { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) }
     }
 
     @Test
@@ -198,7 +265,7 @@ class JoinGroupUseCaseTest {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
         val announced = mutableListOf<EventSnapshot>()
         coEvery { eventRepo.getEventsByType(groupId, "group_meta") } answers { announced.toList() }
-        coEvery { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") } answers {
+        coEvery { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) } answers {
             announced += storedMeta(pubkey)
             true
         }
@@ -210,18 +277,18 @@ class JoinGroupUseCaseTest {
             error("expected the first attempt to be cancelled")
         } catch (_: kotlinx.coroutines.CancellationException) { }
         assertNotNull(stored)
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
 
         // Retry the saved group without saving a second copy.
         coEvery { syncEngine.pullEvents(any(), any(), any(), any()) } returns PullResult(stored = 0, complete = true)
         useCase(buildInviteUri())
 
         coVerify(exactly = 1) { groupRepo.save(any(), any()) }
-        coVerify(exactly = 1) { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+        coVerify(exactly = 1) { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) }
 
         // An existing join announcement prevents another sync or publication.
         useCase(buildInviteUri())
-        coVerify(exactly = 1) { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+        coVerify(exactly = 1) { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents(any(), any(), any(), any()) }
     }
 
@@ -234,7 +301,7 @@ class JoinGroupUseCaseTest {
         assertEquals("Mine", useCase(buildInviteUri()).name)
 
         coVerify(exactly = 0) { eventRepo.getEventsByType(any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -292,7 +359,7 @@ class JoinGroupUseCaseTest {
         val group = useCase(buildInviteUri())
 
         assertEquals(groupId, group.id)
-        coVerify { eventPublisher.publishDirect(any(), groupId, any(), "group_meta") }
+        coVerify { eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any()) }
     }
 
     @Test
@@ -356,14 +423,14 @@ class JoinGroupUseCaseTest {
                 savedGroup
             )
         }
-        coVerify { eventPublisher.publishDirect(joinEvent, groupId, any(), "group_meta") }
+        coVerify { eventPublisher.publishJoinedGroup(joinEvent, match { it.id == groupId }, any()) }
     }
 
     @Test
     fun `invoke publishes a join announcement listing the joiner alongside the synced roster`() = runBlocking {
         every { settings.displayNameFor(pubkey) } returns "Bob"
         val synced = Group(groupId, "TestGroup", "", creatorPubkey, createdAt, listOf(creatorPubkey), listOf("wss://r"))
-        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, synced, synced)
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, null, synced, synced)
         val metaPlaintext = slot<String>()
         every { encryption.encrypt(capture(metaPlaintext), groupKey) } returns "enc-meta"
 
@@ -380,12 +447,12 @@ class JoinGroupUseCaseTest {
     fun `invoke refuses changed original group identity before announcement`() = runBlocking {
         val hijacked = Group(groupId, "TestGroup", "", "ff".repeat(32), createdAt, listOf(pubkey), listOf("wss://r"))
         // After the initial miss, return a row whose immutable creator root differs from the invite.
-        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, hijacked, hijacked)
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, null, hijacked, hijacked)
 
         val error = runCatching { useCase(buildInviteUri()) }.exceptionOrNull()
         assertTrue(error is IllegalStateException)
         assertEquals("Original group identity changed while joining", error?.message)
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `name publication uses current identity scope instead of last global preference`() = runBlocking {
@@ -416,18 +483,19 @@ class JoinGroupUseCaseTest {
     @Test fun `far future creator watermark defers join instead of weakening receiver bound`() = runBlocking {
         coEvery { groupRepo.nameClockFloor(groupId, pubkey) } returns System.currentTimeMillis() / 1000 + 4000
         org.junit.Assert.assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `rejected local join must not publish an unauthorized announcement`() = runBlocking {
         coEvery { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) } returns false
         org.junit.Assert.assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any(), any()) }
     }
 
     @Test fun `epoch changed by initial sync signs with current epoch key and includes epoch metadata`() = runBlocking {
         val live = inviteGroup(keyEpoch = 2)
-        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, live, live)
+        coEvery { groupRepo.getById(groupId) } returnsMany listOf(null, null, live, live)
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 2) } returns "epoch-two"
         val plaintext = slot<String>()
         every { encryption.encrypt(capture(plaintext), "epoch-two") } returns "enc"
@@ -450,7 +518,7 @@ class JoinGroupUseCaseTest {
             groupRepo.saveGroupKeyForEpoch(groupId, 2, groupKey)
             groupRepo.getGroupKeyForEpoch(groupId, 2)
             syncEngine.pullEvents(groupId, 0, groupKey, true)
-            eventPublisher.publishDirect(any(), groupId, any(), "group_meta")
+            eventPublisher.publishJoinedGroup(any(), match { it.id == groupId }, any())
         }
     }
 
@@ -462,7 +530,7 @@ class JoinGroupUseCaseTest {
 
         coVerify(exactly = 0) { groupRepo.saveGroupKeyForEpoch(any(), any(), any()) }
         coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `resume with a stored current key ignores an older invite key`() = runBlocking {
@@ -487,7 +555,7 @@ class JoinGroupUseCaseTest {
         }
 
         coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `key recovery refuses a write that cannot be read back`() = runBlocking {
@@ -498,7 +566,7 @@ class JoinGroupUseCaseTest {
 
         coVerify { groupRepo.saveGroupKeyForEpoch(groupId, 0, groupKey) }
         coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `key recovery refuses a different readback key`() = runBlocking {
@@ -508,7 +576,7 @@ class JoinGroupUseCaseTest {
         assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
 
         coVerify(exactly = 0) { syncEngine.pullEvents(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `join refuses a current key lost during initial sync`() = runBlocking {
@@ -516,18 +584,19 @@ class JoinGroupUseCaseTest {
 
         assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
 
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `rotation during recovery cannot announce without its new key`() = runBlocking {
-        coEvery { groupRepo.getById(groupId) } returnsMany listOf(inviteGroup(), inviteGroup(keyEpoch = 2))
+        coEvery { groupRepo.getById(groupId) } returnsMany
+            listOf(inviteGroup(), inviteGroup(), inviteGroup(keyEpoch = 2))
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returnsMany listOf(null, groupKey)
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 2) } returns null
 
         assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
 
         coVerify { groupRepo.saveGroupKeyForEpoch(groupId, 0, groupKey) }
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 
     @Test fun `group deletion during initial sync cannot announce a completed join`() = runBlocking {
@@ -535,6 +604,6 @@ class JoinGroupUseCaseTest {
 
         assertThrows(IllegalStateException::class.java) { runBlocking { useCase(buildInviteUri()) } }
 
-        coVerify(exactly = 0) { eventPublisher.publishDirect(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { eventPublisher.publishJoinedGroup(any(), any(), any()) }
     }
 }

@@ -10,12 +10,16 @@ import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.repository.SyncEngineContract
 import com.splitfree.domain.usecase.sync.SelfHealUseCase
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 
 /**
@@ -28,6 +32,7 @@ import kotlinx.serialization.json.Json
  * self-authored `group_meta`; an existing creator or stored announcement takes the already-joined path.
  * Local membership alone is not treated as a completed announcement.
  */
+@Singleton
 class JoinGroupUseCase
 @Inject
 constructor(
@@ -43,6 +48,7 @@ constructor(
     private val eventRepo: EventRepositoryContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val joinLock = Mutex()
 
     /**
      * Parse an invite link and join the group.
@@ -56,7 +62,9 @@ constructor(
      *   match the group id
      * @throws IllegalStateException if the link carries no relays
      */
-    suspend operator fun invoke(uri: String): Group {
+    suspend operator fun invoke(uri: String): Group = joinLock.withLock { join(uri) }
+
+    private suspend fun join(uri: String): Group {
         // Never log the link itself: the payload is a bearer credential carrying the group key.
         Log.i(TAG, "Joining via link")
         val invite = InviteLinkCodec.decode(uri)
@@ -77,24 +85,10 @@ constructor(
                 "creator=${invite.creatorPubkey.take(8)} epoch=${invite.keyEpoch}"
         )
 
-        val pubkey = identity.getPublicKeyHex()
+        val pubkey = readyPublicKey()
         val existing = groupRepo.getById(invite.groupId)
-        if (existing != null && invite.creatorTransitions.isNotEmpty()) {
-            check(
-                groupRepo.mergeCreatorBootstrap(
-                    existing.id,
-                    invite.creatorPubkey,
-                    invite.createdAt,
-                    invite.creatorTransitions
-                )
-            ) { "Creator authority could not be restored" }
-        }
-        if (existing != null && (existing.createdBy == pubkey || hasAnnouncedJoin(existing.id, pubkey))) {
-            Log.i(TAG, "Already in group ${invite.groupId}")
-            return groupRepo.getById(existing.id) ?: existing
-        }
-
-        val group = existing ?: Group(
+        check(readyPublicKey() == pubkey) { "Identity changed while joining" }
+        val offeredGroup = existing ?: Group(
             id = invite.groupId,
             name = invite.name,
             createdBy = invite.creatorPubkey,
@@ -104,18 +98,30 @@ constructor(
             keyEpoch = invite.keyEpoch,
             creatorTransitions = invite.creatorTransitions
         )
-        val activeKey = if (existing == null) {
-            groupRepo.save(group, groupKey)
+        val group = eventPublisher.prepareJoinedGroup(offeredGroup, groupKey, pubkey)
+        if (invite.creatorTransitions.isNotEmpty()) {
+            check(
+                groupRepo.mergeCreatorBootstrap(
+                    group.id,
+                    invite.creatorPubkey,
+                    invite.createdAt,
+                    invite.creatorTransitions
+                )
+            ) { "Creator authority could not be restored" }
+        }
+        if (group.createdBy == pubkey || hasAnnouncedJoin(group.id, pubkey)) {
+            Log.i(TAG, "Already in group ${invite.groupId}")
+            val joined = groupRepo.getById(group.id) ?: group
+            check(readyPublicKey() == pubkey) { "Identity changed while joining" }
+            return joined
+        }
+
+        val activeKey = groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch)?.takeIf { it.isNotEmpty() } ?: run {
+            check(invite.keyEpoch == group.keyEpoch) { "Invite does not contain the current group key" }
+            check(readyPublicKey() == pubkey) { "Identity changed while joining" }
+            groupRepo.saveGroupKeyForEpoch(group.id, group.keyEpoch, groupKey)
             check(requireEpochKey(group) == groupKey) { "Group key could not be restored" }
             groupKey
-        } else {
-            Log.i(TAG, "Resuming interrupted join of ${invite.groupId}")
-            groupRepo.getGroupKeyForEpoch(existing.id, existing.keyEpoch)?.takeIf { it.isNotEmpty() } ?: run {
-                check(invite.keyEpoch == existing.keyEpoch) { "Invite does not contain the current group key" }
-                groupRepo.saveGroupKeyForEpoch(existing.id, existing.keyEpoch, groupKey)
-                check(requireEpochKey(existing) == groupKey) { "Group key could not be restored" }
-                groupKey
-            }
         }
 
         // Sync is best effort; relay failures must not prevent preparing the local join announcement.
@@ -130,6 +136,7 @@ constructor(
         }
 
         // Sync may change current authority, but never the original group identity.
+        check(readyPublicKey() == pubkey) { "Identity changed while joining" }
         val currentGroup = checkNotNull(groupRepo.getById(group.id)) { "Group removed while joining" }
         check(currentGroup.originalCreator == invite.creatorPubkey && currentGroup.createdAt == invite.createdAt) {
             "Original group identity changed while joining"
@@ -166,21 +173,10 @@ constructor(
                 currentGroup.originalCreator,
                 currentGroup.creatorTransitions
             )
-        check(identity.getPublicKeyHex() == pubkey) { "Identity changed while joining" }
-        check(
-            groupRepo.applyAuthenticatedMeta(
-                group.id,
-                joinEvent.meta,
-                pubkey,
-                joinEvent.event.createdAt,
-                joinEvent.event.id,
-                currentGroup.keyEpoch,
-                expectedGroup = currentGroup
-            )
-        ) { "Group changed while joining. Try again" }
-        Log.i(TAG, "Local members after join: ${updatedMembers.map { it.take(8) }}")
-
-        publishGroupMeta(group.id, joinEvent)
+        check(readyPublicKey() == pubkey && joinEvent.event.pubkey == pubkey) { "Identity changed while joining" }
+        check(eventPublisher.publishJoinedGroup(joinEvent.event, currentGroup, joinEvent.meta)) {
+            "Group changed while joining. Try again"
+        }
 
         return groupRepo.getById(group.id) ?: group
     }
@@ -190,7 +186,7 @@ constructor(
             "Current group key unavailable"
         }
 
-    private class SignedMeta(val event: NostrEvent, val encrypted: String, val meta: GroupMeta)
+    private class SignedMeta(val event: NostrEvent, val meta: GroupMeta)
 
     /** A stored self-authored meta marks a prior announcement; this does not check relay delivery. */
     private suspend fun hasAnnouncedJoin(groupId: String, pubkey: String): Boolean =
@@ -253,22 +249,18 @@ constructor(
                 encryptedContent = encrypted,
                 createdAt = eventTimestamp
             )
-        return SignedMeta(event, encrypted, meta)
+        return SignedMeta(event, meta)
     }
 
-    /** Publishes a prepared group_meta to relays; failures are logged, the local join already landed. */
-    private suspend fun publishGroupMeta(groupId: String, meta: SignedMeta) {
-        try {
-            eventPublisher.publishDirect(meta.event, groupId, meta.encrypted, "group_meta")
-            Log.i(TAG, "Published group_meta with ${meta.meta.members.size} members for group $groupId")
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to publish group_meta on join: ${e.message}")
+    private fun readyPublicKey(): String {
+        check(identity.identityState() == IdentityState.READY) { "Finish identity setup before joining" }
+        return identity.getPublicKeyHex().also {
+            check(PUBLIC_KEY.matches(it)) { "A valid identity is required before joining" }
         }
     }
 
     companion object {
         private const val TAG = "JoinGroupUseCase"
+        private val PUBLIC_KEY = Regex("[0-9a-f]{64}")
     }
 }

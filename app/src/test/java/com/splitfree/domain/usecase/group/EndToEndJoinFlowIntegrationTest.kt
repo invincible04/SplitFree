@@ -93,6 +93,7 @@ class EndToEndJoinFlowIntegrationTest {
         every { phone1Identity.getPublicKeyHex() } returns phone1PubKey
         every { phone1Identity.getPrivateKeyBytes() } answers { phone1PrivKey.copyOf() }
         every { phone1Identity.hasIdentity() } returns true
+        every { phone2Identity.identityState() } returns com.splitfree.domain.repository.IdentityState.READY
         every { phone2Identity.getPublicKeyHex() } returns phone2PubKey
         every { phone2Identity.getPrivateKeyBytes() } answers { phone2PrivKey.copyOf() }
         every { phone2Identity.hasIdentity() } returns true

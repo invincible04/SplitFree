@@ -16,6 +16,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.repository.DisplayNameDelivery
 import com.splitfree.domain.repository.DisplayNameGroupChangedException
@@ -87,6 +88,45 @@ constructor(
             }
         }
         persist(history)
+    }
+
+    override suspend fun prepareJoinedGroup(group: Group, groupKey: String, expectedAuthor: String): Group =
+        db.withTransaction {
+            requireStableJoiningIdentity(expectedAuthor)
+            groupRepo.getById(group.id) ?: run {
+                groupRepo.save(group, groupKey)
+                checkNotNull(groupRepo.getById(group.id))
+            }
+        }
+
+    override suspend fun publishJoinedGroup(event: NostrEvent, expectedGroup: Group, meta: GroupMeta): Boolean {
+        val saved = db.withTransaction {
+            requireStableJoiningIdentity(event.pubkey)
+            if (groupRepo.getById(expectedGroup.id) != expectedGroup) return@withTransaction false
+            if (!groupRepo.applyAuthenticatedMeta(
+                    expectedGroup.id,
+                    meta,
+                    event.pubkey,
+                    event.createdAt,
+                    event.id,
+                    expectedGroup.keyEpoch,
+                    expectedGroup
+                )
+            ) {
+                return@withTransaction false
+            }
+            check(
+                commit(
+                    eventEntity(event, expectedGroup.id, event.content, "group_meta", null, expectedGroup.keyEpoch),
+                    listOf(event)
+                )
+            ) {
+                "Join event was already stored; retry from the current group"
+            }
+            true
+        }
+        if (saved) dispatch(listOf(event))
+        return saved
     }
 
     private suspend fun requireStableJoiningIdentity(author: String) {

@@ -22,6 +22,7 @@ import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
+import com.splitfree.domain.repository.ControlOperation
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -428,6 +429,52 @@ class IdentityHistoryRoomTest {
         assertTrue(runCatching { author.revoker()() }.isFailure)
         assertEquals(null, author.journal.get("identity-revocation"))
         assertFalse(author.identity.hasPendingKeyPair())
+    }
+
+    @Test
+    fun `durable intent refuses create and both join commit phases without new rows`() = runBlocking {
+        val author = Device(2).also { it.join() }
+        author.journal.insert(ControlOperation("identity-revocation", "revocation", "{}"))
+        val newId = GroupIdentity.derive(old, time + 10)
+        val newGroup = Group(
+            newId,
+            "New",
+            createdBy = old,
+            createdAt = time + 10,
+            members = listOf(old),
+            relays = emptyList()
+        )
+        val creation = signed(
+            oldKey,
+            "group_meta",
+            Json.encodeToString(
+                GroupMeta(
+                    name = "New",
+                    createdBy = old,
+                    createdAt = time + 10,
+                    members = listOf(old)
+                )
+            ),
+            group = newId
+        )
+        assertTrue(runCatching { author.publisher.prepareJoinedGroup(newGroup, key, old) }.isFailure)
+        assertTrue(
+            runCatching { author.publisher.publishCreatedGroup(creation, newGroup, key) }
+                .exceptionOrNull()?.message?.contains("replacement is pending") == true
+        )
+        val event = signed(oldKey, "group_meta", "{}")
+        assertTrue(
+            runCatching {
+                author.publisher.publishJoinedGroup(
+                    event,
+                    author.groups.getById(groupId)!!,
+                    GroupMeta(members = listOf(creator, old))
+                )
+            }.isFailure
+        )
+        assertEquals(null, author.groups.getById(newId))
+        assertTrue(author.events.getEventsByGroup(groupId).isEmpty())
+        assertTrue(author.db.outboxDao().getAll().isEmpty())
     }
 
     @Test

@@ -7,10 +7,12 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -82,5 +84,33 @@ class JoinGroupCoordinatorTest {
         // Acknowledgement clears the failure so another join can start.
         coordinator.acknowledge()
         assertEquals(JoinGroupCoordinator.State.Idle, coordinator.state.value)
+    }
+
+    @Test
+    fun `cancellation clears the running state and explicit retry succeeds`() = runTest {
+        val appScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        coEvery { joinGroup("link") } throws CancellationException("interrupted")
+        val coordinator = JoinGroupCoordinator(joinGroup, appScope)
+        coordinator.join("link")
+        advanceUntilIdle()
+        assertTrue(coordinator.state.value is JoinGroupCoordinator.State.Failed)
+        coordinator.acknowledge()
+        coEvery { joinGroup("link") } returns group
+        coordinator.join("link")
+        advanceUntilIdle()
+        assertEquals(JoinGroupCoordinator.State.Joined(group), coordinator.state.value)
+        coVerify(exactly = 2) { joinGroup("link") }
+        appScope.cancel()
+    }
+
+    @Test
+    fun `cancellation before launch starts cannot strand the joining state`() = runTest {
+        val appScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        appScope.cancel()
+        val coordinator = JoinGroupCoordinator(joinGroup, appScope)
+        coordinator.join("link")
+        advanceUntilIdle()
+        assertTrue(coordinator.state.value is JoinGroupCoordinator.State.Failed)
+        coVerify(exactly = 0) { joinGroup(any()) }
     }
 }

@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -55,9 +56,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavHostController
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.splitfree.data.identity.IdentityManager
 import com.splitfree.data.settings.UserPreferences
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.domain.usecase.group.JoinGroupCoordinator
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.SfListCard
@@ -71,6 +74,7 @@ import com.splitfree.ui.theme.SplitFreeTheme
 import com.splitfree.ui.theme.ThemeMode
 import com.splitfree.ui.theme.ThemePreference
 import com.splitfree.ui.util.decodeInviteForConfirmation
+import com.splitfree.ui.viewmodels.PendingInviteViewModel
 import com.splitfree.util.DebugLog as Log
 import com.splitfree.util.ProcessHealthTracker
 import dagger.hilt.android.AndroidEntryPoint
@@ -99,7 +103,7 @@ class MainActivity : ComponentActivity() {
     private data class PendingInvite(val link: String, val groupName: String, val relayHosts: List<String>)
 
     private var isJoining by mutableStateOf(false)
-    private var pendingInvite by mutableStateOf<PendingInvite?>(null)
+    private val invites by viewModels<PendingInviteViewModel>()
 
     /**
      * Null outside the navigation composition. Emitting controller changes retries a pending join
@@ -121,9 +125,6 @@ class MainActivity : ComponentActivity() {
         sanitizeIntent(intent)
         if (savedInstanceState == null) {
             handleDeepLink(intent)
-        } else {
-            // The launch intent was consumed by the previous instance; only the unanswered prompt survives.
-            savedInstanceState.getString(STATE_PENDING_INVITE)?.let(::offerInvite)
         }
 
         // The permission prompt must be launched from a started activity, so the identity wait only
@@ -170,8 +171,11 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val nav = rememberNavController()
-                    DisposableEffect(nav) {
-                        navController.value = nav
+                    val entry by nav.currentBackStackEntryAsState()
+                    DisposableEffect(nav, entry) {
+                        navController.value = nav.takeIf {
+                            entry != null && entry?.destination?.route != Screen.Onboarding.route
+                        }
                         onDispose { navController.compareAndSet(nav, null) }
                     }
                     val start =
@@ -184,27 +188,20 @@ class MainActivity : ComponentActivity() {
                         onScanResult = ::offerInvite
                     )
 
-                    pendingInvite?.let { invite ->
-                        InviteConfirmSheet(
-                            invite = invite,
-                            onJoin = {
-                                pendingInvite = null
-                                processJoin(invite.link)
-                            },
-                            onDismiss = { pendingInvite = null }
-                        )
-                    }
+                    val pendingLink by invites.pendingLink.collectAsState()
+                    PendingInvitePrompt(
+                        link = pendingLink,
+                        identityReady = identity.identityState() == IdentityState.READY,
+                        onboarding = entry == null || entry?.destination?.route == Screen.Onboarding.route,
+                        joining = isJoining,
+                        onJoin = ::processJoin,
+                        onDismiss = invites::dismiss
+                    )
 
                     if (isJoining) JoiningScrim()
                 }
             }
         }
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        // Compose state on the Activity does not survive recreation; keep the open prompt alive.
-        outState.putString(STATE_PENDING_INVITE, pendingInvite?.link)
     }
 
     /**
@@ -226,18 +223,23 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Leave a successful join unacknowledged until navigation is available. Acknowledge before the
-     * UI effect so later state collections do not replay it; this does not guarantee navigation succeeds.
+     * Keep the invitation and outcome until navigation succeeds on the current Activity.
      */
     @VisibleForTesting
-    internal fun reflectJoinState(state: JoinGroupCoordinator.State, navigate: ((String) -> Unit)?) {
+    internal fun reflectJoinState(
+        state: JoinGroupCoordinator.State,
+        navigate: ((String) -> Unit)?,
+        onJoined: (String) -> Unit = { invites.joined(it) }
+    ) {
+        if (joinCoordinator.state.value != state) return
         isJoining = state is JoinGroupCoordinator.State.Joining
         when (state) {
             is JoinGroupCoordinator.State.Joined -> {
                 if (navigate == null) return
                 Log.i(TAG, "Joined group: ${state.group.id} (${state.group.name})")
-                joinCoordinator.acknowledge()
                 navigate(Screen.GroupDetail.withId(state.group.id))
+                onJoined(state.group.id)
+                joinCoordinator.acknowledge()
             }
 
             is JoinGroupCoordinator.State.Failed -> {
@@ -279,14 +281,30 @@ class MainActivity : ComponentActivity() {
      * deep link (CVE-2025-4957, USENIX 2017).
      */
     private fun offerInvite(link: String) {
-        val invite = decodeInviteForConfirmation(link)
-        if (invite == null) {
+        if (!invites.offer(link)) {
             Log.w(TAG, "Rejected invalid invite input")
             Toast.makeText(this, R.string.invalid_invite_link, Toast.LENGTH_LONG).show()
             return
         }
-        val hosts = invite.relays.map { relay -> relay.toUri().host ?: relay }
-        pendingInvite = PendingInvite(link = link, groupName = invite.name, relayHosts = hosts)
+    }
+
+    @VisibleForTesting
+    @Composable
+    internal fun PendingInvitePrompt(
+        link: String?,
+        identityReady: Boolean,
+        onboarding: Boolean,
+        joining: Boolean,
+        onJoin: (String) -> Unit,
+        onDismiss: () -> Unit
+    ) {
+        if (link == null || !identityReady || onboarding || joining) return
+        val params = remember(link) { decodeInviteForConfirmation(link) } ?: return
+        InviteConfirmSheet(
+            PendingInvite(link, params.name, params.relays.map { it.toUri().host ?: it }),
+            onJoin = { onJoin(link) },
+            onDismiss = onDismiss
+        )
     }
 
     /**
@@ -386,7 +404,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val STATE_PENDING_INVITE = "pending_invite"
         private const val SCRIM_ALPHA = 0.4f
         private val SHEET_BLOCK_SPACING = 12.dp
         private val JOINING_TILE_SIZE = 40.dp

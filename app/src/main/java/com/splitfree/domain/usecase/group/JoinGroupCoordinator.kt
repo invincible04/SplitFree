@@ -44,6 +44,7 @@ constructor(
     /** Start joining via [link] unless a join is already running or an outcome is still unacknowledged. */
     fun join(link: String) {
         if (!_state.compareAndSet(State.Idle, State.Joining(link))) return
+        val joining = State.Joining(link)
         scope.launch {
             val outcome = try {
                 State.Joined(joinGroup(link))
@@ -53,7 +54,11 @@ constructor(
                 Log.e(TAG, "Join failed: ${e.message}", e)
                 State.Failed(e.message)
             }
-            _state.value = outcome
+            _state.compareAndSet(joining, outcome)
+        }.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                _state.compareAndSet(joining, State.Failed("Join interrupted. Try again"))
+            }
         }
     }
 

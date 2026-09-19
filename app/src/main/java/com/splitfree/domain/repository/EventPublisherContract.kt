@@ -2,6 +2,7 @@ package com.splitfree.domain.repository
 
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupMeta
 
 /**
  * Persists signed events and durable deliveries, then attempts relay dispatch.
@@ -13,6 +14,10 @@ interface EventPublisherContract {
         groups: List<Group>,
         persist: suspend (Map<String, List<EventSnapshot>>) -> Unit
     )
+
+    suspend fun prepareJoinedGroup(group: Group, groupKey: String, expectedAuthor: String): Group
+
+    suspend fun publishJoinedGroup(event: NostrEvent, expectedGroup: Group, meta: GroupMeta): Boolean
 
     suspend fun publishIdentityHistory(event: NostrEvent, groupId: String, epoch: Int)
 

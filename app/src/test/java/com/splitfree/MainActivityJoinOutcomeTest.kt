@@ -66,7 +66,7 @@ class MainActivityJoinOutcomeTest {
         val routes = mutableListOf<String>()
 
         activity.reflectJoinState(joined, navigate = null)
-        activity.reflectJoinState(joined, navigate = { routes += it })
+        activity.reflectJoinState(joined, navigate = { routes += it }, onJoined = {})
 
         assertEquals(listOf(Screen.GroupDetail.withId("g-1")), routes)
         assertEquals(JoinGroupCoordinator.State.Idle, coordinator.state.value)
@@ -87,5 +87,22 @@ class MainActivityJoinOutcomeTest {
         activity.reflectJoinState(failed, navigate = null)
 
         assertEquals(JoinGroupCoordinator.State.Idle, failing.state.value)
+    }
+
+    @Test
+    fun `failed navigation retains outcome and only successful navigation consumes invitation`() {
+        coordinator.join("link")
+        val joined = coordinator.state.value
+        val consumed = mutableListOf<String>()
+        val failure = runCatching {
+            activity.reflectJoinState(joined, navigate = { error("graph unavailable") }, onJoined = { consumed += it })
+        }.exceptionOrNull()
+        assertEquals("graph unavailable", failure?.message)
+        assertEquals(joined, coordinator.state.value)
+        assertEquals(emptyList<String>(), consumed)
+        activity.reflectJoinState(joined, navigate = {}, onJoined = { consumed += it })
+        activity.reflectJoinState(joined, navigate = {}, onJoined = { consumed += it })
+        assertEquals(listOf(group.id), consumed)
+        assertEquals(JoinGroupCoordinator.State.Idle, coordinator.state.value)
     }
 }
