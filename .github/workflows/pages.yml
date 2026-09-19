@@ -1,9 +1,10 @@
 name: Website · GitHub Pages
 
 on:
+  push:
+    branches: [mainline]
   pull_request:
     branches: [mainline]
-    paths: ['website/**', '.github/workflows/pages.yml', 'tools/release/publication_policy.py', 'tools/release/tests/test_website_policy.py']
   workflow_dispatch:
 
 permissions:
@@ -35,16 +36,18 @@ jobs:
       - name: Install test browsers
         run: npx --no-install playwright install --with-deps chromium webkit
       - name: Refresh bundled release from the public GitHub API
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
         run: npm run sync:release
       - name: Check formatting, unit tests, static build and browser tests
         run: npm run check
       - name: Check source publication policy
         working-directory: .
         run: python3 -B tools/release/publication_check.py --source worktree
-      - name: Test website publication rules
+      - name: Test website publication and workflow rules
         working-directory: .
-        run: python3 -B -m unittest discover -s tools/release/tests -p test_website_policy.py -v
+        run: |
+          python3 -B -m unittest discover -s tools/release/tests -p test_website_policy.py -v
+          python3 -B -m unittest discover -s tools/release/tests -p test_workflow.py -v
       - name: Retain browser reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -53,10 +56,10 @@ jobs:
           path: website/playwright-report/
           retention-days: 7
       - name: Archive only the static website
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
         run: tar --dereference --hard-dereference --directory dist -cf "$RUNNER_TEMP/artifact.tar" .
       - name: Upload Pages archive
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: github-pages
@@ -66,7 +69,7 @@ jobs:
 
   deploy:
     name: Deploy GitHub Pages
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/mainline' && github.repository == 'invincible04/SplitFree'
     needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 10

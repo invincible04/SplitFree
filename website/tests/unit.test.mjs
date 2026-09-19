@@ -214,10 +214,14 @@ test("build rejects hidden files, unknown extensions and symlink inputs", async 
     }
 });
 
-test("Pages deploy is manual, mainline-only, pinned, and isolated from APK signing", async () => {
+test("Pages deploy is push-or-manual, mainline-only, pinned, and isolated from APK signing", async () => {
     const workflow = await readFile(path.join(root, "../.github/workflows/pages.yml"), "utf8");
     assert.match(workflow, /workflow_dispatch:/);
-    assert.doesNotMatch(workflow, /(?:^|\n)\s+(?:push|pull_request_target):/);
+    assert.match(
+        workflow,
+        /on:\n  push:\n    branches: \[mainline\]\n  pull_request:\n    branches: \[mainline\]/,
+    );
+    assert.doesNotMatch(workflow, /pull_request_target:|paths:/);
     assert.doesNotMatch(workflow, /secrets\.|contents: write|write-all/);
     for (const action of workflow.matchAll(/uses: ([^\s]+)/g))
         assert.match(action[1], /@[a-f0-9]{40}$/);
@@ -227,7 +231,7 @@ test("Pages deploy is manual, mainline-only, pinned, and isolated from APK signi
     assert.doesNotMatch(workflow, /upload-pages-artifact/);
     assert.match(
         workflow,
-        /if: github.event_name == 'workflow_dispatch' && github.ref == 'refs\/heads\/mainline' && github.repository == 'invincible04\/SplitFree'/,
+        /if: \(github.event_name == 'push' \|\| github.event_name == 'workflow_dispatch'\) && github.ref == 'refs\/heads\/mainline' && github.repository == 'invincible04\/SplitFree'/,
     );
     assert.match(workflow, /needs: check/);
     assert.match(workflow, /run: npm run check/);

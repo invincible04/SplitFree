@@ -26,10 +26,9 @@ android {
         applicationId = "com.splitfree"
         minSdk = 26
         targetSdk = 37
-        // Keep the public version at 1.0.0 until the first approved GitHub release.
-        // Android update ordering is independent of the displayed version.
-        versionCode = 4
-        versionName = "1.0.0"
+        // Increase the code for each distributed update; preserve the production signing identity.
+        versionCode = 5
+        versionName = "1.0.1"
     }
 
     if (!unsignedRelease) {

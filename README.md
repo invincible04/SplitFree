@@ -512,7 +512,8 @@ to the official Android APK. It has no backend or runtime third-party scripts.
 - **Local preview:** `npm --prefix website ci --ignore-scripts`, then `npm --prefix website run dev`.
 - **Build:** `npm --prefix website run build` produces the isolated `website/dist` folder.
 - **Self-deploy:** follow the [GitHub Pages guide](website/README.md#deploy-to-github-pages-yourself).
-  Deployment is manual, via the separate **Website · GitHub Pages** workflow.
+  Successful `mainline` pushes deploy through **Website · GitHub Pages** after its checks.
+  PRs run checks only; manual runs on `mainline` remain available for retries and release-data refresh.
 
 ## Contributing
 

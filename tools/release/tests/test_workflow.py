@@ -3,17 +3,22 @@
 Actionlint separately validates YAML and Actions expressions. These tests execute the
 actual inline signing shell against disposable fake SDK tools, never a real key.
 """
+import ast
 import base64
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / '.github/workflows/release.yml'
+PAGES = ROOT / '.github/workflows/pages.yml'
+sys.path.insert(0, str(ROOT / 'tools/release'))
+import artifacts
 
 
 def job(text, name):
@@ -113,6 +118,148 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn('getOrElse(false)', source)
         self.assertRegex(source, r'if \(!unsignedRelease\) \{\s+signingConfigs')
         self.assertIn('if (!unsignedRelease) signingConfig = signingConfigs.getByName("release")', source)
+
+
+def website_condition(expression, event, ref, repository):
+    """Evaluate only the comparison/boolean subset used by the actual Pages guards.
+
+    This is an event-matrix regression test, not a GitHub Actions expression engine.
+    Unknown syntax fails the test rather than silently assuming a safe condition.
+    """
+    context = {'event_name': event, 'ref': ref, 'repository': repository}
+    tree = ast.parse(expression.replace('&&', ' and ').replace('||', ' or '), mode='eval')
+
+    def evaluate(node):
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id == 'github' and node.attr in context:
+                return context[node.attr]
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            values = [evaluate(value) for value in node.values]
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if isinstance(node, ast.Compare) and len(node.ops) == len(node.comparators) == 1:
+            if isinstance(node.ops[0], ast.Eq):
+                return evaluate(node.left) == evaluate(node.comparators[0])
+        raise AssertionError('Unsupported Pages guard syntax: ' + ast.dump(node))
+
+    return evaluate(tree)
+
+
+class WebsiteWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.text = PAGES.read_text()
+        self.check = job(self.text, 'check')
+        self.deploy = job(self.text, 'deploy')
+
+    def test_push_and_every_mainline_pr_run_checks_without_path_skips(self):
+        triggers = self.text.split('on:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertEqual(triggers.strip(),
+                         'push:\n    branches: [mainline]\n  pull_request:\n'
+                         '    branches: [mainline]\n  workflow_dispatch:')
+        self.assertNotRegex(self.check.split('    steps:', 1)[0], r'(?m)^    if:')
+        self.assertIn('    name: Build and check website\n', self.check)
+
+    def test_actual_refresh_upload_and_deploy_guards_allow_only_mainline_publication(self):
+        guards = re.findall(r'^        if: (.+)$', self.check, re.M)
+        guards = [guard for guard in guards if guard != 'always()']
+        guards += re.findall(r'^    if: (.+)$', self.deploy, re.M)
+        self.assertEqual(len(guards), 4, 'refresh, archive, upload and deploy must each be gated')
+        for guard in guards:
+            for event in ('push', 'workflow_dispatch', 'pull_request', 'pull_request_target', 'release'):
+                for ref in ('refs/heads/mainline', 'refs/heads/dev', 'refs/tags/v1.0.0', 'refs/pull/1/merge'):
+                    for repository in ('invincible04/SplitFree', 'someone/SplitFree'):
+                        expected = (event in ('push', 'workflow_dispatch')
+                                    and ref == 'refs/heads/mainline' and repository == 'invincible04/SplitFree')
+                        with self.subTest(guard=guard, event=event, ref=ref, repository=repository):
+                            self.assertIs(website_condition(guard, event, ref, repository), expected)
+
+    def test_failed_checks_cannot_upload_or_deploy(self):
+        self.assertIn('    needs: check\n', self.deploy)
+        self.assertNotIn('always()', self.deploy)
+        self.assertNotIn('continue-on-error', self.text)
+        self.assertNotIn('failure()', self.text)
+        self.assertNotIn('cancelled()', self.text)
+        for name in ('Refresh bundled release from the public GitHub API',
+                     'Archive only the static website', 'Upload Pages archive'):
+            step = self.check.split('      - name: ' + name + '\n', 1)[1].split('      - ', 1)[0]
+            self.assertIn('        if: ', step)
+            self.assertNotIn('always()', step)
+        self.assertLess(self.check.index('npm run sync:release'), self.check.index('npm run check'))
+        for gate in ('npm run check', 'publication_check.py --source worktree',
+                     '-p test_website_policy.py', '-p test_workflow.py'):
+            self.assertLess(self.check.index(gate), self.check.index('Archive only the static website'))
+
+    def test_pr_code_has_no_signing_or_deployment_authority(self):
+        top = self.text.split('jobs:', 1)[0]
+        self.assertIn('permissions:\n  contents: read\n', top)
+        self.assertNotIn(': write', top + self.check)
+        self.assertNotIn('id-token:', top + self.check)
+        self.assertNotIn('secrets.', self.text)
+        self.assertNotIn('release-signing', self.text)
+        self.assertNotIn('contents: write', self.deploy)
+        self.assertIn('      pages: write\n      id-token: write\n', self.deploy)
+        self.assertNotIn('pull_request_target', self.text)
+
+    def test_only_static_output_is_uploaded(self):
+        self.assertIn('tar --dereference --hard-dereference --directory dist -cf "$RUNNER_TEMP/artifact.tar" .', self.check)
+        upload = self.check.split('      - name: Upload Pages archive\n', 1)[1]
+        self.assertIn('          name: github-pages\n', upload)
+        self.assertIn('          path: ${{ runner.temp }}/artifact.tar\n', upload)
+        self.assertIn('          if-no-files-found: error\n', upload)
+        self.assertIn('      name: github-pages\n', self.deploy)
+        self.assertNotIn('actions/checkout@', self.deploy)
+
+    def test_actions_are_pinned_and_deployments_are_serialized(self):
+        for ref in re.findall(r'uses: (\S+)', self.text):
+            self.assertRegex(ref, r'^[\w/-]+@[0-9a-f]{40}$')
+        self.assertEqual(self.text.count('actions/checkout@'), self.text.count('persist-credentials: false'))
+        self.assertIn('group: website-${{ github.ref }}\n  cancel-in-progress: false', self.text)
+        self.assertIn('npm ci --ignore-scripts', self.text)
+        self.assertIn('npx --no-install playwright install --with-deps chromium webkit', self.text)
+
+    def test_android_release_remains_tag_only_and_draft_only(self):
+        text = WORKFLOW.read_text()
+        triggers = text.split('on:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn("tags: ['v*']", triggers)
+        self.assertNotIn('branches:', triggers)
+        self.assertIn("github.ref_type == 'tag'", job(text, 'build'))
+        helper = (ROOT / 'tools/release/github_release.py').read_text()
+        self.assertIn('"draft": True', helper)
+        self.assertIn('"Published release must never be modified"', helper)
+
+    def test_candidate_docs_match_source_without_requiring_release_approval(self):
+        identity = artifacts.gradle_identity((ROOT / 'app/build.gradle.kts').read_text())
+        self.assertIn('versionName = "' + identity['versionName'] + '"` and `versionCode = ' + identity['versionCode'],
+                      (ROOT / 'RELEASING.md').read_text())
+        self.assertIn('versionNameSuffix = "-debug"', (ROOT / 'app/build.gradle.kts').read_text())
+
+
+    def test_release_guide_keeps_linked_acceptance_and_build_sections(self):
+        guide = (ROOT / 'RELEASING.md').read_text()
+        headings = re.findall(r'^#{1,6} (.+)$', guide, re.M)
+        anchors = {re.sub(r'[^\w -]', '', heading.lower()).replace(' ', '-')
+                   for heading in headings}
+        references = re.findall(r'RELEASING\.md#([a-z0-9-]+)', '\n'.join(
+            path.read_text() for path in (
+                ROOT / 'README.md', ROOT / 'CONTRIBUTING.md',
+                ROOT / 'tools/release/INSTALL_TESTING.md',
+                ROOT / 'app/src/main/java/com/splitfree/sync/nearby/README.md')))
+        self.assertTrue(references)
+        self.assertTrue(set(references) <= anchors, set(references) - anchors)
+
+    def test_release_guide_names_candidate_assets_and_preserves_published_releases(self):
+        guide = (ROOT / 'RELEASING.md').read_text()
+        version = artifacts.gradle_identity((ROOT / 'app/build.gradle.kts').read_text())['versionName']
+        for suffix in ('.apk', '-source.tar.gz'):
+            self.assertIn('SplitFree-v' + version + suffix, guide)
+        self.assertIn('never move a published tag or overwrite its APK', guide)
+        self.assertIn('**unpublished draft**', guide)
+        self.assertNotIn('same-tag replacement', guide + (ROOT / 'website/README.md').read_text())
+        self.assertIn('SPLITFREE_VARIANT_BUILD_DIR=app/build', guide)
+        self.assertIn('-PsplitfreeUnsignedRelease=false', guide)
 
 
 class InlineSignerTests(unittest.TestCase):

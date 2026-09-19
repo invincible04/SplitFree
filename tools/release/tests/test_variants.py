@@ -120,7 +120,34 @@ def check_manifest(case, manifest, variant):
         authorities.extend(values)
     case.assertIn(package + ".androidx-startup", authorities)
     case.assertEqual(len(authorities), len(set(authorities)))
+    check_startup(case, manifest, package)
     return set(authorities)
+
+
+# Exact current dependency contract; intentional initializer changes require review.
+STARTUP_INITIALIZERS = {
+    "androidx.emoji2.text.EmojiCompatInitializer",
+    "androidx.lifecycle.ProcessLifecycleInitializer",
+    "okhttp3.internal.platform.PlatformInitializer",
+    "androidx.profileinstaller.ProfileInstallerInitializer",
+}
+WORK_MANAGER_INITIALIZER = "androidx.work.WorkManagerInitializer"
+
+
+def check_startup(case, manifest, package):
+    case.assertFalse(any(node.get(ANDROID + "name") == WORK_MANAGER_INITIALIZER
+                         for node in manifest.iter("meta-data")),
+                     "WorkManager must use SplitFreeApp's Configuration.Provider, not auto-init")
+    providers = manifest.findall("application/provider")
+    startup = [node for node in providers
+               if node.get(ANDROID + "name") == "androidx.startup.InitializationProvider"]
+    case.assertEqual(len(startup), 1)
+    case.assertEqual(startup[0].get(ANDROID + "authorities"), package + ".androidx-startup")
+    case.assertEqual(startup[0].get(ANDROID + "exported"), "false")
+    entries = startup[0].findall("meta-data")
+    case.assertEqual(len(entries), len(STARTUP_INITIALIZERS))
+    case.assertEqual(names(startup[0], "meta-data"), STARTUP_INITIALIZERS)
+    case.assertTrue(all(node.get(ANDROID + "value") == "androidx.startup" for node in entries))
 
 
 def check_build_config(case, text, variant):
@@ -141,7 +168,7 @@ def manifest_fixture(variant):
         <category android:name="android.intent.category.BROWSABLE" />
         <data android:scheme="splitfree" android:host="join" />
     </intent-filter>''' if variant == "release" else ""
-    return ET.fromstring(f'''<manifest xmlns:android="{ANDROID[1:-1]}" package="{package}"
+    manifest = ET.fromstring(f'''<manifest xmlns:android="{ANDROID[1:-1]}" package="{package}"
         android:versionCode="{VERSION_CODE}" android:versionName="{version}">
         <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37" />
         <application android:name="com.splitfree.SplitFreeApp" android:label="{label}"
@@ -157,6 +184,10 @@ def manifest_fixture(variant):
                 android:authorities="{package}.androidx-startup" android:exported="false" />
         </application>
     </manifest>''')
+    provider = manifest.find("application/provider")
+    for name in sorted(STARTUP_INITIALIZERS):
+        ET.SubElement(provider, "meta-data", {ANDROID + "name": name, ANDROID + "value": "androidx.startup"})
+    return manifest
 
 
 class VariantConfigurationTests(unittest.TestCase):
@@ -208,28 +239,89 @@ class VariantConfigurationTests(unittest.TestCase):
             with self.assertRaises(artifacts.ReleaseError):
                 artifacts.policy_check(policy, b"Fixture notices\n", VERSION_NAME)
 
-    def test_debug_overlay_removes_inherited_filters_and_restores_only_launcher(self):
+    def test_variant_overlays_own_labels_and_only_release_adds_production_invites(self):
         main = ET.parse(ROOT / "app/src/main/AndroidManifest.xml").getroot()
-        overlay = ET.parse(ROOT / "app/src/debug/AndroidManifest.xml").getroot()
-        application = overlay.find("application")
-        self.assertEqual(application.get(ANDROID + "label"), "SplitFree Debug")
-        self.assertEqual(application.get(TOOLS + "replace"), "android:label")
-        self.assertEqual(main.find("application").get(ANDROID + "label"), "SplitFree")
-        self.assertEqual(len(application), 1)
-        activity = application.find("activity")
-        self.assertEqual(activity.attrib, {ANDROID + "name": "com.splitfree.MainActivity", ANDROID + "exported": "true"})
+        debug = ET.parse(ROOT / "app/src/debug/AndroidManifest.xml").getroot()
+        release = ET.parse(ROOT / "app/src/release/AndroidManifest.xml").getroot()
+        self.assertIsNone(main.find("application").get(ANDROID + "label"))
+        debug_app = debug.find("application")
+        self.assertEqual(debug_app.attrib, {ANDROID + "label": "SplitFree Debug"})
+        self.assertEqual(len(debug_app), 0)
+        release_app = release.find("application")
+        self.assertEqual(release_app.attrib, {ANDROID + "label": "SplitFree"})
+        self.assertEqual(len(release_app), 1)
+        activity = release_app.find("activity")
+        self.assertEqual(activity.attrib, {
+            ANDROID + "name": "com.splitfree.MainActivity", ANDROID + "exported": "true"})
         filters = activity.findall("intent-filter")
-        self.assertEqual(len(filters), 2)
-        self.assertEqual(filters[0].attrib, {TOOLS + "node": "removeAll"})
-        self.assertEqual(len(filters[0]), 0)
-        self.assertEqual(names(filters[1], "action"), {"android.intent.action.MAIN"})
-        self.assertEqual(names(filters[1], "category"), {"android.intent.category.LAUNCHER"})
-        self.assertEqual(filters[1].findall("data"), [])
-        self.assertEqual(main.find("application/provider").get(ANDROID + "authorities"),
-                         "${applicationId}.androidx-startup")
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(names(filters[0], "action"), {"android.intent.action.VIEW"})
+        self.assertEqual(names(filters[0], "category"), {
+            "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"})
+        self.assertEqual([node.attrib for node in filters[0].findall("data")], [{
+            ANDROID + "scheme": "splitfree", ANDROID + "host": "join"}])
+        main_filters = main.findall("application/activity/intent-filter")
+        self.assertEqual(len(main_filters), 1)
+        self.assertEqual(names(main_filters[0], "action"), {"android.intent.action.MAIN"})
+        self.assertEqual(names(main_filters[0], "category"), {"android.intent.category.LAUNCHER"})
+        self.assertEqual(main_filters[0].findall("data"), [])
+        self.assertFalse(any(key.startswith(TOOLS) for root in (debug, release)
+                             for node in root.iter() for key in node.attrib))
+
+    def test_required_workmanager_removal_has_only_node_local_warning_suppression(self):
+        main = ET.parse(ROOT / "app/src/main/AndroidManifest.xml").getroot()
+        providers = [node for node in main.findall("application/provider")
+                     if node.get(ANDROID + "name") == "androidx.startup.InitializationProvider"]
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0].get(ANDROID + "authorities"), "${applicationId}.androidx-startup")
+        self.assertEqual(providers[0].get(ANDROID + "exported"), "false")
+        removals = providers[0].findall("meta-data")
+        self.assertEqual(len(removals), 1)
+        self.assertEqual(removals[0].attrib, {
+            ANDROID + "name": WORK_MANAGER_INITIALIZER,
+            ANDROID + "value": "androidx.startup",
+            TOOLS + "node": "remove",
+            TOOLS + "ignore-warning": "true",
+        })
+        suppressed = [node for node in main.iter() if TOOLS + "ignore-warning" in node.attrib]
+        self.assertEqual(suppressed, removals)
 
 
 class VariantPolicyTests(unittest.TestCase):
+    def test_startup_contract_rejects_auto_init_and_lost_or_modified_other_initializers(self):
+        for variant in VARIANTS:
+            for mode in ("auto-init", "auto-init-other-provider", "missing-provider", "duplicate-provider",
+                         "wrong-authority", "exported", "missing-other", "duplicate-other", "changed-value",
+                         "unexpected-initializer"):
+                with self.subTest(variant=variant, mode=mode), self.assertRaises(AssertionError):
+                    manifest = manifest_fixture(variant)
+                    app = manifest.find("application")
+                    provider = app.find("provider")
+                    if mode == "auto-init":
+                        ET.SubElement(provider, "meta-data", {
+                            ANDROID + "name": WORK_MANAGER_INITIALIZER, ANDROID + "value": "androidx.startup"})
+                    elif mode == "auto-init-other-provider":
+                        other = ET.SubElement(app, "provider", {ANDROID + "name": "example.Other"})
+                        ET.SubElement(other, "meta-data", {ANDROID + "name": WORK_MANAGER_INITIALIZER})
+                    elif mode == "missing-provider":
+                        app.remove(provider)
+                    elif mode == "duplicate-provider":
+                        app.append(copy.deepcopy(provider))
+                    elif mode == "wrong-authority":
+                        provider.set(ANDROID + "authorities", "wrong.androidx-startup")
+                    elif mode == "exported":
+                        provider.set(ANDROID + "exported", "true")
+                    elif mode == "missing-other":
+                        provider.remove(provider[0])
+                    elif mode == "duplicate-other":
+                        provider.append(copy.deepcopy(provider[0]))
+                    elif mode == "changed-value":
+                        provider[0].set(ANDROID + "value", "not-an-initializer")
+                    else:
+                        ET.SubElement(provider, "meta-data", {
+                            ANDROID + "name": "example.UnexpectedInitializer", ANDROID + "value": "androidx.startup"})
+                    check_startup(self, manifest, VARIANTS[variant][0])
+
     def test_both_manifest_fixtures_pass_with_disjoint_authorities(self):
         debug = check_manifest(self, manifest_fixture("debug"), "debug")
         release = check_manifest(self, manifest_fixture("release"), "release")
@@ -326,6 +418,26 @@ public final class BuildConfig {{
 @unittest.skipUnless(os.environ.get("SPLITFREE_VARIANT_BUILD_DIR"),
                      "Set SPLITFREE_VARIANT_BUILD_DIR after assembling both variants")
 class BuiltVariantTests(unittest.TestCase):
+    def test_unit_test_manifest_preserves_startup_and_debug_isolation(self):
+        build = Path(os.environ["SPLITFREE_VARIANT_BUILD_DIR"])
+        path = build / "intermediates/merged_manifest/debugUnitTest/mergeDebugUnitTestManifest/AndroidManifest.xml"
+        manifest = ET.parse(path).getroot()
+        check_startup(self, manifest, VARIANTS["debug"][0])
+        self.assertEqual(manifest.get("package"), VARIANTS["debug"][0])
+        self.assertEqual(manifest.find("application").get(ANDROID + "label"), "SplitFree Debug")
+        self.assertFalse(any(key.startswith(TOOLS) for node in manifest.iter() for key in node.attrib))
+        activities = manifest.findall("application/activity") + manifest.findall("application/activity-alias")
+        for activity in activities:
+            for intent in activity.findall("intent-filter"):
+                self.assertNotIn("android.intent.action.VIEW", names(intent, "action"))
+                self.assertNotIn("android.intent.category.BROWSABLE", names(intent, "category"))
+        main = [node for node in activities
+                if node.get(ANDROID + "name") == "com.splitfree.MainActivity"]
+        self.assertEqual(len(main), 1)
+        self.assertEqual(len(main[0].findall("intent-filter")), 1)
+        self.assertEqual(names(main[0].find("intent-filter"), "action"), {"android.intent.action.MAIN"})
+        self.assertEqual(names(main[0].find("intent-filter"), "category"), {"android.intent.category.LAUNCHER"})
+
     def test_apks_metadata_and_generated_build_config_agree(self):
         build = Path(os.environ["SPLITFREE_VARIANT_BUILD_DIR"])
         aapt2 = os.environ.get("AAPT2")

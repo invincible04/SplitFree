@@ -19,23 +19,38 @@ It binds to `127.0.0.1`, not your network interfaces.
 
 ## Deploy to GitHub Pages yourself
 
-The workflow is **manual-only for deployment**. Nothing publishes on a push.
-Pull requests touching the website get checks, not a deployment.
+The workflow **deploys automatically after checks pass on a `mainline` push**,
+including a merged pull request. A failed build, test or release-data refresh leaves
+an existing deployment unchanged. No Android release is created or published.
 
-1. Review and commit the website changes, then make them available in the GitHub
-   repository's `mainline` branch through your normal process.
-2. In the repository, open **Settings → Pages → Build and deployment**.
-   Choose **GitHub Actions** as the source.
-3. Open **Actions → Website · GitHub Pages → Run workflow**. Select `mainline`.
-4. The workflow installs locked test dependencies, runs checks, and uploads only
-   `website/dist`. Its separate deployment job publishes the artifact.
-5. Open the actual URL shown by the `github-pages` deployment. No custom domain or
-   signing secrets are required. Do not change the repository's Android release workflow.
+1. In **Settings → Pages → Build and deployment**, choose **GitHub Actions** as
+   the source before the first push. Check that the `github-pages` environment
+   permits `mainline`; required deployment reviewers would make deployment manual.
+   These are repository settings, not changes this workflow makes for you.
+2. Make the reviewed workflow and website available on `mainline`. The push runs
+   locked dependency installation, release-data refresh, formatting, unit/browser
+   tests and publication checks. Only a successful build uploads `website/dist`
+   for the separate deployment job.
+3. Open the actual URL shown by the `github-pages` deployment and verify the page
+   and APK download. No custom domain or signing secrets are required.
+4. For a retry or a release-data refresh without source changes, use
+   **Actions → Website · GitHub Pages → Run workflow** and select `mainline`.
+
+For ongoing development, use `dev` → `mainline` pull requests. A push to `dev`
+does not deploy. All PRs targeting `mainline` run website checks, with no deployment
+or live release-data refresh. There is deliberately no PR path filter, so the
+**Build and check website** check can be required alongside **CI checks** without
+unrelated PRs being left waiting for a skipped workflow. Configure branch protection
+and required reviews in GitHub separately; merging a passing PR triggers deployment.
 
 The page uses relative assets and works under a project path such as `/SplitFree/`
-or a domain root. The browser suite tests both. Deployment is restricted to the
-original repository and `mainline`; a fork owner must explicitly review/change
-that guard to publish their own copy. GitHub may require one-time environment approval.
+or a domain root. The browser suite tests both. Deployment and its live API refresh
+are restricted to a push or manual run on `mainline` in `invincible04/SplitFree`.
+Forks, tags, other branches and PRs cannot enter those steps. Manual runs on other
+branches check their source only. Deployment runs for the same ref are serialized;
+an in-progress deployment is not cancelled by a newer push. GitHub keeps only one
+pending run per ref; rapid pushes can replace an older pending run. Intermediate
+commits need not each deploy.
 
 Alternatively, `npm --prefix website run build` produces a portable `website/dist`
 folder that any static host can serve. There is no application server in production.
@@ -62,10 +77,17 @@ npm --prefix website run sync:release
 ```
 
 This reads GitHub and writes only local `site.config.json`. It performs no commit,
-remote write or deployment. Manual Pages runs refresh the fallback before tests,
-so future visitors without JavaScript also get the release current at deployment.
-No automatic publishing workflow is added. API asset checksums are GitHub's
+remote write or deployment. Eligible push and manual Pages runs refresh the fallback
+before tests, so visitors without JavaScript get the release current at deployment.
+This publishes the website only, not an APK. API asset checksums are GitHub's
 published metadata, not an independent APK signature or security audit.
+
+Source commits and internal Android version-code changes do not update a published
+APK. Until the launch APK is explicitly published, the website offers the existing
+public download. After publishing an APK, rerun this workflow on `mainline` to refresh
+the bundled fallback even if no source changes are needed. Verify the downloaded
+bytes before announcing the release; an already open or cached page can still show
+earlier metadata. Published releases and tags are not replaced.
 
 ## GitHub stars
 
@@ -92,25 +114,30 @@ neutral language. The currency selector changes the example, not exchange rates.
 ## Architecture
 
 ```text
-index.html                  Small page shell with build-time section includes
-sections/*.html             Head, header, hero, demo, features, FAQ, footer and film
-site.config.json            Bundled release fallback (refreshed from GitHub)
-src/styles.css              Brand tokens, section layouts, responsive rules
-src/footer.css              Compact footer and GitHub star invitation
-src/main.js                 Menu, split preview, film dialog, live release UI
-src/release.js              Strict GitHub release validation and bounded GET
-src/stars.js                Optional validated GitHub star metadata
-src/split.js                Pure currency-aware minor-unit split arithmetic
-public/assets/              Self-hosted logo, fonts, film and poster
-public/licenses/            Font licenses (also deployed)
-scripts/build.mjs           Validates configuration; emits an isolated static site
-scripts/templates.mjs       Exact section manifest; safe recursive include assembly
-scripts/serve.mjs           Loopback-only preview with video byte-range support
-scripts/sync-release.mjs    Read-only GitHub check updating the local fallback
-scripts/capture.mjs         Reproducible responsive screenshots (preview running)
-tests/unit.test.mjs         Money, release configuration, build-output contracts
-tests/browser.test.mjs      Responsive layout, keyboard, a11y, media, fallbacks
-dist/                       Generated, ignored; the only deployable folder
+website/
+├── index.html                  Small page shell with build-time section includes
+├── sections/*.html             Head, header, hero, demo, features, FAQ, footer and film
+├── site.config.json            Bundled release fallback (refreshed from GitHub)
+├── src/
+│   ├── styles.css              Brand tokens, section layouts, responsive rules
+│   ├── footer.css              Compact footer and GitHub star invitation
+│   ├── main.js                 Menu, split preview, film dialog, live release UI
+│   ├── release.js              Strict GitHub release validation and bounded GET
+│   ├── stars.js                Optional validated GitHub star metadata
+│   └── split.js                Pure currency-aware minor-unit split arithmetic
+├── public/
+│   ├── assets/                 Self-hosted logo, fonts, film and poster
+│   └── licenses/               Font licenses (also deployed)
+├── scripts/
+│   ├── build.mjs               Validates configuration; emits an isolated static site
+│   ├── templates.mjs           Exact section manifest; safe recursive include assembly
+│   ├── serve.mjs               Loopback-only preview with video byte-range support
+│   ├── sync-release.mjs        Read-only GitHub check updating the local fallback
+│   └── capture.mjs             Reproducible responsive screenshots (preview running)
+├── tests/
+│   ├── unit.test.mjs           Money, release configuration, build-output contracts
+│   └── browser.test.mjs        Responsive layout, keyboard, a11y, media, fallbacks
+└── dist/                       Generated, ignored; the only deployable folder
 ```
 
 No framework, router, backend, runtime package dependencies, cookies, analytics,

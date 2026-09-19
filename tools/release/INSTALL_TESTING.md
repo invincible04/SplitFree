@@ -91,9 +91,10 @@ Provide reviewed local values for each input:
 - Do not create trust by copying an arbitrary candidate's reported signer into a pin
   input.
 
-- Current source is production **`1.0.0` / code `3`**.
-- The display remains frozen until the first approved GitHub release; that does not
-  permit a same-code upgrade.
+- Current source is production **`1.0.1` / code `5`**; the retained predecessor is the
+  published **v1.0.0 / code 4**.
+- A same-code upgrade is never permitted; every distributed update needs a strictly
+  higher `versionCode`.
 - Use the real retained predecessor and higher-code candidate described by the
   [version and ledger policy](../../RELEASING.md#verified-local-distribution).
 

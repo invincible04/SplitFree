@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application android:label="SplitFree">
+        <!-- Only the production app handles external invitations; debug uses in-app Scan or Paste. -->
+        <activity
+            android:name="com.splitfree.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="splitfree" android:host="join" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
