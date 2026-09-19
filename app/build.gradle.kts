@@ -162,6 +162,8 @@ dependencies {
 
     // Unit tests (JVM)
     testImplementation(libs.junit)
+    testImplementation("com.squareup.okhttp3:mockwebserver3:${libs.versions.okhttp.get()}")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:${libs.versions.okhttp.get()}")
     testImplementation(libs.secp256k1.jvm)
     testImplementation(libs.bouncycastle)
     testImplementation(libs.kotlinx.serialization.json)

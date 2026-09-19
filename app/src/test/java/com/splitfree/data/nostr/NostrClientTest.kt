@@ -67,7 +67,7 @@ class NostrClientTest {
     }
 
     @Test
-    fun `subscribe uses wider since window for gift wrap p-tag filter`() = runBlocking {
+    fun `subscribe admits old authored arrivals without replaying unbounded stored history`() = runBlocking {
         val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
         val relay = mockk<Relay>(relaxed = true)
         val capturedFilters = slot<List<NostrFilter>>()
@@ -88,13 +88,14 @@ class NostrClientTest {
         val filters = capturedFilters.captured
         assertEquals("Should have 2 filters", 2, filters.size)
 
-        // Filter 1: group filter uses original since
-        assertEquals(since, filters[0].since)
+        // Neither filter interprets authored time as relay arrival time.
+        assertEquals(null, filters[0].since)
+        assertEquals(0, filters[0].limit)
         assertTrue(filters[0].tags!!.containsKey("#g"))
 
-        // Filter 2: p-tag filter uses since - 48h for NIP-59 timestamp randomization
-        val expectedGiftWrapSince = since - 2 * 86400
-        assertEquals(expectedGiftWrapSince, filters[1].since)
+        // NIP-59 recipient history is fetched separately with bounded pagination.
+        assertEquals(null, filters[1].since)
+        assertEquals(0, filters[1].limit)
         assertTrue(filters[1].tags!!.containsKey("#p"))
         assertEquals(listOf(1059), filters[1].kinds)
     }

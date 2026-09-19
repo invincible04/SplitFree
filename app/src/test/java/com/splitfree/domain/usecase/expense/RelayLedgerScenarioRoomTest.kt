@@ -5,6 +5,7 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.sync.FetchResult
 import com.splitfree.domain.model.sync.FlushResult
+import com.splitfree.domain.model.sync.HistoryRange
 import com.splitfree.test.RelayLedgerScenario
 import io.mockk.coEvery
 import io.mockk.every
@@ -48,14 +49,20 @@ class RelayLedgerScenarioRoomTest {
             coEvery { client.publishJson(any()) } coAnswers { publish(firstArg()) }
             coEvery { client.publish(any()) } coAnswers { publish(firstArg<NostrEvent>().toJson()) }
             coEvery { client.fetchEventsByRelay(any(), any(), any()) } coAnswers {
-                val windows = secondArg<Map<String, Long>>()
-                val finished = complete && !incompleteNextFetch
-                incompleteNextFetch = false
-                FetchResult(history(firstArg()), finished, if (finished) windows.keys else emptySet())
+                fetch(firstArg(), secondArg<Map<String, Long>>().keys)
+            }
+            coEvery { client.fetchHistory(any(), any(), any()) } coAnswers {
+                fetch(firstArg(), secondArg<Map<String, List<HistoryRange>>>().keys)
             }
             coEvery { client.fetchEventIds(any(), any(), any()) } coAnswers {
                 history(firstArg()).filter { it.kind == 30078 }.map { it.id }.toSet()
             }
+        }
+
+        private fun fetch(groupId: String, relays: Set<String>): FetchResult {
+            val finished = complete && !incompleteNextFetch
+            incompleteNextFetch = false
+            return FetchResult(history(groupId), finished, if (finished) relays else emptySet())
         }
 
         private fun publish(serialized: String): Boolean {

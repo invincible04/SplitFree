@@ -9,6 +9,7 @@ import com.splitfree.data.local.dao.DeliveryDao
 import com.splitfree.data.local.dao.DisplayNameDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
+import com.splitfree.data.local.dao.HistorySweepDao
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.data.local.dao.RelaySyncCursorDao
 import com.splitfree.data.local.dao.SyncRevisionDao
@@ -18,6 +19,7 @@ import com.splitfree.data.local.entities.DisplayNameIntentEntity
 import com.splitfree.data.local.entities.DisplayNamePublicationEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.GroupEntity
+import com.splitfree.data.local.entities.HistorySweepEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.local.entities.RelaySyncCursorEntity
 import com.splitfree.data.local.entities.SyncRevisionEntity
@@ -26,9 +28,9 @@ import com.splitfree.data.local.entities.SyncRevisionEntity
     entities = [
         EventEntity::class, GroupEntity::class, OutboxEntity::class, DeliveryEntity::class,
         ControlOperationEntity::class, SyncRevisionEntity::class, RelaySyncCursorEntity::class,
-        DisplayNameIntentEntity::class, DisplayNamePublicationEntity::class
+        DisplayNameIntentEntity::class, DisplayNamePublicationEntity::class, HistorySweepEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 /**
@@ -46,9 +48,12 @@ import com.splitfree.data.local.entities.SyncRevisionEntity
  * - v3: durable control-operation journal and trigger-maintained per-group sync revisions
  * - v4: per-relay, per-recipient completed catch-up cursors
  * - v5: canonical group projection facts and durable identity-scoped display-name publications
+ * - v6: resumable relay history partitions, fair scheduling and unresolved sweep debt
  */
 abstract class AppDatabase : RoomDatabase() {
     abstract fun displayNameDao(): DisplayNameDao
+
+    abstract fun historySweepDao(): HistorySweepDao
 
     abstract fun eventDao(): EventDao
 
@@ -65,6 +70,17 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun relaySyncCursorDao(): RelaySyncCursorDao
 
     companion object {
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS history_sweeps (groupId TEXT NOT NULL, relayUrl TEXT NOT NULL, " +
+                        "recipientPubkey TEXT NOT NULL, pendingJson TEXT NOT NULL, " +
+                        "attemptedAt INTEGER NOT NULL, hadUnresolved INTEGER NOT NULL, " +
+                        "PRIMARY KEY(groupId, relayUrl, recipientPubkey))"
+                )
+            }
+        }
+
         val SYNC_REVISION_CALLBACK = object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 installSyncRevisionTriggers(db)

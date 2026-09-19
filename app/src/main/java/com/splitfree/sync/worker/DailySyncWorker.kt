@@ -22,8 +22,8 @@ import kotlinx.coroutines.CancellationException
  * Daily full reconciliation, scheduled by [SyncScheduler.scheduleDailySync]: first run at the next
  * local midnight, then roughly every 24 hours; WorkManager may drift and defer it.
  *
- * Unlike [SyncWorker], this forces a fresh relay connection, pulls the complete event history of
- * every group (lenient timestamps), self-heals, snapshots, and abandons outbox entries idle for
+ * Unlike [SyncWorker], this forces a fresh relay connection, resumes the same bounded history sweeps
+ * as ordinary sync, self-heals, snapshots, and abandons outbox entries idle for
  * [OUTBOX_RETENTION_DAYS]. The run succeeds only when every attempted outbox row published and
  * every pull was complete; otherwise, or on an exception, it retries up to [RUN_RETRY_BUDGET] times
  * and then fails, and the next period runs regardless. Cancellation is rethrown, never reported.

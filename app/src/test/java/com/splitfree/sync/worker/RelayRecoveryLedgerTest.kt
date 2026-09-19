@@ -162,6 +162,13 @@ class RelayRecoveryLedgerTest {
                 active.clear()
                 listener.onFailure(socket, IOException("simulated link lost"), null)
             }
+            fun publish(event: NostrEvent) {
+                active.forEach { (id, filters) ->
+                    if (filters.any { matches(event, it) }) {
+                        listener.onMessage(socket, "[\"EVENT\",${JSONObject.quote(id)},${event.toJson()}]")
+                    }
+                }
+            }
             private fun receive(text: String) {
                 val frame = JSONArray(text)
                 when (frame.getString(0)) {
@@ -174,8 +181,10 @@ class RelayRecoveryLedgerTest {
                         val fail = ":fetch:" in id && failNextFetches > 0
                         if (fail) failNextFetches--
                         responses[id] = scope.launch {
-                            val eligible = history.filter { e -> filters.any { matches(e, it) } }
-                                .sortedByDescending { it.createdAt }
+                            val eligible = filters.flatMap { filter ->
+                                history.filter { matches(it, filter) }.sortedByDescending { it.createdAt }
+                                    .take(filter.optInt("limit", Int.MAX_VALUE))
+                            }.distinctBy { it.id }.sortedByDescending { it.createdAt }
                             val withheld = stallOldHistory && ":fetch:" in id
                             for (event in eligible.filter { !withheld || it.createdAt >= now - 60 }) {
                                 listener.onMessage(socket, "[\"EVENT\",${JSONObject.quote(id)},${event.toJson()}]")
@@ -188,6 +197,13 @@ class RelayRecoveryLedgerTest {
                                 listener.onMessage(socket, "[\"EOSE\",${JSONObject.quote(id)}]")
                             }
                         }
+                    }
+                    "EVENT" -> {
+                        val event = checkNotNull(NostrEvent.fromJson(frame.getJSONObject(1).toString()))
+                        check(event.verify())
+                        if (history.none { it.id == event.id }) history += event
+                        connections.filter { it.opened }.forEach { it.publish(event) }
+                        listener.onMessage(socket, JSONArray(listOf("OK", event.id, true, "stored")).toString())
                     }
                     "CLOSE" -> {
                         val id = frame.getString(1)
@@ -472,20 +488,18 @@ class RelayRecoveryLedgerTest {
     }
 
     @Test
-    fun `recent gift wrap still arrives through real Relay live replay`() = ts.runTest {
-        val inner = signedExpense(2 * 3600)
-        primary.history += wrapped(inner, 3 * 3600)
+    fun `old gift wrap arrives through real Relay live publication without reconnect`() = ts.runTest {
+        primary.autoOpen = true
         start()
         tick(6_000)
-        assertNull(db.eventDao().getEvent(inner.id))
-        // Stop history fetches on the server so this control specifically exercises live re-REQ.
-        primary.stallOldHistory = true
-        primary.latest().open()
+        val inner = signedExpense(60 * 3600)
+        val envelope = wrapped(inner, 72 * 3600)
+        val generation = client.connectionGeneration.value
+        assertTrue(async { client.publish(envelope) }.await())
         runCurrent()
-        assertTrue(client.connectionState.value)
-        assertTrue(primary.requests.any { ":fetch:" !in it.first })
-        assertNotNull("recent wrapped expense arrives through live re-REQ", db.eventDao().getEvent(inner.id))
+        assertNotNull(db.eventDao().getEvent(inner.id))
         assertEquals(-500L, bobNet())
+        assertEquals(generation, client.connectionGeneration.value)
     }
 
     @Test

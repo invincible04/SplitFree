@@ -194,6 +194,7 @@ constructor(
             var generationNotBefore = 0L
             var initial = true
             var fallbackScheduled = false
+            var reconcileAt = 0L
             val retries = mutableMapOf<String, CatchUpRetry>()
 
             while (currentCoroutineContext().isActive) {
@@ -214,7 +215,8 @@ constructor(
                 val now = SystemClock.elapsedRealtime()
                 val generation = nostrClient.connectionGeneration.value
                 val generationChanged = generation != processedGeneration && now >= generationNotBefore
-                val catchUpAll = initial || relaysChanged || generationChanged
+                val periodic = now >= reconcileAt
+                val catchUpAll = initial || relaysChanged || generationChanged || periodic
                 // Mark only the generation observed BEFORE pulling, never one that arrived in flight.
                 if (catchUpAll) processedGeneration = generation
                 for (group in groups) {
@@ -240,6 +242,7 @@ constructor(
                     val cooldown = if (retries.values.any { it.retryAt == null }) BACKOFF_CAP_MS else BACKOFF_STEP_MS
                     generationNotBefore = SystemClock.elapsedRealtime() + cooldown
                 }
+                if (catchUpAll) reconcileAt = SystemClock.elapsedRealtime() + RECONCILE_INTERVAL_MS
                 subscribed = current
                 initial = false
 
@@ -247,7 +250,7 @@ constructor(
                     nostrClient.connectionGeneration.value != processedGeneration
                 }
                 val retryAt = retries.values.mapNotNull { it.retryAt }.minOrNull()
-                val wakeAt = listOfNotNull(generationAt, retryAt).minOrNull()
+                val wakeAt = listOfNotNull(generationAt, retryAt, reconcileAt).minOrNull()
                 if (wakeAt == null) {
                     changes.receive()
                 } else {
@@ -259,7 +262,6 @@ constructor(
 
     /** Returns whether the group's history is now complete; a group without a key has nothing to pull. */
     private suspend fun catchUpAndSubscribe(groupId: String, myPubkey: String): Boolean {
-        val startedAt = System.currentTimeMillis() / 1000
         val groupKey = groupRepo.getGroupKey(groupId)
         var complete = true
         if (groupKey != null) {
@@ -278,9 +280,8 @@ constructor(
                 complete = false
             }
         }
-        // From just before the pull began: anything published while it was in flight reaches the live
-        // stream instead, and the processor drops what both paths deliver.
-        nostrClient.subscribe(groupId, startedAt - SUBSCRIBE_OVERLAP_SECS, myPubkey)
+        // Live filters have no authored-time lower bound; bounded periodic sweeps also repair gaps.
+        nostrClient.subscribe(groupId, 0, myPubkey)
         return complete
     }
 
@@ -291,7 +292,7 @@ constructor(
         try {
             // onStop cancels this collector mid-event; the row must still reach APPLIED or FAILED, or the
             // next start re-processes it as pending.
-            val result = eventProcessor.process(rawEvent = event, nonCancellable = true)
+            val result = eventProcessor.process(rawEvent = event, nonCancellable = true, lenientTimestamp = true)
             if (result.stored && result.outcome == IngestOutcome.APPLIED) {
                 ExpenseNotifier.notifyIfNeeded(
                     context,
@@ -346,7 +347,7 @@ constructor(
     companion object {
         private const val TAG = "LiveSync"
         private const val CURSOR_OVERLAP_SECS = 3600L
-        private const val SUBSCRIBE_OVERLAP_SECS = 60L
+        internal const val RECONCILE_INTERVAL_MS = 5 * 60_000L
         private const val BACKOFF_STEP_MS = 30_000L
         private const val BACKOFF_CAP_MS = 120_000L
         private const val RECONNECT_GRACE_MS = 5_000L

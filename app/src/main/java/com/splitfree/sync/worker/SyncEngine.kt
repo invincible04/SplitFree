@@ -3,6 +3,7 @@ package com.splitfree.sync.worker
 import android.content.Context
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.OutboxDao
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.repository.RelaySyncCursors
@@ -10,6 +11,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.crypto.isAddressedTo
 import com.splitfree.domain.model.sync.FlushResult
+import com.splitfree.domain.model.sync.HistoryRange
 import com.splitfree.domain.model.sync.PullResult
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -22,6 +24,8 @@ import com.splitfree.sync.event.IngestionContext
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Pulls events from relays and flushes the local outbox.
@@ -38,12 +42,14 @@ constructor(
     private val eventProcessor: EventProcessor,
     private val relayCursors: RelaySyncCursors
 ) : SyncEngineContract {
+    private val pullMutex = Mutex()
+
     /**
      * Pull events for a group from connected relays and process new ones. The group's cursor moves
-     * as a progress indicator; correctness comes from each relay's durable coverage cursor.
+     * as a progress indicator; durable partitions resume bounded sweeps, never infer relay arrival time.
      *
      * @param groupId target group UUID
-     * @param since unix timestamp to fetch events after
+     * @param since legacy hint; ordinary sweeps must also discover late publication with older authored time
      * @param groupKey base64-encoded symmetric group key for decryption
      * @param lenientTimestamp has no effect on admission: every pull is reconciliation and always permits old events
      */
@@ -61,30 +67,35 @@ constructor(
         groupKey: String,
         lenientTimestamp: Boolean = false,
         notifyContext: Context? = null
-    ): PullResult {
+    ): PullResult = pullMutex.withLock {
         // Relays return newest-first. key_rotation must be applied strictly in epoch order and
         // group_meta is last-writer-wins on created_at, so process a catch-up batch oldest-first.
         eventProcessor.retryDeferred(groupId)
         val startedAt = System.currentTimeMillis() / 1000
         val recipient = identity.getPublicKeyHex()
-        val cursors = relayCursors.cursors(groupId, recipient)
+        val sweeps = relayCursors.sweeps(groupId, recipient)
         val primary = groupRepo.getById(groupId)?.relays.orEmpty().ifEmpty { RelayDefaults.DEFAULT_RELAYS }
         // The configured relays remain relevant even when a health probe or socket is offline.
         // Relays this process has connected to in the shared pool may also hold the only published copy.
         val targets = (primary + RelayDefaults.FALLBACK_RELAYS + nostrClient.currentRelayUrls())
             .filter { it.startsWith("wss://") }.distinct()
-        val windows = targets.associateWith { relay ->
-            // Never seed from the group-level lastSyncTimestamp: it may have advanced on fallback-only EOSE.
-            val coveredSince = ((cursors[relay] ?: 0L) - CURSOR_OVERLAP_SECS).coerceAtLeast(0)
-            minOf(since.coerceAtLeast(0), coveredSince)
+        val selected = targets.sortedBy { sweeps[it]?.attemptedAt ?: 0 }.take(NostrClient.MAX_HISTORY_RELAYS)
+        val windows = selected.associateWith { 0L }
+        val pending = selected.associateWith { relay ->
+            sweeps[relay]?.pending?.takeIf { it.isNotEmpty() } ?: listOf(HistoryRange(0, startedAt))
         }
-        val fetch = nostrClient.fetchEventsByRelay(groupId, windows, recipient)
+        // created_at is authored time. Completed sweeps never exclude a later publication of old work.
+        val fetch = if (sweeps.isEmpty()) {
+            nostrClient.fetchEventsByRelay(groupId, windows, recipient)
+        } else {
+            nostrClient.fetchHistory(groupId, pending, recipient)
+        }
         // A key replacement during IO changes what can be unwrapped. Never certify the old
         // recipient's window using a processor that now reads another identity's private key.
-        if (identity.getPublicKeyHex() != recipient) return PullResult(0, false)
-        val events = fetch.events.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
-        val existingIds = eventDao.getEventIds(groupId).toSet()
-        val pendingIds = eventDao.getPendingEvents(groupId).mapTo(HashSet()) { it.eventId }
+        if (identity.getPublicKeyHex() != recipient) return@withLock PullResult(0, false)
+        val events = fetch.events.distinctBy {
+            it.id
+        }.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
         val retryable = mutableListOf<NostrEvent>()
         // Every pull is historical catch-up. A relay's debt can be arbitrarily old even when the
         // caller requested an incremental pull. Use historical validation, never live rate limits;
@@ -92,7 +103,12 @@ constructor(
         val context = IngestionContext.RECONCILIATION
         var count = 0
         for (event in events) {
-            if (event.id in existingIds && event.id !in pendingIds) continue
+            val existing = eventDao.getEvent(event.id)
+            if (existing != null &&
+                existing.applyState in setOf(EventEntity.APPLY_STATE_APPLIED, EventEntity.APPLY_STATE_FAILED)
+            ) {
+                continue
+            }
             // A `p` tag addresses an event to one member: the creator signs one key_rotation envelope
             // per recipient, and a gift wrap names its recipient the same way. The #g filter returns
             // every member's copy. Another member's copy cannot be decrypted here, so it is not this
@@ -110,7 +126,7 @@ constructor(
                     context = context
                 )
             if (result.retryable || result.reason == "pending quota") retryable += event
-            if (result.stored && event.id !in existingIds) {
+            if (result.stored && existing == null) {
                 if (notifyContext != null && result.outcome == IngestOutcome.APPLIED) {
                     ExpenseNotifier.notifyIfNeeded(
                         notifyContext,
@@ -148,15 +164,33 @@ constructor(
             eventProcessor.retryDeferred(groupId)
             if (!progressed) break
         }
-        // Persist only completed relay coverage, after processing, at fetch-start time. Failed or
-        // excluded relays keep their old (or absent) cursor across workers and process restarts.
-        // A rejected dependency/quota record is not durably stored. Without per-event relay
-        // provenance, conservatively retain every window until all such evidence is accepted.
         val sameRecipient = identity.getPublicKeyHex() == recipient
-        val completed = if (retryable.isEmpty() && sameRecipient) fetch.completedRelays else emptySet()
+        if (!sameRecipient) return@withLock PullResult(count, false)
+        val unresolved = retryable.isNotEmpty() ||
+            eventDao.countPending(groupId) > 0 ||
+            eventProcessor.unresolvedIdentityHistory(groupId) > 0
+        val attemptedAt = maxOf(System.currentTimeMillis(), (sweeps.values.maxOfOrNull { it.attemptedAt } ?: 0) + 1)
+        val next = selected.associateWith { relay ->
+            val prior = sweeps[relay]
+            RelaySyncCursors.Sweep(
+                fetch.pendingByRelay[relay]
+                    ?: if (relay in fetch.completedRelays) emptyList() else pending.getValue(relay),
+                attemptedAt,
+                unresolved || (prior?.pending?.isNotEmpty() == true && prior.hadUnresolved)
+            )
+        }
+        // Raw quota rejections are revisited next sweep, not buffered without bound. This relies on
+        // relay retention, just like every other missing page; never let that debt prevent reaching later controls.
+        relayCursors.saveSweeps(groupId, recipient, next)
+        val completed = next.filterValues { it.pending.isEmpty() && !it.hadUnresolved }.keys
         relayCursors.advance(groupId, recipient, completed, startedAt)
         if (completed.isNotEmpty()) groupRepo.updateLastSync(groupId, startedAt)
-        return PullResult(count, fetch.complete && retryable.isEmpty() && sameRecipient)
+        val states = sweeps + next
+        val complete = targets.isNotEmpty() &&
+            targets.all { relay ->
+                states[relay]?.let { it.pending.isEmpty() && !it.hadUnresolved } == true
+            }
+        PullResult(count, complete && !unresolved)
     }
 
     /**
@@ -215,7 +249,6 @@ constructor(
     companion object {
         private const val TAG = "SyncEngine"
         private const val MAX_DEPENDENCY_PASSES = 8
-        private const val CURSOR_OVERLAP_SECS = 3600L
         private const val WARN_RETRY_THRESHOLD = 10
 
         /** Failed attempts after which a non-critical row is considered stuck and backed off. */
@@ -225,6 +258,6 @@ constructor(
         const val STUCK_RETRY_INTERVAL_SECS = 6 * 3600L
 
         /** Never backed off: losing these breaks group membership or key state for everyone. */
-        val CRITICAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")
+        val CRITICAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation", "identity_history")
     }
 }

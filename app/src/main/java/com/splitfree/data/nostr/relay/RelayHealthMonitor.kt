@@ -111,7 +111,7 @@ constructor(private val httpClient: OkHttpClient) {
                 httpClient.newCall(request).execute().use { response ->
                     val latency = System.currentTimeMillis() - start
                     if (!response.isSuccessful) return@use RelayStatus(url, false, latency)
-                    parseNip11(url, response.body?.string(), latency)
+                    parseNip11(url, response.body.string(), latency)
                 }
             }
         }

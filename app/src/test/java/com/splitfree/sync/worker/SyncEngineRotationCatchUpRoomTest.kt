@@ -127,10 +127,11 @@ class SyncEngineRotationCatchUpRoomTest {
             epochZeroKey
         )
 
-        /** One full pull whose single configured relay answered with exactly [events] and reached EOSE. */
+        /** All requested relay fixtures return [events] and reach EOSE. */
         suspend fun pull(events: List<NostrEvent>): PullResult {
-            coEvery { nostrClient.fetchEventsByRelay(groupId, any(), pub) } returns
-                FetchResult(events, complete = true, completedRelays = setOf(relay))
+            coEvery { nostrClient.fetchEventsByRelay(groupId, any(), pub) } answers {
+                FetchResult(events, complete = true, completedRelays = secondArg<Map<String, Long>>().keys)
+            }
             return engine.pullEvents(groupId, 0, epochZeroKey)
         }
 

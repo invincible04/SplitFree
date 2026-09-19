@@ -82,7 +82,7 @@ interface NostrClientContract {
      */
     suspend fun fetchEvents(groupId: String, since: Long, myPubkey: String? = null): FetchResult
 
-    /** Fetch each requested relay from its own history window; unavailable URLs remain incomplete. */
+    /** Bounded paginated history; omitted or unavailable relays and unfinished partitions remain incomplete. */
     suspend fun fetchEventsByRelay(
         groupId: String,
         sinceByRelay: Map<String, Long>,
@@ -108,7 +108,7 @@ interface NostrClientContract {
      */
     suspend fun fetchGiftWraps(recipientPubHex: String): List<NostrEvent>
 
-    /** Subscribe to real-time events for a group. */
+    /** Subscribe to new arrivals without replaying history; [since] cannot exclude old-authored publication. */
     suspend fun subscribe(groupId: String, since: Long, myPubkey: String? = null)
 
     /** Close the subscription for a group. */

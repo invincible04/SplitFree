@@ -158,7 +158,6 @@ class NearbySyncCallbackTest {
             mapOf(
                 ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING to RadioFailureKind.ALREADY_ACTIVE,
                 ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_SCAN to RadioFailureKind.PERMISSION,
-                ConnectionsStatusCodes.MISSING_SETTING_LOCATION_MUST_BE_ON to RadioFailureKind.LOCATION_SETTING,
                 ConnectionsStatusCodes.STATUS_RADIO_ERROR to RadioFailureKind.RADIO,
                 ConnectionsStatusCodes.STATUS_ERROR to RadioFailureKind.RADIO,
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED to RadioFailureKind.ENDPOINT,
@@ -167,7 +166,6 @@ class NearbySyncCallbackTest {
             )
         assertEquals(8001, ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING)
         assertEquals(8037, ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_SCAN)
-        assertEquals(8025, ConnectionsStatusCodes.MISSING_SETTING_LOCATION_MUST_BE_ON)
         assertEquals(8007, ConnectionsStatusCodes.STATUS_RADIO_ERROR)
         assertEquals(13, ConnectionsStatusCodes.STATUS_ERROR)
         assertEquals(8004, ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED)
@@ -183,6 +181,22 @@ class NearbySyncCallbackTest {
             val outcome = pending.await() as RadioOutcome.Failure
             assertEquals("code $code", kind, outcome.kind)
             assertEquals("code $code", code, outcome.statusCode)
+        }
+    }
+
+    @Test
+    fun `legacy platform codes retain their original failure classifications`() = runTest {
+        // Historical SDK values, injected as raw codes so compatibility is tested independently of aliases.
+        val expected = mapOf(8025 to RadioFailureKind.LOCATION_SETTING, 8000 to RadioFailureKind.SERVICE)
+        for ((code, kind) in expected) {
+            val task = stubAdvertising()
+            val pending = async { nearbySync.startAdvertising() }
+            runCurrent()
+            task.fail(code)
+
+            val outcome = pending.await() as RadioOutcome.Failure
+            assertEquals("legacy code $code", kind, outcome.kind)
+            assertEquals("legacy code $code", code, outcome.statusCode)
         }
     }
 

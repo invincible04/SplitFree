@@ -29,11 +29,12 @@ import javax.inject.Singleton
  *
  * ## Schema migration
  *
- * Currently at **version 5** (`exportSchema = true`). Registered migrations:
+ * Currently at **version 6** (`exportSchema = true`). Registered migrations:
  * - [AppDatabase.MIGRATION_1_2]: additive columns on `events` / `groups` plus the `deliveries` table.
  * - [AppDatabase.MIGRATION_2_3]: control journal and persistent sync revisions (including change triggers).
  * - [AppDatabase.MIGRATION_3_4]: relay- and recipient-scoped completed catch-up cursors.
  * - [AppDatabase.MIGRATION_4_5]: canonical group projection facts and identity-scoped display-name publications.
+ * - [AppDatabase.MIGRATION_5_6]: resumable history sweeps, fair relay scheduling and replay debt.
  *
  * ### Do not use `fallbackToDestructiveMigration()`
  *
@@ -65,7 +66,8 @@ object DatabaseModule {
             AppDatabase.MIGRATION_1_2,
             AppDatabase.MIGRATION_2_3,
             AppDatabase.MIGRATION_3_4,
-            AppDatabase.MIGRATION_4_5
+            AppDatabase.MIGRATION_4_5,
+            AppDatabase.MIGRATION_5_6
         )
         .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
         .build()

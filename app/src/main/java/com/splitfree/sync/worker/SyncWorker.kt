@@ -15,11 +15,11 @@ import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
 
 /**
- * Background catch-up: flush the outbox, then pull each group incrementally from its cursor.
+ * Background catch-up: flush the outbox, then resume each group's bounded full-history sweep.
  *
  * Runs periodically on the [PowerManager.syncInterval] schedule and as the one-time boot/network
- * job from [SyncScheduler.scheduleImmediateSync]. Full reconciliation, self-heal and snapshots
- * belong to [DailySyncWorker].
+ * job from [SyncScheduler.scheduleImmediateSync]. Self-heal and snapshots belong to [DailySyncWorker];
+ * old-authored publication recovery runs here as well as in the foreground.
  *
  * The run succeeds only when every attempted outbox row published and every fetch was complete;
  * otherwise, or on an exception, it retries up to [RUN_RETRY_BUDGET] times and then fails.

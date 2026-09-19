@@ -37,7 +37,7 @@ class SyncEngineTest {
     private val identity = mockk<IdentityManager>()
     private val eventProcessor = mockk<EventProcessor>()
     private val cursors = mockk<RelaySyncCursors>(relaxed = true)
-    private val relayUrls = RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS
+    private val relayUrls = listOf(RelayDefaults.DEFAULT_RELAYS.first()) + RelayDefaults.FALLBACK_RELAYS
     private val zeroWindows = relayUrls.associateWith { 0L }
     private lateinit var engine: SyncEngine
 
@@ -51,10 +51,20 @@ class SyncEngineTest {
         every { android.util.Log.i(any(), any()) } returns 0
         every { android.util.Log.w(any(), any<String>()) } returns 0
         every { identity.getPublicKeyHex() } returns myPub
+        coEvery { eventDao.getEvent(any()) } returns null
         coEvery { eventProcessor.retryDeferred(any()) } returns 0
+        coEvery { eventProcessor.unresolvedIdentityHistory(any()) } returns 0
         every { nostrClient.currentRelayUrls() } returns emptyList()
-        coEvery { groupRepo.getById(any()) } returns null
+        coEvery { groupRepo.getById(any()) } returns com.splitfree.domain.model.group.Group(
+            groupId,
+            "Test",
+            createdBy = myPub,
+            createdAt = 1,
+            members = listOf(myPub),
+            relays = listOf(relayUrls.first())
+        )
         coEvery { cursors.cursors(any(), any()) } returns emptyMap()
+        coEvery { cursors.sweeps(any(), any()) } returns emptyMap()
         engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor, cursors)
     }
 
@@ -66,7 +76,9 @@ class SyncEngineTest {
         val event = NostrEvent(id = "e1", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
         coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
             FetchResult(listOf(event), complete = true, completedRelays = relayUrls.toSet())
-        coEvery { eventDao.getEventIds(groupId) } returns listOf("e1") // already known
+        coEvery { eventDao.getEvent("e1") } returns mockk(relaxed = true) {
+            every { applyState } returns com.splitfree.data.local.entities.EventEntity.APPLY_STATE_APPLIED
+        }
 
         val result = engine.pullEvents(groupId, 0, groupKey)
         assertEquals(PullResult(stored = 0, complete = true), result)
@@ -282,7 +294,7 @@ class SyncEngineTest {
         coVerify { groupRepo.updateLastSync(groupId, any()) }
 
         coEvery { cursors.cursors(groupId, myPub) } returns mapOf(fallback to 100_000L)
-        val windows = zeroWindows + (fallback to 96_400L)
+        val windows = zeroWindows
         coEvery { nostrClient.fetchEventsByRelay(groupId, windows, myPub) } returns
             FetchResult(emptyList(), false, setOf(primary, fallback))
         engine.pullEvents(groupId, 96_400, groupKey)
@@ -291,10 +303,10 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `older relay cursor widens incremental window and explicit full pull still starts at zero`() = runBlocking {
+    fun `authored timestamps cannot narrow ordinary sweeps even after completed coverage`() = runBlocking {
         val primary = relayUrls.first()
         coEvery { cursors.cursors(groupId, myPub) } returns relayUrls.associateWith { 100_000L } + (primary to 10_000L)
-        val windows = relayUrls.associateWith { 96_400L } + (primary to 6_400L)
+        val windows = zeroWindows
         coEvery { nostrClient.fetchEventsByRelay(groupId, windows, myPub) } returns
             FetchResult(emptyList(), true, relayUrls.toSet())
         engine.pullEvents(groupId, 96_400, groupKey)
@@ -366,6 +378,105 @@ class SyncEngineTest {
             EventProcessor.ProcessResult(stored = false)
         }
         assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        coVerify(exactly = 0) { cursors.advance(any(), any(), match { it.isNotEmpty() }, any()) }
+    }
+
+    @Test
+    fun `four relay budget is fair after engine replacement and never certifies unattempted peers`() = runBlocking {
+        val extra = (1..5).map { "wss://history-$it.test" }
+        every { nostrClient.currentRelayUrls() } returns extra
+        val state = mutableMapOf<String, RelaySyncCursors.Sweep>()
+        coEvery { cursors.sweeps(groupId, myPub) } answers { state.toMap() }
+        coEvery { cursors.saveSweeps(groupId, myPub, any()) } answers {
+            state.putAll(thirdArg())
+            Unit
+        }
+        val requested = mutableListOf<Set<String>>()
+        coEvery { nostrClient.fetchEventsByRelay(groupId, any(), myPub) } answers {
+            val urls = secondArg<Map<String, Long>>().keys
+            requested += urls
+            FetchResult(emptyList(), true, urls)
+        }
+        coEvery { nostrClient.fetchHistory(groupId, any(), myPub) } answers {
+            val urls = secondArg<Map<String, List<com.splitfree.domain.model.sync.HistoryRange>>>().keys
+            requested += urls
+            FetchResult(emptyList(), true, urls)
+        }
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor, cursors)
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertTrue(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertTrue(requested.all { it.size <= NostrClient.MAX_HISTORY_RELAYS })
+        assertEquals((relayUrls + extra).toSet(), requested.flatten().toSet())
+        assertTrue(requested[0].intersect(requested[1]).isEmpty())
+    }
+
+    @Test
+    fun `retry volume never blocks later controls and dirty sweep requires a clean replay`() = runBlocking {
+        val state = mutableMapOf<String, RelaySyncCursors.Sweep>()
+        coEvery { cursors.sweeps(groupId, myPub) } answers { state.toMap() }
+        coEvery { cursors.saveSweeps(groupId, myPub, any()) } answers {
+            state.putAll(thirdArg())
+            Unit
+        }
+        val money = (0 until 3000).map { index ->
+            NostrEvent(
+                id = "expense-$index",
+                pubkey = myPub,
+                createdAt = index + 1L,
+                kind = 30078,
+                content = "cipher".repeat(300),
+                sig = "sig"
+            )
+        }
+        val control = money.first().copy(id = "unlock", createdAt = 4000)
+        var unlocked = false
+        val accepted = mutableSetOf<String>()
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } answers {
+            val event = firstArg<NostrEvent>()
+            if (event.id == control.id) unlocked = true
+            if (unlocked) {
+                EventProcessor.ProcessResult(stored = accepted.add(event.id))
+            } else {
+                EventProcessor.ProcessResult(stored = false, retryable = true, reason = "undecryptable")
+            }
+        }
+        val tail1 = relayUrls.associateWith { listOf(com.splitfree.domain.model.sync.HistoryRange(1501, 4000)) }
+        val tail2 = relayUrls.associateWith { listOf(com.splitfree.domain.model.sync.HistoryRange(4000, 4000)) }
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(money.take(1500), false, pendingByRelay = tail1)
+        coEvery { nostrClient.fetchHistory(groupId, any(), myPub) } returnsMany listOf(
+            FetchResult(money.drop(1500), false, pendingByRelay = tail2),
+            FetchResult(listOf(control), true, relayUrls.toSet()),
+            FetchResult(money + control, true, relayUrls.toSet())
+        )
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertEquals(tail1, state.mapValues { it.value.pending })
+        assertTrue(state.values.all { it.hadUnresolved })
+        engine = SyncEngine(eventDao, outboxDao, groupRepo, nostrClient, identity, eventProcessor, cursors)
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertEquals(tail2, state.mapValues { it.value.pending })
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertTrue(unlocked)
+        assertTrue(state.values.all { it.pending.isEmpty() && it.hadUnresolved })
+        assertTrue(engine.pullEvents(groupId, 0, groupKey).complete)
+        assertEquals(money.map { it.id }.toSet() + control.id, accepted)
+        assertTrue(state.values.all { it.pending.isEmpty() && !it.hadUnresolved })
+    }
+
+    @Test
+    fun `awaiting identity history row is replayed and unresolved evidence blocks completion`() = runBlocking {
+        val event = NostrEvent(id = "awaiting", pubkey = myPub, createdAt = 100, kind = 30078, content = "x", sig = "s")
+        coEvery { eventDao.getEvent(event.id) } returns mockk(relaxed = true) {
+            every { applyState } returns com.splitfree.data.local.entities.EventEntity.APPLY_STATE_AWAITING_HISTORY
+        }
+        coEvery { eventProcessor.process(any(), any(), any(), any(), any(), any()) } returns
+            EventProcessor.ProcessResult(stored = false, outcome = com.splitfree.sync.event.IngestOutcome.DEFERRED)
+        coEvery { nostrClient.fetchEventsByRelay(groupId, zeroWindows, myPub) } returns
+            FetchResult(listOf(event), true, relayUrls.toSet())
+        coEvery { eventProcessor.unresolvedIdentityHistory(groupId) } returns 1
+        assertFalse(engine.pullEvents(groupId, 0, groupKey).complete)
+        coVerify(exactly = 1) { eventProcessor.process(event, groupId, any(), any(), any(), any()) }
         coVerify(exactly = 0) { cursors.advance(any(), any(), match { it.isNotEmpty() }, any()) }
     }
 

@@ -120,6 +120,22 @@ class RelaySyncCursorsTest {
         assertEquals(mapOf(RELAY_A to 100L), repo.cursors("g1", "alice"))
     }
 
+    @Test
+    fun `file reopen retains sweep debt frontier and fair attempt independently per recipient`() = runBlocking {
+        val range = com.splitfree.domain.model.sync.HistoryRange(1, 2, "ab")
+        val alice = RelaySyncCursors.Sweep(listOf(range), attemptedAt = 100, hadUnresolved = true)
+        val bob = RelaySyncCursors.Sweep(emptyList(), attemptedAt = 200, hadUnresolved = false)
+        repo.saveSweeps("g1", "alice", mapOf(RELAY_A to alice, RELAY_B to bob))
+        repo.saveSweeps("g1", "bob", mapOf(RELAY_A to bob))
+        db.close()
+        openDatabase()
+        assertEquals(mapOf(RELAY_A to alice, RELAY_B to bob), repo.sweeps("g1", "alice"))
+        assertEquals(mapOf(RELAY_A to bob), repo.sweeps("g1", "bob"))
+        assertTrue(repo.sweeps("g2", "alice").isEmpty())
+        repo.saveSweeps("g1", "alice", mapOf(RELAY_A to bob))
+        assertEquals(mapOf(RELAY_A to bob, RELAY_B to bob), repo.sweeps("g1", "alice"))
+    }
+
     private fun openDatabase() {
         db = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
             .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)

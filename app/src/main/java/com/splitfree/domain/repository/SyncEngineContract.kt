@@ -9,11 +9,11 @@ import com.splitfree.domain.model.sync.PullResult
  */
 interface SyncEngineContract {
     /**
-     * Pull events for a group from connected relays and process new ones. Each relay's history cursor
-     * advances only after that relay completes; unavailable history remains durable recovery debt.
+     * Resume bounded full-history sweeps for a group. Unfinished partitions survive process restart.
+     * Completion is relative to relay EOSE responses, not proof of arrival-time coverage or retention.
      *
      * @param groupId target group UUID
-     * @param since requested unix timestamp; widened as needed to cover each relay's unresolved history
+     * @param since legacy caller hint; cannot exclude older authored events from reconciliation
      * @param groupKey base64-encoded symmetric group key for decryption
      * @param lenientTimestamp has no effect on admission: every pull is historical and always permits old events
      */

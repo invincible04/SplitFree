@@ -8,6 +8,7 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.sync.ConnectionStatus
 import com.splitfree.domain.model.sync.FetchResult
+import com.splitfree.domain.model.sync.HistoryRange
 import com.splitfree.domain.repository.NostrClientContract
 import com.splitfree.util.DebugLog as Log
 import java.io.IOException
@@ -37,6 +38,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
 
 /**
  * Nostr relay pool: manages multiple WebSocket connections, subscriptions,
@@ -48,6 +50,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 class NostrClient
 @Inject
 constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClientContract {
+    internal constructor(appScope: CoroutineScope, httpClient: OkHttpClient) : this(appScope) {
+        relayHttpClient = httpClient
+    }
+
+    private var relayHttpClient: OkHttpClient = Relay.sharedClient
     private val relays = ConcurrentHashMap<String, Relay>()
     private val connectionMutex = Mutex()
 
@@ -161,7 +168,14 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                     existing.resetReconnect()
                     if (existing.state.value == Relay.State.DISCONNECTED) existing.connect()
                 } else {
-                    val relay = Relay(url, scope, authSigner = authSigner, onConnected = ::relayOpened)
+                    val relay =
+                        Relay(
+                            url,
+                            scope,
+                            okHttpClient = relayHttpClient,
+                            authSigner = authSigner,
+                            onConnected = ::relayOpened
+                        )
                     relays[url] = relay
                     // Collect messages from this relay, verify signatures, and deduplicate
                     scope.launch {
@@ -176,7 +190,8 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                             TAG,
                                             "Rejecting unexpected event kind ${msg.event.kind} from ${relay.url}"
                                         )
-                                    } else if (msg.event.verify() &&
+                                    } else if (msg.subId in activeSubscriptions.values &&
+                                        msg.event.verify() &&
                                         addSeen(msg.event.id)
                                     ) {
                                         _incomingEvents.emit(msg.event)
@@ -236,29 +251,10 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         }
         val subId = "${subIdCounter.incrementAndGet()}:$groupId"
         activeSubscriptions[groupId] = subId
-        val sinceVal = if (since > 0) since else null
-        // Filter 1: kind 30078 (direct) + kind 1059 (gift wrap) by #g tag
-        val filterByGroup =
-            NostrFilter(
-                kinds = listOf(NostrKind.APP_SPECIFIC, NostrKind.GIFT_WRAP),
-                tags = mapOf("#g" to listOf(groupId)),
-                since = sinceVal
-            )
-        val filters = mutableListOf(filterByGroup)
-        // Filter 2: kind 1059 by #p tag; NIP-59 relays route gift wraps by recipient.
-        // NIP-59 randomizes timestamps up to 48h in the past, so widen the window.
-        if (myPubkey != null) {
-            val giftWrapSince = sinceVal?.let { maxOf(it - 2 * 86400, 0) }
-            filters.add(
-                NostrFilter(
-                    kinds = listOf(NostrKind.GIFT_WRAP),
-                    tags = mapOf("#p" to listOf(myPubkey)),
-                    since = giftWrapSince
-                )
-            )
-        }
+        // NIP-01 limit restricts stored history only. No authored-time lower bound may filter new arrivals.
+        val filters = groupFilters(groupId, 0, myPubkey).map { it.copy(limit = 0) }
         relays.values.forEach { it.subscribe(subId, filters) }
-        Log.d(TAG, "subscribe($subId): ${filters.size} filters, since=$sinceVal, relays=${relays.size}")
+        Log.d(TAG, "subscribe($subId): ${filters.size} filters, arrival stream, relays=${relays.size}")
     }
 
     override suspend fun unsubscribe(groupId: String) {
@@ -339,8 +335,11 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         if (live.isEmpty()) return FetchResult(emptyList(), complete = false)
         val events = mutableListOf<NostrEvent>()
         val eoseFrom = ConcurrentHashMap.newKeySet<String>()
+        var eventBytes = 0L
+        val frameCounts = live.associate { it.url to AtomicInteger() }
         val allEose = CompletableDeferred<Unit>()
         val dropped = ConcurrentHashMap.newKeySet<String>()
+        val saturated = ConcurrentHashMap.newKeySet<String>()
         val epochs = live.associate { it.url to it.connectionEpoch.get() }
         val drops = live.associate { it.url to it.droppedMessages.get() }
         val collectorsReady = CompletableDeferred<Unit>()
@@ -367,9 +366,28 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                     }.collect { msg ->
                                         when (msg) {
                                             is RelayMessage.EventMsg -> {
-                                                if (msg.subId == subId && msg.event.verify()) {
+                                                if (msg.subId == subId && relay.url !in eoseFrom) {
                                                     synchronized(events) {
-                                                        if (dedup(msg.event, events)) events.add(msg.event)
+                                                        val event = msg.event
+                                                        val size = event.toJson().length.toLong() * 2
+                                                        if (frameCounts.getValue(relay.url).incrementAndGet() >
+                                                            HistoryPaginator.MAX_EVENTS ||
+                                                            !event.verify() ||
+                                                            filtersByRelay.getValue(relay.url).none {
+                                                                matches(event, it)
+                                                            }
+                                                        ) {
+                                                            dropped.add(relay.url)
+                                                        } else if (dedup(event, events)) {
+                                                            if (events.size >= HistoryPaginator.MAX_EVENTS ||
+                                                                eventBytes + size > HistoryPaginator.MAX_BYTES
+                                                            ) {
+                                                                saturated.add(relay.url)
+                                                            } else {
+                                                                events.add(event)
+                                                                eventBytes += size
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -385,6 +403,13 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
                                                 }
                                             }
 
+                                            is RelayMessage.ClosedMsg -> {
+                                                if (msg.subId == subId) {
+                                                    dropped.add(relay.url)
+                                                    eoseFrom.add(relay.url)
+                                                    if (eoseFrom.size >= live.size) allEose.complete(Unit)
+                                                }
+                                            }
                                             else -> {}
                                         }
                                     }
@@ -420,8 +445,9 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         }.mapTo(HashSet()) { it.url }
         return FetchResult(
             synchronized(events) { events.toList() },
-            complete = completed.containsAll(filtersByRelay.keys),
-            completedRelays = completed
+            complete = completed.containsAll(filtersByRelay.keys) && saturated.isEmpty(),
+            completedRelays = completed - saturated,
+            saturatedRelays = saturated.intersect(completed)
         )
     }
 
@@ -444,9 +470,75 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         sinceByRelay: Map<String, Long>,
         myPubkey: String?
     ): FetchResult {
-        val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
-        return fetchWithFilters(subId, sinceByRelay.mapValues { (_, since) -> groupFilters(groupId, since, myPubkey) })
+        val until = System.currentTimeMillis() / 1000
+        val pending = sinceByRelay.mapValues { (_, since) ->
+            listOf(HistoryRange((since - if (myPubkey != null && since > 0) 2 * 86400 else 0).coerceAtLeast(0), until))
+        }
+        val selected = pending.entries.take(MAX_HISTORY_RELAYS).associate { it.toPair() }
+        val result = fetchHistory(groupId, selected, myPubkey)
+        val omitted = pending - selected.keys
+        return result.copy(
+            complete = result.complete && omitted.isEmpty(),
+            pendingByRelay =
+            result.pendingByRelay + omitted
+        )
     }
+
+    suspend fun fetchHistory(
+        groupId: String,
+        pendingByRelay: Map<String, List<HistoryRange>>,
+        myPubkey: String?
+    ): FetchResult = coroutineScope {
+        require(pendingByRelay.size <= MAX_HISTORY_RELAYS)
+        val subId = "${subIdCounter.incrementAndGet()}:fetch:$groupId"
+        val results = pendingByRelay.map { (url, ranges) ->
+            async {
+                val result = HistoryPaginator.fetch(ranges) { range ->
+                    val filters = groupFilters(groupId, 0, myPubkey).map {
+                        it.copy(
+                            since = range.since.takeIf { value -> value > 0 },
+                            until = range.until,
+                            ids = range.idPrefix.takeIf { value -> value.isNotEmpty() }?.let(::listOf),
+                            limit = HistoryPaginator.PAGE_SIZE
+                        )
+                    }
+                    val pageId = if (range ==
+                        ranges.firstOrNull()
+                    ) {
+                        subId
+                    } else {
+                        "$subId:${subIdCounter.incrementAndGet()}"
+                    }
+                    val page = fetchWithFilters(pageId, mapOf(url to filters))
+                    HistoryPaginator.Page(
+                        page.events,
+                        page.complete || url in page.saturatedRelays,
+                        url in page.saturatedRelays
+                    )
+                }
+                url to result
+            }
+        }.map { it.await() }.toMap()
+        val completed = results.filterValues { it.pending.isEmpty() }.keys
+        FetchResult(
+            results.values.flatMap { it.events }.distinctBy { it.id },
+            results.isNotEmpty() && completed.size == pendingByRelay.size,
+            completed,
+            results.filterValues { it.pending.isNotEmpty() }.mapValues { it.value.pending }
+        )
+    }
+
+    private fun matches(event: NostrEvent, filter: NostrFilter): Boolean =
+        (filter.since == null || event.createdAt >= filter.since) &&
+            (filter.until == null || event.createdAt <= filter.until) &&
+            (filter.kinds == null || event.kind in filter.kinds) &&
+            (filter.ids == null || filter.ids.any { event.id.startsWith(it) }) &&
+            (
+                filter.tags == null ||
+                    filter.tags.all { (name, values) ->
+                        event.tags.any { it.size > 1 && it[0] == name.removePrefix("#") && it[1] in values }
+                    }
+                )
 
     private fun groupFilters(groupId: String, since: Long, myPubkey: String?): List<NostrFilter> {
         val sinceVal = if (since > 0) since else null
@@ -514,12 +606,14 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
         }
         if (relays.containsKey(url)) return
         connectRequested = true
-        val relay = Relay(url, scope, authSigner = authSigner, onConnected = ::relayOpened)
+        val relay =
+            Relay(url, scope, okHttpClient = relayHttpClient, authSigner = authSigner, onConnected = ::relayOpened)
         relays[url] = relay
         scope.launch {
             relay.messages.collect { msg ->
                 if (msg is RelayMessage.EventMsg &&
                     (msg.event.kind == NostrKind.APP_SPECIFIC || msg.event.kind == NostrKind.GIFT_WRAP) &&
+                    msg.subId in activeSubscriptions.values &&
                     msg.event.verify() &&
                     addSeen(msg.event.id)
                 ) {
@@ -542,6 +636,7 @@ constructor(@ApplicationScope private val appScope: CoroutineScope) : NostrClien
     }
 
     companion object {
+        const val MAX_HISTORY_RELAYS = 4
         private const val TAG = "NostrClient"
         private const val READY_TIMEOUT_MS = 5_000L
 

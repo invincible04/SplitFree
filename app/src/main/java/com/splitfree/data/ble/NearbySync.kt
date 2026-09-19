@@ -730,6 +730,14 @@ constructor(
         /** Number of drops between diagnostics, starting with the first drop. */
         private const val DROP_LOG_INTERVAL = 100L
 
+        // Google no longer returns these codes and offers no replacements. Keep their existing
+        // classifications if received; suppress deprecation only at these compatibility aliases.
+        @Suppress("DEPRECATION")
+        private const val LEGACY_LOCATION_SETTING_REQUIRED = ConnectionsStatusCodes.MISSING_SETTING_LOCATION_MUST_BE_ON
+
+        @Suppress("DEPRECATION")
+        private const val LEGACY_NETWORK_NOT_CONNECTED = ConnectionsStatusCodes.STATUS_NETWORK_NOT_CONNECTED
+
         /** Maps a Nearby Connections status code, or the exception carrying it, onto a failure category. */
         fun classify(statusCode: Int?, throwable: Throwable?): RadioFailureKind = when (statusCode) {
             ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING,
@@ -747,7 +755,7 @@ constructor(
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_ADVERTISE,
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_CONNECT -> RadioFailureKind.PERMISSION
 
-            ConnectionsStatusCodes.MISSING_SETTING_LOCATION_MUST_BE_ON -> RadioFailureKind.LOCATION_SETTING
+            LEGACY_LOCATION_SETTING_REQUIRED -> RadioFailureKind.LOCATION_SETTING
 
             ConnectionsStatusCodes.STATUS_RADIO_ERROR,
             ConnectionsStatusCodes.STATUS_ALREADY_HAVE_ACTIVE_STRATEGY,
@@ -761,7 +769,7 @@ constructor(
 
             ConnectionsStatusCodes.STATUS_PAYLOAD_IO_ERROR -> RadioFailureKind.PAYLOAD
 
-            ConnectionsStatusCodes.STATUS_NETWORK_NOT_CONNECTED,
+            LEGACY_NETWORK_NOT_CONNECTED,
             ConnectionsStatusCodes.API_CONNECTION_FAILED_ALREADY_IN_USE -> RadioFailureKind.SERVICE
 
             else -> if (throwable is SecurityException) RadioFailureKind.PERMISSION else RadioFailureKind.UNKNOWN

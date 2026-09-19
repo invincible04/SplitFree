@@ -132,7 +132,7 @@ class Relay(
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        handleIncoming(text)
+                        if (!stale()) handleIncoming(text)
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -168,8 +168,16 @@ class Relay(
      * collector cannot stall socket reads; AUTH signing is handled synchronously.
      */
     internal fun handleIncoming(text: String) {
+        if (text.length > MAX_FRAME_CHARS) {
+            droppedMessages.incrementAndGet()
+            return
+        }
         try {
-            val msg = RelayMessage.parse(text) ?: return
+            val msg = RelayMessage.parse(text) ?: run {
+                // A malformed EVENT followed by EOSE is not a complete historical response.
+                droppedMessages.incrementAndGet()
+                return
+            }
             when (msg) {
                 is RelayMessage.OkMsg -> {
                     okCallbacks.remove(msg.eventId)?.complete(msg)
@@ -257,7 +265,10 @@ class Relay(
     private fun catchUpFilters(subId: String, filters: List<NostrFilter>): List<NostrFilter> {
         val since =
             listOfNotNull(lastEventTimestamp[subId], oldestDroppedTimestamp[subId]).minOrNull() ?: return filters
-        return filters.map { f -> f.copy(since = since - 60) } // 60s buffer
+        return filters.map { f ->
+            // A live arrival stream (limit=0) and a bounded historical partition must keep their exact scope.
+            if (f.limit != null || f.until != null) f else f.copy(since = since - 60)
+        }
     }
 
     /**
@@ -385,6 +396,7 @@ class Relay(
 
         /** Buffer for slow active collectors; with no collectors, SharedFlow drops frames without buffering. */
         const val MESSAGE_BUFFER_CAPACITY = 4096
+        private const val MAX_FRAME_CHARS = 1024 * 1024
 
         /** Log every Nth drop rather than every drop. */
         private const val DROP_LOG_INTERVAL = 100L

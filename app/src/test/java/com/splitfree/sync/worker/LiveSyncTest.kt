@@ -166,6 +166,19 @@ class LiveSyncTest {
     )
 
     @Test
+    fun `healthy foreground starts another full sweep without reconnect or group changes`() = testScope.runTest {
+        start()
+        runCurrent()
+        val generation = connectionGeneration.value
+        elapse(LiveSync.RECONCILE_INTERVAL_MS - 1)
+        coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        elapse(1)
+        coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
+        assertEquals(generation, connectionGeneration.value)
+        coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
+    }
+
+    @Test
     fun `binding twice is refused`() {
         assertThrows(IllegalStateException::class.java) { liveSync.bind(owner.registry) }
     }
@@ -180,23 +193,20 @@ class LiveSyncTest {
     }
 
     @Test
-    fun `start forces the relay set, pulls a keyed group from its cursor and subscribes from before the pull`() =
-        testScope.runTest {
-            val before = System.currentTimeMillis() / 1000
-            start()
-            runCurrent()
-            val after = System.currentTimeMillis() / 1000
+    fun `start pulls history and subscribes to arrivals of any authored age`() = testScope.runTest {
+        start()
+        runCurrent()
 
-            val since = slot<Long>()
-            coVerifyOrder {
-                connectionManager.ensureConnected(forceReconnect = true)
-                syncEngine.flushOutbox()
-                syncEngine.pullEvents("g1", 10_000 - 3600, "key-g1", false, context)
-                nostrClient.subscribe("g1", capture(since), "alice")
-            }
-            coVerify(exactly = 0) { connectionManager.ensureConnected(false) }
-            assertTrue(since.captured in (before - 60)..(after - 60))
+        val since = slot<Long>()
+        coVerifyOrder {
+            connectionManager.ensureConnected(forceReconnect = true)
+            syncEngine.flushOutbox()
+            syncEngine.pullEvents("g1", 10_000 - 3600, "key-g1", false, context)
+            nostrClient.subscribe("g1", capture(since), "alice")
         }
+        coVerify(exactly = 0) { connectionManager.ensureConnected(false) }
+        assertEquals(0L, since.captured)
+    }
 
     @Test
     fun `a group without a cursor is pulled from zero`() = testScope.runTest {
@@ -438,7 +448,7 @@ class LiveSyncTest {
         elapse(1)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", 10_000 - 3600, "key-g1", false, context) }
         coVerify(exactly = 2) { nostrClient.subscribe("g1", any(), "alice") }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
         verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
@@ -460,7 +470,7 @@ class LiveSyncTest {
             coVerify(exactly = index + 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
         }
         verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 4) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         coVerify(exactly = 4) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
         verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
@@ -477,7 +487,7 @@ class LiveSyncTest {
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 2) { nostrClient.subscribe("g1", any(), "alice") }
         coVerify(exactly = 1) { connectionManager.ensureConnected(any()) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
     }
 
@@ -494,7 +504,7 @@ class LiveSyncTest {
         elapse(30_000)
         coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), "key-g2", any(), any()) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 1) { syncEngine.pullEvents("g1", any(), "key-g1", any(), any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), "key-g2", any(), any()) }
         verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
@@ -514,7 +524,7 @@ class LiveSyncTest {
 
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         coVerify(exactly = 2) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
         verify(exactly = 0) { SyncScheduler.scheduleImmediateSync(context) }
@@ -659,7 +669,7 @@ class LiveSyncTest {
         }
         elapse(120_000)
         coVerify(exactly = 7) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 7) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
     }
@@ -678,7 +688,7 @@ class LiveSyncTest {
         elapse(120_000)
 
         coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
-        elapse(600_000)
+        elapse(60_000)
         coVerify(exactly = 5) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         verify(exactly = 1) { SyncScheduler.scheduleImmediateSync(context) }
     }
@@ -706,7 +716,7 @@ class LiveSyncTest {
         runCurrent()
         groups.value = listOf(group)
         runCurrent()
-        elapse(600_000)
+        elapse(60_000)
 
         coVerify(exactly = 1) { syncEngine.pullEvents("g2", any(), any(), any(), any()) }
         coVerify(exactly = 1) { nostrClient.unsubscribe("g2") }
@@ -735,7 +745,7 @@ class LiveSyncTest {
         stop()
         runCurrent()
         connectionGeneration.value++
-        elapse(600_000)
+        elapse(60_000)
 
         assertEquals(1, references)
         verify(exactly = 1) { nostrClient.releaseConnection() }
@@ -756,7 +766,7 @@ class LiveSyncTest {
         elapse(30_000)
         stop()
         runCurrent()
-        elapse(600_000)
+        elapse(60_000)
 
         coVerify(exactly = 2) { syncEngine.pullEvents("g1", any(), any(), any(), any()) }
         coVerify(exactly = 1) { nostrClient.subscribe("g1", any(), "alice") }
@@ -780,8 +790,8 @@ class LiveSyncTest {
         incoming.tryEmit(known)
         runCurrent()
 
-        coVerify(exactly = 1) { eventProcessor.process(applied, null, null, true, false, any(), null) }
-        coVerify(exactly = 1) { eventProcessor.process(known, null, null, true, false, any(), null) }
+        coVerify(exactly = 1) { eventProcessor.process(applied, null, null, true, true, any(), null) }
+        coVerify(exactly = 1) { eventProcessor.process(known, null, null, true, true, any(), null) }
         verify(exactly = 1) { ExpenseNotifier.notifyIfNeeded(context, "expense", "{}", "bob", "alice", "Trip") }
         verify(exactly = 1) { identity.getPublicKeyHex() }
     }
@@ -800,7 +810,7 @@ class LiveSyncTest {
         runCurrent()
 
         coVerify(exactly = 0) { eventProcessor.process(forAnother, any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 1) { eventProcessor.process(forMe, null, null, true, false, any(), null) }
+        coVerify(exactly = 1) { eventProcessor.process(forMe, null, null, true, true, any(), null) }
     }
 
     @Test

@@ -30,7 +30,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.SQLiteMode
 
 /**
- * Opens seeded v1, v3 and v4 files through Room's v5 schema validation. The v3 fixture uses the
+ * Opens seeded v1, v3 and v4 files through Room's v6 schema validation. The v3 fixture uses the
  * exported schema and production revision triggers; the v4 fixture adds relay cursors to it.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -67,7 +67,8 @@ class MigrationTest {
                 AppDatabase.MIGRATION_1_2,
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
-                AppDatabase.MIGRATION_4_5
+                AppDatabase.MIGRATION_4_5,
+                AppDatabase.MIGRATION_5_6
             )
             .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
             .allowMainThreadQueries()
@@ -75,10 +76,10 @@ class MigrationTest {
             .also { db = it }
 
     @Test
-    fun `migrated database reports version 5`() {
+    fun `migrated database reports version 6`() {
         val migrated = openCurrent()
 
-        assertEquals(5, migrated.openHelper.readableDatabase.version)
+        assertEquals(6, migrated.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -220,7 +221,7 @@ class MigrationTest {
         assertEquals(EventEntity.APPLY_STATE_APPLIED, prod.eventDao().getEvent("e1")!!.applyState)
         assertEquals(1, prod.outboxDao().count())
         assertNull(prod.deliveryDao().get("nope"))
-        assertEquals(5, prod.openHelper.readableDatabase.version)
+        assertEquals(6, prod.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -275,13 +276,13 @@ class MigrationTest {
     fun `v3 to v5 preserves every v3 table and revision trigger without trusting global sync`() = runBlocking {
         val fixture = createV3Database(dbName)
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5)
+            .addMigrations(AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6)
             .allowMainThreadQueries()
             .build()
             .also { db = it }
         val sql = migrated.openHelper.writableDatabase
 
-        assertEquals(5, sql.version)
+        assertEquals(6, sql.version)
         assertEquals(
             fixture.rows,
             tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
@@ -316,12 +317,12 @@ class MigrationTest {
     }
 
     @Test
-    fun `DatabaseModule registers v3 to v5 migration without data loss`() = runBlocking {
+    fun `DatabaseModule registers v3 to v6 migration without data loss`() = runBlocking {
         val fixture = createV3Database(PROD_DB_NAME)
         val migrated = DatabaseModule.provideDatabase(context).also { db = it }
         val sql = migrated.openHelper.readableDatabase
 
-        assertEquals(5, sql.version)
+        assertEquals(6, sql.version)
         assertEquals(
             fixture.rows,
             tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
@@ -344,9 +345,12 @@ class MigrationTest {
         raw.version = 4
         raw.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_4_5).allowMainThreadQueries().build().also { db = it }
+            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6).allowMainThreadQueries().build().also {
+                db =
+                    it
+            }
         val sql = migrated.openHelper.readableDatabase
-        assertEquals(5, sql.version)
+        assertEquals(6, sql.version)
         assertEquals(
             fixture.rows,
             tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
@@ -356,6 +360,56 @@ class MigrationTest {
         assertEquals("", migrated.groupDao().getById("g1")!!.projectionJson)
         assertNull(migrated.displayNameDao().getIntent("alice"))
         assertEquals(fixture.triggers, triggerDefinitions(sql))
+    }
+
+    @Test
+    fun `v5 migration adds durable sweep frontier without changing existing rows or triggers`() = runBlocking {
+        deleteDatabase(dbName)
+        val schema = JSONObject(
+            listOf(
+                File("schemas/com.splitfree.data.local.AppDatabase/5.json"),
+                File("app/schemas/com.splitfree.data.local.AppDatabase/5.json")
+            ).first { it.exists() }.readText()
+        ).getJSONObject("database")
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context).name(dbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(5) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        val entities = schema.getJSONArray("entities")
+                        for (i in 0 until entities.length()) {
+                            val entity = entities.getJSONObject(i)
+                            val table = entity.getString("tableName")
+                            db.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", table))
+                            val indices = entity.optJSONArray("indices") ?: continue
+                            for (j in 0 until indices.length()) {
+                                db.execSQL(
+                                    indices.getJSONObject(j).getString("createSql").replace("\${TABLE_NAME}", table)
+                                )
+                            }
+                        }
+                        AppDatabase.SYNC_REVISION_CALLBACK.onCreate(db)
+                        db.execSQL("INSERT INTO outbox VALUES ('old','{}',1,0,NULL,'expense')")
+                    }
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) =
+                        error("fixture")
+                }).build()
+        )
+        val triggers = helper.use { triggerDefinitions(it.writableDatabase) }
+        val migrated = openCurrent()
+        assertEquals(triggers, triggerDefinitions(migrated.openHelper.readableDatabase))
+        assertEquals("old", migrated.outboxDao().getAll().single().eventId)
+        val cursors = RelaySyncCursors(migrated)
+        val range = com.splitfree.domain.model.sync.HistoryRange(123, 123, "ab")
+        cursors.saveSweeps("g1", "alice", mapOf(RELAY_URL to RelaySyncCursors.Sweep(listOf(range), 1234L, true)))
+        migrated.close()
+        db = null
+        val reopened = RelaySyncCursors(openCurrent())
+        assertEquals(
+            RelaySyncCursors.Sweep(listOf(range), 1234L, true),
+            reopened.sweeps("g1", "alice").getValue(RELAY_URL)
+        )
+        assertTrue(reopened.sweeps("g1", "bob").isEmpty())
+        assertTrue(reopened.sweeps("g2", "alice").isEmpty())
     }
 
     private fun createV3Database(name: String): V3Fixture {

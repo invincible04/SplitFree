@@ -62,6 +62,10 @@ class NostrClientFetchTest {
         val e = mockk<NostrEvent>(relaxed = true)
         every { e.id } returns id
         every { e.verify() } returns true
+        every { e.kind } returns 30078
+        every { e.createdAt } returns 1000L
+        every { e.tags } returns listOf(listOf("g", "group-1"), listOf("g", "g"))
+        every { e.toJson() } returns "{}"
         return e
     }
 
@@ -206,7 +210,7 @@ class NostrClientFetchTest {
 
             val result = client.fetchEvents("group-1", 0, null)
 
-            assertEquals(FetchResult(emptyList(), complete = false), result)
+            assertEquals(FetchResult(emptyList(), complete = false), result.copy(pendingByRelay = emptyMap()))
             assertEquals("a relay that is not handshaking is not waited for", 0L, currentTime)
             verify(exactly = 0) { down.relay.subscribe(any(), any()) }
             verify(exactly = 0) { alsoDown.relay.subscribe(any(), any()) }
@@ -220,7 +224,7 @@ class NostrClientFetchTest {
 
         val result = client.fetchEvents("group-1", 0, null)
 
-        assertEquals(FetchResult(emptyList(), complete = false), result)
+        assertEquals(FetchResult(emptyList(), complete = false), result.copy(pendingByRelay = emptyMap()))
         assertEquals(NostrClient.SETTLE_TIMEOUT_MS, currentTime)
         verify(exactly = 0) { stuck.relay.subscribe(any(), any()) }
         assertEquals(emptyList<String>(), stuck.closed)
@@ -357,7 +361,7 @@ class NostrClientFetchTest {
         runCurrent()
         assertEquals(null, filtersA.captured[0].since)
         assertEquals(null, filtersA.captured[1].since)
-        assertEquals(500_000L, filtersB.captured[0].since)
+        assertEquals(327_200L, filtersB.captured[0].since)
         assertEquals(327_200L, filtersB.captured[1].since)
         a.messages.emit(RelayMessage.EoseMsg(requireNotNull(a.subId)))
         b.messages.emit(RelayMessage.EoseMsg(requireNotNull(b.subId)))
