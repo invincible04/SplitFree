@@ -1,5 +1,6 @@
 package com.splitfree.domain.crypto.integration
 
+import android.util.Log
 import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.util.CompressionUtil
 import com.splitfree.domain.crypto.GroupEncryption
@@ -10,15 +11,21 @@ import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.util.hexToBytes
+import com.splitfree.test.RelayProbeAssertions.assertAccepted
+import com.splitfree.test.RelayProbeAssertions.requireEvents
+import fr.acinq.secp256k1.Secp256k1
 import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import java.security.SecureRandom
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -27,177 +34,177 @@ import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
-/**
- * End-to-end integration test: creates real expense/settlement events with real crypto,
- * publishes them to real Nostr relays, fetches them back, and verifies decryption.
- *
- * Run: `./gradlew test -DREAL_RELAY_TEST=true --tests "*.EndToEndExpenseIntegrationTest"`
- */
+/** Opt-in live crypto/storage round-trips; no app persistence or ledger processing. */
 class EndToEndExpenseIntegrationTest {
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
     private val encryption = GroupEncryption(CompressionUtil)
     private val relays = listOf("wss://nos.lol", "wss://relay.primal.net")
-
-    private lateinit var client: NostrClient
+    private val clients = mutableListOf<NostrClient>()
+    private lateinit var scope: CoroutineScope
     private lateinit var privKey: ByteArray
     private lateinit var pubHex: String
+    private var logMocked = false
 
     @Before
     fun setup() {
         Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
-        mockkStatic(android.util.Log::class)
-        every { android.util.Log.i(any<String>(), any<String>()) } returns 0
-        every { android.util.Log.w(any<String>(), any<String>()) } returns 0
-        every { android.util.Log.d(any<String>(), any<String>()) } returns 0
-        every { android.util.Log.e(any<String>(), any<String>()) } returns 0
-
+        mockkStatic(Log::class)
+        logMocked = true
+        every { Log.i(any<String>(), any<String>()) } returns 0
+        every { Log.w(any<String>(), any<String>()) } returns 0
+        every { Log.d(any<String>(), any<String>()) } returns 0
+        every { Log.e(any<String>(), any<String>()) } returns 0
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         privKey = generateValidPrivateKey()
         pubHex = NostrEvent.pubkeyFromPrivkey(privKey)
-        client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
     }
 
     @After
     fun teardown() {
-        if (::client.isInitialized) client.disconnect()
-        if (::privKey.isInitialized) privKey.fill(0)
-        unmockkStatic(android.util.Log::class)
+        try {
+            clients.forEach { it.disconnect() }
+        } finally {
+            if (::scope.isInitialized) scope.cancel()
+            if (::privKey.isInitialized) privKey.fill(0)
+            if (logMocked) unmockkStatic(Log::class)
+        }
     }
 
     private fun generateValidPrivateKey(): ByteArray {
         val key = ByteArray(32)
+        val random = SecureRandom()
         do {
-            SecureRandom().nextBytes(key)
-        } while (!fr.acinq.secp256k1.Secp256k1.secKeyVerify(key))
+            random.nextBytes(key)
+        } while (!Secp256k1.secKeyVerify(key))
         return key
     }
 
-    @Test(timeout = 60_000)
+    private suspend fun connectedClient(relayUrl: String): NostrClient {
+        val client = NostrClient(scope)
+        clients.add(client)
+        client.connect(listOf(relayUrl))
+        withTimeout(10_000) { client.connectionState.first { it } }
+        return client
+    }
+
+    private suspend fun publishAndFetch(
+        relayUrl: String,
+        event: NostrEvent,
+        groupId: String,
+        recipientPubHex: String = pubHex
+    ): NostrEvent {
+        assertTrue("Published fixture must verify", event.verify())
+        val publisher = connectedClient(relayUrl)
+        try {
+            assertAccepted(publisher.publish(event))
+        } finally {
+            publisher.disconnect()
+        }
+        val reader = connectedClient(relayUrl)
+        try {
+            val fetched = reader.fetchEvents(groupId, 0, recipientPubHex)
+            assertTrue("Independent fetch from $relayUrl must complete without loss", fetched.complete)
+            return requireEvents(listOf(event), fetched.events).single()
+        } finally {
+            reader.disconnect()
+        }
+    }
+
+    private fun expenseEvent(groupId: String, expense: Expense, groupKey: String): NostrEvent = NostrEvent(
+        pubkey = pubHex,
+        createdAt = System.currentTimeMillis() / 1000,
+        kind = 30078,
+        tags = listOf(listOf("d", "$groupId:${expense.id}"), listOf("g", groupId), listOf("t", "expense")),
+        content = encryption.encrypt(json.encodeToString(Expense.serializer(), expense), groupKey)
+    ).sign(privKey)
+
+    private fun expense(otherPubHex: String): Expense = Expense(
+        id = UUID.randomUUID().toString(),
+        amount = 50050,
+        currency = "INR",
+        description = "Disposable dinner fixture at café",
+        paidBy = pubHex,
+        splitType = SplitType.EQUAL,
+        splitAmong = listOf(SplitEntry(pubHex, 25025), SplitEntry(otherPubHex, 25025)),
+        timestamp = System.currentTimeMillis() / 1000
+    )
+
+    @Test
     fun `expense event - create, sign, publish to relay, fetch back, decrypt`() = runBlocking {
-        val groupKey = encryption.generateGroupKey()
-        val groupId = "expense-test-${System.currentTimeMillis()}"
-
-        val expense = Expense(
-            id = "exp-${System.currentTimeMillis()}",
-            amount = 50050,
-            currency = "INR",
-            description = "Dinner at café",
-            paidBy = pubHex,
-            splitType = SplitType.EQUAL,
-            splitAmong = listOf(SplitEntry(pubHex, 25025), SplitEntry("bb".repeat(32), 25025)),
-            timestamp = System.currentTimeMillis() / 1000
-        )
-
-        val encrypted = encryption.encrypt(json.encodeToString(Expense.serializer(), expense), groupKey)
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(listOf("d", "$groupId:${expense.id}"), listOf("g", groupId), listOf("t", "expense")),
-            content = encrypted
-        ).sign(privKey)
-
-        assertTrue("Event must verify", event.verify())
-
-        // Publish to real relays
-        client.connect(relays)
-        delay(3000)
-        assertTrue("Should be connected", client.isConnected)
-        client.publish(event)
-        delay(2000)
-
-        // Fetch back
-        val fetched = client.fetchEvents(groupId, 0, pubHex).events
-        println("Fetched ${fetched.size} events from relays")
-
-        if (fetched.isNotEmpty()) {
-            val found = fetched.find { it.id == event.id }
-            if (found != null) {
-                assertTrue("Fetched event must verify", found.verify())
-                val decrypted = encryption.decrypt(found.content, groupKey)
-                val recovered = json.decodeFromString<Expense>(decrypted)
-                assertEquals(expense.id, recovered.id)
-                assertEquals(expense.amount, recovered.amount)
-                assertEquals(expense.currency, recovered.currency)
-                println("✅ Expense round-trip verified via real relay")
+        val otherPriv = generateValidPrivateKey()
+        try {
+            val groupKey = encryption.generateGroupKey()
+            val groupId = UUID.randomUUID().toString()
+            val expense = expense(NostrEvent.pubkeyFromPrivkey(otherPriv))
+            val event = expenseEvent(groupId, expense, groupKey)
+            relays.forEach { url ->
+                val fetched = publishAndFetch(url, event, groupId)
+                val recovered = json.decodeFromString<Expense>(encryption.decrypt(fetched.content, groupKey))
+                assertEquals("Every expense field must survive the remote round-trip on $url", expense, recovered)
             }
+        } finally {
+            otherPriv.fill(0)
         }
     }
 
-    @Test(timeout = 60_000)
+    @Test
     fun `settlement event - publish to relay and fetch back`() = runBlocking {
-        val groupKey = encryption.generateGroupKey()
-        val groupId = "settle-test-${System.currentTimeMillis()}"
-
-        val settlement = Settlement(
-            id = "s-${System.currentTimeMillis()}",
-            from = pubHex,
-            to = "bb".repeat(32),
-            amount = 25000,
-            currency = "INR",
-            timestamp = System.currentTimeMillis() / 1000
-        )
-
-        val encrypted = encryption.encrypt(json.encodeToString(Settlement.serializer(), settlement), groupKey)
-        val event = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(listOf("d", "$groupId:${settlement.id}"), listOf("g", groupId), listOf("t", "settlement")),
-            content = encrypted
-        ).sign(privKey)
-
-        assertTrue("Event must verify", event.verify())
-
-        client.connect(relays)
-        delay(3000)
-        client.publish(event)
-        delay(2000)
-
-        val fetched = client.fetchEvents(groupId, 0, pubHex).events
-        println("Fetched ${fetched.size} settlement events")
-
-        if (fetched.isNotEmpty()) {
-            val found = fetched.find { it.id == event.id }
-            if (found != null) {
-                val decrypted = encryption.decrypt(found.content, groupKey)
-                val recovered = json.decodeFromString<Settlement>(decrypted)
-                assertEquals(settlement.id, recovered.id)
-                assertEquals(settlement.amount, recovered.amount)
-                println("✅ Settlement round-trip verified via real relay")
+        val recipientPriv = generateValidPrivateKey()
+        try {
+            val groupKey = encryption.generateGroupKey()
+            val groupId = UUID.randomUUID().toString()
+            val settlement = Settlement(
+                id = UUID.randomUUID().toString(),
+                from = pubHex,
+                to = NostrEvent.pubkeyFromPrivkey(recipientPriv),
+                amount = 25000,
+                currency = "INR",
+                timestamp = System.currentTimeMillis() / 1000
+            )
+            val event = NostrEvent(
+                pubkey = pubHex,
+                createdAt = System.currentTimeMillis() / 1000,
+                kind = 30078,
+                tags = listOf(
+                    listOf("d", "$groupId:${settlement.id}"),
+                    listOf("g", groupId),
+                    listOf("t", "settlement")
+                ),
+                content = encryption.encrypt(json.encodeToString(Settlement.serializer(), settlement), groupKey)
+            ).sign(privKey)
+            relays.forEach { url ->
+                val fetched = publishAndFetch(url, event, groupId)
+                val recovered = json.decodeFromString<Settlement>(encryption.decrypt(fetched.content, groupKey))
+                assertEquals("Every settlement field must survive the remote round-trip on $url", settlement, recovered)
             }
+        } finally {
+            recipientPriv.fill(0)
         }
     }
 
-    @Test(timeout = 60_000)
-    fun `gift-wrapped expense - publish and verify on relay`() = runBlocking {
+    @Test
+    fun `gift-wrapped expense - publish fetch unwrap and decrypt on independent recipient`() = runBlocking {
         val recipientPriv = generateValidPrivateKey()
-        val recipientPub = NostrEvent.pubkeyFromPrivkey(recipientPriv).hexToBytes()
-        val groupKey = encryption.generateGroupKey()
-
-        val expenseJson = """{"id":"e1","amount":1000,"currency":"INR","description":"test",""" +
-            """"paid_by":"$pubHex","split_type":"equal",""" +
-            """"split_among":[{"pubkey":"$pubHex","share":500},{"pubkey":"other","share":500}],"timestamp":1}"""
-        val encrypted = encryption.encrypt(expenseJson, groupKey)
-        val inner = NostrEvent(
-            pubkey = pubHex,
-            createdAt = System.currentTimeMillis() / 1000,
-            kind = 30078,
-            tags = listOf(listOf("g", "gw-test"), listOf("t", "expense")),
-            content = encrypted
-        ).sign(privKey)
-
-        val wrapped = Nip59.giftWrap(inner.copy(sig = ""), privKey, recipientPub)
-        assertEquals(1059, wrapped.kind)
-        assertNotEquals(pubHex, wrapped.pubkey)
-        assertTrue("Wrapped event must verify", wrapped.verify())
-
-        // Publish gift wrap to real relay
-        client.connect(relays)
-        delay(3000)
-        client.publish(wrapped)
-        delay(2000)
-        println("✅ Gift-wrapped expense published to real relay")
-
-        recipientPriv.fill(0)
+        try {
+            val recipientPubHex = NostrEvent.pubkeyFromPrivkey(recipientPriv)
+            val groupKey = encryption.generateGroupKey()
+            val groupId = UUID.randomUUID().toString()
+            val expense = expense(recipientPubHex)
+            val rumor = expenseEvent(groupId, expense, groupKey).copy(sig = "")
+            val wrapped = Nip59.giftWrap(rumor, privKey, recipientPubHex.hexToBytes())
+            assertEquals(1059, wrapped.kind)
+            assertNotEquals(pubHex, wrapped.pubkey)
+            relays.forEach { url ->
+                val fetched = publishAndFetch(url, wrapped, groupId, recipientPubHex)
+                val unwrapped = Nip59.unwrap(fetched, recipientPriv)
+                    ?: throw AssertionError("Independent recipient could not unwrap fetched event on $url")
+                assertEquals(pubHex, unwrapped.senderPubkey)
+                assertEquals(rumor, unwrapped.rumor)
+                val recovered = json.decodeFromString<Expense>(encryption.decrypt(unwrapped.rumor.content, groupKey))
+                assertEquals(expense, recovered)
+            }
+        } finally {
+            recipientPriv.fill(0)
+        }
     }
 }

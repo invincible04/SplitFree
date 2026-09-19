@@ -9,15 +9,18 @@ import com.splitfree.domain.crypto.nip.Nip59
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.test.RelayProbeAssertions.assertAccepted
+import com.splitfree.test.RelayProbeAssertions.requireEvents
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -32,15 +35,15 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Real relay test with GIFT WRAP ENABLED; simulates the actual prod path.
- *
- * Phone 1 creates expense → NIP-59 gift wraps it for Phone 2 → publishes kind 1059
- * Phone 2 receives kind 1059 → unwraps → decrypts → verifies expense
- *
- * The outer kind-1059 wrapper must carry a `p` tag naming the recipient: relays route gift
- * wraps to the recipient's subscription by that tag, so without it nothing is ever delivered.
+ * Live NIP-59 and bidirectional direct-event transport between two clients in one JVM.
+ * Verifies exact events and decrypted expenses, not app persistence or ledger processing.
+ * The recipient subscription uses an unrelated #g value to isolate kind-1059 delivery via #p.
+ * Opt in with `-DREAL_RELAY_TEST=true`; rejection or missing exact events fails.
  */
 class GiftWrapRelayIntegrationTest {
+    private lateinit var relayScope: CoroutineScope
+    private var logMocked = false
+
     private lateinit var phone1: NostrClient
     private lateinit var phone2: NostrClient
     private val encryption = GroupEncryption(com.splitfree.data.util.CompressionUtil)
@@ -62,6 +65,8 @@ class GiftWrapRelayIntegrationTest {
     fun setup() {
         Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
         mockkStatic(android.util.Log::class)
+        logMocked = true
+        relayScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.d(any<String>(), any<String>()) } answers {
@@ -88,8 +93,8 @@ class GiftWrapRelayIntegrationTest {
 
         p1Signer = EventSigner(p1Id)
         p2Signer = EventSigner(p2Id)
-        phone1 = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
-        phone2 = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        phone1 = NostrClient(relayScope)
+        phone2 = NostrClient(relayScope)
 
         groupId =
             java.util.UUID
@@ -100,11 +105,12 @@ class GiftWrapRelayIntegrationTest {
 
     @After
     fun teardown() {
-        phone1.disconnect()
-        phone2.disconnect()
-        p1Priv.fill(0)
-        p2Priv.fill(0)
-        unmockkStatic(android.util.Log::class)
+        if (::phone1.isInitialized) phone1.disconnect()
+        if (::phone2.isInitialized) phone2.disconnect()
+        if (::relayScope.isInitialized) relayScope.cancel()
+        if (::p1Priv.isInitialized) p1Priv.fill(0)
+        if (::p2Priv.isInitialized) p2Priv.fill(0)
+        if (logMocked) unmockkStatic(android.util.Log::class)
     }
 
     private fun genKey(): ByteArray {
@@ -124,15 +130,18 @@ class GiftWrapRelayIntegrationTest {
         println("=== GIFT WRAP RELAY TEST ===")
         println("Phone 1: ${p1Pub.take(8)}  Phone 2: ${p2Pub.take(8)}")
 
-        // Connect both
         phone1.authSigner = { c, r -> p1Signer.createAuthEvent(c, r) }
         phone2.authSigner = { c, r -> p2Signer.createAuthEvent(c, r) }
         phone1.connect(relays)
         phone2.connect(relays)
-        delay(3000)
+        withTimeout(15_000) {
+            phone1.connectionState.first { it }
+            phone2.connectionState.first { it }
+        }
         assertTrue("Both connected", phone1.isConnected && phone2.isConnected)
+        assertTrue("Sender relay pool must answer before publishing", phone1.fetchEvents(groupId, 0, p1Pub).complete)
+        assertTrue("Recipient relay pool must answer before publishing", phone2.fetchEvents(groupId, 0, p2Pub).complete)
 
-        // ── TEST 1: Verify gift wrap tag structure (p tag for recipient, g tag for group) ──
         println("\n── TEST 1: Verify gift wrap tag structure ──")
         val expense =
             Expense(
@@ -166,9 +175,9 @@ class GiftWrapRelayIntegrationTest {
                 }
             )
 
-        // Verify tags per NIP-59 spec
-        val pTag = wrapped.tags.find { it[0] == "p" }
-        val gTag = wrapped.tags.find { it[0] == "g" }
+        // NIP-59 requires the recipient p tag; the g tag is a SplitFree extension.
+        val pTag = wrapped.tags.find { it.size >= 2 && it[0] == "p" }
+        val gTag = wrapped.tags.find { it.size >= 2 && it[0] == "g" }
         assertNotNull("NIP-59: must have p tag for recipient routing", pTag)
         assertNotNull("App: must have g tag for group filtering", gTag)
         assertEquals(p2Pub, pTag!![1])
@@ -179,34 +188,37 @@ class GiftWrapRelayIntegrationTest {
         println("   ✅ g tag: ${gTag[1].take(8)} (group)")
         println("   ✅ kind: 1059, ephemeral pubkey: ${wrapped.pubkey.take(8)}")
 
-        // Verify unwrap works
-        val (rumor, sender) = Nip59.unwrap(wrapped, p2Priv.copyOf())!!
+        val wrappedDeferred = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(30_000) {
+                phone2.incomingEvents.first { event ->
+                    event.id == wrapped.id &&
+                        event.kind == 1059 &&
+                        event.tags.any { it.size >= 2 && it[0] == "p" && it[1] == p2Pub }
+                }
+            }
+        }
+        // A different #g filter makes this envelope reachable only through the recipient #p filter.
+        val recipientSubscription = java.util.UUID.randomUUID().toString()
+        phone2.subscribe(recipientSubscription, now, p2Pub)
+        assertAccepted(phone1.publish(wrapped))
+        val receivedWrap = requireEvents(listOf(wrapped), listOf(wrappedDeferred.await())).single()
+        val unwrapped = Nip59.unwrap(receivedWrap, p2Priv.copyOf())
+        assertNotNull("Received envelope must unwrap for its recipient", unwrapped)
+        val (rumor, sender) = unwrapped!!
         assertEquals(p1Pub, sender)
-        val parsed =
-            json.decodeFromString(
-                Expense.serializer(),
-                encryption.decrypt(rumor.content, groupKey)
-            )
-        assertEquals("Dinner", parsed.description)
-        assertEquals(150000L, parsed.amount)
-        println("   ✅ Unwrap + decrypt: ${parsed.description} ₹${parsed.amount / 100}")
+        assertEquals(expenseEvent.copy(sig = ""), rumor)
+        val parsed = json.decodeFromString(
+            Expense.serializer(),
+            encryption.decrypt(rumor.content, groupKey)
+        )
+        assertEquals(expense, parsed)
+        assertTrue("Rumor must carry the expense UUID", listOf("x", expense.id) in rumor.tags)
+        assertNull("Rumor must NOT have e tag", rumor.tags.find { it.firstOrNull() == "e" })
+        phone2.unsubscribe(recipientSubscription)
 
-        // Verify x tag (not e tag) in rumor
-        assertNotNull("Rumor must have x tag", rumor.tags.find { it[0] == "x" })
-        assertNull("Rumor must NOT have e tag", rumor.tags.find { it[0] == "e" })
-        println("   ✅ Expense UUID in x tag (not reserved e tag)")
-
-        // ── TEST 2: Verify relay accepts kind 1059 with p+g tags ──
-        println("\n── TEST 2: Verify relay accepts gift-wrapped event ──")
-        val published = phone1.publish(wrapped)
-        assertTrue("Relay must accept kind 1059", published)
-        println("   ✅ Published to relay: ${wrapped.id.take(12)}")
-
-        // ── TEST 3: Direct (non-gift-wrap) expense sync still works ──
         println("\n── TEST 3: Direct expense sync (gift wrap disabled path) ──")
         phone1.subscribe(groupId, now - 60)
         phone2.subscribe(groupId, now - 60)
-        delay(2000)
 
         val directExpense =
             p1Signer.createSignedEvent(
@@ -216,26 +228,24 @@ class GiftWrapRelayIntegrationTest {
                 expense.id + "-direct"
             )
         val receivedDeferred =
-            async {
+            async(start = CoroutineStart.UNDISPATCHED) {
                 withTimeout(30_000) {
                     phone2.incomingEvents.first { e ->
-                        e.kind == 30078 && e.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "expense" }
+                        e.id == directExpense.id && e.kind == 30078
                     }
                 }
             }
-        delay(200)
-        assertTrue("Direct expense published", phone1.publish(directExpense))
+        assertAccepted(phone1.publish(directExpense))
 
-        val received = receivedDeferred.await()
+        val received = requireEvents(listOf(directExpense), listOf(receivedDeferred.await())).single()
         val directParsed =
             json.decodeFromString(
                 Expense.serializer(),
                 encryption.decrypt(received.content, groupKey)
             )
-        assertEquals("Dinner", directParsed.description)
+        assertEquals(expense, directParsed)
         println("   ✅ Phone 2 received direct expense: ${directParsed.description} ₹${directParsed.amount / 100}")
 
-        // ── TEST 4: Phone 2 → Phone 1 direct expense ──
         println("\n── TEST 4: Phone 2 → Phone 1 direct expense ──")
         val exp2 =
             Expense(
@@ -259,25 +269,23 @@ class GiftWrapRelayIntegrationTest {
                 encryption.encrypt(json.encodeToString(Expense.serializer(), exp2), groupKey),
                 exp2.id
             )
-        delay(2000)
         val recv2Deferred =
-            async {
+            async(start = CoroutineStart.UNDISPATCHED) {
                 withTimeout(30_000) {
                     phone1.incomingEvents.first { e ->
-                        e.kind == 30078 && e.pubkey == p2Pub
+                        e.id == exp2Event.id && e.kind == 30078 && e.pubkey == p2Pub
                     }
                 }
             }
-        delay(200)
-        assertTrue("Phone 2 expense published", phone2.publish(exp2Event))
+        assertAccepted(phone2.publish(exp2Event))
 
-        val recv2 = recv2Deferred.await()
+        val recv2 = requireEvents(listOf(exp2Event), listOf(recv2Deferred.await())).single()
         val parsed2 =
             json.decodeFromString(
                 Expense.serializer(),
                 encryption.decrypt(recv2.content, groupKey)
             )
-        assertEquals("Cab", parsed2.description)
+        assertEquals(exp2, parsed2)
         println("   ✅ Phone 1 received: ${parsed2.description} ₹${parsed2.amount / 100}")
 
         println("\n╔══════════════════════════════════════════════════╗")
@@ -285,7 +293,7 @@ class GiftWrapRelayIntegrationTest {
         println("╠══════════════════════════════════════════════════╣")
         println("║  ✓ Gift wrap has p tag (NIP-59 routing)          ║")
         println("║  ✓ Gift wrap has g tag (group filtering)         ║")
-        println("║  ✓ Unwrap + decrypt works                        ║")
+        println("║  ✓ Received exact envelope + unwrap + decrypt    ║")
         println("║  ✓ x tag (not e) for expense UUID                ║")
         println("║  ✓ Relay accepts kind 1059                       ║")
         println("║  ✓ Direct expense sync Phone 1→2                 ║")

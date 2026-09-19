@@ -5,51 +5,45 @@ import com.splitfree.data.nostr.NostrClient
 import com.splitfree.data.nostr.protocol.ClientMessage
 import com.splitfree.data.nostr.protocol.NostrFilter
 import com.splitfree.data.nostr.protocol.RelayMessage
-import com.splitfree.data.nostr.relay.Relay
+import com.splitfree.data.util.CompressionUtil
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
+import com.splitfree.test.RelayProbeAssertions.assertAccepted
+import com.splitfree.test.RelayProbeAssertions.requireEvents
+import fr.acinq.secp256k1.Secp256k1
 import io.mockk.every
 import io.mockk.mockkStatic
-import io.mockk.unmockkAll
+import io.mockk.unmockkStatic
+import java.security.SecureRandom
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
-/**
- * Real integration test against a live Nostr relay.
- *
- * Validates the full stack: OkHttp WebSocket → Relay → NostrClient → event flow.
- * Uses wss://nos.lol (public, no auth required).
- *
- * These tests require network access and may be slow (~5s each).
- * They are NOT mocked; they exercise the real code paths.
- */
+/** Opt-in live probes: expected connections, publish acceptance and matching read-back must succeed. */
 class RelayIntegrationTest {
-    // Real secp256k1 keypair for signing
-    private val privKey =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .chunked(2)
-            .map { it.toInt(16).toByte() }
-            .toByteArray()
-    private val pubKey = NostrEvent.pubkeyFromPrivkey(privKey)
-
-    private lateinit var relay: Relay
     private val relayUrl = "wss://nos.lol"
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val relays = mutableListOf<Relay>()
+    private val clients = mutableListOf<NostrClient>()
+    private lateinit var scope: CoroutineScope
+    private lateinit var privKey: ByteArray
+    private lateinit var pubKey: String
+    private var logMocked = false
 
     @Before
     fun setup() {
@@ -57,214 +51,184 @@ class RelayIntegrationTest {
             "Skipped: set -DREAL_RELAY_TEST=true to run integration tests",
             System.getProperty("REAL_RELAY_TEST") == "true"
         )
-        mockkStatic(android.util.Log::class)
+        mockkStatic(Log::class)
+        logMocked = true
         every { Log.d(any<String>(), any<String>()) } returns 0
         every { Log.i(any<String>(), any<String>()) } returns 0
         every { Log.w(any<String>(), any<String>()) } returns 0
         every { Log.e(any<String>(), any<String>()) } returns 0
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        privKey = ByteArray(32)
+        val random = SecureRandom()
+        do {
+            random.nextBytes(privKey)
+        } while (!Secp256k1.secKeyVerify(privKey))
+        pubKey = NostrEvent.pubkeyFromPrivkey(privKey)
     }
 
     @After
     fun teardown() {
-        if (::relay.isInitialized) relay.disconnect()
-        scope.cancel()
-        unmockkAll()
+        try {
+            clients.forEach { it.disconnect() }
+            relays.forEach { it.disconnect() }
+        } finally {
+            if (::scope.isInitialized) scope.cancel()
+            if (::privKey.isInitialized) privKey.fill(0)
+            if (logMocked) unmockkStatic(Log::class)
+        }
+    }
+
+    private suspend fun connectedRelay(): Relay {
+        val relay = Relay(relayUrl, scope)
+        relays.add(relay)
+        relay.connect()
+        withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
+        return relay
+    }
+
+    private suspend fun connectedClient(): NostrClient {
+        val client = NostrClient(scope)
+        clients.add(client)
+        client.connect(listOf(relayUrl))
+        withTimeout(10_000) { client.connectionState.first { it } }
+        return client
+    }
+
+    private fun encryptedEvent(groupId: String = UUID.randomUUID().toString()): NostrEvent {
+        val encryption = GroupEncryption(CompressionUtil)
+        return NostrEvent(
+            pubkey = pubKey,
+            createdAt = System.currentTimeMillis() / 1000,
+            kind = 30078,
+            tags = listOf(listOf("d", groupId), listOf("g", groupId)),
+            content = encryption.encrypt("disposable relay probe $groupId", encryption.generateGroupKey())
+        ).sign(privKey)
+    }
+
+    private suspend fun fetchFromRelay(reader: Relay, filter: NostrFilter): List<NostrEvent> = coroutineScope {
+        val subId = UUID.randomUUID().toString()
+        val response = async(start = CoroutineStart.UNDISPATCHED) {
+            val events = mutableListOf<NostrEvent>()
+            withTimeout(10_000) {
+                reader.messages.first { message ->
+                    when (message) {
+                        is RelayMessage.EventMsg -> {
+                            if (message.subId == subId) events.add(message.event)
+                            false
+                        }
+                        is RelayMessage.EoseMsg -> message.subId == subId
+                        is RelayMessage.ClosedMsg -> {
+                            if (message.subId == subId) throw AssertionError("Relay closed subscription $subId")
+                            false
+                        }
+                        else -> false
+                    }
+                }
+            }
+            events.toList()
+        }
+        try {
+            reader.subscribe(subId, listOf(filter))
+            response.await()
+        } finally {
+            reader.closeSubscription(subId)
+            response.cancel()
+        }
     }
 
     @Test
     fun `relay connects to live server`() = runBlocking {
-        relay = Relay(relayUrl, scope)
-        relay.connect()
-
-        // Wait for connection (up to 10s)
-        withTimeout(10_000) {
-            relay.state.first { it == Relay.State.CONNECTED }
-        }
-        assertEquals(Relay.State.CONNECTED, relay.state.value)
+        assertEquals(Relay.State.CONNECTED, connectedRelay().state.value)
     }
 
     @Test
-    fun `relay publish and receive OK response`() = runBlocking {
-        relay = Relay(relayUrl, scope)
-        relay.connect()
-        withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
-
-        // Create a kind 1 ephemeral event (text note); relays accept these
-        val event =
-            NostrEvent(
-                pubkey = pubKey,
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 1,
-                tags = listOf(listOf("t", "splitfree-test")),
-                content = "integration test ${System.nanoTime()}"
-            ).sign(privKey)
-
-        assertTrue("Event must have valid signature", event.verify())
-
-        val accepted = relay.sendEvent(event, timeoutMs = 10_000)
-        // Relay may accept or reject (rate limit, etc.), but we should get a response
-        // The key test is that sendEvent completes without exception
-        assertNotNull(accepted)
+    fun `relay publish requires OK acceptance and independent read back`() = runBlocking {
+        val publisher = connectedRelay()
+        val event = encryptedEvent()
+        assertAccepted(publisher.sendEvent(event, timeoutMs = 10_000))
+        publisher.disconnect()
+        val received = fetchFromRelay(connectedRelay(), NostrFilter(ids = listOf(event.id)))
+        requireEvents(listOf(event), received)
+        Unit
     }
 
     @Test
-    fun `relay subscribe receives EOSE`() = runBlocking {
-        relay = Relay(relayUrl, scope)
-        relay.connect()
-        withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
-
-        val subId = "test-sub-${System.nanoTime()}"
-        val filter =
-            NostrFilter(
-                kinds = listOf(1),
-                limit = 1
-            )
-
-        var gotEose = false
-        val eoseJob =
-            scope.launch {
-                relay.messages.collect { msg ->
-                    if (msg is RelayMessage.EoseMsg && msg.subId == subId) {
-                        gotEose = true
-                        return@collect
-                    }
-                }
-            }
-
-        relay.subscribe(subId, listOf(filter))
-
-        // Wait for EOSE (relay sends this after sending stored events)
-        withTimeout(10_000) { while (!gotEose) delay(100) }
-        assertTrue("Should receive EOSE", gotEose)
-
-        relay.closeSubscription(subId)
-        eoseJob.cancel()
+    fun `relay subscribe receives EOSE for an empty filter`() = runBlocking {
+        val absentId = encryptedEvent().id
+        val received = fetchFromRelay(connectedRelay(), NostrFilter(ids = listOf(absentId)))
+        assertTrue("Unpublished fixture must not exist on relay", received.isEmpty())
     }
 
     @Test
-    fun `relay subscribe receives events before EOSE`() = runBlocking {
-        relay = Relay(relayUrl, scope)
-        relay.connect()
-        withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
-
-        val subId = "test-events-${System.nanoTime()}"
-        // Ask for recent kind 1 events; there are always some on public relays
-        val filter =
-            NostrFilter(
-                kinds = listOf(1),
-                limit = 3
-            )
-
-        val events = mutableListOf<NostrEvent>()
-        var gotEose = false
-
-        val collectJob =
-            scope.launch {
-                relay.messages.collect { msg ->
-                    when (msg) {
-                        is RelayMessage.EventMsg -> {
-                            if (msg.subId == subId) events.add(msg.event)
-                        }
-
-                        is RelayMessage.EoseMsg -> {
-                            if (msg.subId == subId) gotEose = true
-                        }
-
-                        else -> {}
-                    }
-                }
-            }
-
-        relay.subscribe(subId, listOf(filter))
-        withTimeout(10_000) { while (!gotEose) delay(100) }
-
-        // Public relays should have at least 1 kind-1 event
-        assertTrue("Should receive at least 1 event", events.isNotEmpty())
-        // All received events should have valid structure
-        events.forEach { event ->
-            assertEquals(1, event.kind)
-            assertTrue("Event ID should be 64 hex chars", event.id.length == 64)
-            assertTrue("Pubkey should be 64 hex chars", event.pubkey.length == 64)
-            assertTrue("Sig should be 128 hex chars", event.sig.length == 128)
-            assertTrue("CreatedAt should be positive", event.createdAt > 0)
-        }
-
-        relay.closeSubscription(subId)
-        collectJob.cancel()
+    fun `relay subscribe receives exact fixtures before EOSE`() = runBlocking {
+        val publisher = connectedRelay()
+        val expected = listOf(encryptedEvent(), encryptedEvent())
+        expected.forEach { assertAccepted(publisher.sendEvent(it, timeoutMs = 10_000)) }
+        publisher.disconnect()
+        val received = fetchFromRelay(connectedRelay(), NostrFilter(ids = expected.map { it.id }))
+        requireEvents(expected, received)
+        Unit
     }
 
     @Test
     fun `relay disconnect transitions to DISCONNECTED`() = runBlocking {
-        relay = Relay(relayUrl, scope)
-        relay.connect()
-        withTimeout(10_000) { relay.state.first { it == Relay.State.CONNECTED } }
-
+        val relay = connectedRelay()
         relay.disconnect()
         assertEquals(Relay.State.DISCONNECTED, relay.state.value)
     }
 
     @Test
-    fun `NostrClient full round-trip with live relay`() = runBlocking {
-        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
-        try {
-            client.connect(listOf(relayUrl))
+    fun `NostrClient full round-trip with independent live reader`() = runBlocking {
+        val groupId = UUID.randomUUID().toString()
+        val event = encryptedEvent(groupId)
+        val publisher = connectedClient()
+        assertAccepted(publisher.publish(event))
+        publisher.disconnect()
+        assertFalse(publisher.isConnected)
 
-            // Wait for at least one relay to connect
-            withTimeout(10_000) { while (!client.isConnected) delay(100) }
-            assertTrue(client.isConnected)
-
-            // Fetch recent events for a random group ID (will return empty but exercises the path)
-            val events = client.fetchEvents("nonexistent-group-${System.nanoTime()}", 0, pubKey).events
-            // Should return empty list (no events for random group), not throw
-            assertNotNull(events)
-
-            // Publish a signed event
-            val event =
-                NostrEvent(
-                    pubkey = pubKey,
-                    createdAt = System.currentTimeMillis() / 1000,
-                    kind = 1,
-                    tags = listOf(listOf("t", "splitfree-integration")),
-                    content = "NostrClient test ${System.nanoTime()}"
-                ).sign(privKey)
-
-            // publish may succeed or fail depending on relay policy, but should not throw
-            client.publish(event)
-        } finally {
-            client.disconnect()
-        }
-        assertFalse(client.isConnected)
-    }
-
-    @Test
-    fun `NostrClient rejects non-wss relay URLs`() = runBlocking {
-        val client = NostrClient(CoroutineScope(SupervisorJob() + Dispatchers.IO))
-        try {
-            client.connect(listOf("ws://insecure.relay", "http://bad.relay"))
-            // Should connect to 0 relays
-            assertFalse(client.isConnected)
-        } finally {
-            client.disconnect()
-        }
+        val reader = connectedClient()
+        val fetched = reader.fetchEvents(groupId, 0, pubKey)
+        assertTrue("Independent relay fetch must reach EOSE without loss", fetched.complete)
+        requireEvents(listOf(event), fetched.events)
+        Unit
     }
 
     @Test
     fun `relay handles invalid URL gracefully`() = runBlocking {
-        relay = Relay("wss://this.relay.does.not.exist.invalid", scope)
+        val relay = Relay("wss://this.relay.does.not.exist.invalid", scope)
+        relays.add(relay)
+        assertEquals(Relay.State.DISCONNECTED, relay.state.value)
         relay.connect()
+        withTimeout(10_000) { relay.state.first { it == Relay.State.DISCONNECTED } }
+        assertEquals(Relay.State.DISCONNECTED, relay.state.value)
+    }
+}
 
-        // Should transition to CONNECTING then DISCONNECTED (connection failure)
-        delay(3000)
-        // After failure, state should be DISCONNECTED (with reconnect scheduled)
-        assertTrue(
-            "State should be DISCONNECTED or CONNECTING after failure",
-            relay.state.value == Relay.State.DISCONNECTED || relay.state.value == Relay.State.CONNECTING
-        )
+// Separate class name keeps protocol-only coverage in the default test gate.
+class RelayProtocolOfflineTest {
+    @Test
+    fun `NostrClient rejects non-wss relay URLs`() = runBlocking {
+        mockkStatic(Log::class)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val client = NostrClient(scope)
+        try {
+            every { Log.d(any<String>(), any<String>()) } returns 0
+            every { Log.i(any<String>(), any<String>()) } returns 0
+            every { Log.w(any<String>(), any<String>()) } returns 0
+            every { Log.e(any<String>(), any<String>()) } returns 0
+            client.connect(listOf("ws://insecure.relay", "http://bad.relay"))
+            assertFalse(client.isConnected)
+            assertTrue(client.currentRelayUrls().isEmpty())
+        } finally {
+            client.disconnect()
+            scope.cancel()
+            unmockkStatic(Log::class)
+        }
     }
 
     @Test
     fun `relay message parsing matches real relay format`() {
-        // Verify our parser handles real relay message formats
+        // Hand-built wire fixtures exercise parsing, not live relay delivery or signature verification.
         val eventJson = """["EVENT","sub1",{"id":"${"ab".repeat(
             32
         )}","pubkey":"${"cd".repeat(

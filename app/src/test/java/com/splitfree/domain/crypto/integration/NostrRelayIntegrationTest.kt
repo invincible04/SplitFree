@@ -4,9 +4,16 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
+import com.splitfree.test.RelayProbeAssertions.assertAccepted
+import com.splitfree.test.RelayProbeAssertions.requireEvents
+import fr.acinq.secp256k1.Secp256k1
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import java.io.Closeable
 import java.security.SecureRandom
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
+import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
@@ -20,245 +27,226 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
-/**
- * Integration test: publish signed events to REAL public Nostr relays
- * using raw OkHttp WebSocket. Validates that our NostrEvent serialization
- * and signing is wire-compatible with real Nostr relay infrastructure.
- *
- * Uses raw WebSocket intentionally (not NostrClient) to independently verify
- * the protocol implementation.
- *
- * Run: `./gradlew test -DREAL_RELAY_TEST=true --tests "*.NostrRelayIntegrationTest"`
- * Closes the last gap: proving our from-scratch NIP-01/NIP-44 implementation
- * is wire-compatible with real Nostr infrastructure.
- *
- * Run: ./gradlew :app:testDebugUnitTest --tests "*.NostrRelayIntegrationTest"
- *
- * Requires network. Gracefully skips if no relay is reachable.
- */
+/** Raw WebSocket probes deliberately bypass NostrClient and require explicit network opt-in. */
 class NostrRelayIntegrationTest {
-    private val relays =
-        listOf(
-            "wss://nos.lol",
-            "wss://offchain.pub",
-            "wss://relay.primal.net"
-        )
-
-    private val privKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-    private val pubKeyHex = NostrEvent.pubkeyFromPrivkey(privKey)
-    private val httpClient =
-        OkHttpClient
-            .Builder()
-            .pingInterval(30, TimeUnit.SECONDS)
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .build()
+    private val relays = listOf("wss://nos.lol", "wss://offchain.pub", "wss://relay.primal.net")
+    private lateinit var privKey: ByteArray
+    private lateinit var pubKeyHex: String
+    private lateinit var httpClient: OkHttpClient
 
     @Before
     fun setup() {
         Assume.assumeTrue("Skipped: set -DREAL_RELAY_TEST=true", System.getProperty("REAL_RELAY_TEST") == "true")
+        privKey = generateValidPrivateKey()
+        pubKeyHex = NostrEvent.pubkeyFromPrivkey(privKey)
+        httpClient = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
     }
 
-    @Test
-    fun `publish event to real relay and read it back`() {
-        val event =
-            NostrEvent(
-                pubkey = pubKeyHex,
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 1,
-                tags = listOf(listOf("t", "splitfree-test")),
-                content = "SplitFree integration test ${System.currentTimeMillis()}"
-            ).sign(privKey)
-
-        assertTrue("Event must verify locally", event.verify())
-
-        val result = tryRelays { url -> publishAndReadBack(url, event) }
-        if (result != null) {
-            assertEquals(event.id, result.id)
-            assertEquals(event.pubkey, result.pubkey)
-            assertEquals(event.content, result.content)
-            assertEquals(event.sig, result.sig)
-            assertTrue("Returned event must verify", result.verify())
+    @After
+    fun teardown() {
+        if (::privKey.isInitialized) privKey.fill(0)
+        if (::httpClient.isInitialized) {
+            httpClient.dispatcher.cancelAll()
+            httpClient.connectionPool.evictAll()
         }
     }
 
-    @Test
-    fun `relay accepts kind 30078 NIP-78 events`() {
-        val event =
-            NostrEvent(
-                pubkey = pubKeyHex,
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 30078,
-                tags =
-                listOf(
-                    listOf("d", "splitfree-test-${System.currentTimeMillis()}"),
-                    listOf("t", "expense")
-                ),
-                content = "encrypted-expense-placeholder"
-            ).sign(privKey)
-
-        val accepted = tryRelays { url -> publishAndWaitForOk(url, event) }
-        if (accepted != null) {
-            assertTrue("Relay must accept kind 30078", accepted)
-        }
+    private fun generateValidPrivateKey(): ByteArray {
+        val key = ByteArray(32)
+        val random = SecureRandom()
+        do {
+            random.nextBytes(key)
+        } while (!Secp256k1.secKeyVerify(key))
+        return key
     }
 
     @Test
-    fun `NIP-44 encrypted event survives relay round-trip`() {
-        val recipientPriv = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val recipientPub = NostrEvent.pubkeyFromPrivkey(recipientPriv).hexToBytes()
-
-        val plaintext = "expense:{amount:500,currency:INR}"
-        val convKey = Nip44.getConversationKey(privKey, recipientPub)
-        val encrypted = Nip44.encrypt(plaintext, convKey)
-
-        val event =
-            NostrEvent(
-                pubkey = pubKeyHex,
-                createdAt = System.currentTimeMillis() / 1000,
-                kind = 30078,
-                tags =
-                listOf(
-                    listOf("d", "splitfree-enc-${System.currentTimeMillis()}"),
-                    listOf("p", recipientPub.toHex())
-                ),
-                content = encrypted
-            ).sign(privKey)
-
-        val result = tryRelays { url -> publishAndReadBack(url, event) }
-        if (result != null) {
-            val decrypted = Nip44.decrypt(result.content, convKey)
-            assertEquals("Decrypted content must match", plaintext, decrypted)
-        }
+    fun `publish encrypted event to real relay and read it back`() {
+        encryptedRoundTrip(kind = 1)
     }
 
-    // --- Helpers ---
+    @Test
+    fun `relay accepts and stores encrypted kind 30078 NIP-78 events`() {
+        encryptedRoundTrip(kind = 30078)
+    }
 
-    private fun <T> tryRelays(action: (String) -> T?): T? {
-        for (url in relays) {
+    @Test
+    fun `NIP-44 recipient decrypts independently fetched relay event`() {
+        encryptedRoundTrip(kind = 30078)
+    }
+
+    private fun encryptedRoundTrip(kind: Int) {
+        val recipientPriv = generateValidPrivateKey()
+        try {
+            val recipientPub = NostrEvent.pubkeyFromPrivkey(recipientPriv).hexToBytes()
+            val senderKey = Nip44.getConversationKey(privKey, recipientPub)
             try {
-                val result = action(url)
-                if (result != null) {
-                    println("✅ Success on $url")
-                    return result
+                val plaintext = "disposable expense probe ${UUID.randomUUID()}"
+                val event = NostrEvent(
+                    pubkey = pubKeyHex,
+                    createdAt = System.currentTimeMillis() / 1000,
+                    kind = kind,
+                    tags = listOf(listOf("d", UUID.randomUUID().toString()), listOf("p", recipientPub.toHex())),
+                    content = Nip44.encrypt(plaintext, senderKey)
+                ).sign(privKey)
+                val recipientKey = Nip44.getConversationKey(recipientPriv, pubKeyHex.hexToBytes())
+                try {
+                    relays.forEach { url ->
+                        val received = publishAndReadBack(url, event)
+                        assertEquals(
+                            "Recipient must decrypt the remotely fetched event on $url",
+                            plaintext,
+                            Nip44.decrypt(received.content, recipientKey)
+                        )
+                    }
+                } finally {
+                    recipientKey.fill(0)
                 }
-            } catch (e: Exception) {
-                println("⚠️ $url: ${e.message}")
+            } finally {
+                senderKey.fill(0)
+            }
+        } finally {
+            recipientPriv.fill(0)
+        }
+    }
+
+    private fun publishAndReadBack(relayUrl: String, event: NostrEvent): NostrEvent {
+        assertTrue("Published fixture must verify", event.verify())
+        openWs(relayUrl).use { publisher ->
+            publisher.send("""["EVENT",${event.toJson()}]""")
+            publisher.requireAccepted(event.id)
+        }
+
+        // Fetch on a new socket after acceptance to distinguish stored history from a live echo.
+        return openWs(relayUrl).use { reader ->
+            val subId = UUID.randomUUID().toString()
+            val received = mutableListOf<NostrEvent>()
+            try {
+                reader.send("""["REQ","$subId",{"ids":["${event.id}"]}]""")
+                reader.awaitMessage { message ->
+                    when (message) {
+                        is Msg.Event -> {
+                            if (message.subId == subId) received.add(message.event)
+                            false
+                        }
+                        is Msg.Eose -> message.subId == subId
+                        is Msg.Closed -> {
+                            if (message.subId == subId) {
+                                throw AssertionError("$relayUrl closed subscription: ${message.reason}")
+                            }
+                            false
+                        }
+                        else -> false
+                    }
+                }
+                requireEvents(listOf(event), received).single()
+            } finally {
+                reader.socket.send("""["CLOSE","$subId"]""")
             }
         }
-        println("⚠️ SKIPPED: No relay reachable (network required)")
-        return null
     }
 
-    private fun publishAndReadBack(relayUrl: String, event: NostrEvent): NostrEvent? {
-        val receivedEvents = CopyOnWriteArrayList<NostrEvent>()
-        val eventLatch = CountDownLatch(1)
-        val okLatch = CountDownLatch(1)
-        var accepted = false
+    internal sealed class Frame {
+        object Opened : Frame()
+        data class Text(val text: String) : Frame()
+        data class Failed(val cause: Throwable) : Frame()
+    }
 
-        val ws =
-            openWs(relayUrl) { text ->
-                when (val msg = parseMsg(text)) {
-                    is Msg.Ok -> {
-                        accepted = msg.accepted
-                        okLatch.countDown()
-                    }
+    internal inner class RelaySocket(
+        val socket: WebSocket,
+        private val inbox: LinkedBlockingQueue<Frame>,
+        private val url: String
+    ) : Closeable {
+        fun send(text: String) {
+            assertTrue("WebSocket send failed on $url", socket.send(text))
+        }
 
-                    is Msg.Event -> {
-                        if (msg.event.id == event.id) {
-                            receivedEvents.add(msg.event)
-                            eventLatch.countDown()
-                        }
-                    }
+        fun awaitOpen(timeoutNanos: Long = TimeUnit.SECONDS.toNanos(10)): RelaySocket {
+            try {
+                awaitFrame(timeoutNanos) { it is Frame.Opened }
+                return this
+            } catch (failure: Throwable) {
+                close()
+                throw failure
+            }
+        }
 
-                    else -> {}
-                }
-            } ?: return null
+        fun requireAccepted(eventId: String) {
+            val ok = awaitMessage { it is Msg.Ok && it.eventId == eventId } as Msg.Ok
+            assertAccepted(ok.accepted)
+        }
 
-        try {
-            val subId = "t${System.currentTimeMillis()}"
-            ws.send("""["REQ","$subId",{"ids":["${event.id}"],"limit":1}]""")
-            ws.send("""["EVENT",${event.toJson()}]""")
+        fun awaitFrame(timeoutNanos: Long = TimeUnit.SECONDS.toNanos(10), predicate: (Frame) -> Boolean): Frame {
+            val deadline = System.nanoTime() + timeoutNanos
+            while (true) {
+                val remaining = deadline - System.nanoTime()
+                assertTrue("Timed out waiting for relay response on $url", remaining > 0)
+                val frame = inbox.poll(remaining, TimeUnit.NANOSECONDS)
+                    ?: throw AssertionError("Timed out waiting for relay response on $url")
+                if (frame is Frame.Failed) throw AssertionError("Relay connection failed on $url", frame.cause)
+                if (predicate(frame)) return frame
+            }
+        }
 
-            if (!okLatch.await(10, TimeUnit.SECONDS) || !accepted) return null
-            if (!eventLatch.await(10, TimeUnit.SECONDS)) return null
+        fun awaitMessage(predicate: (Msg) -> Boolean): Msg {
+            val frame = awaitFrame { it is Frame.Text && predicate(parseMsg(it.text)) } as Frame.Text
+            return parseMsg(frame.text)
+        }
 
-            ws.send("""["CLOSE","$subId"]""")
-            return receivedEvents.firstOrNull()
-        } finally {
-            ws.close(1000, "done")
+        override fun close() {
+            socket.close(1000, "done")
+            socket.cancel()
         }
     }
 
-    private fun publishAndWaitForOk(relayUrl: String, event: NostrEvent): Boolean? {
-        val okLatch = CountDownLatch(1)
-        var accepted = false
-
-        val ws =
-            openWs(relayUrl) { text ->
-                val msg = parseMsg(text)
-                if (msg is Msg.Ok && msg.eventId == event.id) {
-                    accepted = msg.accepted
-                    okLatch.countDown()
+    private fun openWs(url: String): RelaySocket {
+        val inbox = LinkedBlockingQueue<Frame>()
+        val socket = httpClient.newWebSocket(
+            Request.Builder().url(url).build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    inbox.offer(Frame.Opened)
                 }
-            } ?: return null
 
-        try {
-            ws.send("""["EVENT",${event.toJson()}]""")
-            if (!okLatch.await(10, TimeUnit.SECONDS)) return null
-            return if (accepted) true else null
-        } finally {
-            ws.close(1000, "done")
-        }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    inbox.offer(Frame.Text(text))
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    inbox.offer(Frame.Failed(t))
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    inbox.offer(Frame.Failed(IllegalStateException("Relay closed socket: $code $reason")))
+                    webSocket.close(code, reason)
+                }
+            }
+        )
+        return RelaySocket(socket, inbox, url).awaitOpen()
     }
 
-    // --- OkHttp WebSocket ---
-
-    private fun openWs(url: String, onMessage: (String) -> Unit): WebSocket? {
-        val openLatch = CountDownLatch(1)
-        var opened = false
-
-        val ws =
-            httpClient.newWebSocket(
-                Request.Builder().url(url).build(),
-                object : WebSocketListener() {
-                    override fun onOpen(webSocket: WebSocket, response: Response) {
-                        opened = true
-                        openLatch.countDown()
-                    }
-
-                    override fun onMessage(webSocket: WebSocket, text: String) {
-                        onMessage(text)
-                    }
-
-                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        openLatch.countDown()
-                    }
-                }
-            )
-
-        return if (openLatch.await(10, TimeUnit.SECONDS) && opened) ws else null
-    }
-
-    // --- Minimal relay message parser ---
-
-    private sealed class Msg {
+    internal sealed class Msg {
         data class Ok(val eventId: String, val accepted: Boolean) : Msg()
-
         data class Event(val subId: String, val event: NostrEvent) : Msg()
-
+        data class Eose(val subId: String) : Msg()
+        data class Closed(val subId: String, val reason: String) : Msg()
         object Other : Msg()
     }
 
-    private fun parseMsg(json: String): Msg? = try {
+    private fun parseMsg(json: String): Msg {
         val arr = Json.parseToJsonElement(json.trim()).jsonArray
-        when (arr[0].jsonPrimitive.content) {
+        return when (arr[0].jsonPrimitive.content) {
             "OK" -> {
                 Msg.Ok(arr[1].jsonPrimitive.content, arr[2].jsonPrimitive.boolean)
             }
@@ -283,11 +271,49 @@ class NostrRelayIntegrationTest {
                 )
             }
 
-            else -> {
-                Msg.Other
-            }
+            "EOSE" -> Msg.Eose(arr[1].jsonPrimitive.content)
+            "CLOSED" -> Msg.Closed(arr[1].jsonPrimitive.content, arr[2].jsonPrimitive.content)
+            else -> Msg.Other
         }
-    } catch (_: Exception) {
-        null
+    }
+}
+
+class RawRelayProtocolOfflineTest {
+    private val probe = NostrRelayIntegrationTest()
+    private val socket = mockk<WebSocket>(relaxed = true)
+    private val inbox = LinkedBlockingQueue<NostrRelayIntegrationTest.Frame>()
+    private val connection = probe.RelaySocket(socket, inbox, "offline relay fixture")
+
+    @Test
+    fun `unreachable relay fails and disposes the opening socket`() {
+        inbox.add(NostrRelayIntegrationTest.Frame.Failed(IllegalStateException("offline")))
+        assertThrows(AssertionError::class.java) { connection.awaitOpen() }
+        verify(exactly = 1) { socket.close(1000, "done") }
+        verify(exactly = 1) { socket.cancel() }
+    }
+
+    @Test
+    fun `no open response fails instead of returning null or skipping`() {
+        assertThrows(AssertionError::class.java) { connection.awaitOpen(timeoutNanos = 0) }
+        verify(exactly = 1) { socket.cancel() }
+    }
+
+    @Test
+    fun `raw relay rejection fails`() {
+        inbox.add(NostrRelayIntegrationTest.Frame.Text("""["OK","expected",false,"rejected"]"""))
+        assertThrows(AssertionError::class.java) { connection.requireAccepted("expected") }
+    }
+
+    @Test
+    fun `unrelated OK cannot make the raw publish pass`() {
+        inbox.add(NostrRelayIntegrationTest.Frame.Text("""["OK","unrelated",true,""]"""))
+        inbox.add(NostrRelayIntegrationTest.Frame.Failed(IllegalStateException("connection lost")))
+        assertThrows(AssertionError::class.java) { connection.requireAccepted("expected") }
+    }
+
+    @Test
+    fun `raw send failure cannot pass`() {
+        every { socket.send(any<String>()) } returns false
+        assertThrows(AssertionError::class.java) { connection.send("offline fixture") }
     }
 }
