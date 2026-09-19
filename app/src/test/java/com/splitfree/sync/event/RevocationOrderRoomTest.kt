@@ -16,6 +16,7 @@ import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
@@ -103,6 +104,11 @@ class RevocationOrderRoomTest {
 
         init {
             devices += this
+            coEvery { publisher.captureRevocationHistory(any(), any(), any()) } coAnswers {
+                thirdArg<suspend (Map<String, List<EventSnapshot>>) -> Unit>()(
+                    secondArg<List<Group>>().associate { it.id to emptyList() }
+                )
+            }
             coEvery { publisher.publishDirect(any(), any(), any(), any(), any()) } coAnswers {
                 sent += firstArg<NostrEvent>()
             }

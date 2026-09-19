@@ -84,6 +84,7 @@ class PrelaunchFreshFlowRoomTest {
     private inner class Device(privateKey: ByteArray) {
         val pubkey = NostrEvent.pubkeyFromPrivkey(privateKey)
         val identity = mockk<IdentityContract>(relaxed = true) {
+            every { identityState() } returns com.splitfree.domain.repository.IdentityState.READY
             every { getPublicKeyHex() } returns pubkey
             every { getPublicKeyBytes() } returns pubkey.hexToBytes()
             every { getPrivateKeyBytes() } answers { privateKey.copyOf() }
@@ -431,9 +432,17 @@ class PrelaunchFreshFlowRoomTest {
         val localIdentity = IdentityManager(RuntimeEnvironment.getApplication(), FakeSecureStorage())
         localIdentity.importKey(creatorKey.joinToString("") { "%02x".format(it) })
         val journal = ControlOperationJournal(device.db.controlOperationDao())
-        val blocked = mockk<com.splitfree.domain.repository.EventPublisherContract>()
-        coEvery { blocked.publishDirect(any(), any(), any(), any(), any()) } throws
-            IllegalStateException("Publish interrupted")
+        val blocked = object : com.splitfree.domain.repository.EventPublisherContract by device.publisher {
+            override suspend fun publishDirect(
+                event: NostrEvent,
+                groupId: String,
+                encrypted: String,
+                eventType: String,
+                expenseUuid: String?
+            ) {
+                error("Publish interrupted")
+            }
+        }
         val operation = RevokeKeyUseCase(
             localIdentity,
             device.groups,

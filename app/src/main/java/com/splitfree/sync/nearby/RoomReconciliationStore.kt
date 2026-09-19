@@ -294,7 +294,8 @@ constructor(
 
     override suspend fun retryDeferred(groupId: String): Int = eventProcessor.retryDeferred(groupId)
 
-    override suspend fun pendingCount(groupId: String): Int = eventDao.countPending(groupId)
+    override suspend fun pendingCount(groupId: String): Int =
+        eventDao.countPending(groupId) + eventProcessor.unresolvedIdentityHistory(groupId)
 
     override fun observeChanges(groupId: String): Flow<StoreVersion> =
         syncRevisionDao.observeRevision(groupId).map { StoreVersion(it) }
@@ -329,7 +330,7 @@ constructor(
 
     companion object {
         private const val TAG = "NearbyStore"
-        private val CONTROL_TYPES = setOf("key_rotation", "group_meta", "key_revocation")
+        private val CONTROL_TYPES = setOf("key_rotation", "group_meta", "key_revocation", "identity_history")
 
         // Per-group quotas apply to available carried envelopes; MAX_ENVELOPE_BYTES limits one UTF-8 JSON payload.
         // MAX_EVICTIONS_PER_INSERT bounds eviction work; exceeding it reports RecordOutcome.BUSY.

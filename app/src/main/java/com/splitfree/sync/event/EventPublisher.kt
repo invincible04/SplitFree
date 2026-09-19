@@ -16,12 +16,14 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.repository.DisplayNameDelivery
 import com.splitfree.domain.repository.DisplayNameGroupChangedException
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.domain.repository.OutboxFullException
 import com.splitfree.domain.repository.PreparedDisplayName
 import com.splitfree.domain.repository.SettingsContract
@@ -55,6 +57,58 @@ constructor(
     private val db: AppDatabase,
     private val settings: SettingsContract
 ) : EventPublisherContract {
+    override suspend fun captureRevocationHistory(
+        oldPubkey: String,
+        groups: List<Group>,
+        persist: suspend (Map<String, List<EventSnapshot>>) -> Unit
+    ) = db.withTransaction {
+        check(identity.getPublicKeyHex() == oldPubkey) { "Identity changed before history capture" }
+        check(
+            groupRepo.getAll().filter {
+                oldPubkey in it.members
+            }.map { it.id }.toSet() == groups.map { it.id }.toSet()
+        ) {
+            "Groups changed before identity history capture. Try again"
+        }
+        val history = groups.associate { group ->
+            check(groupRepo.getById(group.id) == group) { "Group changed before history capture" }
+            val rows = IdentityHistoryPage.MONEY_TYPES.flatMap { type ->
+                eventDao.getEventsByTypeAndAuthor(group.id, type, oldPubkey)
+            }.filter { it.applyState != EventEntity.APPLY_STATE_FAILED }
+            check(rows.size <= IdentityHistoryPage.MAX_EVENTS) {
+                "Identity history exceeds the authenticated page limit"
+            }
+            group.id to rows.map { row ->
+                EventSnapshot(
+                    row.eventId, row.groupId, row.pubkey, row.createdAt, row.kind, row.contentEncrypted,
+                    row.eventType, row.expenseUuid, row.sig, row.receivedAt, row.originalEventJson,
+                    row.keyEpoch, row.applyState
+                )
+            }
+        }
+        persist(history)
+    }
+
+    private suspend fun requireStableJoiningIdentity(author: String) {
+        check(
+            identity.identityState() == IdentityState.READY &&
+                Regex("[0-9a-f]{64}").matches(author) &&
+                identity.getPublicKeyHex() == author &&
+                !identity.hasPendingKeyPair() &&
+                identity.stagedIdentitySwitch() == null &&
+                db.controlOperationDao().get("identity-revocation") == null &&
+                db.controlOperationDao().get(IdentitySwitchCoordinator.SWITCH_ID) == null
+        ) {
+            "Identity replacement is pending or identity changed; finish it before joining or creating groups"
+        }
+    }
+
+    override suspend fun publishIdentityHistory(event: NostrEvent, groupId: String, epoch: Int) {
+        check(event.verify()) { "Invalid prepared history signature" }
+        val entity = eventEntity(event, groupId, event.content, IdentityHistoryPage.TYPE, null, epoch)
+        if (commit(entity, listOf(event))) dispatch(listOf(event))
+    }
+
     override suspend fun publishToGroup(
         event: NostrEvent,
         groupId: String,
@@ -108,6 +162,7 @@ constructor(
     override suspend fun publishCreatedGroup(event: NostrEvent, group: Group, groupKey: String): Boolean {
         val saved = db.withTransaction {
             if (groupRepo.getById(group.id) != null) return@withTransaction false
+            requireStableJoiningIdentity(group.createdBy)
             check(identity.getPublicKeyHex() == group.createdBy && event.pubkey == group.createdBy) {
                 "Identity changed while creating the group"
             }
@@ -236,6 +291,11 @@ constructor(
         val rows = deliveries.map { OutboxEntity(it.id, it.toJson(), it.createdAt, eventType = entity.eventType) }
         check(rows.map { it.eventId }.distinct().size == rows.size) { "Duplicate prepared delivery IDs" }
         return db.withTransaction {
+            if (entity.eventType in IdentityHistoryPage.MONEY_TYPES) {
+                check(db.controlOperationDao().get("identity-revocation") == null) {
+                    "Identity replacement is pending; finish it before saving money changes"
+                }
+            }
             if (expectedGroup != null) {
                 if (entity.eventType == "expense" &&
                     eventDao.getExpenseByAuthor(checkNotNull(entity.expenseUuid), entity.groupId, entity.pubkey) != null

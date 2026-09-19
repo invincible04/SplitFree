@@ -8,6 +8,7 @@ import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.ControlOperation
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.test.FakeControlOperationJournal
@@ -24,7 +25,6 @@ import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -89,6 +89,11 @@ class RevokeKeyUseCaseTest {
         coEvery { groupRepo.applyAuthenticatedRevocation(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             groupRepo.applyIdentityRevocation(firstArg(), secondArg(), thirdArg(), arg(3), arg(4), true, arg(6))
         }
+        coEvery { publisher.captureRevocationHistory(any(), any(), any()) } coAnswers {
+            thirdArg<suspend (Map<String, List<EventSnapshot>>) -> Unit>()(
+                secondArg<List<Group>>().associate { it.id to emptyList() }
+            )
+        }
         useCase = service()
     }
 
@@ -105,7 +110,11 @@ class RevokeKeyUseCaseTest {
         assertEquals(newPubkey, useCase())
         coVerifyOrder {
             identity.setRevocationEventIds(
-                listOf(signedEvents.getValue("key_revocation").id, signedEvents.getValue("group_meta").id)
+                match { ids ->
+                    ids.take(2) ==
+                        listOf(signedEvents.getValue("key_revocation").id, signedEvents.getValue("group_meta").id) &&
+                        ids.size == 3
+                }
             )
             publisher.publishDirect(any(), "g", any(), "key_revocation", any())
             publisher.publishDirect(any(), "g", any(), "group_meta", any())
@@ -310,12 +319,8 @@ class RevokeKeyUseCaseTest {
     @Test
     fun `published revocation proves possession of the replacement key to every group`() = runBlocking {
         val revocations = mutableListOf<KeyRevocation>()
-        every { encryption.encrypt(any(), any()) } answers {
-            val text = firstArg<String>()
-            if ("oldPubkey" in json.parseToJsonElement(text).jsonObject) {
-                revocations += json.decodeFromString<KeyRevocation>(text)
-            }
-            text
+        coEvery { publisher.publishDirect(any(), "g", any(), "key_revocation", any()) } coAnswers {
+            revocations += json.decodeFromString<KeyRevocation>(firstArg<NostrEvent>().content)
         }
         useCase()
         val revocation = revocations.single()

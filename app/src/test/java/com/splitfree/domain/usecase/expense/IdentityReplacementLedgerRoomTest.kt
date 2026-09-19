@@ -3,6 +3,7 @@ package com.splitfree.domain.usecase.expense
 import android.app.Application
 import androidx.room.Room
 import com.splitfree.data.local.AppDatabase
+import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.nostr.EventThrottler
 import com.splitfree.data.repository.ControlOperationJournal
 import com.splitfree.data.repository.EventRepository
@@ -18,6 +19,7 @@ import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.group.ControlOperationLock
@@ -75,7 +77,10 @@ class IdentityReplacementLedgerRoomTest {
     private var clock = System.currentTimeMillis() / 1000 - 600
 
     private inner class Device(seed: Int) {
-        val identity = TestIdentity(seed)
+        val identity = TestIdentity(seed).also {
+            every { it.contract.identityState() } returns com.splitfree.domain.repository.IdentityState.READY
+            every { it.contract.stagedIdentitySwitch() } returns null
+        }
         val pub = identity.pub
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)
@@ -159,11 +164,20 @@ class IdentityReplacementLedgerRoomTest {
         }
 
         /**
-         * Calls the revocation handler directly, bypassing signed-event ingestion. An empty [new] removes
-         * the member; [successorKey] supplies the possession proof needed to transfer the balance.
+         * Real replacements include successor-signed history; legacy removals deliberately have no evidence.
+         * The handler call keeps these financial tests independent of revocation delivery order.
          */
         fun revoke(old: String, new: String, successorKey: ByteArray? = null) = runBlocking {
-            revokeAt(old, new, successorKey, ++clock, "rev-$clock-${old.take(6)}")
+            if (successorKey == null) {
+                revokeAt(old, new, null, ++clock, "legacy-$clock-${old.take(6)}")
+            } else {
+                val author = devices.first { it.pub == old }
+                val successor = devices.first { it.pub == new }
+                val event = revocationEvent(author, new, successorKey)
+                val payload = encryption.decrypt(event.content, groupKey)
+                assertTrue(revokeKey.handleRevocation(payload, old, groupId, event.createdAt, event.id))
+                certifyHistory(event, successor)
+            }
         }
 
         /** [revoke] with an explicit clock, for records whose canonical order differs from their arrival order. */
@@ -171,6 +185,25 @@ class IdentityReplacementLedgerRoomTest {
             val proof = successorKey?.let { KeyRevocation.proveSuccessor(groupId, old, new, it) }.orEmpty()
             val payload = json.encodeToString(KeyRevocation(old, new, "Key compromised", successorProof = proof))
             assertTrue(revokeKey.handleRevocation(payload, old, groupId, at, eventId))
+        }
+
+        fun certifyHistory(revocation: NostrEvent, successor: Device) = runBlocking {
+            val ids = eventRepo.getEventsByGroup(groupId)
+                .filter { it.pubkey == revocation.pubkey && it.eventType in IdentityHistoryPage.MONEY_TYPES }
+                .map { it.eventId }
+            IdentityHistoryPage.create(groupId, revocation.pubkey, successor.pub, revocation, ids).forEach { page ->
+                val event = successor.signer.createSignedEvent(
+                    groupId,
+                    IdentityHistoryPage.TYPE,
+                    encryption.encrypt(json.encodeToString(page), groupKey),
+                    createdAt = revocation.createdAt
+                )
+                assertEquals(IngestOutcome.APPLIED, ingest(event, IngestionContext.RECONCILIATION))
+            }
+        }
+
+        fun assertUnavailable() {
+            assertThrows(BalanceUnavailableException::class.java) { balances() }
         }
 
         fun retired() = runBlocking { groupRepo.retiredIdentities(groupId) }
@@ -321,7 +354,7 @@ class IdentityReplacementLedgerRoomTest {
     }
 
     @Test
-    fun `a member removed without replacement keeps their balance and the counterparty can settle it`() {
+    fun `legacy removal leaves balances unavailable while admitting a counterparty settlement`() {
         val alice = Device(1)
         val bob = Device(2)
         val carol = Device(3)
@@ -329,20 +362,20 @@ class IdentityReplacementLedgerRoomTest {
         listOf(alice, bob, carol).forEach { it.join(roster, alice.pub) }
         everyoneIngests(expense(alice, bob.pub), alice, bob, carol)
 
-        // Bob's key is revoked with no successor: he is gone but his 50 is not.
+        // Legacy removal changes membership but cannot certify the retired identity's complete history.
         listOf(alice, carol).forEach { it.revoke(bob.pub, "") }
         assertEquals(listOf(alice.pub, carol.pub), alice.members())
-        assertEquals(mapOf(alice.pub to 50L, bob.pub to -50L), alice.balances())
+        alice.assertUnavailable()
 
         // Alice records Bob's repayment; Carol accepts her event under LIVE ingestion rules.
         val received = alice.settle(from = bob.pub, to = alice.pub, amount = 50)
-        assertEquals(mapOf(alice.pub to 0L, bob.pub to 0L), alice.balances())
+        alice.assertUnavailable()
         assertEquals(IngestOutcome.APPLIED, carol.ingest(received))
-        assertEquals(mapOf(alice.pub to 0L, bob.pub to 0L), carol.balances())
+        carol.assertUnavailable()
     }
 
     @Test
-    fun `former counterparty settlement also applies during offline reconciliation`() {
+    fun `legacy removal admits former counterparty settlement during reconciliation without certifying balances`() {
         val alice = Device(1)
         val bob = Device(2)
         val carol = Device(3)
@@ -350,16 +383,16 @@ class IdentityReplacementLedgerRoomTest {
         listOf(alice, bob, carol).forEach { it.join(roster, alice.pub) }
         everyoneIngests(expense(alice, bob.pub), alice, bob, carol)
 
-        // Bob's key is revoked with no successor: he is gone but his 50 is not.
+        // Legacy removal changes membership but cannot certify the retired identity's complete history.
         listOf(alice, carol).forEach { it.revoke(bob.pub, "") }
         assertEquals(listOf(alice.pub, carol.pub), alice.members())
-        assertEquals(mapOf(alice.pub to 50L, bob.pub to -50L), alice.balances())
+        alice.assertUnavailable()
 
         // Alice records Bob's repayment; Carol receives it later through reconciliation.
         val received = alice.settle(from = bob.pub, to = alice.pub, amount = 50)
-        assertEquals(mapOf(alice.pub to 0L, bob.pub to 0L), alice.balances())
+        alice.assertUnavailable()
         assertEquals(IngestOutcome.APPLIED, carol.ingest(received, IngestionContext.RECONCILIATION))
-        assertEquals(mapOf(alice.pub to 0L, bob.pub to 0L), carol.balances())
+        carol.assertUnavailable()
     }
 
     @Test
@@ -372,12 +405,25 @@ class IdentityReplacementLedgerRoomTest {
         everyoneIngests(expense(alice, bob.pub), alice, bob, carol)
         listOf(alice, carol).forEach { it.revoke(bob.pub, "") }
 
-        // Bob, now removed, signs a settlement clearing his own debt: refused by every remaining member.
+        // Uncertified retired-key history is quarantined, never applied to the ledger.
+        val receivers = listOf(alice, carol)
+        val before = runBlocking {
+            receivers.associateWith { it.eventRepo.getEventsByGroup(groupId).map { row -> row.eventId } }
+        }
         val fromRemoved = bob.settle(from = bob.pub, to = alice.pub, amount = 50)
-        assertEquals(IngestOutcome.REJECTED, alice.ingest(fromRemoved))
-        assertEquals(IngestOutcome.REJECTED, carol.ingest(fromRemoved))
-        assertEquals(IngestOutcome.REJECTED, carol.ingest(fromRemoved, IngestionContext.RECONCILIATION))
-        assertEquals(mapOf(alice.pub to 50L, bob.pub to -50L), alice.balances())
+        assertEquals(IngestOutcome.DEFERRED, alice.ingest(fromRemoved))
+        assertEquals(IngestOutcome.DEFERRED, carol.ingest(fromRemoved))
+        assertEquals(IngestOutcome.DEFERRED, carol.ingest(fromRemoved, IngestionContext.RECONCILIATION))
+        for (receiver in receivers) {
+            runBlocking {
+                val row = checkNotNull(receiver.db.eventDao().getEvent(fromRemoved.id))
+                assertEquals(EventEntity.APPLY_STATE_AWAITING_HISTORY, row.applyState)
+                assertEquals(fromRemoved.toJson(), row.originalEventJson)
+                assertEquals(before.getValue(receiver), receiver.eventRepo.getEventsByGroup(groupId).map { it.eventId })
+                assertEquals(0, receiver.db.outboxDao().count())
+            }
+            receiver.assertUnavailable()
+        }
 
         // Alice cannot record a settlement with someone who was never a member.
         val refused = assertThrows(IllegalArgumentException::class.java) {
@@ -414,7 +460,7 @@ class IdentityReplacementLedgerRoomTest {
     }
 
     @Test
-    fun `a signed revocation naming the creditor as successor does not erase the creditor's balance`() {
+    fun `unproven creditor successor cannot erase debt or certify balances`() {
         val alice = Device(1)
         val bob = Device(2)
         listOf(alice, bob).forEach { it.join(listOf(alice.pub, bob.pub), alice.pub) }
@@ -425,16 +471,16 @@ class IdentityReplacementLedgerRoomTest {
         assertEquals(IngestOutcome.APPLIED, alice.ingest(revocationEvent(bob, alice.pub)))
 
         assertEquals(listOf(alice.pub), alice.members())
-        assertEquals(mapOf(alice.pub to 50L, bob.pub to -50L), alice.balances())
+        alice.assertUnavailable()
         assertEquals(alice.pub, runBlocking { alice.groupRepo.getById(groupId) }?.createdBy)
 
         // Alice can still record that Bob paid her in cash.
         alice.settle(from = bob.pub, to = alice.pub, amount = 50)
-        assertEquals(mapOf(alice.pub to 0L, bob.pub to 0L), alice.balances())
+        alice.assertUnavailable()
     }
 
     @Test
-    fun `a replacement received without successor proof keeps the debt on the retired key`() {
+    fun `a replacement without successor proof keeps attribution and requires history recovery`() {
         val alice = Device(1)
         val bob = Device(2)
         val bob2 = Device(3)
@@ -445,7 +491,7 @@ class IdentityReplacementLedgerRoomTest {
         assertEquals(IngestOutcome.APPLIED, alice.ingest(revocationEvent(bob, bob2.pub)))
 
         assertEquals(listOf(alice.pub, bob2.pub), alice.members())
-        assertEquals(mapOf(alice.pub to 50L, bob.pub to -50L), alice.balances())
+        alice.assertUnavailable()
         assertEquals(bob.pub, runBlocking { alice.groupRepo.retiredIdentities(groupId) }.resolve(bob.pub))
     }
 
@@ -457,7 +503,9 @@ class IdentityReplacementLedgerRoomTest {
         listOf(alice, bob).forEach { it.join(listOf(alice.pub, bob.pub), alice.pub) }
         everyoneIngests(expense(alice, bob.pub), alice, bob)
 
-        assertEquals(IngestOutcome.APPLIED, alice.ingest(revocationEvent(bob, bob2.pub, bob2.identity.priv)))
+        val retirement = revocationEvent(bob, bob2.pub, bob2.identity.priv)
+        assertEquals(IngestOutcome.APPLIED, alice.ingest(retirement))
+        alice.certifyHistory(retirement, bob2)
 
         assertEquals(listOf(alice.pub, bob2.pub), alice.members())
         assertEquals(mapOf(alice.pub to 50L, bob2.pub to -50L), alice.balances())
@@ -481,6 +529,10 @@ class IdentityReplacementLedgerRoomTest {
         assertEquals(IngestOutcome.APPLIED, alice.ingest(secondHop))
         assertEquals(IngestOutcome.APPLIED, inOrder.ingest(firstHop))
         assertEquals(IngestOutcome.APPLIED, inOrder.ingest(secondHop))
+        listOf(alice, inOrder).forEach {
+            it.certifyHistory(firstHop, bob2)
+            it.certifyHistory(secondHop, bob3)
+        }
 
         assertEquals(mapOf(alice.pub to 50L, bob3.pub to -50L), inOrder.balances())
         assertEquals(inOrder.balances(), alice.balances())
@@ -507,7 +559,7 @@ class IdentityReplacementLedgerRoomTest {
 
         for (device in listOf(alice, inOrder)) {
             assertEquals(listOf(alice.pub, bob2.pub), device.members())
-            assertEquals(mapOf(alice.pub to 50L, bob2.pub to -50L), device.balances())
+            device.assertUnavailable()
             assertEquals(mapOf(bob.pub to bob2.pub), device.retired().successors)
             // bob3's seat existed only by virtue of the superseded record.
             assertFalse(bob3.pub in device.members())
@@ -534,16 +586,13 @@ class IdentityReplacementLedgerRoomTest {
 
         assertEquals(setOf(alice.pub, carol.pub, bob2.pub), alice.members().toSet())
         assertEquals(3, alice.members().size)
-        val balances = alice.balances()
-        assertEquals(50L, balances[alice.pub])
-        assertEquals(-50L, balances[bob2.pub])
-        assertEquals(0L, balances[carol.pub] ?: 0L)
+        alice.assertUnavailable()
         assertEquals(mapOf(bob.pub to bob2.pub), alice.retired().successors)
         assertEquals(alice.pub, alice.createdBy())
     }
 
     @Test
-    fun `real live conflicting proven revocations must converge regardless of arrival order`() {
+    fun `conflicting proven revocations converge on attribution but leave balances unavailable`() {
         val alice = Device(1)
         val bob = Device(2)
         val bob2 = Device(3)
@@ -559,7 +608,8 @@ class IdentityReplacementLedgerRoomTest {
         assertEquals(IngestOutcome.APPLIED, other.ingest(early))
         assertEquals(IngestOutcome.APPLIED, other.ingest(late))
 
-        assertEquals("Live delivery order must not select the financial successor", other.balances(), alice.balances())
+        other.assertUnavailable()
+        alice.assertUnavailable()
         assertEquals(other.retired().successors, alice.retired().successors)
     }
 

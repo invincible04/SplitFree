@@ -8,6 +8,14 @@ import com.splitfree.domain.model.group.Group
  * Successful local publication does not imply relay acceptance.
  */
 interface EventPublisherContract {
+    suspend fun captureRevocationHistory(
+        oldPubkey: String,
+        groups: List<Group>,
+        persist: suspend (Map<String, List<EventSnapshot>>) -> Unit
+    )
+
+    suspend fun publishIdentityHistory(event: NostrEvent, groupId: String, epoch: Int)
+
     /**
      * Save event locally and publish with per-member NIP-59 gift wrapping (if enabled).
      *

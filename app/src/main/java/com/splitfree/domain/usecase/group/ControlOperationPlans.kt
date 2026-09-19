@@ -16,7 +16,11 @@ import kotlinx.serialization.json.Json
 internal data class RotationIntent(val group: Group, val removedMember: String, val epoch: Int)
 
 @Serializable
-internal data class RevocationIntent(val oldPubkey: String, val groups: List<Group>)
+internal data class RevocationIntent(
+    val oldPubkey: String,
+    val groups: List<Group>,
+    val moneyHistory: Map<String, List<String>>? = null
+)
 
 @Serializable
 internal data class PreparedControlEvent(
@@ -34,7 +38,11 @@ internal data class PreparedControlEvent(
 }
 
 @Serializable
-internal data class PreparedRevocation(val newPubkey: String, val events: List<PreparedControlEvent>)
+internal data class PreparedRevocation(
+    val newPubkey: String,
+    val events: List<PreparedControlEvent>,
+    val historyEvents: List<PreparedControlEvent> = emptyList()
+)
 
 @Serializable
 internal data class PreparedRevocationProjection(val payload: String, val epoch: Int, val signature: String) {

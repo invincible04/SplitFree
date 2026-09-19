@@ -76,6 +76,9 @@ class JoinGroupBackupRoomTest {
 
     private fun identity(privateKey: ByteArray): IdentityContract = mockk(relaxed = true) {
         val pubkey = NostrEvent.pubkeyFromPrivkey(privateKey)
+        every { identityState() } returns com.splitfree.domain.repository.IdentityState.READY
+        every { hasPendingKeyPair() } returns false
+        every { stagedIdentitySwitch() } returns null
         every { getPublicKeyHex() } returns pubkey
         every { getPublicKeyBytes() } returns pubkey.hexToBytes()
         every { getPrivateKeyBytes() } answers { privateKey.copyOf() }

@@ -775,6 +775,11 @@ constructor(
         }
     }
 
+    override suspend fun authenticatedRevocations(groupId: String): List<GroupControlFact> {
+        val row = groupDao.getById(groupId) ?: return emptyList()
+        return projection(row).facts.filter { it.kind == "revocation" }
+    }
+
     override suspend fun authenticatedRotations(groupId: String): Map<String, KeyRotation> {
         val row = groupDao.getById(groupId) ?: return emptyMap()
         return projection(row).facts.filter { it.kind in setOf("rotation", "rotation-history") && it.rotation != null }

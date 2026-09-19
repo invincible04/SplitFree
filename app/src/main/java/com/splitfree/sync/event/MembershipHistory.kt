@@ -2,9 +2,13 @@ package com.splitfree.sync.event
 
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.entities.EventEntity
+import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
+import com.splitfree.domain.model.group.IdentityHistory
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRotation
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.MembershipHistoryContract
@@ -45,6 +49,18 @@ constructor(
         }
         return authors
     }
+
+    suspend fun identityEvidence(groupId: String, encryption: GroupEncryption): IdentityHistory.Evidence =
+        IdentityHistory(groupRepo, encryption).evaluate(
+            groupId,
+            eventDao.getEventsByType(groupId, IdentityHistoryPage.TYPE)
+                .filter { it.applyState == EventEntity.APPLY_STATE_APPLIED }.map { row ->
+                    EventSnapshot(
+                        row.eventId, row.groupId, row.pubkey, row.createdAt, row.kind, row.contentEncrypted,
+                        row.eventType, row.expenseUuid, row.sig, row.receivedAt, row.originalEventJson, row.keyEpoch
+                    )
+                }
+        )
 
     override suspend fun formerMembers(groupId: String): Set<String> {
         val current = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()

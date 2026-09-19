@@ -58,7 +58,7 @@ constructor(
             ) { "Invalid creator transition evidence" }
         }
         val groupKey = groupRepo.getGroupKey(groupId)
-        val events = eventRepo.getEventsByGroup(groupId)
+        val events = eventRepo.getExportableEvents(groupId)
         val exportedEvents = events.map { e ->
             ExportedEvent(
                 eventId = e.eventId, pubkey = e.pubkey, createdAt = e.createdAt, kind = e.kind,

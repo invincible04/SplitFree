@@ -23,6 +23,11 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
     override suspend fun getEventsByGroup(groupId: String): List<EventSnapshot> =
         eventDao.getEventsByGroup(groupId).map { it.toSnapshot() }
 
+    override suspend fun getExportableEvents(groupId: String): List<EventSnapshot> =
+        eventDao.getExportableEvents(groupId).map { it.toSnapshot() }
+
+    override suspend fun setApplyState(eventId: String, state: Int) = eventDao.setApplyState(eventId, state)
+
     override fun observeEventsByGroup(groupId: String): Flow<List<EventSnapshot>> =
         eventDao.observeEventsByGroup(groupId).map { entities -> entities.map { it.toSnapshot() } }
 
@@ -59,7 +64,7 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
         createdAt = createdAt, kind = kind, contentEncrypted = contentEncrypted,
         eventType = eventType, expenseUuid = expenseUuid, sig = sig,
         receivedAt = receivedAt, originalEventJson = originalEventJson,
-        keyEpoch = keyEpoch
+        keyEpoch = keyEpoch, applyState = applyState
     )
 
     private fun EventSnapshot.toEntity() = EventEntity(
@@ -67,6 +72,6 @@ constructor(private val db: AppDatabase, private val eventDao: EventDao) :
         createdAt = createdAt, kind = kind, contentEncrypted = contentEncrypted,
         eventType = eventType, expenseUuid = expenseUuid, sig = sig,
         receivedAt = receivedAt, originalEventJson = originalEventJson,
-        keyEpoch = keyEpoch
+        keyEpoch = keyEpoch, applyState = applyState
     )
 }

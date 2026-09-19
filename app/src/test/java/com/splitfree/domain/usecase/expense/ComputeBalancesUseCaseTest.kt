@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.IdentityHistory
 import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -13,8 +14,10 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkConstructor
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
+import io.mockk.unmockkConstructor
 import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import io.mockk.verify
@@ -36,7 +39,10 @@ class ComputeBalancesUseCaseTest {
     fun silenceLog() = mockLogW()
 
     @After
-    fun restoreLog() = unmockkStatic(android.util.Log::class)
+    fun restoreLog() {
+        unmockkStatic(android.util.Log::class)
+        unmockkConstructor(IdentityHistory::class)
+    }
 
     private fun eventDao() = mockk<EventRepositoryContract>(relaxed = true)
 
@@ -2227,12 +2233,32 @@ class ComputeBalancesUseCaseTest {
             assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(result))
         }
 
-    // --- Retired identities: a revoked key's position follows its successor ---
+    // --- Attribution arithmetic after history admission ---
+    // These fixtures deliberately use textual identities and plaintext payloads. The cryptographic
+    // admission boundary is stubbed only here; real authorization/order/negative coverage uses Room.
+    private fun assumeAuthenticatedHistoryForArithmetic() {
+        mockkConstructor(IdentityHistory::class)
+        coEvery { anyConstructed<IdentityHistory>().evaluate(any(), any()) } returns
+            IdentityHistory.Evidence(emptyMap(), emptySet())
+    }
+
+    @Test
+    fun `legacy retirement with no checkpoint withholds balances without losing event rows`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(aliceFronts)
+        val failure = runCatching { ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1") }
+            .exceptionOrNull()
+        assertTrue(failure is BalanceUnavailableException)
+        assertEquals(listOf(aliceFronts), dao.getEventsByGroup("g1"))
+    }
 
     @Test
     fun `a revoked identity's balance is attributed to its successor across expenses and settlements`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
+        assumeAuthenticatedHistoryForArithmetic()
         coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
         coEvery { dao.getEventsByGroup("g1") } returns listOf(
             aliceFronts, // bob owes alice 50
@@ -2256,6 +2282,7 @@ class ComputeBalancesUseCaseTest {
     fun `a replacement chain folds every hop into the final identity and the snapshot path agrees`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
+        assumeAuthenticatedHistoryForArithmetic()
         val retired = RetiredIdentities(setOf("bob", "bob2"), mapOf("bob" to "bob3", "bob2" to "bob3"))
         coEvery { repo.retiredIdentities("g1") } returns retired
         val second = makeEvent(
@@ -2288,6 +2315,7 @@ class ComputeBalancesUseCaseTest {
     fun `a revoked identity without a successor keeps its own balance`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
+        assumeAuthenticatedHistoryForArithmetic()
         coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), emptyMap())
         coEvery { dao.getEventsByGroup("g1") } returns listOf(aliceFronts)
 
@@ -2300,6 +2328,7 @@ class ComputeBalancesUseCaseTest {
     fun `resolveIdentities false keeps totals under the keys the signed events name`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
+        assumeAuthenticatedHistoryForArithmetic()
         coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
         val ledger = listOf(aliceFronts)
 
@@ -2313,6 +2342,7 @@ class ComputeBalancesUseCaseTest {
     fun `folding two positions that overflow reports balances unavailable instead of wrapping`() = runTest {
         val dao = eventDao()
         val repo = groupRepo()
+        assumeAuthenticatedHistoryForArithmetic()
         coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
         val big = Long.MAX_VALUE - 10
         coEvery { dao.getEventsByGroup("g1") } returns listOf(

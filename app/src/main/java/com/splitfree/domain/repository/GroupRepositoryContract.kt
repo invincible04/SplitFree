@@ -2,6 +2,7 @@ package com.splitfree.domain.repository
 
 import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupControlFact
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.model.group.RetiredIdentities
@@ -257,6 +258,9 @@ interface GroupRepositoryContract {
      * These are durable local admission records, not signed envelopes or fresh signature verification.
      */
     suspend fun authenticatedRotations(groupId: String): Map<String, KeyRotation> = emptyMap()
+
+    /** All admitted retirement facts, including competing replacements; not fresh wire authorization. */
+    suspend fun authenticatedRevocations(groupId: String): List<GroupControlFact> = emptyList()
 
     /**
      * Retains history without changing the checkpoint roster or epoch. The caller must authenticate the

@@ -61,6 +61,8 @@ data class EventEntity(
         /** Stored for dedup/evidence but side effects were deferred; excluded from projections, retried. */
         const val APPLY_STATE_PENDING = 1
 
+        const val APPLY_STATE_AWAITING_HISTORY = 3
+
         /**
          * Stored for dedup/evidence but the side effect was permanently rejected (e.g. a rotation whose
          * key material this device cannot open). Excluded from projections and from retry.

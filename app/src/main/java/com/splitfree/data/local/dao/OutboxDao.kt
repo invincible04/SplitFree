@@ -51,7 +51,7 @@ interface OutboxDao {
      */
     @Query(
         "DELETE FROM outbox WHERE COALESCE(lastRetryAt, createdAt) < :cutoff" +
-            " AND (eventType IS NULL OR eventType NOT IN ('group_meta', 'key_rotation', 'key_revocation'))"
+            " AND (eventType IS NULL OR eventType NOT IN ('group_meta', 'key_rotation', 'key_revocation', 'identity_history'))"
     )
     suspend fun deleteOlderThan(cutoff: Long)
 

@@ -178,6 +178,7 @@ class EventProcessorTest {
         coEvery { groupRepo.resolveRoster(any(), any()) } answers { secondArg() }
         coEvery { groupRepo.isHistoricalCreator(any(), any(), any(), any()) } returns false
         coEvery { groupRepo.hasRevocationInEpoch(any(), any(), any()) } returns false
+        coEvery { groupRepo.retiredIdentities(any()) } returns com.splitfree.domain.model.group.RetiredIdentities.NONE
         every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         // The relaxed dao would otherwise hand back a non-null relaxed EventEntity here.
         coEvery { eventDao.getEvent(any()) } returns null

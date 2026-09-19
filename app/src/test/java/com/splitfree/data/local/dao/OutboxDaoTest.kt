@@ -81,12 +81,21 @@ class OutboxDaoTest {
         dao.insert(row("meta", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = "group_meta"))
         dao.insert(row("rot", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = "key_rotation"))
         dao.insert(row("rev", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = "key_revocation"))
+        dao.insert(
+            row("history", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = "identity_history")
+        )
+        dao.insert(row("history-never-tried", createdAt = now - 400 * day, eventType = "identity_history"))
         dao.insert(row("exp", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = "expense"))
         dao.insert(row("untyped", createdAt = now - 400 * day, lastRetryAt = now - 300 * day, eventType = null))
 
         dao.deleteOlderThan(now - 90 * day)
 
-        assertEquals(setOf("meta", "rot", "rev"), dao.getAll().map { it.eventId }.toSet())
+        assertEquals(
+            setOf("meta", "rot", "rev", "history", "history-never-tried"),
+            dao.getAll().map {
+                it.eventId
+            }.toSet()
+        )
     }
 
     @Test

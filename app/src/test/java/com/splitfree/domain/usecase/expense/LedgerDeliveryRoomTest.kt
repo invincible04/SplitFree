@@ -79,6 +79,8 @@ class LedgerDeliveryRoomTest {
     private inner class Peer(seed: Int, wrapped: Boolean = true) {
         val identity: TestIdentity = TestIdentity(seed).also { fixture ->
             every { fixture.contract.getPublicKeyBytes() } answers { fixture.pub.hexToBytes() }
+            every { fixture.contract.identityState() } returns com.splitfree.domain.repository.IdentityState.READY
+            every { fixture.contract.stagedIdentitySwitch() } returns null
         }
         val pub = identity.pub
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)

@@ -21,6 +21,7 @@ import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
@@ -200,6 +201,9 @@ class IdentityRotationHistoryRoomTest {
         assertEquals(mapOf(successor to 50L, bob.pub to -50L), alice.balances())
         val revocation = alice.db.eventDao().getEventsByType(groupId, "key_revocation").single()
         carol.ingest(alice.event(revocation.eventId))
+        val checkpoints = alice.db.eventDao().getEventsByType(groupId, IdentityHistoryPage.TYPE)
+        assertTrue(checkpoints.isNotEmpty())
+        checkpoints.forEach { carol.ingest(alice.event(it.eventId)) }
         val epochKey = checkNotNull(alice.groups.getGroupKeyForEpoch(groupId, 1))
         val companion = alice.db.eventDao().getEventsByType(groupId, "group_meta").single {
             Json.decodeFromString<GroupMeta>(encryption.decrypt(it.contentEncrypted, epochKey))

@@ -7,6 +7,8 @@ import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.group.IdentityHistory
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -102,6 +104,31 @@ constructor(
         useSnapshots: Boolean = true,
         resolveIdentities: Boolean = true
     ): BalanceResult = withContext(Dispatchers.Default) {
+        val evidence = IdentityHistory(groupRepo, encryption).evaluate(groupId, events)
+        if (evidence.unresolved.isNotEmpty()) {
+            throw BalanceUnavailableException(
+                "Identity history is incomplete or conflicting; sync the missing evidence"
+            )
+        }
+        for ((author, authorized) in evidence.authorized) {
+            val retained = events.filter { it.pubkey == author && it.eventType in IdentityHistoryPage.MONEY_TYPES }
+                .mapTo(HashSet()) { it.eventId }
+            val originals = events.filter { it.pubkey == author && it.eventType == "expense" && it.applyState == 0 }
+                .mapTo(HashSet()) { it.expenseUuid }
+            val missingOriginal = events.any {
+                it.pubkey == author &&
+                    it.eventType in setOf("expense_correction", "expense_delete") &&
+                    it.expenseUuid !in originals
+            }
+            if (retained != authorized ||
+                missingOriginal ||
+                events.any { it.eventId in authorized && it.applyState != 0 }
+            ) {
+                throw BalanceUnavailableException(
+                    "Identity history is missing money events or contains unauthorized history"
+                )
+            }
+        }
         val keyCache = mutableMapOf<Int, String>()
         // Key: (pubkey, currency) -> net amount
         val balances = mutableMapOf<Pair<String, String>, Long>()

@@ -80,6 +80,9 @@ abstract class EventDao {
     @Query("SELECT * FROM events WHERE groupId = :groupId AND applyState = 0 ORDER BY createdAt ASC, eventId ASC")
     abstract fun observeEventsByGroup(groupId: String): Flow<List<EventEntity>>
 
+    @Query("SELECT * FROM events WHERE groupId = :groupId AND applyState != 2 ORDER BY createdAt ASC, eventId ASC")
+    abstract suspend fun getExportableEvents(groupId: String): List<EventEntity>
+
     @Query("SELECT * FROM events WHERE eventId = :eventId")
     abstract suspend fun getEvent(eventId: String): EventEntity?
 
@@ -176,11 +179,11 @@ abstract class EventDao {
     abstract suspend fun setApplyState(eventId: String, state: Int)
 
     /** Rows whose side effects were deferred, oldest first, so `EventProcessor.retryDeferred` can re-run them. */
-    @Query("SELECT * FROM events WHERE groupId = :groupId AND applyState = 1 ORDER BY createdAt ASC, eventId ASC")
+    @Query("SELECT * FROM events WHERE groupId = :groupId AND applyState IN (1, 3) ORDER BY createdAt ASC, eventId ASC")
     abstract suspend fun getPendingEvents(groupId: String): List<EventEntity>
 
     /** Number of rows in [groupId] still waiting for their side effect. */
-    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND applyState = 1")
+    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND applyState IN (1, 3)")
     abstract suspend fun countPending(groupId: String): Int
 
     /**
@@ -200,7 +203,7 @@ abstract class EventDao {
     abstract suspend fun getHeldEventIds(groupId: String): List<String>
 
     /** Rows by [pubkey] in [groupId] still awaiting a dependency; bounds what one author may hold pending. */
-    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND pubkey = :pubkey AND applyState = 1")
+    @Query("SELECT COUNT(*) FROM events WHERE groupId = :groupId AND pubkey = :pubkey AND applyState IN (1, 3)")
     abstract suspend fun countPendingByAuthor(groupId: String, pubkey: String): Int
 
     /** Pending deletes have already passed authentication and payload checks; only their original was missing. */

@@ -43,7 +43,8 @@ class UpdateDisplayNameUseCase @Inject constructor(
                     if (!isCurrent(intent)) return@withLock null
                     val current = groupRepo.getById(group.id) ?: return@withLock GroupResult.Removed
                     if (intent.identityPubkey !in current.members) return@withLock GroupResult.Removed
-                    if (identity.hasPendingKeyPair() || identity.stagedIdentitySwitch() != null ||
+                    if (identity.hasPendingKeyPair() ||
+                        identity.stagedIdentitySwitch() != null ||
                         journal.get(IdentitySwitchCoordinator.SWITCH_ID) != null
                     ) {
                         return@withLock GroupResult.Deferred

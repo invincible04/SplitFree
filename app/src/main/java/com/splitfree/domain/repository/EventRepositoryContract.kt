@@ -10,6 +10,10 @@ interface EventRepositoryContract {
     /** @return all events for a group, ordered by creation time */
     suspend fun getEventsByGroup(groupId: String): List<EventSnapshot>
 
+    suspend fun getExportableEvents(groupId: String): List<EventSnapshot> = getEventsByGroup(groupId)
+
+    suspend fun setApplyState(eventId: String, state: Int)
+
     /** @return reactive stream of events for a group */
     fun observeEventsByGroup(groupId: String): Flow<List<EventSnapshot>>
 
@@ -84,7 +88,8 @@ data class EventSnapshot(
     val sig: String = "",
     val receivedAt: Long = 0,
     val originalEventJson: String? = null,
-    val keyEpoch: Int = 0
+    val keyEpoch: Int = 0,
+    val applyState: Int = 0
 ) {
     companion object {
         /**

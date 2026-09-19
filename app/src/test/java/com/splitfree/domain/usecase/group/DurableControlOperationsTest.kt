@@ -17,6 +17,7 @@ import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.repository.ControlOperation
 import com.splitfree.domain.repository.ControlOperationJournalContract
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.repository.SecureStorageException
@@ -88,6 +89,17 @@ class DurableControlOperationsTest {
             ),
             encryption.generateGroupKey()
         )
+        coEvery { publisher.captureRevocationHistory(any(), any(), any()) } coAnswers {
+            thirdArg<suspend (Map<String, List<EventSnapshot>>) -> Unit>()(
+                secondArg<List<Group>>().associate { it.id to emptyList() }
+            )
+        }
+        coEvery { publisher.publishIdentityHistory(any(), any(), any()) } coAnswers {
+            val event = firstArg<NostrEvent>()
+            val operation = checkNotNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
+            assertTrue(checkNotNull(operation.preparedJson).contains(event.id))
+            assertTrue(event.verify())
+        }
         coEvery { publisher.publishDirect(any(), any(), any(), any(), any()) } coAnswers {
             val event = firstArg<NostrEvent>()
             val operations = journal.getAll("rotation") + journal.getAll("revocation")

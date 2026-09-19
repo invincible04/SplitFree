@@ -89,6 +89,7 @@ class EventPublisherTest {
 
     @Before
     fun setup() = runBlocking {
+        every { identity.identityState() } returns com.splitfree.domain.repository.IdentityState.READY
         every { identity.hasPendingKeyPair() } returns false
         every { identity.stagedIdentitySwitch() } returns null
         every { identity.getPublicKeyHex() } returns myPub

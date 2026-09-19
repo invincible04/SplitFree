@@ -14,10 +14,12 @@ import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.model.group.GroupProjection
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.BalanceUnavailableException
 import com.splitfree.domain.usecase.expense.ComputeBalancesUseCase
 import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
@@ -31,6 +33,7 @@ import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -185,15 +188,42 @@ class ImportGroupRevocationRoomTest {
     }
 
     /** Roster [creator, member], the creator fronts 100 with member, then member retires to memberSuccessor. */
-    private fun memberReplacementLedger(): List<EventSnapshot> = listOf(
-        creatorMeta(listOf(creator, member), at = createdAt + 10),
-        expense(creatorKey, member, at = createdAt + 20),
-        revocation(memberKey, member, memberSuccessor, at = createdAt + 30, successorKey = memberSuccessorKey)
-    )
+    private fun memberReplacementLedger(): List<EventSnapshot> {
+        val revoke =
+            revocation(memberKey, member, memberSuccessor, at = createdAt + 30, successorKey = memberSuccessorKey)
+        return listOf(
+            creatorMeta(listOf(creator, member), at = createdAt + 10),
+            expense(creatorKey, member, at = createdAt + 20),
+            revoke,
+            history(revoke, memberSuccessorKey)
+        )
+    }
+
+    private fun history(
+        revoke: EventSnapshot,
+        successorKey: ByteArray,
+        ids: List<String> = emptyList()
+    ): EventSnapshot {
+        val page = IdentityHistoryPage.create(
+            groupId,
+            revoke.pubkey,
+            NostrEvent.pubkeyFromPrivkey(successorKey),
+            checkNotNull(NostrEvent.fromJson(checkNotNull(revoke.originalEventJson))),
+            ids
+        ).single()
+        return signed(
+            successorKey,
+            IdentityHistoryPage.TYPE,
+            json.encodeToString(IdentityHistoryPage.serializer(), page),
+            revoke.createdAt + 1
+        )
+    }
+
+    private fun assertUnavailable() = assertThrows(BalanceUnavailableException::class.java) { balances() }
 
     @Test
     fun `fresh restore rebuilds the tombstone, the successor link, the roster and the balances`() = runBlocking {
-        assertEquals(3, importer(backup(memberReplacementLedger())))
+        assertEquals(4, importer(backup(memberReplacementLedger())))
 
         val group = groups.getById(groupId)!!
         assertEquals(listOf(creator, memberSuccessor), group.members)
@@ -260,7 +290,7 @@ class ImportGroupRevocationRoomTest {
     @Test
     fun `re-importing the same backup is idempotent`() = runBlocking {
         val rows = memberReplacementLedger()
-        assertEquals(3, importer(backup(rows)))
+        assertEquals(4, importer(backup(rows)))
         val first = groups.getById(groupId)!!
 
         assertEquals(0, importer(backup(rows)))
@@ -269,20 +299,20 @@ class ImportGroupRevocationRoomTest {
         assertEquals(first.members, second.members)
         assertEquals(first.createdBy, second.createdBy)
         assertEquals(mapOf(member to memberSuccessor), groups.retiredIdentities(groupId).successors)
-        assertEquals(3, events.getEventCount(groupId))
+        assertEquals(4, events.getEventCount(groupId))
     }
 
     @Test
     fun `a revocation row stored by an older app without its effect is repaired by the next import`() = runBlocking {
         val rows = memberReplacementLedger()
         // What an older restore left behind: every row stored as applied, group rebuilt from the meta only.
-        importer(backup(rows.filter { it.eventType != "key_revocation" }))
+        importer(backup(rows.filter { it.eventType !in setOf("key_revocation", IdentityHistoryPage.TYPE) }))
         events.insert(rows.single { it.eventType == "key_revocation" })
         assertEquals(listOf(creator, member), groups.getById(groupId)!!.members)
         assertTrue(groups.retiredIdentities(groupId).revoked.isEmpty())
 
-        // Nothing new to store, yet the stored revocation's effect is applied.
-        assertEquals(0, importer(backup(rows)))
+        // The checkpoint arrives while the stored revocation's effect is repaired.
+        assertEquals(1, importer(backup(rows)))
 
         assertEquals(listOf(creator, memberSuccessor), groups.getById(groupId)!!.members)
         assertEquals(mapOf(member to memberSuccessor), groups.retiredIdentities(groupId).successors)
@@ -316,7 +346,7 @@ class ImportGroupRevocationRoomTest {
 
         assertEquals(3, importer(backup(rows)))
 
-        assertEquals(mapOf(creator to 50L, member to -50L), balances())
+        assertUnavailable()
         val group = groups.getById(groupId)!!
         assertEquals(listOf(creator), group.members)
         assertEquals(creator, group.createdBy)
@@ -338,7 +368,7 @@ class ImportGroupRevocationRoomTest {
         // Roster semantics are unchanged: the successor takes the seat.
         assertEquals(listOf(creator, memberSuccessor), groups.getById(groupId)!!.members)
         // Without successor proof, the debt stays on the original split participant, not the expense signer.
-        assertEquals(mapOf(creator to 50L, member to -50L), balances())
+        assertUnavailable()
         assertEquals(emptyMap<String, String>(), groups.retiredIdentities(groupId).successors)
     }
 
@@ -361,7 +391,7 @@ class ImportGroupRevocationRoomTest {
 
         assertEquals(3, importer(backup(rows)))
 
-        assertEquals(mapOf(creator to 50L, member to -50L), balances())
+        assertUnavailable()
         assertEquals(emptyMap<String, String>(), groups.retiredIdentities(groupId).successors)
     }
 
@@ -375,7 +405,8 @@ class ImportGroupRevocationRoomTest {
             revocation(memberSuccessorKey, memberSuccessor, terminal, at = createdAt + 90, successorKey = terminalKey)
         )
 
-        assertEquals(4, importer(backup(rows)))
+        val evidence = listOf(history(rows[2], memberSuccessorKey), history(rows[3], terminalKey))
+        assertEquals(6, importer(backup(rows + evidence)))
 
         assertEquals(mapOf(creator to 50L, terminal to -50L), balances())
         val group = groups.getById(groupId)!!
@@ -433,7 +464,7 @@ class ImportGroupRevocationRoomTest {
             assertEquals(3, importer(backup(listOf(root, debt, late))))
             assertEquals(1, importer(backup(listOf(root, debt, early, late))))
             val incremental = Triple(
-                balances(),
+                assertUnavailable().javaClass,
                 groups.getById(groupId)!!.members,
                 groups.retiredIdentities(groupId).successors
             )
@@ -442,9 +473,13 @@ class ImportGroupRevocationRoomTest {
             setup()
             assertEquals(4, importer(backup(listOf(root, debt, early, late))))
             val fresh =
-                Triple(balances(), groups.getById(groupId)!!.members, groups.retiredIdentities(groupId).successors)
+                Triple(
+                    assertUnavailable().javaClass,
+                    groups.getById(groupId)!!.members,
+                    groups.retiredIdentities(groupId).successors
+                )
 
-            assertEquals(mapOf(creator to 50L, memberSuccessor to -50L), fresh.first)
+            assertEquals(BalanceUnavailableException::class.java, fresh.first)
             assertEquals(fresh.first, incremental.first)
             assertEquals(listOf(creator, memberSuccessor), fresh.second)
             assertEquals(fresh.second, incremental.second)
@@ -495,7 +530,10 @@ class ImportGroupRevocationRoomTest {
             rows += revocation(keys[i], pubs[i], pubs[i + 1], at = createdAt + 30 + i, successorKey = keys[i + 1])
         }
 
-        assertEquals(11, importer(backup(rows)))
+        val evidence = rows.filter { it.eventType == "key_revocation" }.mapIndexed { index, revoke ->
+            history(revoke, keys[index + 1])
+        }
+        assertEquals(20, importer(backup(rows + evidence)))
 
         assertEquals(listOf(creator, pubs.last()), groups.getById(groupId)!!.members)
         assertEquals(mapOf(creator to 50L, pubs.last() to -50L), balances())
@@ -505,7 +543,7 @@ class ImportGroupRevocationRoomTest {
     }
 
     @Test
-    fun `a replacement cycle resolves to nobody and keeps the balance on the original key`() = runBlocking {
+    fun `a replacement cycle resolves to nobody and balances remain unavailable`() = runBlocking {
         val rows = listOf(
             creatorMeta(listOf(creator, member), at = createdAt + 10),
             expense(creatorKey, member, at = createdAt + 20),
@@ -517,7 +555,7 @@ class ImportGroupRevocationRoomTest {
         assertEquals(4, importer(backup(rows)))
 
         // Both identities are retired: drop their roster seat but retain the debt on the original split participant.
-        assertEquals(mapOf(creator to 50L, member to -50L), balances())
+        assertUnavailable()
         val group = groups.getById(groupId)!!
         assertEquals(listOf(creator), group.members)
         assertEquals(creator, group.createdBy)

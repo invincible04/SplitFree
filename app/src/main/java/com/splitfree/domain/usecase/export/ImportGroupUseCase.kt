@@ -12,6 +12,8 @@ import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.IdentityHistory
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.model.group.KeyRotation
 import com.splitfree.domain.repository.EventRepositoryContract
@@ -95,7 +97,9 @@ constructor(
         val backupKeys = decryptBackupKeys(export)
 
         val groupId = export.groupId
-        val candidates = export.events.mapNotNull { toCandidate(it) }
+        val candidates = export.events.mapNotNull { toCandidate(it) }.filter {
+            it.parsed.tags.filter { tag -> tag.firstOrNull() == "g" } == listOf(listOf("g", groupId))
+        }
         val (structural, content) = candidates.partition { it.eventType in STRUCTURAL_TYPES }
 
         return eventRepo.withTransaction {
@@ -105,7 +109,7 @@ constructor(
             var imported = 0
 
             // Pass 1: membership-defining events, then rebuild the group from them.
-            for (candidate in structural) {
+            for (candidate in structural.filter { it.eventType != IdentityHistoryPage.TYPE }) {
                 if (candidate.eventId in knownEventIds) continue
                 val decrypted = decryptForValidation(candidate, groupId, groupKey)
                 if (decrypted != null && !eventValidator.isContentSafe(decrypted)) continue
@@ -114,24 +118,42 @@ constructor(
                 newEventIds += candidate.eventId
                 imported++
             }
-            val stored = eventRepo.getEventsByGroup(groupId)
+            var stored = eventRepo.getEventsByGroup(groupId)
             replayPostImport(groupId, stored, newEventIds)
+            val history = IdentityHistory(groupRepo, encryption)
+            for (candidate in structural.filter { it.eventType == IdentityHistoryPage.TYPE }) {
+                if (candidate.eventId in knownEventIds) continue
+                if (!history.installRevocation(candidate.parsed, groupId, candidate.keyEpoch)) continue
+                eventRepo.insert(candidate.toSnapshot(groupId))
+                knownEventIds += candidate.eventId
+                imported++
+            }
+            stored = eventRepo.getEventsByGroup(groupId)
+            val evidence = history.evaluate(groupId, stored)
+            val retired = groupRepo.retiredIdentities(groupId).revoked
 
             // Preserve removed members' history, not just the reconstructed current roster.
             // Originals precede corrections/deletes so same-author dependency checks can find them.
             val group = groupRepo.getById(groupId)
-            val members = group?.let { collectHistoricalMembers(groupId, groupKey, stored) + it.members }
+            val members = group?.let { collectHistoricalMembers(groupId, groupKey, stored) + it.members + retired }
             for (candidate in content.sortedWith(DEPENDENCY_ORDER)) {
                 if (candidate.eventId in knownEventIds) continue
                 if (members != null && candidate.pubkey !in members) continue
 
                 val eventType = candidate.eventType
+                val retiredMoney = candidate.pubkey in retired && eventType in IdentityHistoryPage.MONEY_TYPES
+                val awaitsHistory = retiredMoney && !evidence.permits(candidate.pubkey, candidate.eventId)
+                if (awaitsHistory && candidate.pubkey in evidence.authorized) continue
                 val expenseUuid = candidate.expenseUuid
+                var awaitsOriginal = false
                 if (eventType in DEPENDENT_TYPES) {
                     val original = expenseUuid?.let { eventRepo.getExpenseByAuthor(it, groupId, candidate.pubkey) }
                     if (!eventValidator.isCorrectionAuthorValid(eventType, candidate.pubkey, original?.pubkey)) {
-                        Log.w(TAG, "Skipping $eventType ${candidate.eventId.take(8)}: no original by its author")
-                        continue
+                        if (!retiredMoney) {
+                            Log.w(TAG, "Skipping $eventType ${candidate.eventId.take(8)}: no original by its author")
+                            continue
+                        }
+                        awaitsOriginal = true
                     }
                 }
 
@@ -139,17 +161,48 @@ constructor(
                 // would incorrectly drop valid historical events from the same author.
 
                 val decrypted = decryptForValidation(candidate, groupId, groupKey)
+                if (retiredMoney && decrypted == null) continue
                 if (decrypted != null) {
                     if (!eventValidator.isContentSafe(decrypted)) continue
                     if (!isPayloadValid(candidate, decrypted, members ?: emptySet())) continue
                 }
 
-                eventRepo.insert(candidate.toSnapshot(groupId))
+                eventRepo.insert(
+                    candidate.toSnapshot(groupId).copy(
+                        applyState = when {
+                            awaitsHistory -> 3
+                            awaitsOriginal -> 1
+                            else -> 0
+                        }
+                    )
+                )
                 knownEventIds += candidate.eventId
                 imported++
             }
 
+            retryIdentityHistory(groupId)
             imported
+        }
+    }
+
+    private suspend fun retryIdentityHistory(groupId: String) {
+        val history = IdentityHistory(groupRepo, encryption)
+        repeat(2) {
+            val rows = eventRepo.getExportableEvents(groupId)
+            val evidence = history.evaluate(groupId, rows)
+            val group = groupRepo.getById(groupId) ?: return
+            val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return
+            val members = collectHistoricalMembers(groupId, key, rows.filter { it.applyState == 0 }) +
+                group.members + groupRepo.retiredIdentities(groupId).revoked
+            for (row in rows.filter { it.applyState in setOf(1, 3) && it.eventType in IdentityHistoryPage.MONEY_TYPES }
+                .sortedBy { it.eventType in DEPENDENT_TYPES }) {
+                if (row.pubkey !in evidence.authorized) continue
+                if (!evidence.permits(row.pubkey, row.eventId)) {
+                    eventRepo.setApplyState(row.eventId, 2)
+                } else if (history.validMoney(row, members, eventRepo.getEventsByGroup(groupId))) {
+                    eventRepo.setApplyState(row.eventId, 0)
+                }
+            }
         }
     }
 
@@ -504,7 +557,7 @@ constructor(
         var metaCount = 0
         var creatorKnown = false
         for (event in controlEvents) {
-            if (event.eventType == "key_rotation") continue
+            if (event.eventType == "key_rotation" || event.eventType == IdentityHistoryPage.TYPE) continue
             val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch)
                 ?: groupRepo.getGroupKey(groupId) ?: continue
             val decrypted = try {
@@ -811,7 +864,7 @@ constructor(
         private const val GROUP_KEY_BYTES = 32
 
         /** Events that define membership/keys; stored and replayed before anything else is filtered. */
-        private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation")
+        private val STRUCTURAL_TYPES = setOf("group_meta", "key_rotation", "key_revocation", IdentityHistoryPage.TYPE)
 
         /** Events that only apply against an original `expense` stored by the same author. */
         private val DEPENDENT_TYPES = setOf("expense_correction", "expense_delete")

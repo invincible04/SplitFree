@@ -9,6 +9,7 @@ import com.splitfree.domain.model.export.SplitFreeExport
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -71,6 +72,8 @@ class ExportImportUseCaseTest {
         }
         // Import decrypts with the epoch key of each row when available; default to "not stored".
         coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
+        coEvery { groupRepo.retiredIdentities(any()) } returns RetiredIdentities.NONE
+        coEvery { groupRepo.authenticatedRevocations(any()) } returns emptyList()
         // Default mocks use legacy replay without persisted canonical projection or bootstrap support.
         coEvery { groupRepo.resetRosterProjection(any(), any(), any()) } returns false
         coEvery { groupRepo.hasCanonicalProjection(any()) } returns false
@@ -164,7 +167,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
+        coEvery { eventRepo.getExportableEvents(groupId) } returns listOf(sampleEntity)
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
@@ -188,7 +191,7 @@ class ExportImportUseCaseTest {
     fun `export with no group key still authenticates the file and leaves the keys empty`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns null
         coEvery { groupRepo.getById(groupId) } returns null
-        coEvery { eventRepo.getEventsByGroup(groupId) } returns listOf(sampleEntity)
+        coEvery { eventRepo.getExportableEvents(groupId) } returns listOf(sampleEntity)
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
@@ -205,7 +208,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        coEvery { eventRepo.getEventsByGroup(groupId) } returns emptyList()
+        coEvery { eventRepo.getExportableEvents(groupId) } returns emptyList()
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
@@ -221,7 +224,7 @@ class ExportImportUseCaseTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        coEvery { eventRepo.getEventsByGroup(groupId) } returns emptyList()
+        coEvery { eventRepo.getExportableEvents(groupId) } returns emptyList()
         val handedOut = memberPrivKey.copyOf()
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } returns handedOut

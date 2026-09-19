@@ -12,6 +12,8 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.IdentityHistory
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -114,6 +116,17 @@ constructor(
         context: IngestionContext = IngestionContext.LIVE,
         expectedGroupId: String? = null
     ): ProcessResult {
+        if (rawEvent.tags.any { it.firstOrNull() == "t" && it.getOrNull(1) == IdentityHistoryPage.TYPE } &&
+            (
+                rawEvent.content.length > 65536 ||
+                    rawEvent.tags.size > 16 ||
+                    rawEvent.tags.any { tag ->
+                        tag.size > 4 || tag.any { it.length > 1024 }
+                    }
+                )
+        ) {
+            return rejected("oversized history evidence")
+        }
         // 1. Unwrap gift wrap if applicable
         val unwrapResult = giftWrap.tryUnwrap(rawEvent)
         val inner = unwrapResult?.rumor ?: rawEvent
@@ -201,7 +214,15 @@ constructor(
 
         val membershipResult =
             validateMembership(eventType, authorHex, group, groupId, inner, context) { historical() }
-        if (!membershipResult.allowed) return rejected("not a member", inner.id, eventType, authorHex)
+        if (!membershipResult.allowed) {
+            return rejected(
+                if (membershipResult.exactHistory) "unlisted identity history" else "not a member",
+                inner.id,
+                eventType,
+                authorHex
+            )
+        }
+        val awaitsHistory = membershipResult.awaitsHistory
 
         // 7. Decrypt: use cached self-join decryption if available, else try epoch keys
         val decryptedContent: Decrypted =
@@ -230,6 +251,26 @@ constructor(
             }
         }
 
+        if (eventType == IdentityHistoryPage.TYPE) {
+            val evidence = IdentityHistory(groupRepo, encryption)
+            val page = evidence.authenticate(inner, groupId, decryptedEpoch)
+                ?: return rejected("invalid history evidence", inner.id, eventType, authorHex)
+            val revocation = checkNotNull(page.revocation)
+            if (groupRepo.authenticatedRevocations(groupId).none { it.id == revocation.id }) {
+                val retirement = process(
+                    revocation,
+                    nonCancellable = nonCancellable,
+                    context = IngestionContext.RECONCILIATION,
+                    expectedGroupId = groupId
+                )
+                if (retirement.outcome !in setOf(IngestOutcome.APPLIED, IngestOutcome.ALREADY_APPLIED) ||
+                    evidence.authenticate(inner, groupId, decryptedEpoch) == null
+                ) {
+                    return rejected("missing identity revocation", inner.id, eventType, authorHex)
+                }
+            }
+        }
+
         if (!eventValidator.isContentSafe(decrypted)) {
             Log.w(TAG, "Rejecting event with unsafe content: ${inner.id}")
             return rejected("unsafe content", inner.id, eventType, authorHex)
@@ -237,7 +278,13 @@ constructor(
 
         // 8. Business rule validations. A correction or delete may legitimately outrun its original;
         //    it is then stored pending rather than refused (see the class comment).
-        val rules = validateBusinessRules(eventType, authorHex, expenseUuid, groupId)
+        val rules = validateBusinessRules(
+            eventType,
+            authorHex,
+            expenseUuid,
+            groupId,
+            membershipResult.exactHistory || awaitsHistory
+        )
         if (rules == BusinessRules.REJECTED) return rejected("business rule", inner.id, eventType, authorHex)
         val awaitsOriginal = rules == BusinessRules.MISSING_ORIGINAL
 
@@ -245,7 +292,9 @@ constructor(
         // offline peer must not reject a repayment an online peer accepted. This expands payload
         // participants only: the author's membership and removal-epoch checks above still apply.
         val participants =
-            if (context == IngestionContext.RECONCILIATION) {
+            if (membershipResult.exactHistory || awaitsHistory) {
+                group.members.toSet() + historical() + membershipHistory.formerMembers(groupId)
+            } else if (context == IngestionContext.RECONCILIATION) {
                 group.members.toSet() + historical()
             } else {
                 group.members.toSet()
@@ -263,7 +312,9 @@ constructor(
                 return rejected("missing participant", inner.id, eventType, authorHex)
             PayloadValidation.VALID -> Unit
         }
-        if (awaitsOriginal && eventDao.countPendingByAuthor(groupId, authorHex) >= MAX_PENDING_LEDGER_PER_AUTHOR) {
+        if ((awaitsOriginal || awaitsHistory) &&
+            eventDao.countPendingByAuthor(groupId, authorHex) >= MAX_PENDING_LEDGER_PER_AUTHOR
+        ) {
             // Bounded retention: a member cannot fill the database with corrections to nothing. The
             // record is not stored, so a later pull or session offers it again.
             Log.w(TAG, "Rejecting $eventType from ${authorHex.take(8)}: too many records awaiting originals")
@@ -281,16 +332,19 @@ constructor(
         val storedSig = if (unwrapResult != null) EventSnapshot.SEAL_SIG_PREFIX + unwrapResult.sealSig else inner.sig
         val hasSideEffects = eventType in SIDE_EFFECT_TYPES
         val pendingOnInsert = hasSideEffects || awaitsOriginal
-        val rowId = eventDao.insert(
-            EventEntity(
-                eventId = inner.id, groupId = groupId, pubkey = authorHex,
-                createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
-                eventType = eventType, expenseUuid = expenseUuid, sig = storedSig,
-                receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson(),
-                keyEpoch = decryptedEpoch,
-                applyState = if (pendingOnInsert) EventEntity.APPLY_STATE_PENDING else EventEntity.APPLY_STATE_APPLIED
-            )
+        val entity = EventEntity(
+            eventId = inner.id, groupId = groupId, pubkey = authorHex,
+            createdAt = inner.createdAt, kind = NostrKind.APP_SPECIFIC, contentEncrypted = inner.content,
+            eventType = eventType, expenseUuid = expenseUuid, sig = storedSig,
+            receivedAt = System.currentTimeMillis() / 1000, originalEventJson = inner.toJson(),
+            keyEpoch = decryptedEpoch,
+            applyState = when {
+                awaitsHistory -> EventEntity.APPLY_STATE_AWAITING_HISTORY
+                pendingOnInsert -> EventEntity.APPLY_STATE_PENDING
+                else -> EventEntity.APPLY_STATE_APPLIED
+            }
         )
+        val rowId = if (membershipResult.exactHistory) eventDao.insertHistory(entity) else eventDao.insert(entity)
         if (rowId == EventDao.REJECTED_DELETED) {
             // The author's delete was applied between the business-rule check and the write.
             Log.w(TAG, "Rejecting replayed deleted expense: $expenseUuid")
@@ -308,6 +362,18 @@ constructor(
             )
         }
 
+        if (awaitsHistory) {
+            return ProcessResult(
+                true,
+                group.name,
+                eventType,
+                null,
+                authorHex,
+                outcome = IngestOutcome.DEFERRED,
+                reason = "missing identity history",
+                eventId = inner.id
+            )
+        }
         if (awaitsOriginal) {
             val held = ProcessResult(true, group.name, eventType, decrypted, authorHex, eventId = inner.id)
             // The original may have committed (import, local publish) since the business-rule check;
@@ -404,7 +470,13 @@ constructor(
             if (pending.isEmpty()) return applied
             var progress = 0
             for (row in pending) {
-                if (eventDao.getEvent(row.eventId)?.applyState != EventEntity.APPLY_STATE_PENDING) continue
+                if (eventDao.getEvent(row.eventId)?.applyState !in setOf(
+                        EventEntity.APPLY_STATE_PENDING,
+                        EventEntity.APPLY_STATE_AWAITING_HISTORY
+                    )
+                ) {
+                    continue
+                }
                 val result = applyStoredEffects(
                     eventId = row.eventId,
                     eventType = row.eventType,
@@ -445,6 +517,42 @@ constructor(
     ): ProcessResult {
         val group = groupRepo.getById(groupId)
             ?: return rejected("unknown group", eventId, eventType, authorHex)
+        if (eventType in IdentityHistoryPage.MONEY_TYPES &&
+            authorHex in groupRepo.retiredIdentities(groupId).revoked
+        ) {
+            val evidence = membershipHistory.identityEvidence(groupId, encryption)
+            if (!evidence.permits(authorHex, eventId)) {
+                if (authorHex in evidence.authorized) {
+                    markFailed(eventId, nonCancellable)
+                    return rejected("unlisted identity history", eventId, eventType, authorHex)
+                }
+                return ProcessResult(
+                    true,
+                    group.name,
+                    eventType,
+                    null,
+                    authorHex,
+                    outcome = IngestOutcome.DEFERRED,
+                    reason = "missing identity history",
+                    eventId = eventId
+                )
+            }
+        }
+        if (eventDao.getEvent(eventId)?.applyState == EventEntity.APPLY_STATE_AWAITING_HISTORY) {
+            val plaintext = decryptContent(content, eventType, authorHex, group, groupId)
+                ?: return rejected("undecryptable", eventId, eventType, authorHex)
+            val participants = group.members.toSet() + membershipHistory.historicalAuthors(groupId) +
+                membershipHistory.formerMembers(groupId)
+            if (validatePayload(eventType, plaintext.content, authorHex, expenseUuid, participants, eventId) !=
+                PayloadValidation.VALID
+            ) {
+                return rejected("missing participant", eventId, eventType, authorHex)
+            }
+            if (eventType !in ORIGINAL_DEPENDENT_TYPES) {
+                markApplied(eventId, nonCancellable)
+                return ProcessResult(true, group.name, eventType, null, authorHex, eventId = eventId)
+            }
+        }
         if (eventType in ORIGINAL_DEPENDENT_TYPES) {
             val original = expenseUuid?.let { eventDao.getExpenseByAuthor(it, groupId, authorHex) }
             val base = ProcessResult(true, group.name, eventType, null, authorHex, eventId = eventId)
@@ -578,7 +686,9 @@ constructor(
         val allowed: Boolean,
         val cachedDecrypted: String? = null,
         val historical: Boolean = false,
-        val cachedEpoch: Int? = null
+        val cachedEpoch: Int? = null,
+        val exactHistory: Boolean = false,
+        val awaitsHistory: Boolean = false
     )
 
     private suspend fun validateMembership(
@@ -590,6 +700,19 @@ constructor(
         context: IngestionContext,
         historicalAuthors: suspend () -> Set<String>
     ): MembershipResult {
+        if (eventType == IdentityHistoryPage.TYPE) return MembershipResult(true)
+        if (eventType in IdentityHistoryPage.MONEY_TYPES &&
+            authorHex in groupRepo.retiredIdentities(groupId).revoked
+        ) {
+            val evidence = membershipHistory.identityEvidence(groupId, encryption)
+            return if (evidence.permits(authorHex, inner.id)) {
+                MembershipResult(true, exactHistory = true)
+            } else if (authorHex in evidence.authorized) {
+                MembershipResult(false, exactHistory = true)
+            } else {
+                MembershipResult(true, awaitsHistory = true)
+            }
+        }
         if (authorHex !in group.members) {
             if (eventType == TYPE_KEY_REVOCATION) {
                 // Admit either an old-key revocation completing a current-epoch replacement, or a
@@ -716,7 +839,8 @@ constructor(
         eventType: String,
         authorHex: String,
         expenseUuid: String?,
-        groupId: String
+        groupId: String,
+        preserveHistory: Boolean = false
     ): BusinessRules {
         if (eventType in ORIGINAL_DEPENDENT_TYPES) {
             if (expenseUuid == null) {
@@ -730,7 +854,7 @@ constructor(
                 return BusinessRules.REJECTED
             }
         }
-        if (eventType == "expense" && expenseUuid != null) {
+        if (eventType == "expense" && expenseUuid != null && !preserveHistory) {
             // Pending deletes need this history to satisfy their dependency, and failed deletes never
             // took effect. EventDao.insert repeats this check inside the write transaction.
             val deletedUuids = eventDao.getAppliedDeletedExpenseUuidsByAuthor(groupId, authorHex).toSet()
@@ -829,6 +953,17 @@ constructor(
         eventId = eventId,
         retryable = reason in RETRYABLE_REASONS
     )
+
+    suspend fun unresolvedIdentityHistory(groupId: String): Int {
+        val rows = eventDao.getEventsByGroup(groupId)
+        val evidence = membershipHistory.identityEvidence(groupId, encryption)
+        val missing = evidence.authorized.any { (author, ids) ->
+            val local = rows.filter { it.pubkey == author && it.eventType in IdentityHistoryPage.MONEY_TYPES }
+                .mapTo(HashSet()) { it.eventId }
+            !local.containsAll(ids) || !ids.containsAll(local)
+        }
+        return evidence.unresolved.size + if (missing) 1 else 0
+    }
 
     companion object {
         private const val TAG = "EventProcessor"

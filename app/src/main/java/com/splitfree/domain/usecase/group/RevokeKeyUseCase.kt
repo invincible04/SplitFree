@@ -2,10 +2,13 @@ package com.splitfree.domain.usecase.group
 
 import com.splitfree.domain.crypto.EventSigner
 import com.splitfree.domain.crypto.GroupEncryption
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.IdentityHistory
+import com.splitfree.domain.model.group.IdentityHistoryPage
 import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.ControlOperation
 import com.splitfree.domain.repository.ControlOperationJournalContract
@@ -63,15 +66,30 @@ constructor(
                     "Current-epoch key unavailable for group ${group.id}; revocation not started"
                 }
             }
-            val operation = ControlOperation(
-                RotateGroupKeyUseCase.REVOCATION_ID,
-                "revocation",
-                json.encodeToString(intent)
-            )
-            // Persist intent before generating the successor. An unprepared intent is safe to resume;
-            // a prepared batch still requires its exact successor key, even after a crash.
-            journal.insert(operation)
-            finish(operation)
+            var captured: ControlOperation? = null
+            eventPublisher.captureRevocationHistory(me, intent.groups) { history ->
+                val validator = IdentityHistory(groupRepo, encryption)
+                val ids = history.mapValues { (groupId, rows) ->
+                    val members = intent.groups.single { it.id == groupId }.members.toSet() +
+                        membershipHistory.formerMembers(groupId)
+                    check(
+                        rows.all { row ->
+                            row.applyState == 0 && validator.validMoney(row, members, rows, requireSignature = true)
+                        }
+                    ) {
+                        "Retained money history is incomplete or unverifiable. Restore original signed events before replacing identity"
+                    }
+                    rows.map { it.eventId }.distinct().sorted()
+                }
+                val operation = ControlOperation(
+                    RotateGroupKeyUseCase.REVOCATION_ID,
+                    "revocation",
+                    json.encodeToString(intent.copy(moneyHistory = ids))
+                )
+                journal.insert(operation)
+                captured = operation
+            }
+            finish(checkNotNull(captured) { "History capture did not persist a revocation intent" })
         }
     }
 
@@ -110,7 +128,54 @@ constructor(
                     prepareRevocation(group, key, intent.oldPubkey, newPubkey, newPrivateKey)
                 }
             }
-            json.encodeToString(PreparedRevocation(newPubkey, events)).also { journal.prepare(operation.id, it) }
+            val historyEvents = withReplacementKey { privateKey ->
+                intent.moneyHistory?.let { history ->
+                    intent.groups.flatMap { group ->
+                        val revocation = events.single {
+                            it.groupId == group.id && it.eventType == "key_revocation"
+                        }.event()
+                        val key = checkNotNull(groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch))
+                        IdentityHistoryPage.create(
+                            group.id,
+                            intent.oldPubkey,
+                            newPubkey,
+                            revocation,
+                            history.getValue(group.id)
+                        )
+                            .map { page ->
+                                val payload = json.encodeToString(page)
+                                val event = NostrEvent(
+                                    pubkey = newPubkey,
+                                    createdAt = revocation.createdAt,
+                                    kind = 30078,
+                                    tags = listOf(
+                                        listOf("g", group.id),
+                                        listOf("t", IdentityHistoryPage.TYPE),
+                                        listOf(
+                                            "d",
+                                            "${group.id}:history:${revocation.id}:${page.root}:${page.pageIndex}"
+                                        )
+                                    ),
+                                    content = encryption.encrypt(payload, key)
+                                ).sign(privateKey)
+                                PreparedControlEvent(
+                                    group.id,
+                                    IdentityHistoryPage.TYPE,
+                                    event.toJson(),
+                                    PreparedRevocationProjection.authenticate(
+                                        event.id,
+                                        payload,
+                                        group.keyEpoch,
+                                        privateKey
+                                    )
+                                )
+                            }
+                    }
+                }.orEmpty()
+            }
+            json.encodeToString(PreparedRevocation(newPubkey, events, historyEvents)).also {
+                journal.prepare(operation.id, it)
+            }
         }
         var prepared = json.decodeFromString<PreparedRevocation>(preparedJson)
         check(identity.getPublicKeyHex() == intent.oldPubkey || identity.getPublicKeyHex() == prepared.newPubkey) {
@@ -126,8 +191,15 @@ constructor(
             intent.groups.forEach { membershipHistory.retainRotationHistory(it.id) }
         }
         // Tracking IDs are informational only: neither proof of publication nor authorization to discard a key.
-        identity.setRevocationEventIds(prepared.events.map { it.event().id })
+        identity.setRevocationEventIds((prepared.events + prepared.historyEvents).map { it.event().id })
         prepared.events.filter { it.eventType == "key_revocation" }.forEach { it.publish(eventPublisher) }
+        prepared.historyEvents.forEach { envelope ->
+            eventPublisher.publishIdentityHistory(
+                envelope.event(),
+                envelope.groupId,
+                checkNotNull(envelope.projection).epoch
+            )
+        }
         prepared.events.filter { it.eventType == "group_meta" }.forEach { it.publish(eventPublisher) }
         for (revocation in prepared.events.filter { it.eventType == "key_revocation" }) {
             val groupId = revocation.groupId
@@ -270,6 +342,37 @@ constructor(
             }
             envelope.copy(projection = projection)
         }
+        val expectedHistory = intent.moneyHistory?.let { history ->
+            intent.groups.flatMap { group ->
+                val revocation = events.single { it.groupId == group.id && it.eventType == "key_revocation" }.event()
+                IdentityHistoryPage.create(
+                    group.id,
+                    intent.oldPubkey,
+                    prepared.newPubkey,
+                    revocation,
+                    history.getValue(group.id)
+                )
+            }
+        }.orEmpty()
+        val actualHistory = prepared.historyEvents.map { envelope ->
+            val event = envelope.event()
+            val projection = checkNotNull(envelope.projection)
+            val group = intent.groups.single { it.id == envelope.groupId }
+            check(
+                event.verify() &&
+                    event.pubkey == prepared.newPubkey &&
+                    event.kind == 30078 &&
+                    envelope.eventType == IdentityHistoryPage.TYPE &&
+                    projection.epoch == group.keyEpoch &&
+                    projection.verify(event.id, prepared.newPubkey) &&
+                    event.tags.filter { it.firstOrNull() == "g" } == listOf(listOf("g", group.id)) &&
+                    event.tags.filter { it.firstOrNull() == "t" } == listOf(listOf("t", IdentityHistoryPage.TYPE))
+            ) {
+                "Invalid authenticated identity history envelope"
+            }
+            json.decodeFromString<IdentityHistoryPage>(projection.payload)
+        }
+        check(actualHistory == expectedHistory) { "Incomplete or altered identity history batch" }
         val upgraded = prepared.copy(events = events)
         if (upgraded != prepared) journal.amend(operationId, preparedJson, json.encodeToString(upgraded))
         return upgraded
