@@ -67,8 +67,8 @@ class ExportImportUseCaseTest {
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
         // Execute the mocked transaction body; this does not model Room isolation or rollback.
-        coEvery { eventRepo.withTransaction(captureLambda<suspend () -> Int>()) } coAnswers {
-            lambda<suspend () -> Int>().captured.invoke()
+        coEvery { eventRepo.withTransaction(any<suspend () -> Any?>()) } coAnswers {
+            firstArg<suspend () -> Any?>().invoke()
         }
         // Import decrypts with the epoch key of each row when available; default to "not stored".
         coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
@@ -171,6 +171,7 @@ class ExportImportUseCaseTest {
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
+        every { identity.getPublicKeyHex() } returns memberPubkey
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
@@ -188,19 +189,14 @@ class ExportImportUseCaseTest {
     }
 
     @Test
-    fun `export with no group key still authenticates the file and leaves the keys empty`() = runBlocking {
-        coEvery { groupRepo.getGroupKey(groupId) } returns null
+    fun `export refuses a deleted group instead of creating an unrestorable backup`() = runBlocking {
         coEvery { groupRepo.getById(groupId) } returns null
-        coEvery { eventRepo.getExportableEvents(groupId) } returns listOf(sampleEntity)
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
-        val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
-
-        val result = useCase(groupId)
-        val export = json.decodeFromString<SplitFreeExport>(result)
-        assertEquals(independentMac(export, memberPrivKey), export.hmac)
-        assertEquals("", export.encryptedGroupKey)
-        assertTrue(export.encryptedEpochKeys.isEmpty())
+        every { identity.getPublicKeyHex() } returns memberPubkey
+        val failure = runCatching { ExportGroupUseCase(eventRepo, groupRepo, identity)(groupId) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertEquals("Group no longer exists; export again", failure?.message)
     }
 
     @Test
@@ -212,6 +208,7 @@ class ExportImportUseCaseTest {
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } answers { memberPrivKey.copyOf() }
         every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
+        every { identity.getPublicKeyHex() } returns memberPubkey
         val useCase = ExportGroupUseCase(eventRepo, groupRepo, identity)
 
         val result = useCase(groupId)
@@ -229,6 +226,7 @@ class ExportImportUseCaseTest {
         val identity = mockk<IdentityContract>()
         every { identity.getPrivateKeyBytes() } returns handedOut
         every { identity.getPublicKeyBytes() } returns memberPubkey.hexToBytes()
+        every { identity.getPublicKeyHex() } returns memberPubkey
 
         ExportGroupUseCase(eventRepo, groupRepo, identity)(groupId)
 

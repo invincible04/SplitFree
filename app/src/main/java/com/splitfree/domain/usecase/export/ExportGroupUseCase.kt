@@ -1,6 +1,7 @@
 package com.splitfree.domain.usecase.export
 
 import com.splitfree.domain.crypto.ExportKeyDerivation
+import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
@@ -9,10 +10,14 @@ import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
+import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.Json
 
 /**
@@ -41,10 +46,26 @@ constructor(
      * @param groupId target group UUID
      * @return pretty-printed JSON string of the export
      */
-    suspend operator fun invoke(groupId: String): String {
-        val group = groupRepo.getById(groupId)
-        val rootedGroup = group?.takeIf { GroupIdentity.matches(groupId, it.originalCreator, it.createdAt) }
-        require(group?.creatorTransitions.isNullOrEmpty() || rootedGroup != null) {
+    suspend operator fun invoke(groupId: String): String = openSession().use { session ->
+        invoke(groupId, session)
+    }
+
+    /** One borrowed identity for the entire output document, not a fresh identity per group. */
+    fun openSession(): ExportSession = ExportSession(identity)
+
+    suspend operator fun invoke(groupId: String, session: ExportSession): String {
+        session.requireCurrentIdentity()
+        // Both repositories share the application Room database. Keys live outside Room, but epoch
+        // keys are immutable: read them by this captured epoch after releasing the transaction.
+        val (group, events) = eventRepo.withTransaction {
+            val group = checkNotNull(groupRepo.getById(groupId)) { "Group no longer exists; export again" }
+            group to eventRepo.getExportableEvents(groupId)
+        }
+        require(group.keyEpoch >= 0 && events.all { it.keyEpoch in 0..group.keyEpoch }) {
+            "Group history changed before its key epoch was applied; sync and export again"
+        }
+        val rootedGroup = group.takeIf { GroupIdentity.matches(groupId, it.originalCreator, it.createdAt) }
+        require(group.creatorTransitions.isEmpty() || rootedGroup != null) {
             "Creator transitions require a verified original creator"
         }
         if (rootedGroup != null) {
@@ -57,8 +78,20 @@ constructor(
                 )
             ) { "Invalid creator transition evidence" }
         }
-        val groupKey = groupRepo.getGroupKey(groupId)
-        val events = eventRepo.getExportableEvents(groupId)
+        val epochKeys = linkedMapOf<Int, String>()
+        for (epoch in 0..group.keyEpoch) {
+            currentCoroutineContext().ensureActive()
+            val key = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+            require(runCatching { Base64.getDecoder().decode(key).size == 32 }.getOrDefault(false)) {
+                "Invalid key for epoch $epoch; backup not written"
+            }
+            epochKeys[epoch] = key
+        }
+        val requiredEpochs = events.map { it.keyEpoch }.toSet() + group.keyEpoch
+        check(epochKeys.keys.containsAll(requiredEpochs)) {
+            "Keys required by the captured history are unavailable; sync and export again"
+        }
+        session.requireCurrentIdentity()
         val exportedEvents = events.map { e ->
             ExportedEvent(
                 eventId = e.eventId, pubkey = e.pubkey, createdAt = e.createdAt, kind = e.kind,
@@ -67,47 +100,58 @@ constructor(
                 keyEpoch = e.keyEpoch
             )
         }
-
-        val privKey = identity.getPrivateKeyBytes()
-        try {
-            // NIP-44 encrypt the group key to self (only this private key can decrypt it)
-            val encryptedGroupKey: String
-            val encryptedEpochKeys: Map<String, String>
-            if (groupKey != null) {
-                val convKey = Nip44.getConversationKey(privKey, identity.getPublicKeyBytes())
-                encryptedGroupKey = Nip44.encrypt(groupKey, convKey)
-                // Include available historical keys; a device may never have held every epoch.
-                val epochKeys = mutableMapOf<String, String>()
-                val currentEpoch = group?.keyEpoch ?: 0
-                for (epoch in 0..currentEpoch) {
-                    val key = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
-                    epochKeys[epoch.toString()] = Nip44.encrypt(key, convKey)
-                }
-                encryptedEpochKeys = epochKeys
-            } else {
-                encryptedGroupKey = ""
-                encryptedEpochKeys = emptyMap()
-            }
-
-            val unsigned = SplitFreeExport(
-                version = SplitFreeExport.CURRENT_VERSION,
-                groupId = groupId,
-                exportedAt = System.currentTimeMillis() / 1000,
-                events = exportedEvents,
-                encryptedGroupKey = encryptedGroupKey,
-                groupName = group?.name ?: "",
-                relays = group?.relays ?: emptyList(),
-                keyEpoch = group?.keyEpoch ?: 0,
-                encryptedEpochKeys = encryptedEpochKeys,
-                rootCreator = rootedGroup?.originalCreator.orEmpty(),
-                rootCreatedAt = rootedGroup?.createdAt ?: 0,
-                creatorTransitions = rootedGroup?.creatorTransitions.orEmpty()
-            )
-            val export = unsigned.copy(hmac = ExportMac.compute(unsigned, privKey).toHex())
-            return json.encodeToString(export)
+        val convKey = Nip44.getConversationKey(session.privateKey, session.publicKey.hexToBytes())
+        val encryptedEpochKeys = try {
+            epochKeys.mapKeys { it.key.toString() }.mapValues { (_, key) -> Nip44.encrypt(key, convKey) }
         } finally {
-            privKey.fill(0)
+            convKey.fill(0)
         }
+        val unsigned = SplitFreeExport(
+            version = SplitFreeExport.CURRENT_VERSION,
+            groupId = groupId,
+            exportedAt = System.currentTimeMillis() / 1000,
+            events = exportedEvents,
+            encryptedGroupKey = encryptedEpochKeys.getValue(group.keyEpoch.toString()),
+            groupName = group.name,
+            relays = group.relays,
+            keyEpoch = group.keyEpoch,
+            encryptedEpochKeys = encryptedEpochKeys,
+            rootCreator = rootedGroup?.originalCreator.orEmpty(),
+            rootCreatedAt = rootedGroup?.createdAt ?: 0,
+            creatorTransitions = rootedGroup?.creatorTransitions.orEmpty()
+        )
+        val export = unsigned.copy(hmac = ExportMac.compute(unsigned, session.privateKey).toHex())
+        currentCoroutineContext().ensureActive()
+        session.requireCurrentIdentity()
+        return json.encodeToString(export)
+    }
+}
+
+/** Owns a single private-key copy; callers must close it on success, failure and cancellation. */
+class ExportSession internal constructor(private val identity: IdentityContract) : AutoCloseable {
+    internal val privateKey: ByteArray = identity.getPrivateKeyBytes()
+    internal val publicKey: String
+    private var closed = false
+
+    init {
+        try {
+            require(privateKey.size == 32) { "A ready identity is required to export" }
+            publicKey = NostrEvent.pubkeyFromPrivkey(privateKey)
+            requireCurrentIdentity()
+        } catch (failure: Throwable) {
+            privateKey.fill(0)
+            throw failure
+        }
+    }
+
+    fun requireCurrentIdentity() {
+        check(!closed) { "Export identity session is closed" }
+        check(identity.getPublicKeyHex() == publicKey) { "Identity changed during export; export again" }
+    }
+
+    override fun close() {
+        privateKey.fill(0)
+        closed = true
     }
 }
 

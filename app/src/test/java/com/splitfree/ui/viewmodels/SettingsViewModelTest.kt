@@ -11,6 +11,7 @@ import com.splitfree.domain.repository.DisplayNamePublishResult
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
+import com.splitfree.domain.usecase.export.ExportSession
 import com.splitfree.domain.usecase.group.DisplayNamePublisher
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import io.mockk.coEvery
@@ -53,6 +54,7 @@ class SettingsViewModelTest {
     private val desiredName = MutableStateFlow("")
     private val groupRepo = mockk<GroupRepositoryContract>()
     private val exportGroup = mockk<ExportGroupUseCase>()
+    private val exportSession = mockk<ExportSession>(relaxed = true)
     private val outboxDao = mockk<OutboxDao> {
         every { pendingOutboxCount() } returns flowOf(0)
         every { stuckOutboxCount() } returns flowOf(0)
@@ -81,6 +83,7 @@ class SettingsViewModelTest {
         every { identity.hasIdentity() } returns false
         every { identity.hasPendingKeyPair() } returns false
         coEvery { groupRepo.getAll() } returns groups
+        every { exportGroup.openSession() } returns exportSession
 
         every { namePublisher.displayName } returns desiredName
         every { namePublisher.result } returns MutableStateFlow(DisplayNamePublishResult())
@@ -104,8 +107,8 @@ class SettingsViewModelTest {
     fun `export writes every group as a JSON array and reports success`() = runTest {
         val sink = ByteArrayOutputStream()
         every { contentResolver.openOutputStream(uri, "wt") } returns sink
-        coEvery { exportGroup("g1") } returns """{"groupId":"g1"}"""
-        coEvery { exportGroup("g2") } returns """{"groupId":"g2"}"""
+        coEvery { exportGroup("g1", exportSession) } returns """{"groupId":"g1"}"""
+        coEvery { exportGroup("g2", exportSession) } returns """{"groupId":"g2"}"""
 
         vm.exportAllGroups(uri)
 
@@ -118,8 +121,8 @@ class SettingsViewModelTest {
     fun `failure mid-write deletes the partial document and reports an error`() = runTest {
         val sink = ByteArrayOutputStream()
         every { contentResolver.openOutputStream(uri, "wt") } returns sink
-        coEvery { exportGroup("g1") } returns """{"groupId":"g1"}"""
-        coEvery { exportGroup("g2") } throws IllegalStateException("keystore unavailable")
+        coEvery { exportGroup("g1", exportSession) } returns """{"groupId":"g1"}"""
+        coEvery { exportGroup("g2", exportSession) } throws IllegalStateException("keystore unavailable")
 
         vm.exportAllGroups(uri)
 
@@ -163,12 +166,89 @@ class SettingsViewModelTest {
     @Test
     fun `delete failure during cleanup does not mask the export error`() = runTest {
         every { contentResolver.openOutputStream(uri, "wt") } returns ByteArrayOutputStream()
-        coEvery { exportGroup("g1") } throws IllegalStateException("boom")
+        coEvery { exportGroup("g1", exportSession) } throws IllegalStateException("boom")
         every { DocumentsContract.deleteDocument(contentResolver, uri) } throws UnsupportedOperationException("ro")
 
         vm.exportAllGroups(uri)
 
         assertEquals(ExportState.Error("boom"), vm.exportState.value)
+    }
+
+    @Test
+    fun `whole-file session closes on success and failure`() = runTest {
+        every { contentResolver.openOutputStream(uri, "wt") } returns ByteArrayOutputStream()
+        coEvery { exportGroup(any(), exportSession) } returns "{}"
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Done, vm.exportState.value)
+        verify(exactly = 1) { exportGroup.openSession() }
+        verify(exactly = 1) { exportSession.close() }
+        coEvery { exportGroup("g2", exportSession) } throws IOException("write failed")
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Error("write failed"), vm.exportState.value)
+        verify(exactly = 2) { exportSession.close() }
+    }
+
+    @Test
+    fun `identity replacement during provider close refuses success and removes document`() = runTest {
+        var changed = false
+        every { contentResolver.openOutputStream(uri, "wt") } returns object : ByteArrayOutputStream() {
+            override fun close() {
+                super.close()
+                changed = true
+            }
+        }
+        coEvery { exportGroup(any(), exportSession) } returns "{}"
+        every { exportSession.requireCurrentIdentity() } answers {
+            check(!changed) { "Identity changed during export; export again" }
+        }
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Error("Identity changed during export; export again"), vm.exportState.value)
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        verify(exactly = 1) { exportSession.close() }
+    }
+
+    @Test
+    fun `provider close failure cannot report a successful backup`() = runTest {
+        every { contentResolver.openOutputStream(uri, "wt") } returns object : ByteArrayOutputStream() {
+            override fun close() = throw IOException("provider close failed")
+        }
+        coEvery { exportGroup(any(), exportSession) } returns "{}"
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Error("provider close failed"), vm.exportState.value)
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        verify(exactly = 1) { exportSession.close() }
+    }
+
+    @Test
+    fun `concurrent export and clearing state cannot start a second writer`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<String>()
+        every { contentResolver.openOutputStream(uri, "wt") } returns ByteArrayOutputStream()
+        coEvery { exportGroup("g1", exportSession) } coAnswers { gate.await() }
+        coEvery { exportGroup("g2", exportSession) } returns "{}"
+        vm.exportAllGroups(uri)
+        vm.clearExportState()
+        assertEquals(ExportState.InProgress, vm.exportState.value)
+        vm.exportAllGroups(uri)
+        verify(exactly = 1) { contentResolver.openOutputStream(uri, "wt") }
+        verify(exactly = 1) { exportGroup.openSession() }
+        gate.complete("{}")
+        assertEquals(ExportState.Done, vm.exportState.value)
+    }
+
+    @Test
+    fun `cancellation deletes partial document and closes captured identity`() = runTest {
+        every { contentResolver.openOutputStream(uri, "wt") } returns ByteArrayOutputStream()
+        coEvery { exportGroup("g1", exportSession) } returns "{}"
+        coEvery { exportGroup("g2", exportSession) } throws kotlinx.coroutines.CancellationException("cancelled")
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Idle, vm.exportState.value)
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        verify(exactly = 1) { exportSession.close() }
+        coEvery { exportGroup("g2", exportSession) } returns "{}"
+        vm.exportAllGroups(uri)
+        assertEquals(ExportState.Done, vm.exportState.value)
+        verify(exactly = 2) { exportGroup.openSession() }
+        verify(exactly = 2) { contentResolver.openOutputStream(uri, "wt") }
     }
 
     @Test
@@ -240,7 +320,7 @@ class SettingsViewModelTest {
     @Test
     fun `clearExportState returns to idle`() = runTest {
         every { contentResolver.openOutputStream(uri, "wt") } returns ByteArrayOutputStream()
-        coEvery { exportGroup(any()) } returns "{}"
+        coEvery { exportGroup(any(), exportSession) } returns "{}"
         vm.exportAllGroups(uri)
         assertEquals(ExportState.Done, vm.exportState.value)
 

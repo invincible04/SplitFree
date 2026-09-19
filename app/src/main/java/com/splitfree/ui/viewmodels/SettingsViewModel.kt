@@ -158,7 +158,10 @@ constructor(
                 _exportState.value = ExportState.Done
             } catch (e: Exception) {
                 withContext(NonCancellable + ioDispatcher) { discardPartialExport(uri) }
-                if (e is CancellationException) throw e
+                if (e is CancellationException) {
+                    _exportState.value = ExportState.Idle
+                    throw e
+                }
                 Log.w(TAG, "Export failed: ${e.message}")
                 _exportState.value = ExportState.Error(e.message ?: "Export failed")
             }
@@ -166,22 +169,28 @@ constructor(
     }
 
     fun clearExportState() {
+        if (_exportState.value is ExportState.InProgress) return
         _exportState.value = ExportState.Idle
     }
 
     private suspend fun writeAllGroups(uri: Uri) {
-        // "wt" truncates, so re-exporting over an existing file never leaves a stale tail behind.
-        val out = appContext.contentResolver.openOutputStream(uri, "wt")
-            ?: throw IOException("Could not open the backup file for writing")
-        out.bufferedWriter().use { writer ->
-            val groups = groupRepo.getAll()
-            writer.write("[")
-            groups.forEachIndexed { i, group ->
-                if (i > 0) writer.write(",")
-                writer.write(exportGroup(group.id))
-                writer.flush()
+        exportGroup.openSession().use { session ->
+            // "wt" truncates, so overwriting a backup never leaves a stale tail behind.
+            val out = appContext.contentResolver.openOutputStream(uri, "wt")
+                ?: throw IOException("Could not open the backup file for writing")
+            out.bufferedWriter().use { writer ->
+                val groups = groupRepo.getAll()
+                writer.write("[")
+                groups.forEachIndexed { i, group ->
+                    if (i > 0) writer.write(",")
+                    writer.write(exportGroup(group.id, session))
+                    writer.flush()
+                }
+                session.requireCurrentIdentity()
+                writer.write("]")
             }
-            writer.write("]")
+            // Provider flush/close can suspend the operation long enough for identity replacement.
+            session.requireCurrentIdentity()
         }
     }
 
