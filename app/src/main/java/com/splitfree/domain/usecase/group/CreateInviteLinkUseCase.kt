@@ -9,8 +9,8 @@ import javax.inject.Inject
  * Generates a shareable invite link carrying the group's current-epoch key.
  *
  * The link is a bearer token (see [InviteLinkCodec]); it does not need the inviter's private key.
- * Any member may invite, but the link always names the real creator because the group id is
- * derived from `(createdBy, createdAt)`.
+ * The group id binds `(originalCreator, createdAt)`; signed certificates carry creator succession.
+ * The codec rejects evidence that does not establish the group snapshot's current authority.
  */
 class CreateInviteLinkUseCase
 @Inject
@@ -21,7 +21,8 @@ constructor(private val groupRepo: GroupRepositoryContract) {
      * @param groupId target group UUID
      * @return `splitfree://join?d=...` deep link
      * @throws IllegalStateException if the group is not found, has no known creator (imported from a
-     *   backup and not yet given one by a creator-signed `group_meta`), or has no key for its current epoch
+     *   backup without usable creator evidence), or has no key for its current epoch
+     * @throws IllegalArgumentException if creator evidence or compact-link budgets fail codec validation
      */
     suspend operator fun invoke(groupId: String): String {
         val group = groupRepo.getById(groupId) ?: throw IllegalStateException("Group $groupId not found")

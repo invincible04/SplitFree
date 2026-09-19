@@ -52,10 +52,9 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * Interrupted removals resumed over the real stack: in-memory Room, the real [GroupRepository] and
- * [ControlOperationJournal], real NIP-44 envelopes and BIP-340 signatures, and the real ingestion
- * pipeline for the control events that move the roster while the removal is pending. Publication is
- * the only mock: it records what left and fails on demand.
+ * Offline removal recovery with in-memory Room, production repositories and control-event ingestion,
+ * plus real NIP-44/BIP-340 crypto. Secure storage is fake; publishing, settings and self-heal are mocked.
+ * Publication captures attempts before injected failure; no relay delivery or process restart is tested.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -97,7 +96,9 @@ class RotateGroupKeyRecoveryRoomTest {
             journal,
             lock
         )
-        private val revocation = RevokeKeyUseCase(identity, groups, encryption, signer, publisher, journal, lock)
+        private val revocation = RevokeKeyUseCase(
+            identity, groups, encryption, signer, publisher, journal, lock, mockk(relaxed = true), mockk(relaxed = true)
+        )
         private val post =
             EventPostProcessor(groups, rotation, revocation, mockk(relaxed = true), publisher, identity, scope)
         private val settings = mockk<SettingsContract> { every { giftWrapEnabled } returns false }
@@ -148,7 +149,7 @@ class RotateGroupKeyRecoveryRoomTest {
         fun event(type: String, payload: String, createdAt: Long = System.currentTimeMillis() / 1000): NostrEvent =
             signer.createSignedEvent(groupId, type, encryption.encrypt(payload, epochZeroKey), createdAt = createdAt)
 
-        /** Starts removing [removed] and crashes on the first envelope: the plan is journaled, nothing landed. */
+        /** Fails the first publication attempt after journaling; the local epoch remains unchanged. */
         suspend fun interruptRemoval(removed: String) {
             failPublishAt = publishCalls + 1
             assertTrue(runCatching { rotation(groupId, removed) }.isFailure)
@@ -157,7 +158,7 @@ class RotateGroupKeyRecoveryRoomTest {
             assertEquals(0, group().keyEpoch)
         }
 
-        /** Every published `key_rotation` addressed to [recipient], opened with the recipient's key. */
+        /** Captured rotation attempts addressed to [recipient], opened with the recipient's key. */
         fun envelopesFor(recipient: Device): List<KeyRotation> = sent
             .filter { it.tags.contains(listOf("p", recipient.pub)) }
             .map { event ->
@@ -168,7 +169,7 @@ class RotateGroupKeyRecoveryRoomTest {
                 json.decodeFromString<KeyRotation>(Nip44.decrypt(event.content, conversationKey))
             }
 
-        /** The published metadata a receiver would keep: the highest `(created_at, id)` clock. */
+        /** Captured metadata with the highest `(created_at, id)` clock; no receiver is run here. */
         fun newestMeta(): NostrEvent = sent
             .filter { it.tags.contains(listOf("t", "group_meta")) }
             .maxWith(compareBy<NostrEvent>({ it.createdAt }, { it.id }))
@@ -195,9 +196,8 @@ class RotateGroupKeyRecoveryRoomTest {
         joiner.event("group_meta", json.encodeToString(GroupMeta(members = roster + joiner.pub)))
 
     /**
-     * A removal is interrupted, a member joins, the amended plan is interrupted again, then a delayed
-     * creator snapshot returns the roster to its original membership. The completed rotation must leave
-     * the newest published metadata equal to the roster it installed locally, not the joiner's one.
+     * A join and later creator snapshot change the roster across two publication failures. Recovery must
+     * make the newest captured metadata match the final local roster, not an intermediate roster.
      */
     @Test
     fun `resumed rotation after roster oscillation publishes a newest metadata that matches its final roster`() =
@@ -215,14 +215,14 @@ class RotateGroupKeyRecoveryRoomTest {
             creator.rotation.resumeIfNeeded()
             assertEquals(2, creator.plan().count { it.eventType == "group_meta" })
             assertEquals(0, creator.group().keyEpoch)
-            val delayedCreatorMeta = creator.event(
+            val newerCreatorMeta = creator.event(
                 "group_meta",
                 json.encodeToString(
                     GroupMeta("Trip", createdBy = creator.pub, createdAt = 1, members = originalRoster)
                 ),
-                initialMetaTime - 1
+                initialMetaTime + 1
             )
-            assertEquals(IngestOutcome.APPLIED, creator.ingest(delayedCreatorMeta))
+            assertEquals(IngestOutcome.APPLIED, creator.ingest(newerCreatorMeta))
             assertEquals(originalRoster, creator.group().members)
 
             creator.rotation.resumeIfNeeded()
@@ -239,9 +239,8 @@ class RotateGroupKeyRecoveryRoomTest {
         }
 
     /**
-     * The removed key revokes itself to a successor while its removal is pending. Removal follows the
-     * person: the successor gets neither the new epoch key nor a roster seat, and the payload still
-     * names the key the creator selected.
+     * Revocation replaces the pending removal target. Its new roster replacement gets no epoch-key
+     * envelope or seat; rotation payloads still name the originally selected key.
      */
     @Test
     fun `resumed removal excludes the successor its member revoked to while it was pending`() = runBlocking {
@@ -276,9 +275,8 @@ class RotateGroupKeyRecoveryRoomTest {
     }
 
     /**
-     * The repository records a `replaced` link even when the successor was already an independent
-     * member (the revoked key is then simply dropped). A key being removed must not be able to knock
-     * out such a member by revoking to it.
+     * A named successor that already held an independent roster seat must keep it and receive the key.
+     * Naming an existing member as successor must not extend the pending removal to that member.
      */
     @Test
     fun `resumed removal keeps a successor who was already a member before the removal`() = runBlocking {
@@ -312,9 +310,8 @@ class RotateGroupKeyRecoveryRoomTest {
     }
 
     /**
-     * The intent was journaled but nothing was signed when the removed key revoked itself. Resuming
-     * rebases the intent onto the live roster; the successor must still be excluded, including when the
-     * rebased intent is resumed once more after a crash before the plan was prepared.
+     * Rebase an unsigned removal intent after its target revokes. The successor must remain excluded
+     * even when a key-write failure interrupts the rebase before plan preparation.
      */
     @Test
     fun `unprepared removal rebased after its member revoked still excludes the successor`() = runBlocking {
@@ -330,7 +327,7 @@ class RotateGroupKeyRecoveryRoomTest {
         assertEquals(IngestOutcome.APPLIED, creator.ingest(revocationOf(removed, successor)))
         assertEquals(listOf(creator.pub, successor.pub, peer.pub), creator.group().members)
 
-        // First resume rebases the intent, then crashes on the epoch key write before anything is signed.
+        // Fail the epoch-key write after rebasing but before preparing signed events.
         creator.groupKeys.failNextPut = true
         creator.rotation.resumeIfNeeded()
         val rebased = checkNotNull(creator.pending())
@@ -350,8 +347,8 @@ class RotateGroupKeyRecoveryRoomTest {
     }
 
     /**
-     * Positive control: a genuinely new member who joins between preparation and resume gets its own
-     * envelope for the same key, and the newest published metadata carries the final roster.
+     * Unlike the removal target's replacement, a new joiner receives the epoch key on resume.
+     * Corrective metadata must match the final roster and sort after the prepared metadata.
      */
     @Test
     fun `resumed removal after a join grants the joiner an envelope and a newer metadata for the final roster`() =

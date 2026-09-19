@@ -4,6 +4,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.model.balance.BalanceResult
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -42,6 +43,7 @@ class ComputeBalancesUseCaseTest {
     private fun groupRepo() = mockk<GroupRepositoryContract>(relaxed = true).also {
         coEvery { it.getGroupKey("g1") } returns groupKey
         coEvery { it.getGroupKeyForEpoch("g1", any()) } returns groupKey
+        coEvery { it.retiredIdentities(any()) } returns RetiredIdentities.NONE
     }
 
     /** Mock encryption returns contentEncrypted as-is. */
@@ -118,7 +120,7 @@ class ComputeBalancesUseCaseTest {
         pubkey = pubkey,
         createdAt = createdAt,
         kind = 30078,
-        contentEncrypted = content, // In tests, contentEncrypted holds plaintext; mock decrypt returns it as-is
+        contentEncrypted = content, // Plaintext for the passthrough decrypt mock.
         eventType = type,
         expenseUuid = uuid,
         sig = "s",
@@ -1075,7 +1077,7 @@ class ComputeBalancesUseCaseTest {
 
     // --- Snapshot coverage (replay by event_hashes, not by timestamp) ---
 
-    /** Ten filler ids that are known locally and covered by the snapshot, so the trust checks pass. */
+    /** Ten known filler ids satisfy the snapshot coverage threshold. */
     private val fillerIds = (1..10).map { "filler_$it" }
 
     private fun hashArr(ids: List<String>): String =
@@ -1218,10 +1220,10 @@ class ComputeBalancesUseCaseTest {
 
         val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
 
-        // -50 (reverse original) +100 (correction) = 100
+        // 50 (snapshot) -50 (reverse original) +100 (correction) = 100
         assertEquals(100L, result.balances.find { it.pubkey == "alice" }?.net)
         assertEquals(-100L, result.balances.find { it.pubkey == "bob" }?.net)
-        // Corrected expenses are shown (with the corrected payload), so they are not excluded.
+        // A correction must not exclude the author-bound expense identity.
         assertTrue(ExpenseIdentity("alice", "u1") !in result.excludedExpenses)
     }
 
@@ -1265,7 +1267,7 @@ class ComputeBalancesUseCaseTest {
 
         val balances = ComputeBalancesUseCase(dao, repo, encryption())("g1")
 
-        // -100 (reverse c1) +150 (c2) = 150
+        // 100 (snapshot) -100 (reverse c1) +150 (c2) = 150
         assertEquals(150L, balances.find { it.pubkey == "alice" }?.net)
         assertEquals(-150L, balances.find { it.pubkey == "bob" }?.net)
     }
@@ -1883,7 +1885,7 @@ class ComputeBalancesUseCaseTest {
         assertEquals(50L, n["alice"])
         assertEquals(-50L, n["bob"])
         assertTrue("Mallory's own record is gone", "mallory" !in n && "carol" !in n)
-        // Alice's record is still live, so the uuid must stay visible in the UI.
+        // Exclusions are author-bound: Alice's expense with the same uuid remains included.
         assertEquals(setOf(ExpenseIdentity("mallory", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
@@ -1916,7 +1918,7 @@ class ComputeBalancesUseCaseTest {
         assertTrue("alice" !in n && "bob" !in n)
         assertEquals(100L, n["mallory"])
         assertEquals(-100L, n["carol"])
-        // Mallory's record is live under the same uuid, so it must not be filtered from the list.
+        // Excluding Alice's identity must not exclude Mallory's expense with the same uuid.
         assertEquals(setOf(ExpenseIdentity("alice", "U")), result.excludedExpenses)
         unmockkStatic(android.util.Log::class)
     }
@@ -1999,7 +2001,7 @@ class ComputeBalancesUseCaseTest {
         content = expenseJson("x1", 100, paidBy = "bob", splits = split("bob" to 50, "alice" to 50), timestamp = 100)
     )
 
-    /** Alice repays bob the 50 she owes, signed by alice, under settlement id `S`. */
+    /** Alice-authored fixture repays bob 50 under settlement id `S`; no signature validation here. */
     private val aliceRepays = makeEvent(
         "s_alice",
         type = "settlement",
@@ -2010,9 +2012,8 @@ class ComputeBalancesUseCaseTest {
     )
 
     /**
-     * Carol settles 1 with dave under the same id `S`, signed by carol and valid on its own: carol is a
-     * party to it. Its clock is older than alice's, so a uuid-only dedup that trusts canonical order
-     * would keep this record and drop alice's.
+     * Carol-authored fixture settles 1 with dave under the same id `S`. Its earlier clock would
+     * suppress Alice's repayment if deduplication used the id without the author.
      */
     private val carolSettlesDave = makeEvent(
         "s_carol",
@@ -2025,8 +2026,7 @@ class ComputeBalancesUseCaseTest {
 
     @Test
     fun `a settlement id reused by an unrelated pair cannot erase another pair's repayment`() = runTest {
-        // Both settlements are stored APPLIED; only the id collides. Whatever the storage or clock order,
-        // both must count: two authors under one id are two settlements.
+        // The mocked ledger supplies two authors under one settlement id; both must count in every input order.
         val result = computeForEveryOrder(listOf(bobFronts, aliceRepays, carolSettlesDave))
 
         val n = nets(result)
@@ -2076,4 +2076,273 @@ class ComputeBalancesUseCaseTest {
             // settlement that the snapshot never saw: it must be applied.
             assertEquals(mapOf("alice" to 0L, "bob" to 0L, "carol" to 1L, "dave" to -1L), nets(result))
         }
+
+    // --- Conflicting settlement versions: one canonical winner, with or without a snapshot ---
+
+    /** Bob's earlier version of settlement `s1`: he repays alice 20. Canonically first by `createdAt`. */
+    private val bobPays20Early = makeEvent(
+        "z_early",
+        type = "settlement",
+        uuid = "s1",
+        pubkey = "bob",
+        createdAt = 10,
+        content = settlementJson("s1", "bob", "alice", 20, timestamp = 10)
+    )
+
+    /** Bob's later version of the same `s1`: 50 instead of 20. Its id sorts first, its clock last. */
+    private val bobPays50Late = makeEvent(
+        "a_late",
+        type = "settlement",
+        uuid = "s1",
+        pubkey = "bob",
+        createdAt = 50,
+        content = settlementJson("s1", "bob", "alice", 50, timestamp = 50)
+    )
+
+    /** Alice fronts 100 split evenly: bob owes her 50 before any settlement. */
+    private val aliceFronts = makeEvent(
+        "e1",
+        type = "expense",
+        uuid = "u1",
+        pubkey = "alice",
+        createdAt = 1,
+        content = expenseJson("u1", 100, splits = split("alice" to 50, "bob" to 50))
+    )
+
+    @Test
+    fun `conflicting settlement versions resolve to the canonical earliest regardless of input order`() = runTest {
+        val repo = groupRepo()
+        val useCase = ComputeBalancesUseCase(eventDao(), repo, encryption())
+
+        val earlyFirst = useCase.computeWithExclusions(
+            "g1",
+            listOf(aliceFronts, bobPays20Early, bobPays50Late),
+            useSnapshots = false
+        )
+        val lateFirst = useCase.computeWithExclusions(
+            "g1",
+            listOf(aliceFronts, bobPays50Late, bobPays20Early),
+            useSnapshots = false
+        )
+
+        // The 20 version has the earlier clock and wins in both orders: bob still owes 30.
+        assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(earlyFirst))
+        assertEquals(nets(earlyFirst), nets(lateFirst))
+    }
+
+    @Test
+    fun `conflicting settlement versions with equal clocks are resolved by event id`() = runTest {
+        val useCase = ComputeBalancesUseCase(eventDao(), groupRepo(), encryption())
+        val v20 = bobPays20Early.copy(eventId = "b_twenty", createdAt = 10)
+        val v50 = bobPays50Late.copy(eventId = "a_fifty", createdAt = 10)
+
+        val a = useCase.computeWithExclusions("g1", listOf(aliceFronts, v20, v50), useSnapshots = false)
+        val b = useCase.computeWithExclusions("g1", listOf(aliceFronts, v50, v20), useSnapshots = false)
+
+        // "a_fifty" < "b_twenty": the 50 version is canonical, bob is square.
+        assertEquals(mapOf("alice" to 0L, "bob" to 0L), nets(a))
+        assertEquals(nets(a), nets(b))
+    }
+
+    @Test
+    fun `conflicting settlement versions that differ in currency and parties still yield one canonical winner`() =
+        runTest {
+            val useCase = ComputeBalancesUseCase(eventDao(), groupRepo(), encryption())
+            val eurToCarol = makeEvent(
+                "a_eur",
+                type = "settlement",
+                uuid = "s1",
+                pubkey = "bob",
+                createdAt = 50,
+                content = settlementJson("s1", "bob", "carol", 7, currency = "EUR", timestamp = 50)
+            )
+
+            val a = useCase.computeWithExclusions("g1", listOf(aliceFronts, bobPays20Early, eurToCarol), false)
+            val b = useCase.computeWithExclusions("g1", listOf(aliceFronts, eurToCarol, bobPays20Early), false)
+
+            // The INR-20 version is canonical; the EUR version never touches carol.
+            assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(a))
+            assertEquals(nets(a), nets(b))
+        }
+
+    @Test
+    fun `snapshot that counted a later settlement version is distrusted once the canonical earlier version is local`() =
+        runTest {
+            val dao = eventDao()
+            val repo = groupRepo()
+            // The creator snapshotted with only the 50 version in hand: everyone at zero.
+            installSnapshot(
+                dao,
+                repo,
+                events = listOf(aliceFronts, bobPays20Early, bobPays50Late),
+                coveredIds = listOf("e1", "a_late"),
+                balances = """[${balEntry("alice", 0, "INR")},${balEntry("bob", 0, "INR")}]"""
+            )
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
+
+            val withSnapshot = useCase.computeWithExclusions("g1")
+            val fullReplay = useCase.computeWithExclusions("g1", dao.getEventsByGroup("g1"), useSnapshots = false)
+
+            // The noncanonical covered version must not hide the earlier repayment: bob still owes 30.
+            assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(fullReplay))
+            assertEquals(nets(fullReplay), nets(withSnapshot))
+        }
+
+    @Test
+    fun `snapshot that counted the canonical settlement version stays trusted when a later version arrives`() =
+        runTest {
+            val dao = eventDao()
+            val repo = groupRepo()
+            installSnapshot(
+                dao,
+                repo,
+                events = listOf(aliceFronts, bobPays20Early, bobPays50Late),
+                coveredIds = listOf("e1", "z_early"),
+                balances = """[${balEntry("alice", 30, "INR")},${balEntry("bob", -30, "INR")}]"""
+            )
+            val useCase = ComputeBalancesUseCase(dao, repo, encryption())
+
+            val withSnapshot = useCase.computeWithExclusions("g1")
+            val fullReplay = useCase.computeWithExclusions("g1", dao.getEventsByGroup("g1"), useSnapshots = false)
+
+            assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(withSnapshot))
+            assertEquals(nets(fullReplay), nets(withSnapshot))
+        }
+
+    @Test
+    fun `snapshot covering both conflicting versions is trusted and the covered canonical winner is not reapplied`() =
+        runTest {
+            val dao = eventDao()
+            val repo = groupRepo()
+            installSnapshot(
+                dao,
+                repo,
+                events = listOf(aliceFronts, bobPays20Early, bobPays50Late),
+                coveredIds = listOf("e1", "z_early", "a_late"),
+                balances = """[${balEntry("alice", 30, "INR")},${balEntry("bob", -30, "INR")}]"""
+            )
+
+            val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+            assertEquals(mapOf("alice" to 30L, "bob" to -30L), nets(result))
+        }
+
+    // --- Retired identities: a revoked key's position follows its successor ---
+
+    @Test
+    fun `a revoked identity's balance is attributed to its successor across expenses and settlements`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            aliceFronts, // bob owes alice 50
+            makeEvent(
+                "s_new",
+                type = "settlement",
+                uuid = "s9",
+                pubkey = "bob2",
+                createdAt = 200,
+                content = settlementJson("s9", "bob2", "alice", 20, timestamp = 200)
+            )
+        )
+
+        val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+        // The old key is gone from the result; bob2 carries the remaining 30.
+        assertEquals(mapOf("alice" to 30L, "bob2" to -30L), nets(result))
+    }
+
+    @Test
+    fun `a replacement chain folds every hop into the final identity and the snapshot path agrees`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        val retired = RetiredIdentities(setOf("bob", "bob2"), mapOf("bob" to "bob3", "bob2" to "bob3"))
+        coEvery { repo.retiredIdentities("g1") } returns retired
+        val second = makeEvent(
+            "e2",
+            type = "expense",
+            uuid = "u2",
+            pubkey = "alice",
+            createdAt = 2,
+            content = expenseJson("u2", 40, splits = split("alice" to 20, "bob2" to 20), timestamp = 2)
+        )
+        installSnapshot(
+            dao,
+            repo,
+            events = listOf(aliceFronts, second),
+            coveredIds = listOf("e1"),
+            // Snapshots stay keyed by the signed events' keys.
+            balances = """[${balEntry("alice", 50, "INR")},${balEntry("bob", -50, "INR")}]"""
+        )
+        coEvery { repo.retiredIdentities("g1") } returns retired
+        val useCase = ComputeBalancesUseCase(dao, repo, encryption())
+
+        val seeded = useCase.computeWithExclusions("g1")
+        val replayed = useCase.computeWithExclusions("g1", dao.getEventsByGroup("g1"), useSnapshots = false)
+
+        assertEquals(mapOf("alice" to 70L, "bob3" to -70L), nets(seeded))
+        assertEquals(nets(seeded), nets(replayed))
+    }
+
+    @Test
+    fun `a revoked identity without a successor keeps its own balance`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), emptyMap())
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(aliceFronts)
+
+        val result = ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1")
+
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(result))
+    }
+
+    @Test
+    fun `resolveIdentities false keeps totals under the keys the signed events name`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
+        val ledger = listOf(aliceFronts)
+
+        val raw = ComputeBalancesUseCase(dao, repo, encryption())
+            .computeWithExclusions("g1", ledger, useSnapshots = false, resolveIdentities = false)
+
+        assertEquals(mapOf("alice" to 50L, "bob" to -50L), nets(raw))
+    }
+
+    @Test
+    fun `folding two positions that overflow reports balances unavailable instead of wrapping`() = runTest {
+        val dao = eventDao()
+        val repo = groupRepo()
+        coEvery { repo.retiredIdentities("g1") } returns RetiredIdentities(setOf("bob"), mapOf("bob" to "bob2"))
+        val big = Long.MAX_VALUE - 10
+        coEvery { dao.getEventsByGroup("g1") } returns listOf(
+            // alice +big, bob -big
+            makeEvent(
+                "e1",
+                type = "expense",
+                uuid = "u1",
+                pubkey = "alice",
+                content = expenseJson("u1", big, splits = split("alice" to 0, "bob" to big))
+            ),
+            // carol +100, bob2 -100: folding bob into bob2 would fall below Long.MIN_VALUE.
+            makeEvent(
+                "e2",
+                type = "expense",
+                uuid = "u2",
+                pubkey = "carol",
+                createdAt = 2,
+                content = expenseJson(
+                    "u2",
+                    100,
+                    paidBy = "carol",
+                    splits = split("carol" to 0, "bob2" to 100),
+                    timestamp = 2
+                )
+            )
+        )
+
+        assertThrows(BalanceUnavailableException::class.java) {
+            runBlocking { ComputeBalancesUseCase(dao, repo, encryption()).computeWithExclusions("g1") }
+        }
+    }
 }

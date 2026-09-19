@@ -6,6 +6,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.splitfree.data.local.dao.ControlOperationDao
 import com.splitfree.data.local.dao.DeliveryDao
+import com.splitfree.data.local.dao.DisplayNameDao
 import com.splitfree.data.local.dao.EventDao
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.dao.OutboxDao
@@ -13,6 +14,8 @@ import com.splitfree.data.local.dao.RelaySyncCursorDao
 import com.splitfree.data.local.dao.SyncRevisionDao
 import com.splitfree.data.local.entities.ControlOperationEntity
 import com.splitfree.data.local.entities.DeliveryEntity
+import com.splitfree.data.local.entities.DisplayNameIntentEntity
+import com.splitfree.data.local.entities.DisplayNamePublicationEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.data.local.entities.OutboxEntity
@@ -22,28 +25,31 @@ import com.splitfree.data.local.entities.SyncRevisionEntity
 @Database(
     entities = [
         EventEntity::class, GroupEntity::class, OutboxEntity::class, DeliveryEntity::class,
-        ControlOperationEntity::class, SyncRevisionEntity::class, RelaySyncCursorEntity::class
+        ControlOperationEntity::class, SyncRevisionEntity::class, RelaySyncCursorEntity::class,
+        DisplayNameIntentEntity::class, DisplayNamePublicationEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 /**
  * Room database for SplitFree's local-first storage.
  *
- * Only the *content* of expense, settlement, correction, deletion and snapshot events is stored as
- * NIP-44 ciphertext. Everything else (group name and description, member pubkeys, relay URLs,
- * member display names, event tags and event metadata such as author, timestamps, type, expense UUID) is
- * stored in plaintext and protected solely by Android's file-based encryption of the app sandbox.
+ * Event payloads retain their wire encryption; Room itself is not encrypted by this database.
+ * Group projections, display-name intents, journal metadata and event headers are plaintext
+ * in the Android app sandbox, protected at rest by platform file-based encryption.
  * Group symmetric keys are stored separately in [KeystoreEncryptedStorage][com.splitfree.data.util.KeystoreEncryptedStorage].
  *
  * Schema history:
  * - v1: `events`, `groups`, `outbox`
  * - v2: `events.applyState`, `groups.lastMetaEventId`, `groups.memberClocks`, new `deliveries`
  *   table ([MIGRATION_1_2], additive only)
- * - v3: immutable control-operation journal and trigger-maintained per-group sync revisions
+ * - v3: durable control-operation journal and trigger-maintained per-group sync revisions
  * - v4: per-relay, per-recipient completed catch-up cursors
+ * - v5: canonical group projection facts and durable identity-scoped display-name publications
  */
 abstract class AppDatabase : RoomDatabase() {
+    abstract fun displayNameDao(): DisplayNameDao
+
     abstract fun eventDao(): EventDao
 
     abstract fun groupDao(): GroupDao
@@ -62,6 +68,21 @@ abstract class AppDatabase : RoomDatabase() {
         val SYNC_REVISION_CALLBACK = object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 installSyncRevisionTriggers(db)
+            }
+        }
+
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `groups` ADD COLUMN projectionJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS display_name_intents (identityPubkey TEXT NOT NULL, " +
+                        "revision TEXT NOT NULL, name TEXT NOT NULL, requestedAt INTEGER NOT NULL, PRIMARY KEY(identityPubkey))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS display_name_publications (identityPubkey TEXT NOT NULL, " +
+                        "groupId TEXT NOT NULL, revision TEXT NOT NULL, lastReservedTimestamp INTEGER NOT NULL, " +
+                        "groupSnapshotJson TEXT, preparedEventJson TEXT, committedEventId TEXT, PRIMARY KEY(identityPubkey, groupId))"
+                )
             }
         }
 

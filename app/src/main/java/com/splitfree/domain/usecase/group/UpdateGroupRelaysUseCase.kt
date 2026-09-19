@@ -14,15 +14,11 @@ import javax.inject.Inject
 import kotlinx.serialization.json.Json
 
 /**
- * Updates a group's relay list, persists locally, publishes an updated `group_meta` event,
- * and re-publishes existing events to the new relays so history is not lost.
+ * Creator-only relay update ordered by the signed metadata event's clock.
  *
- * Flow:
- * 1. Validate the non-empty relay list against the invite-link budget
- * 2. Update local group record with new relays
- * 3. Reconnect [NostrClientContract] to include the new relays
- * 4. Encrypt and publish `group_meta` event with updated relay list
- * 5. Run [SelfHealUseCase] to re-publish any local events missing from the new relays
+ * Apply against the observed group before publishing. Connect to old and new relays so both can
+ * receive the change, then request best-effort history repair when relays were added; this does
+ * not guarantee every historical event reaches each new relay.
  */
 class UpdateGroupRelaysUseCase
 @Inject
@@ -52,8 +48,7 @@ constructor(
         require(group.createdBy == identity.getPublicKeyHex()) { "Only the group creator can change relays" }
         val oldRelays = group.relays.toSet()
 
-        // 1. Build the group_meta first so the local write is ordered by the same clock every other
-        //    device will use for it, instead of a wall-clock stamp that could block metas in flight.
+        // Use the signed event clock locally too, rather than a separate wall-clock watermark.
         val meta = GroupMeta(
             name = group.name,
             description = group.description,
@@ -61,7 +56,12 @@ constructor(
             createdAt = group.createdAt,
             members = group.members,
             relays = relays,
-            memberNames = group.memberNames
+            memberNames = group.memberNames,
+            keyEpoch = group.keyEpoch,
+            originalCreator = group.originalCreator.takeIf {
+                com.splitfree.domain.model.group.GroupIdentity.matches(group.id, it, group.createdAt)
+            }.orEmpty(),
+            creatorTransitions = group.creatorTransitions
         )
         val encrypted = encryption.encrypt(json.encodeToString(GroupMeta.serializer(), meta), groupKey)
         val event = signer.createSignedEvent(
@@ -70,27 +70,23 @@ constructor(
             encryptedContent = encrypted
         )
 
-        // 2. Update local
-        val updated = groupRepo.updateFromMeta(
+        val updated = groupRepo.applyAuthenticatedMeta(
             groupId = group.id,
-            name = group.name,
-            members = group.members,
-            relays = relays,
-            eventTimestamp = event.createdAt,
-            createdBy = group.createdBy,
-            memberNames = group.memberNames,
-            description = group.description,
-            eventId = event.id
+            meta = meta,
+            author = event.pubkey,
+            timestamp = event.createdAt,
+            eventId = event.id,
+            epoch = group.keyEpoch,
+            expectedGroup = group
         )
 
         check(updated) { "Group changed before the relays could be saved. Try again" }
 
-        // 3. Reconnect to include new relays, then publish
+        // Keep old relays reachable for the announcement of their replacement.
         val allRelays = (oldRelays + relays).distinct()
         nostrClient.connect(allRelays)
         eventPublisher.publishDirect(event, group.id, encrypted, "group_meta")
 
-        // 4. Re-publish existing events to new relays
         val newRelays = relays.toSet() - oldRelays
         if (newRelays.isNotEmpty()) {
             val healed = selfHeal(groupId)

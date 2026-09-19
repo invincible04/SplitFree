@@ -7,6 +7,7 @@ import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
+import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.NostrClientContract
@@ -20,8 +21,12 @@ import kotlinx.serialization.json.Json
 /**
  * Parses an invite link, stores the group and its epoch key, syncs existing events, and joins the group.
  *
- * The link's creator claim is trusted only because [InviteLinkCodec.decode] has already verified
- * that the group id is derived from `(creatorPubkey, createdAt)`; the inviter is irrelevant.
+ * [InviteLinkCodec.decode] verifies the original creator binding and any succession certificates;
+ * the inviter supplies the bearer key, not creator authority.
+ *
+ * The group and key are saved before network sync. A retry resumes a saved group with no stored
+ * self-authored `group_meta`; an existing creator or stored announcement takes the already-joined path.
+ * Local membership alone is not treated as a completed announcement.
  */
 class JoinGroupUseCase
 @Inject
@@ -34,16 +39,16 @@ constructor(
     private val eventPublisher: EventPublisherContract,
     private val selfHeal: SelfHealUseCase,
     private val syncEngine: SyncEngineContract,
-    private val settings: SettingsContract
+    private val settings: SettingsContract,
+    private val eventRepo: EventRepositoryContract
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
      * Parse an invite link and join the group.
      *
-     * Decodes the compact link, saves the group locally with the creator, creation time and key
-     * epoch carried by the link (so the key lands under `groupId:epoch` and the next `key_rotation`
-     * is accepted), performs initial sync, and publishes a join announcement.
+     * Save the invite's root evidence and advertised epoch key before best-effort initial sync,
+     * then announce using the post-sync group state.
      *
      * @param uri `splitfree://join?d=<compact_base64_payload>` deep link
      * @return the joined [Group]
@@ -56,7 +61,6 @@ constructor(
         Log.i(TAG, "Joining via link")
         val invite = InviteLinkCodec.decode(uri)
 
-        // Validate group ID is a valid UUID
         try {
             java.util.UUID.fromString(invite.groupId)
         } catch (_: Exception) {
@@ -73,30 +77,51 @@ constructor(
                 "creator=${invite.creatorPubkey.take(8)} epoch=${invite.keyEpoch}"
         )
 
+        val pubkey = identity.getPublicKeyHex()
         val existing = groupRepo.getById(invite.groupId)
-        if (existing != null) {
+        if (existing != null && invite.creatorTransitions.isNotEmpty()) {
+            check(
+                groupRepo.mergeCreatorBootstrap(
+                    existing.id,
+                    invite.creatorPubkey,
+                    invite.createdAt,
+                    invite.creatorTransitions
+                )
+            ) { "Creator authority could not be restored" }
+        }
+        if (existing != null && (existing.createdBy == pubkey || hasAnnouncedJoin(existing.id, pubkey))) {
             Log.i(TAG, "Already in group ${invite.groupId}")
-            return existing
+            return groupRepo.getById(existing.id) ?: existing
         }
 
-        val pubkey = identity.getPublicKeyHex()
-        val group =
-            Group(
-                id = invite.groupId,
-                name = invite.name,
-                createdBy = invite.creatorPubkey,
-                createdAt = invite.createdAt,
-                members = listOf(pubkey),
-                relays = invite.relays,
-                keyEpoch = invite.keyEpoch
-            )
-        // Stores the key under "<groupId>:<keyEpoch>" (and under the plain group id only for epoch 0).
-        groupRepo.save(group, groupKey)
+        val group = existing ?: Group(
+            id = invite.groupId,
+            name = invite.name,
+            createdBy = invite.creatorPubkey,
+            createdAt = invite.createdAt,
+            members = listOf(pubkey),
+            relays = invite.relays,
+            keyEpoch = invite.keyEpoch,
+            creatorTransitions = invite.creatorTransitions
+        )
+        val activeKey = if (existing == null) {
+            groupRepo.save(group, groupKey)
+            check(requireEpochKey(group) == groupKey) { "Group key could not be restored" }
+            groupKey
+        } else {
+            Log.i(TAG, "Resuming interrupted join of ${invite.groupId}")
+            groupRepo.getGroupKeyForEpoch(existing.id, existing.keyEpoch)?.takeIf { it.isNotEmpty() } ?: run {
+                check(invite.keyEpoch == existing.keyEpoch) { "Invite does not contain the current group key" }
+                groupRepo.saveGroupKeyForEpoch(existing.id, existing.keyEpoch, groupKey)
+                check(requireEpochKey(existing) == groupKey) { "Group key could not be restored" }
+                groupKey
+            }
+        }
 
-        // Connect, sync existing events, publish our join, then release
+        // Sync is best effort; relay failures must not prevent preparing the local join announcement.
         try {
             ensureConnected(group.relays)
-            initialSync(group, groupKey)
+            initialSync(group, activeKey)
             selfHeal(group.id)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -104,17 +129,10 @@ constructor(
             Log.w(TAG, "Initial sync failed: ${e.message}")
         }
 
-        // After initial sync, publish a group_meta that includes ourselves.
-        // This announces our join to other members via relays.
-        val currentGroup = groupRepo.getById(group.id) ?: group
-        if (currentGroup.createdBy.isEmpty() || currentGroup.createdBy != invite.creatorPubkey) {
-            // The id is bound to the invite's creator, so nothing pulled during sync should have
-            // changed this; if it did, a trusted-creator hand-over path is misbehaving.
-            Log.w(
-                TAG,
-                "Creator mismatch after initial sync for ${group.id}: " +
-                    "local=${currentGroup.createdBy.take(8)} invite=${invite.creatorPubkey.take(8)}"
-            )
+        // Sync may change current authority, but never the original group identity.
+        val currentGroup = checkNotNull(groupRepo.getById(group.id)) { "Group removed while joining" }
+        check(currentGroup.originalCreator == invite.creatorPubkey && currentGroup.createdAt == invite.createdAt) {
+            "Original group identity changed while joining"
         }
         val updatedMembers =
             if (pubkey in currentGroup.members) {
@@ -122,13 +140,17 @@ constructor(
             } else {
                 currentGroup.members + pubkey
             }
-        val myName = settings.displayName
+        val myName = settings.displayNameFor(pubkey)
         val updatedNames = currentGroup.memberNames.toMutableMap()
         if (myName.isNotBlank()) updatedNames[pubkey] = myName
 
-        // Build the announcement first: the local join is recorded under the same (created_at, id)
-        // clock every other device will order it by, and never touches the creator's watermark, so a
-        // creator meta that is still in flight cannot be blocked by our own join.
+        // Sign above our name clock and apply that same event clock locally. A self-join must not
+        // advance the creator's metadata clock and suppress creator updates still in flight.
+        val now = System.currentTimeMillis() / 1000
+        val floor = groupRepo.nameClockFloor(group.id, pubkey)
+        check(floor < now + 3600) { "Join clock is ahead of the allowed window. Try again later" }
+        val timestamp = maxOf(now, floor + 1)
+        val announcementKey = requireEpochKey(currentGroup)
         val joinEvent =
             buildGroupMeta(
                 group.id,
@@ -137,26 +159,42 @@ constructor(
                 currentGroup.createdAt,
                 updatedMembers,
                 currentGroup.relays,
-                groupKey,
-                updatedNames
+                announcementKey,
+                updatedNames,
+                currentGroup.keyEpoch,
+                timestamp,
+                currentGroup.originalCreator,
+                currentGroup.creatorTransitions
             )
-        groupRepo.applyMemberSelfUpdate(
-            group.id,
-            pubkey,
-            joinEvent.event.createdAt,
-            joinEvent.event.id,
-            join = true,
-            displayName = myName.takeIf { it.isNotBlank() }
-        )
+        check(identity.getPublicKeyHex() == pubkey) { "Identity changed while joining" }
+        check(
+            groupRepo.applyAuthenticatedMeta(
+                group.id,
+                joinEvent.meta,
+                pubkey,
+                joinEvent.event.createdAt,
+                joinEvent.event.id,
+                currentGroup.keyEpoch,
+                expectedGroup = currentGroup
+            )
+        ) { "Group changed while joining. Try again" }
         Log.i(TAG, "Local members after join: ${updatedMembers.map { it.take(8) }}")
 
-        // Publish join announcement while still connected
         publishGroupMeta(group.id, joinEvent)
 
         return groupRepo.getById(group.id) ?: group
     }
 
-    private class SignedMeta(val event: NostrEvent, val encrypted: String, val memberCount: Int)
+    private suspend fun requireEpochKey(group: Group): String =
+        checkNotNull(groupRepo.getGroupKeyForEpoch(group.id, group.keyEpoch)?.takeIf { it.isNotEmpty() }) {
+            "Current group key unavailable"
+        }
+
+    private class SignedMeta(val event: NostrEvent, val encrypted: String, val meta: GroupMeta)
+
+    /** A stored self-authored meta marks a prior announcement; this does not check relay delivery. */
+    private suspend fun hasAnnouncedJoin(groupId: String, pubkey: String): Boolean =
+        eventRepo.getEventsByType(groupId, "group_meta").any { it.pubkey == pubkey }
 
     /** Connects to the given relays if not already connected, setting up auth signing. */
     private suspend fun ensureConnected(relays: List<String>) {
@@ -188,7 +226,11 @@ constructor(
         members: List<String>,
         relays: List<String>,
         groupKey: String,
-        memberNames: Map<String, String> = emptyMap()
+        memberNames: Map<String, String>,
+        keyEpoch: Int,
+        eventTimestamp: Long,
+        originalCreator: String,
+        creatorTransitions: List<com.splitfree.domain.model.group.CreatorTransition>
     ): SignedMeta {
         val meta = GroupMeta(
             name = name,
@@ -197,7 +239,10 @@ constructor(
             createdAt = createdAt,
             members = members,
             relays = relays,
-            memberNames = memberNames
+            memberNames = memberNames,
+            keyEpoch = keyEpoch,
+            originalCreator = originalCreator,
+            creatorTransitions = creatorTransitions
         )
         val metaJson = json.encodeToString(GroupMeta.serializer(), meta)
         val encrypted = encryption.encrypt(metaJson, groupKey)
@@ -205,16 +250,17 @@ constructor(
             signer.createSignedEvent(
                 groupId = groupId,
                 eventType = "group_meta",
-                encryptedContent = encrypted
+                encryptedContent = encrypted,
+                createdAt = eventTimestamp
             )
-        return SignedMeta(event, encrypted, members.size)
+        return SignedMeta(event, encrypted, meta)
     }
 
     /** Publishes a prepared group_meta to relays; failures are logged, the local join already landed. */
     private suspend fun publishGroupMeta(groupId: String, meta: SignedMeta) {
         try {
             eventPublisher.publishDirect(meta.event, groupId, meta.encrypted, "group_meta")
-            Log.i(TAG, "Published group_meta with ${meta.memberCount} members for group $groupId")
+            Log.i(TAG, "Published group_meta with ${meta.meta.members.size} members for group $groupId")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

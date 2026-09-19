@@ -71,7 +71,7 @@ class EventPostProcessorTest {
 
     /** Stub the outcome [RotateGroupKeyUseCase.handleKeyRotation] reports for any rotation. */
     private fun rotationReturns(outcome: RotationOutcome) {
-        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } returns outcome
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any(), any()) } returns outcome
     }
 
     private fun noMetaWrites() {
@@ -111,6 +111,17 @@ class EventPostProcessorTest {
     // --- outcome mapping ---
 
     @Test
+    fun `handle key_rotation passes signed event id into canonical reconstruction`() = runBlocking {
+        assertEquals(
+            PostProcessOutcome.APPLIED,
+            processor.handle("key_rotation", "{}", pubkey, groupId, 4321, false, "rotation-id", 0)
+        )
+        coVerify(exactly = 1) {
+            rotateGroupKey.handleKeyRotation("{}", pubkey, groupId, 4321, "rotation-id")
+        }
+    }
+
+    @Test
     fun `handle null decrypted fails without touching the group`() = runBlocking {
         val outcome = processor.handle("group_meta", null, pubkey, groupId, 1000, false)
         assertEquals(PostProcessOutcome.FAILED, outcome)
@@ -122,7 +133,7 @@ class EventPostProcessorTest {
         val outcome = processor.handle("expense", """{"data":"x"}""", pubkey, groupId, 1000, false)
         assertEquals(PostProcessOutcome.APPLIED, outcome)
         noMetaWrites()
-        coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { rotateGroupKey.handleKeyRotation(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { revokeKey.handleRevocation(any(), any(), any(), any(), any()) }
     }
 
@@ -232,7 +243,7 @@ class EventPostProcessorTest {
 
     @Test
     fun `handle rethrows CancellationException`() {
-        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any()) } throws
+        coEvery { rotateGroupKey.handleKeyRotation(any(), any(), any(), any(), any()) } throws
             kotlinx.coroutines.CancellationException("cancel")
         try {
             runBlocking { processor.handle("key_rotation", """{"data":"x"}""", pubkey, groupId, 1000, false) }
@@ -382,7 +393,7 @@ class EventPostProcessorTest {
         coEvery { groupRepo.getById(groupId) } returns null
         val stranger = "bb".repeat(32)
         val meta = """{"name":"New","members":["$stranger"],"relays":["wss://r2"]}"""
-        // When currentGroup is null, isCreator is true regardless of author
+        // With no stored group, verify metadata-write delegation; this mock cannot prove creation.
         processor.handle("group_meta", meta, stranger, groupId, 2000, false)
         coVerify {
             groupRepo.updateFromMeta(
@@ -424,7 +435,7 @@ class EventPostProcessorTest {
         processor.handle("group_meta", meta, pubkey, boundId, 2000, false, eventId = "ev-bootstrap")
 
         coVerify { groupRepo.updateCreator(boundId, pubkey, createdAt) }
-        // Treated as the creator: full metadata is applied and createdBy is set.
+        // Verify creator-bound metadata delegation; repository persistence is mocked.
         coVerify {
             groupRepo.updateFromMeta(
                 boundId,
@@ -814,6 +825,168 @@ class EventPostProcessorTest {
         }
     }
 
+    @Test
+    fun `canonical retry rejects removed member metadata from an older epoch`() = runBlocking {
+        coEvery { groupRepo.hasCanonicalProjection(groupId) } returns true
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
+        val meta = GroupMeta(name = "Trip", members = listOf(pubkey, stranger), relays = group.relays)
+
+        assertEquals(
+            PostProcessOutcome.REJECTED,
+            processor.handle("group_meta", Json.encodeToString(meta), stranger, groupId, 2000, false, "old-member", 0)
+        )
+        coVerify(exactly = 0) { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `canonical retry preserves current epoch self join`() = runBlocking {
+        coEvery { groupRepo.hasCanonicalProjection(groupId) } returns true
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
+        coEvery { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
+        val meta = GroupMeta(name = "Trip", members = listOf(pubkey, stranger), relays = group.relays, keyEpoch = 1)
+
+        assertEquals(
+            PostProcessOutcome.APPLIED,
+            processor.handle("group_meta", Json.encodeToString(meta), stranger, groupId, 2000, false, "self-join", 1)
+        )
+        coVerify(exactly = 1) { groupRepo.applyAuthenticatedMeta(groupId, meta, stranger, 2000, "self-join", 1) }
+    }
+
+    @Test
+    fun `canonical retry accepts timestamp qualified historical creator without granting a self join`() = runBlocking {
+        coEvery { groupRepo.hasCanonicalProjection(groupId) } returns true
+        coEvery { groupRepo.getById(groupId) } returns group.copy(keyEpoch = 1)
+        coEvery { groupRepo.isHistoricalCreator(groupId, stranger, 2000, "former-creator") } returns true
+        coEvery { groupRepo.resolveRoster(groupId, listOf(stranger)) } returns listOf(pubkey)
+        coEvery { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
+        val meta = GroupMeta(
+            name = "Historical",
+            createdBy = stranger,
+            createdAt = group.createdAt,
+            members = listOf(stranger),
+            relays = group.relays
+        )
+
+        assertEquals(
+            PostProcessOutcome.APPLIED,
+            processor.handle(
+                "group_meta",
+                Json.encodeToString(meta),
+                stranger,
+                groupId,
+                2000,
+                false,
+                "former-creator",
+                0
+            )
+        )
+        coVerify(exactly = 1) { groupRepo.applyAuthenticatedMeta(groupId, meta, stranger, 2000, "former-creator", 0) }
+    }
+
+    @Test
+    fun `canonical historical creator rejects rootless self join and mismatched creation time`() = runBlocking {
+        coEvery { groupRepo.hasCanonicalProjection(groupId) } returns true
+        coEvery { groupRepo.isHistoricalCreator(any(), any(), any(), any()) } returns true
+        coEvery { groupRepo.resolveRoster(groupId, listOf(stranger)) } returns listOf(pubkey)
+        val rootless = GroupMeta(members = listOf(pubkey, stranger))
+        val wrongCreation = rootless.copy(createdBy = stranger, createdAt = group.createdAt + 1)
+        for (meta in listOf(rootless, wrongCreation)) {
+            assertEquals(
+                PostProcessOutcome.REJECTED,
+                processor.handle("group_meta", Json.encodeToString(meta), stranger, groupId, 2000, false, "old-join", 0)
+            )
+        }
+        coVerify(exactly = 0) { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `historical companion requires existing proven successor and prior creator authority`() = runBlocking {
+        coEvery { groupRepo.hasCanonicalProjection(groupId) } returns true
+        coEvery { groupRepo.isHistoricalCreator(groupId, stranger, 2000, "companion") } returns true
+        coEvery { groupRepo.isHistoricalCreator(groupId, stranger, 2001, "after-retirement") } returns false
+        coEvery { groupRepo.resolveRoster(groupId, listOf(stranger)) } returns listOf(pubkey)
+        coEvery { groupRepo.retiredIdentities(groupId) } returns
+            com.splitfree.domain.model.group.RetiredIdentities(setOf(stranger), mapOf(stranger to pubkey))
+        coEvery { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
+        val companion = GroupMeta(
+            createdBy = pubkey,
+            createdAt = group.createdAt,
+            members = listOf(pubkey),
+            relays = group.relays
+        )
+        assertEquals(
+            PostProcessOutcome.APPLIED,
+            processor.handle(
+                "group_meta",
+                Json.encodeToString(companion),
+                stranger,
+                groupId,
+                2000,
+                false,
+                "companion",
+                0
+            )
+        )
+        val invented = companion.copy(createdBy = "cc".repeat(32))
+        assertEquals(
+            PostProcessOutcome.REJECTED,
+            processor.handle(
+                "group_meta",
+                Json.encodeToString(invented),
+                stranger,
+                groupId,
+                2000,
+                false,
+                "companion",
+                0
+            )
+        )
+        assertEquals(
+            PostProcessOutcome.REJECTED,
+            processor.handle(
+                "group_meta",
+                Json.encodeToString(companion),
+                stranger,
+                groupId,
+                2001,
+                false,
+                "after-retirement",
+                0
+            )
+        )
+        coVerify(exactly = 1) { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `canonical root binding never bypasses a retirement without historical authority`() = runBlocking {
+        val rootGroupId = GroupIdentity.derive(stranger, 1000)
+        coEvery { groupRepo.hasCanonicalProjection(rootGroupId) } returns true
+        coEvery { groupRepo.getById(rootGroupId) } returns group.copy(id = rootGroupId, createdBy = "")
+        coEvery { groupRepo.resolveRoster(rootGroupId, listOf(stranger)) } returns emptyList()
+        val meta = GroupMeta(
+            name = "Retired root",
+            createdBy = stranger,
+            createdAt = 1000,
+            members = listOf(pubkey, stranger),
+            relays = group.relays
+        )
+
+        assertEquals(
+            PostProcessOutcome.REJECTED,
+            processor.handle(
+                "group_meta",
+                Json.encodeToString(meta),
+                stranger,
+                rootGroupId,
+                2000,
+                false,
+                "retired-root",
+                0
+            )
+        )
+        coVerify(exactly = 0) { groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
     // --- roster scope: a creator meta sealed under an older epoch may not touch membership ---
 
     @Test
@@ -942,9 +1115,8 @@ class EventPostProcessorTest {
     private val joiner = "bb".repeat(32)
 
     /**
-     * Make the repository behave like Room: the first read returns [before], every read after the
-     * meta has been applied returns [after]. Both write paths (creator watermark and member self-update)
-     * flip the persisted state.
+     * Reads return [before] until either mocked metadata-write path switches them to [after].
+     * Models post-write roster reads, not Room transactions or ordering checks.
      */
     private fun persistedTransition(before: Group, after: Group) {
         var current = before

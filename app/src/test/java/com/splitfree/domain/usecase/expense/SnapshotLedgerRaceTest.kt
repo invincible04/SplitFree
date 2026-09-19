@@ -5,6 +5,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -30,10 +31,8 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * A snapshot must describe exactly the ledger it was computed from. An event that lands while the snapshot is
- * being computed stays outside its coverage list, so the next balance computation replays it on top instead of
- * treating it as already counted. Real NIP-44 encryption; the repository is a scripted stand-in whose ledger
- * grows at a deterministic point inside the computation.
+ * Snapshot balances and coverage must use the same ledger read so later arrivals remain replayable.
+ * Real NIP-44 encryption with a scripted repository and signer; deterministic injection, not concurrent SQLite.
  */
 class SnapshotLedgerRaceTest {
     private val groupId = "snapshot-race"
@@ -57,6 +56,7 @@ class SnapshotLedgerRaceTest {
                 relays = emptyList()
             )
         coEvery { getGroupKeyForEpoch(groupId, 0) } returns key
+        coEvery { retiredIdentities(groupId) } returns RetiredIdentities.NONE
     }
     private val identity = mockk<IdentityContract> { every { getPublicKeyHex() } returns "alice" }
     private val signer = mockk<EventSigner> {
@@ -95,9 +95,8 @@ class SnapshotLedgerRaceTest {
         )
 
     /**
-     * Snapshots the ten-expense ledger while [arrival] lands mid-computation (during the decryption of the
-     * last covered event), then checks that the snapshot covers only the initial ten and that the incremental
-     * balance equals [expected] and equals a full replay of the grown ledger.
+     * Injects [arrival] while decrypting the last of ten expenses. Coverage must exclude it, and
+     * snapshot-seeded replay must match [expected] and full replay of the expanded ledger.
      */
     private suspend fun assertArrival(arrival: EventSnapshot, expected: Long) {
         val initial = ledger.toList()

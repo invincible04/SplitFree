@@ -8,7 +8,7 @@ import kotlinx.coroutines.sync.withLock
 /**
  * Lock order: control operation -> repository group lock -> Room transaction.
  * Never enter a control use case while holding a repository group lock or Room transaction.
- * Shared across use-case instances and both rotation and identity revocation.
+ * Shared across use-case instances and rotation, identity revocation and staged identity switches.
  */
 @Singleton
 class ControlOperationLock @Inject constructor() {

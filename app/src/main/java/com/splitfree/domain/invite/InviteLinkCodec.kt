@@ -1,7 +1,10 @@
 package com.splitfree.domain.invite
 
+import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.model.group.GroupProjection
+import com.splitfree.domain.model.group.GroupProjectionReducer
 import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.domain.util.TextSanitizer
 import com.splitfree.domain.util.hexToBytes
@@ -19,9 +22,10 @@ import java.util.UUID
  * @property relays list of Nostr relay URLs for this group
  * @property name human-readable group name (sanitised, at most 100 UTF-8 bytes)
  * @property expiry unix timestamp (seconds) after which the link should be rejected
- * @property creatorPubkey hex pubkey of the group creator, bound to [groupId]
+ * @property creatorPubkey original creator pubkey, bound to [groupId]; not necessarily the current authority
  * @property createdAt group creation time (unix seconds), bound to [groupId]
  * @property keyEpoch epoch that [groupKey] belongs to
+ * @property creatorTransitions signed retirement evidence used to derive current creator authority
  */
 data class InviteParams(
     val groupId: String,
@@ -31,26 +35,23 @@ data class InviteParams(
     val expiry: Long,
     val creatorPubkey: String,
     val createdAt: Long,
-    val keyEpoch: Int
+    val keyEpoch: Int,
+    val creatorTransitions: List<CreatorTransition> = emptyList()
 )
 
 /**
  * Encodes/decodes compact invite links for group sharing.
  *
- * SECURITY MODEL: Bearer-token invite; the URL itself is the credential.
+ * **Bearer credential:** the payload exposes the group key. Anyone holding it can decrypt
+ * that epoch's events. Encoding sets a 24-hour expiry, but this is a client-side join check,
+ * not key revocation or a cryptographically enforced deadline.
  *
- * - **Confidentiality** of the link is the user's responsibility. The group key travels in the
- *   clear inside the payload; anyone holding the link can join and read the group. Mitigated by
- *   the 24h expiry and the confirmation dialog shown before joining. (Encrypting the key with
- *   material that is itself carried in the same link adds bytes, not secrecy.)
- * - **Creator authenticity** is verifiable. The group id is
- *   [GroupIdentity.derive]`(creatorPubkey, createdAt)`, so [decode] rejects any link whose
- *   `(groupId, creatorPubkey, createdAt)` triple does not agree. A member cannot forge a link that
- *   makes the joiner believe someone else created the group, and every joiner of a given group
- *   ends up with the same `createdBy` regardless of who invited them.
- * - **Epoch correctness**: the link names the epoch its key belongs to, so a joiner stores the key
- *   under the right epoch and accepts the creator's next `key_rotation` (which must be exactly
- *   `epoch + 1`).
+ * **Authority:** the group id binds the original creator and creation time via [GroupIdentity].
+ * Version 4 carries signed retirement certificates so current authority can be derived without
+ * historical epoch keys. This does not authenticate the inviter or sign the rest of the link.
+ *
+ * **Epoch:** the link labels its key so joining can store it under the advertised epoch;
+ * decoding cannot prove that the supplied key is the group's actual key for that epoch.
  *
  * Format: `splitfree://join?d=<base64url>`
  *
@@ -59,6 +60,11 @@ data class InviteParams(
  * [version:1 = 0x03][groupId:16][creatorPub:32][createdAt:8][keyEpoch:2][groupKey:32]
  * [relayBitmap:2][customRelayLen:1][customRelays:customRelayLen][expiry:4][name:rest]
  * ```
+ *
+ * Version 4 keeps the same header through expiry, then encodes `[nameLen:1][name:nameLen]`
+ * and `[proofCount:1][proofs:234*proofCount]`. Each proof is eventId(32), timestamp(8), epoch(2),
+ * oldKey(32), newKey(32), successorSignature(64), retiringSignature(64), all integers big-endian.
+ * Both encoder and decoder allow at most four proofs and 2,048 base64 characters; proofs are never truncated.
  *
  * Relay URLs in [RelayDefaults.KNOWN_RELAYS] are encoded as bits of the big-endian 16-bit bitmap (bit `i`
  * = index `i`). Any other relay travels inside the custom-relay region as `[len:1][utf8:len]`, one entry after
@@ -84,6 +90,8 @@ object InviteLinkCodec {
     private const val DEFAULT_NAME = "Group"
 
     private const val VERSION: Int = 0x03
+    private const val PROOF_VERSION: Int = 0x04
+    private const val TRANSITION_SIZE = 32 + 8 + 2 + 32 + 32 + 64 + 64
     private const val UUID_SIZE = 16
     private const val PUBKEY_SIZE = 32
     private const val CREATED_AT_SIZE = 8
@@ -120,18 +128,28 @@ object InviteLinkCodec {
      * Encode a group into a compact invite link.
      *
      * @param group the group to create an invite for; its `id` must equal
-     *   [GroupIdentity.derive]`(group.createdBy, group.createdAt)`
+     *   [GroupIdentity.derive]`(group.originalCreator, group.createdAt)`
      * @param groupKey base64-encoded 32-byte symmetric key for `group.keyEpoch`
      * @return invite URL string (`splitfree://join?d=...`)
-     * @throws IllegalArgumentException if the group id is not bound to its creator, the key is not
-     *   32 bytes, the epoch does not fit in 16 bits, or the relays do not satisfy [fitsInviteLink]
+     * @throws IllegalArgumentException if the root or authority evidence is invalid, the key is not
+     *   32 bytes, the epoch does not fit in 16 bits, or relay, proof-count or payload budgets are exceeded
      */
     fun encode(group: Group, groupKey: String): String {
         val uuid = UUID.fromString(group.id)
-        require(group.createdBy.length == PUBKEY_SIZE * 2) { "Group creator pubkey must be 64 hex chars" }
-        require(GroupIdentity.matches(group.id, group.createdBy, group.createdAt)) {
+        require(group.originalCreator.length == PUBKEY_SIZE * 2) { "Group creator pubkey must be 64 hex chars" }
+        require(GroupIdentity.matches(group.id, group.originalCreator, group.createdAt)) {
             "Group id does not match its creator"
         }
+        require(group.creatorTransitions.size <= CreatorTransition.MAX_INVITE_TRANSITIONS) {
+            "Creator history exceeds the compact invite limit"
+        }
+        require(
+            CreatorTransition.validate(group.id, group.originalCreator, group.createdAt, group.creatorTransitions)
+        ) {
+            "Invalid creator authority proof"
+        }
+        val authority = authority(group.id, group.originalCreator, group.createdAt, group.creatorTransitions)
+        require(authority.isNotEmpty() && authority == group.createdBy) { "Creator authority proof is incomplete" }
         require(group.keyEpoch in 0..MAX_EPOCH) { "Key epoch out of range" }
         val custom = customRelays(group.relays)
         require(fits(group.relays, custom)) {
@@ -146,9 +164,9 @@ object InviteLinkCodec {
         val customRelayBytes = customRelayBytes(custom)
 
         val buf = ByteArrayOutputStream()
-        buf.write(VERSION)
+        buf.write(if (group.creatorTransitions.isEmpty()) VERSION else PROOF_VERSION)
         writeUuid(buf, uuid)
-        buf.write(group.createdBy.hexToBytes())
+        buf.write(group.originalCreator.hexToBytes())
         writeInt64(buf, group.createdAt)
         writeUint16(buf, group.keyEpoch)
         buf.write(keyBytes)
@@ -157,9 +175,23 @@ object InviteLinkCodec {
         buf.write(customRelayBytes.size)
         buf.write(customRelayBytes, 0, customRelayBytes.size)
         writeUint32(buf, exp)
+        if (group.creatorTransitions.isNotEmpty()) buf.write(nameBytes.size)
         buf.write(nameBytes)
+        if (group.creatorTransitions.isNotEmpty()) {
+            buf.write(group.creatorTransitions.size)
+            for (proof in group.creatorTransitions) {
+                buf.write(proof.eventId.hexToBytes())
+                writeInt64(buf, proof.timestamp)
+                writeUint16(buf, proof.epoch)
+                buf.write(proof.oldPubkey.hexToBytes())
+                buf.write(proof.newPubkey.hexToBytes())
+                buf.write(proof.successorProof.hexToBytes())
+                buf.write(proof.signature.hexToBytes())
+            }
+        }
 
         val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(buf.toByteArray())
+        require(payload.length <= MAX_PAYLOAD_LENGTH) { "Invite payload exceeds the compact link limit" }
         return "splitfree://join?d=$payload"
     }
 
@@ -169,14 +201,15 @@ object InviteLinkCodec {
      * @param uri `splitfree://join?d=...` deep link
      * @return parsed [InviteParams]
      * @throws IllegalArgumentException if the link is malformed, expired, uses an unsupported version,
-     *   or its group id is not bound to the claimed creator
+     *   or its root binding or creator authority evidence is invalid
      */
     fun decode(uri: String): InviteParams {
         val dParam = extractPayloadParam(uri)
         require(dParam.length <= MAX_PAYLOAD_LENGTH) { "Invalid invite link: payload too large" }
         val data = Base64.getUrlDecoder().decode(dParam)
         require(data.isNotEmpty()) { "Invalid invite link: payload too short" }
-        require((data[0].toInt() and 0xFF) == VERSION) { "Unsupported invite link version" }
+        val version = data[0].toInt() and 0xFF
+        require(version == VERSION || version == PROOF_VERSION) { "Unsupported invite link version" }
         require(data.size >= HEADER_SIZE + EXPIRY_SIZE) { "Invalid invite link: payload too short" }
 
         var pos = 1
@@ -207,11 +240,48 @@ object InviteLinkCodec {
         pos += EXPIRY_SIZE
         require(System.currentTimeMillis() / 1000 <= exp) { "This invite link has expired" }
 
-        val rawName = if (pos < data.size) String(data, pos, data.size - pos, Charsets.UTF_8) else ""
+        val proofs = mutableListOf<CreatorTransition>()
+        val rawName = if (version == PROOF_VERSION) {
+            require(pos < data.size) { "Missing invite name" }
+            val size = data[pos++].toInt() and 0xFF
+            require(size <= MAX_NAME_BYTES && pos + size < data.size) { "Truncated invite name" }
+            val value = String(data, pos, size, Charsets.UTF_8)
+            pos += size
+            val count = data[pos++].toInt() and 0xFF
+            require(
+                count in 1..CreatorTransition.MAX_INVITE_TRANSITIONS &&
+                    data.size - pos == count * TRANSITION_SIZE
+            ) { "Invalid creator proof region" }
+            fun hex(size: Int): String = data.copyOfRange(pos, pos + size).toHex().also { pos += size }
+            repeat(count) {
+                val id = hex(32)
+                val timestamp = readInt64(data, pos).also { pos += 8 }
+                val epoch = readUint16(data, pos).also { pos += 2 }
+                proofs += CreatorTransition(id, timestamp, epoch, hex(32), hex(32), hex(64), hex(64))
+            }
+            require(
+                CreatorTransition.validate(groupId, creatorPubkey, createdAt, proofs) &&
+                    proofs.all { it.hasAdmissibleTimestamp() } &&
+                    authority(groupId, creatorPubkey, createdAt, proofs).isNotEmpty()
+            ) { "Invalid creator authority proof" }
+            value
+        } else if (pos < data.size) {
+            String(data, pos, data.size - pos, Charsets.UTF_8)
+        } else {
+            ""
+        }
         val name = String(truncateUtf8(sanitizeName(rawName), MAX_NAME_BYTES), Charsets.UTF_8).ifBlank { DEFAULT_NAME }
 
-        return InviteParams(groupId, groupKey, relays, name, exp, creatorPubkey, createdAt, keyEpoch)
+        return InviteParams(groupId, groupKey, relays, name, exp, creatorPubkey, createdAt, keyEpoch, proofs)
     }
+
+    private fun authority(id: String, root: String, at: Long, proofs: List<CreatorTransition>): String =
+        GroupProjectionReducer.reduce(
+            GroupProjection(
+                Group(id, "", createdBy = root, createdAt = at, members = emptyList(), relays = emptyList()),
+                facts = proofs.map { it.fact() }
+            )
+        ).group.createdBy
 
     // --- Name helpers ---
 

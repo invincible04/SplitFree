@@ -4,8 +4,8 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.group.Group
 
 /**
- * Domain contract for event publishing (local persistence + relay dispatch).
- * Handles local persistence and relay dispatch of signed Nostr events.
+ * Persists signed events and durable deliveries, then attempts relay dispatch.
+ * Successful local publication does not imply relay acceptance.
  */
 interface EventPublisherContract {
     /**
@@ -51,11 +51,17 @@ interface EventPublisherContract {
     ): Boolean
 
     /**
-     * Persists a newly created [group], its [groupKey], the creation `group_meta` [event] and its delivery
-     * in one transaction. Returns false without writing anything when a group with the same id already
-     * exists; the caller reconciles against the stored group.
+     * Saves the group row, creation event and outbox delivery in one Room transaction, then dispatches.
+     * The group key is written to separate secure storage and is not rolled back with Room.
+     * Returns false without writing when the group already exists; the caller reconciles stored state.
      */
     suspend fun publishCreatedGroup(event: NostrEvent, group: Group, groupKey: String): Boolean
+
+    /**
+     * Commits the prepared rename and delivery while the caller holds ControlOperationLock.
+     * Null means identity, revision or pending-switch state no longer permits publication.
+     */
+    suspend fun publishDisplayName(prepared: PreparedDisplayName): DisplayNameDelivery?
 
     /** True if [author] has a stored `group_meta` in [groupId] addressed under creation command [commandId]. */
     suspend fun hasCreatedGroupCommand(groupId: String, author: String, commandId: String): Boolean
@@ -96,7 +102,8 @@ interface EventPublisherContract {
      * later cannot decrypt them and never receives that history. Called when new members appear
      * in a `group_meta`; each of my `expense`/`settlement`/`expense_correction`/`expense_delete`/
      * `snapshot` events is wrapped once per recipient and queued in the outbox. Events published
-     * direct (`group_meta`, `key_rotation`, `key_revocation`) are already readable from relays.
+     * direct (`group_meta`, `key_rotation`, `key_revocation`) do not need new gift wraps, but still
+     * require their decryption keys.
      *
      * No-op when gift wrap is disabled or [recipients] is empty. Self is always excluded.
      *

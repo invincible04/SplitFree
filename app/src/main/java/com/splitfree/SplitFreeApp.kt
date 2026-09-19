@@ -15,6 +15,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.work.Configuration
 import com.splitfree.data.nostr.relay.RelayHealthMonitor
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.group.DisplayNamePublisher
+import com.splitfree.domain.usecase.group.IdentitySwitchCoordinator
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
 import com.splitfree.domain.util.RelayDefaults
@@ -47,6 +49,10 @@ class SplitFreeApp :
     @Inject lateinit var revokeKeyUseCase: RevokeKeyUseCase
 
     @Inject lateinit var rotateGroupKeyUseCase: RotateGroupKeyUseCase
+
+    @Inject lateinit var identitySwitch: IdentitySwitchCoordinator
+
+    @Inject lateinit var displayNamePublisher: DisplayNamePublisher
 
     @Inject lateinit var identity: IdentityContract
 
@@ -93,6 +99,14 @@ class SplitFreeApp :
         registerNetworkCallback()
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
             try {
+                identitySwitch.resumeIfNeeded()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not reconcile interrupted identity switch", e)
+                return@launch
+            }
+            try {
                 revokeKeyUseCase.resumeIfNeeded()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -107,6 +121,7 @@ class SplitFreeApp :
             } catch (e: Exception) {
                 Log.e(TAG, "Could not resume interrupted key rotation", e)
             }
+            displayNamePublisher.start()
             recoverPendingAtStartup { eventProcessor.recoverPending() }
             try {
                 relayHealthMonitor.checkRelays(RelayDefaults.DEFAULT_RELAYS + RelayDefaults.FALLBACK_RELAYS)

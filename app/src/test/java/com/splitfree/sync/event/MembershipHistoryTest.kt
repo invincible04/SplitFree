@@ -6,13 +6,16 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.KeyRotation
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.hexToBytes
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
@@ -48,6 +51,8 @@ class MembershipHistoryTest {
         every { identity.getPublicKeyHex() } returns myPub
         every { identity.getPrivateKeyBytes() } answers { myPriv.copyOf() }
         coEvery { groupRepo.getById(groupId) } returns group
+        coEvery { groupRepo.authenticatedRotations(groupId) } returns emptyMap()
+        coEvery { groupRepo.retiredIdentities(groupId) } returns RetiredIdentities.NONE
         coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns emptyList()
         history = MembershipHistory(eventDao, groupRepo, identity)
     }
@@ -236,5 +241,117 @@ class MembershipHistoryTest {
 
         assertEquals(1, handedOut.size)
         assertTrue(handedOut.single().all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `admitted rotations remain usable without reading a replaced personal key`() = runBlocking {
+        val rotation = KeyRotation(1, emptyMap(), listOf(creatorPub, myPub), removedPub)
+        coEvery { groupRepo.authenticatedRotations(groupId) } returns mapOf("retained" to rotation)
+        coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns listOf(
+            rotationRow(1, rotation.members, removedPub, id = "retained")
+        )
+        every { identity.getPrivateKeyBytes() } throws IllegalStateException("Old personal key unavailable")
+
+        assertEquals(setOf(creatorPub, myPub, removedPub), history.historicalAuthors(groupId))
+        assertEquals(setOf(removedPub), history.formerMembers(groupId))
+        assertEquals(1, history.removalEpochOf(groupId, removedPub))
+        verify(exactly = 0) { identity.getPrivateKeyBytes() }
+    }
+
+    @Test
+    fun `retained and legacy removals are unioned without granting revoked keys author eligibility`() = runBlocking {
+        val revoked = NostrEvent.pubkeyFromPrivkey(ByteArray(32).also { it[31] = 5 })
+        coEvery { groupRepo.authenticatedRotations(groupId) } returns mapOf(
+            "first" to KeyRotation(1, emptyMap(), listOf(creatorPub, myPub), removedPub)
+        )
+        coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns listOf(
+            rotationRow(2, listOf(creatorPub, myPub), otherPub),
+            rotationRow(3, listOf(creatorPub, myPub), removedPub)
+        )
+        coEvery { groupRepo.retiredIdentities(groupId) } returns RetiredIdentities(setOf(revoked))
+
+        assertEquals(setOf(removedPub, otherPub, revoked), history.formerMembers(groupId))
+        assertFalse(revoked in history.historicalAuthors(groupId))
+        assertEquals(3, history.removalEpochOf(groupId, removedPub))
+        assertNull(history.removalEpochOf(groupId, revoked))
+    }
+
+    @Test
+    fun `retention stores readable applied history and never pending or invalid signed envelopes`() = runBlocking {
+        val applied = rotationRow(1, listOf(creatorPub, myPub), removedPub, id = "applied")
+        val pending = rotationRow(
+            1,
+            listOf(creatorPub, myPub),
+            otherPub,
+            applyState = EventEntity.APPLY_STATE_PENDING,
+            id = "pending"
+        )
+        val invalid = applied.copy(eventId = "invalid", originalEventJson = "{}")
+        coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns listOf(applied, pending, invalid)
+        coEvery { groupRepo.retainAuthenticatedRotationHistory(any(), any(), any(), any(), any()) } returns true
+
+        history.retainRotationHistory(groupId)
+
+        coVerify(exactly = 1) {
+            groupRepo.retainAuthenticatedRotationHistory(
+                groupId,
+                KeyRotation(1, emptyMap(), listOf(creatorPub, myPub), removedPub),
+                creatorPub,
+                1001L,
+                "applied"
+            )
+        }
+        coVerify(exactly = 1) { groupRepo.retainAuthenticatedRotationHistory(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `retention rejects signed envelopes that do not match their applied row or routing`() = runBlocking {
+        val row = rotationRow(1, listOf(creatorPub, myPub), removedPub)
+        val signed = NostrEvent(
+            pubkey = creatorPub,
+            createdAt = row.createdAt,
+            kind = 30078,
+            tags = listOf(listOf("g", groupId), listOf("t", "key_rotation")),
+            content = row.contentEncrypted
+        ).sign(creatorPriv)
+        val valid = row.copy(eventId = signed.id, sig = signed.sig, originalEventJson = signed.toJson())
+        fun mismatched(event: NostrEvent) = valid.copy(originalEventJson = event.toJson())
+        fun rebound(event: NostrEvent) =
+            valid.copy(eventId = event.id, sig = event.sig, originalEventJson = event.toJson())
+        val invalid = listOf(
+            valid.copy(eventId = "00".repeat(32)),
+            valid.copy(createdAt = row.createdAt + 1),
+            valid.copy(pubkey = otherPub),
+            mismatched(signed.copy(sig = "00".repeat(64))),
+            mismatched(signed.copy(content = signed.content + "changed").sign(creatorPriv)),
+            rebound(signed.copy(tags = listOf(listOf("g", "other"), listOf("t", "key_rotation"))).sign(creatorPriv)),
+            rebound(signed.copy(tags = signed.tags + listOf(listOf("g", groupId))).sign(creatorPriv)),
+            rebound(signed.copy(tags = listOf(listOf("g", groupId), listOf("t", "group_meta"))).sign(creatorPriv))
+        )
+        coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns invalid + valid
+        coEvery { groupRepo.retainAuthenticatedRotationHistory(any(), any(), any(), any(), any()) } returns true
+
+        history.retainRotationHistory(groupId)
+
+        coVerify(exactly = 1) {
+            groupRepo.retainAuthenticatedRotationHistory(
+                groupId,
+                KeyRotation(1, emptyMap(), listOf(creatorPub, myPub), removedPub),
+                creatorPub,
+                row.createdAt,
+                signed.id
+            )
+        }
+        coVerify(exactly = 1) { groupRepo.retainAuthenticatedRotationHistory(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `failed retention is not silently accepted before identity retirement`() = runBlocking {
+        coEvery { eventDao.getEventsByType(groupId, "key_rotation") } returns listOf(
+            rotationRow(1, listOf(creatorPub, myPub), removedPub)
+        )
+        coEvery { groupRepo.retainAuthenticatedRotationHistory(any(), any(), any(), any(), any()) } returns false
+        val failure = runCatching { history.retainRotationHistory(groupId) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
     }
 }

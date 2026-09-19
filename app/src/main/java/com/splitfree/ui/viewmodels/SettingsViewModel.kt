@@ -10,10 +10,9 @@ import com.splitfree.di.IoDispatcher
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
-import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
+import com.splitfree.domain.usecase.group.DisplayNamePublisher
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
-import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
 import com.splitfree.util.DebugLog as Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -21,37 +20,28 @@ import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Drives the settings screen: identity display, key backup/restore,
- * privacy toggles (gift wrap), key revocation, and outbox health.
+ * Drives identity display and backup, display-name publication, gift-wrap preferences,
+ * key revocation, and outbox health. Key import belongs to onboarding.
  */
-@OptIn(FlowPreview::class)
 @HiltViewModel
 class SettingsViewModel
 @Inject
 constructor(
     private val identity: IdentityContract,
     private val giftWrap: GiftWrapService,
-    private val userPreferences: SettingsContract,
     private val revokeKeyUseCase: RevokeKeyUseCase,
-    private val updateDisplayName: UpdateDisplayNameUseCase,
+    private val namePublisher: DisplayNamePublisher,
     private val groupRepo: GroupRepositoryContract,
     private val exportGroup: ExportGroupUseCase,
     @ApplicationContext private val appContext: Context,
@@ -65,18 +55,15 @@ constructor(
     )
     val npub: StateFlow<String> = _npub
 
-    // V4 fix: lazy-load private key only on reveal, clear on hide
+    // Keep secret text out of UI state until explicitly revealed; hiding drops the reference.
     private val _nsec = MutableStateFlow("")
     val nsec: StateFlow<String> = _nsec
 
     private val _seedPhrase = MutableStateFlow<List<String>>(emptyList())
     val seedPhrase: StateFlow<List<String>> = _seedPhrase
 
-    private val _displayName = MutableStateFlow(userPreferences.displayName)
-    val displayName: StateFlow<String> = _displayName
-
-    /** The last name handed to [updateDisplayName]; starts as the persisted value so re-typing it is a no-op. */
-    private var lastPublishedName: String = _displayName.value
+    val displayName: StateFlow<String> = namePublisher.displayName
+    val namePublication = namePublisher.result
 
     /**
      * `(pending, stuck)` outbox counts: events not yet accepted by any relay, and the subset that
@@ -89,26 +76,24 @@ constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0 to 0)
 
     init {
-        // Debounce name changes to avoid spamming relays on every keystroke. `drop(1)` skips only the
-        // StateFlow's initial replay; it must run BEFORE `debounce`, otherwise a first edit typed
-        // within the debounce window is merged into the initial emission and silently discarded.
-        _displayName
-            .drop(1)
-            .debounce(DISPLAY_NAME_DEBOUNCE_MS)
-            .distinctUntilChanged()
-            .filter { it != lastPublishedName }
-            .onEach { name ->
-                try {
-                    updateDisplayName(name)
-                    lastPublishedName = name
-                } catch (_: Exception) { }
-            }
-            .launchIn(viewModelScope)
+        namePublisher.start()
     }
 
+    private val _nameSaveFailed = MutableStateFlow(false)
+    val nameSaveFailed: StateFlow<Boolean> = _nameSaveFailed
+
     fun setDisplayName(name: String) {
-        userPreferences.displayName = name
-        _displayName.value = userPreferences.displayName
+        try {
+            namePublisher.submit(name)
+            _nameSaveFailed.value = false
+        } catch (e: Exception) {
+            _nameSaveFailed.value = true
+            Log.w(TAG, "Display name was not saved: ${e.javaClass.simpleName}")
+        }
+    }
+
+    fun clearNameSaveFailure() {
+        _nameSaveFailed.value = false
     }
 
     var giftWrapEnabled: Boolean
@@ -160,10 +145,9 @@ constructor(
      * Export all groups as a JSON array to [uri], streaming one group at a time so the whole
      * export is never held in memory.
      *
-     * Runs on [viewModelScope] rather than a composable scope so recomposition and configuration
-     * changes do not cancel the write. On any failure (including cancellation when the user leaves
-     * the screen mid-write) the partially written document is deleted so a truncated file is never
-     * mistaken for a backup. A second call while one is running is ignored.
+     * [viewModelScope] survives configuration changes; clearing the ViewModel cancels the write.
+     * Failure or cancellation triggers best-effort deletion of the partial SAF document, not a guarantee
+     * that the provider removes it. Concurrent export requests are ignored.
      */
     fun exportAllGroups(uri: Uri) {
         if (_exportState.value is ExportState.InProgress) return
@@ -212,9 +196,11 @@ constructor(
         }
     }
 
+    /** Starts the identity replacement; a tap while one is already running (or resuming) is ignored. */
     fun revokeKey() {
+        if (_revokeState.value is RevokeState.InProgress) return
+        _revokeState.value = RevokeState.InProgress
         viewModelScope.launch {
-            _revokeState.value = RevokeState.InProgress
             try {
                 val newPub = revokeKeyUseCase()
                 _npub.value = newPub
@@ -226,8 +212,8 @@ constructor(
     }
 
     /**
-     * Returns a finished revocation ([RevokeState.Done] / [RevokeState.Error]) to idle once the screen has shown
-     * it. A revocation still [RevokeState.InProgress] is left alone: it completes on its own and must stay visible.
+     * Clear only a finished revocation result. Keeping [RevokeState.InProgress] preserves the
+     * duplicate-tap guard while the operation is running or resuming.
      */
     fun clearRevokeState() {
         if (_revokeState.value !is RevokeState.InProgress) _revokeState.value = RevokeState.Idle
@@ -235,7 +221,6 @@ constructor(
 
     private companion object {
         const val TAG = "SettingsViewModel"
-        const val DISPLAY_NAME_DEBOUNCE_MS = 800L
     }
 }
 

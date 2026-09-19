@@ -62,7 +62,7 @@ class CreateSnapshotUseCaseTest {
             relays = emptyList()
         )
         every { identity.getPublicKeyHex() } returns myPubkey
-        coEvery { computeBalances.computeWithExclusions(groupId, any(), false) } returns
+        coEvery { computeBalances.computeWithExclusions(groupId, any(), false, false) } returns
             BalanceResult(listOf(Balance("pub1", 100, "INR"), Balance("pub2", -100, "INR")), emptySet())
         coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(150)
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns null
@@ -128,7 +128,8 @@ class CreateSnapshotUseCaseTest {
 
         assertTrue(useCase(groupId))
 
-        coVerify(exactly = 1) { computeBalances.computeWithExclusions(groupId, events, false) }
+        // Request full replay without identity folding; readers resolve retired keys from current group state.
+        coVerify(exactly = 1) { computeBalances.computeWithExclusions(groupId, events, false, false) }
         coVerify(exactly = 1) { eventRepo.getEventsByGroup(groupId) }
         coVerify(exactly = 0) { eventRepo.getEventIds(any()) }
         coVerify(exactly = 0) { eventRepo.getEventCount(any()) }
@@ -139,14 +140,14 @@ class CreateSnapshotUseCaseTest {
 
     @Test
     fun `skips when below threshold`() = runBlocking {
-        // 1 day old snapshot at 40 events: 50-40=10 events, 1 day < 30 days
+        // 50 - 40 = 10 new rows (<100); the snapshot is 1 day old (<30 days).
         val recentSnapshot = snapshotEvent("snap1", asOfCount = 40, createdAt = daysAgo(1))
         coEvery { eventRepo.getEventsByGroup(groupId) } returns ledger(49, recentSnapshot)
         coEvery { eventRepo.getLatestEventByType(groupId, "snapshot") } returns recentSnapshot
         val result = useCase(groupId)
         assertFalse(result)
         coVerify(exactly = 0) { eventPublisher.saveAndQueue(any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { computeBalances.computeWithExclusions(any(), any(), any()) }
+        coVerify(exactly = 0) { computeBalances.computeWithExclusions(any(), any(), any(), any()) }
     }
 
     @Test
@@ -183,8 +184,7 @@ class CreateSnapshotUseCaseTest {
 
     @Test
     fun `does not create a snapshot when the group has no known creator`() = runBlocking {
-        // With createdBy empty there is no trusted snapshot author, so nobody (not even a
-        // member) may publish one.
+        // Membership alone cannot authorize a snapshot when no creator is known.
         coEvery { groupRepo.getById(groupId) } returns Group(
             id = groupId,
             name = "Test",
@@ -352,7 +352,7 @@ class CreateSnapshotUseCaseTest {
 
     @Test
     fun `balance failure prevents publishing a partial snapshot`() = runBlocking {
-        coEvery { computeBalances.computeWithExclusions(groupId, any(), false) } throws
+        coEvery { computeBalances.computeWithExclusions(groupId, any(), false, false) } throws
             BalanceUnavailableException("Missing historical key")
 
         assertThrows(BalanceUnavailableException::class.java) { runBlocking { useCase(groupId) } }

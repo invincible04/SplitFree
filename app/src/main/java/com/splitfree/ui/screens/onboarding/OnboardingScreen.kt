@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.LockClock
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -62,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -93,9 +95,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.splitfree.R
+import com.splitfree.domain.repository.IdentityState
 import com.splitfree.ui.components.BrandMark
+import com.splitfree.ui.components.EmptyState
 import com.splitfree.ui.components.HintCard
 import com.splitfree.ui.components.MiniLabel
 import com.splitfree.ui.components.SfAccentButton
@@ -113,6 +120,7 @@ import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.util.adaptiveSizeTokens
 import com.splitfree.ui.util.asString
 import com.splitfree.ui.viewmodels.ImportStatus
+import com.splitfree.ui.viewmodels.OnboardingCompletion
 import com.splitfree.ui.viewmodels.OnboardingViewModel
 
 /** The three panes of first launch. Held in `rememberSaveable` by the route; enums save as-is. */
@@ -136,16 +144,21 @@ enum class OnboardingSheet {
 /**
  * Snapshot of [OnboardingViewModel]'s flows for the stateless content.
  *
- * @property error what went wrong with the last key import, or null.
+ * @property error what went wrong with the last key import or identity creation, or null.
  * @property keyImported true once a key was accepted; the route then shows [OnboardingStep.RestoreBackup].
  * @property importStatus outcome of the last backup import, or null before the first attempt.
  * @property importing true while a backup file is being read and imported.
+ * @property identityState what the identity store holds; [IdentityState.UNAVAILABLE] replaces the welcome
+ *   actions with a retry, [IdentityState.RECOVERY_REQUIRED] explains why a phrase is being asked for again.
+ * @property identityBusy true while a key is being created or imported.
  */
 data class OnboardingUiState(
     val error: UiMessage? = null,
     val keyImported: Boolean = false,
     val importStatus: ImportStatus? = null,
-    val importing: Boolean = false
+    val importing: Boolean = false,
+    val identityState: IdentityState = IdentityState.ABSENT,
+    val identityBusy: Boolean = false
 )
 
 /**
@@ -157,6 +170,7 @@ data class OnboardingUiState(
  * @property importKey try to import a hex key / mnemonic; the ViewModel reports the result via state.
  * @property pickBackup open the document picker for a `.splitfree` backup file.
  * @property clearError drop the current key-import error (called when the secret text changes).
+ * @property retryIdentityStore probe the identity store again after it reported a transient failure.
  * @property complete leave onboarding.
  */
 data class OnboardingActions(
@@ -164,6 +178,7 @@ data class OnboardingActions(
     val importKey: (String) -> Unit = {},
     val pickBackup: () -> Unit = {},
     val clearError: () -> Unit = {},
+    val retryIdentityStore: () -> Unit = {},
     val complete: () -> Unit = {}
 )
 
@@ -178,11 +193,30 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
     val keyImported by viewModel.keyImported.collectAsStateWithLifecycle()
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
     val importing by viewModel.importing.collectAsStateWithLifecycle()
+    val identityState by viewModel.identityState.collectAsStateWithLifecycle()
+    val identityBusy by viewModel.identityBusy.collectAsStateWithLifecycle()
     var step by rememberSaveable { mutableStateOf(OnboardingStep.Welcome) }
     var sheet by rememberSaveable { mutableStateOf<OnboardingSheet?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val currentOnComplete by rememberUpdatedState(onComplete)
 
-    // Reading and importing happen in the ViewModel: a composable scope is cancelled by navigation
-    // and recomposition, which would abort the import mid-transaction.
+    LaunchedEffect(viewModel, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.completion.collect { completion ->
+                // An outgoing or stopped entry must leave the outcome for the next active composition.
+                if (completion == OnboardingCompletion.Pending &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                    viewModel.completion.value == OnboardingCompletion.Pending
+                ) {
+                    currentOnComplete()
+                    viewModel.acknowledgeCompletion()
+                }
+            }
+        }
+    }
+
+    // ViewModel ownership keeps the import alive across configuration changes, not after the
+    // navigation entry is removed. Ordinary recomposition does not cancel remembered scopes.
     val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importBackup(uri)
     }
@@ -200,7 +234,9 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
             error = error,
             keyImported = keyImported,
             importStatus = importStatus,
-            importing = importing
+            importing = importing,
+            identityState = identityState,
+            identityBusy = identityBusy
         ),
         // A successful key import always lands on the backup pane, whatever the saved step says.
         step = if (keyImported) OnboardingStep.RestoreBackup else step,
@@ -210,12 +246,14 @@ fun OnboardingScreen(onComplete: () -> Unit, viewModel: OnboardingViewModel = hi
         actions =
         OnboardingActions(
             generateIdentity = { name ->
-                viewModel.generateIdentity(name.trim())
-                onComplete()
+                // Leave only once a key is really stored; a failed write keeps the sheet and shows why.
+                viewModel.createIdentity(name.trim())
             },
-            importKey = { viewModel.importKey(it) },
+            importKey = viewModel::restoreKey,
             pickBackup = { backupLauncher.launch(arrayOf("*/*")) },
             clearError = viewModel::clearError,
+            // The store answering again with the old key intact means there is nothing left to onboard.
+            retryIdentityStore = viewModel::retryIdentity,
             complete = onComplete
         )
     )
@@ -267,10 +305,17 @@ internal fun OnboardingContent(
         ) { current ->
             when (current) {
                 OnboardingStep.Welcome ->
-                    WelcomePane(
-                        onGetStarted = { onSheet(OnboardingSheet.Name) },
-                        onRestore = { onStep(OnboardingStep.RestoreKey) }
-                    )
+                    if (state.identityState == IdentityState.UNAVAILABLE) {
+                        // The stored key may well be intact: offer nothing that would replace it.
+                        StorageUnavailablePane(onRetry = actions.retryIdentityStore)
+                    } else {
+                        WelcomePane(
+                            recoveryRequired = state.identityState == IdentityState.RECOVERY_REQUIRED,
+                            error = state.error,
+                            onGetStarted = { onSheet(OnboardingSheet.Name) },
+                            onRestore = { onStep(OnboardingStep.RestoreKey) }
+                        )
+                    }
 
                 OnboardingStep.RestoreKey ->
                     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -298,7 +343,35 @@ internal fun OnboardingContent(
     }
 
     if (sheet == OnboardingSheet.Name) {
-        NameSheet(onContinue = actions.generateIdentity, onDismiss = { onSheet(null) })
+        NameSheet(
+            busy = state.identityBusy,
+            error = state.error,
+            onContinue = actions.generateIdentity,
+            onDismiss = { onSheet(null) }
+        )
+    }
+}
+
+/**
+ * Retry-only welcome state: an unreadable store is not evidence that its identity can be replaced.
+ */
+@Composable
+private fun StorageUnavailablePane(onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize().safeDrawingPadding().testTag("onboarding_storage_unavailable")) {
+        EmptyState(
+            icon = Icons.Outlined.LockClock,
+            title = stringResource(R.string.identity_storage_unavailable_title),
+            body = stringResource(R.string.identity_storage_unavailable_body),
+            modifier = Modifier.align(
+                Alignment.Center
+            ).padding(horizontal = adaptiveSizeTokens().screenPaddingHorizontal)
+        ) {
+            SfSecondaryButton(
+                text = stringResource(R.string.retry),
+                onClick = onRetry,
+                modifier = Modifier.testTag("onboarding_storage_retry")
+            )
+        }
     }
 }
 
@@ -317,7 +390,7 @@ private val TrustPillBorder = Color(0xFF3D493D)
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WelcomePane(onGetStarted: () -> Unit, onRestore: () -> Unit) {
+private fun WelcomePane(recoveryRequired: Boolean, error: UiMessage?, onGetStarted: () -> Unit, onRestore: () -> Unit) {
     LightSystemBarIcons()
     SplitFreeTheme(darkTheme = true) {
         val tokens = adaptiveSizeTokens()
@@ -421,6 +494,17 @@ private fun WelcomePane(onGetStarted: () -> Unit, onRestore: () -> Unit) {
                         TrustPill(stringResource(R.string.chip_decentralized))
                         TrustPill(stringResource(R.string.chip_free))
                     }
+                    if (recoveryRequired) {
+                        Spacer(Modifier.height(12.dp))
+                        WarningCard(
+                            text = stringResource(R.string.identity_recovery_required),
+                            modifier = Modifier.testTag("onboarding_recovery_required")
+                        )
+                    }
+                    if (error != null) {
+                        Spacer(Modifier.height(12.dp))
+                        WarningCard(text = error.asString(), modifier = Modifier.testTag("onboarding_identity_error"))
+                    }
                     Spacer(Modifier.height(16.dp))
                     SfAccentButton(
                         text = stringResource(R.string.get_started),
@@ -481,7 +565,7 @@ private fun TrustPill(label: String) {
 /** "Choose a name" sheet: optional display name, then a fresh identity. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NameSheet(onContinue: (String) -> Unit, onDismiss: () -> Unit) {
+private fun NameSheet(busy: Boolean, error: UiMessage?, onContinue: (String) -> Unit, onDismiss: () -> Unit) {
     var name by rememberSaveable { mutableStateOf("") }
     SfSheet(
         onDismiss = onDismiss,
@@ -493,11 +577,16 @@ private fun NameSheet(onContinue: (String) -> Unit, onDismiss: () -> Unit) {
                 SfPrimaryButton(
                     text = stringResource(R.string.continue_button),
                     onClick = { onContinue(name) },
+                    loading = busy,
                     modifier = Modifier.testTag("onboarding_name_continue")
                 )
             }
         }
     ) {
+        if (error != null) {
+            WarningCard(text = error.asString(), modifier = Modifier.testTag("onboarding_name_error"))
+            Spacer(Modifier.height(14.dp))
+        }
         MiniLabel(stringResource(R.string.your_name))
         Spacer(Modifier.height(7.dp))
         OutlinedTextField(
@@ -598,7 +687,7 @@ private fun RestoreKeyPane(
                 text = stringResource(R.string.import_key),
                 onClick = { onImport(secret) },
                 enabled = secret.isNotBlank(),
-                loading = state.importing,
+                loading = state.importing || state.identityBusy,
                 modifier = Modifier.testTag("onboarding_import_key")
             )
             Spacer(Modifier.height(9.dp))
@@ -693,8 +782,8 @@ private fun RestoreBackupPane(state: OnboardingUiState, onPickBackup: () -> Unit
             }
             Spacer(Modifier.height(24.dp))
         }
-        // Leaving the screen clears the ViewModel and cancels a running import (the transaction rolls
-        // back), so both exits are held until the import settles.
+        // Removing this navigation entry cancels the ViewModel's import. Disable both exits until it
+        // settles; groups committed before a cancellation remain restored.
         SfBottomDock {
             SfPrimaryButton(
                 text = stringResource(R.string.continue_button),

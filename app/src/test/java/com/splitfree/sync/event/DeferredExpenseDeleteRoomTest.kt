@@ -61,7 +61,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
-/** Real Room, crypto, validation and ledger projection: nothing on the ingestion path is mocked. */
+/**
+ * In-memory Room, real crypto, validation and ledger projection. Identity/settings and unrelated
+ * control/post-processing collaborators are doubles; race tests also script selected DAO reads.
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
 class DeferredExpenseDeleteRoomTest {
@@ -136,7 +139,7 @@ class DeferredExpenseDeleteRoomTest {
         )
     }
 
-    /** A second device ingests real signed events, then exports a self-encrypted, MAC-authenticated backup. */
+    /** A separate Room store under Bob's identity ingests signed history and exports an authenticated backup. */
     private suspend fun backup(vararg history: NostrEvent): String {
         val source = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)
             .allowMainThreadQueries()
@@ -570,10 +573,17 @@ class DeferredExpenseDeleteRoomTest {
             GiftWrapService(alice.contract, settings),
             groups,
             alice.contract,
-            db
+            db, settings
         )
-        val repository =
-            ExpenseRepository(dao, groups, encryption, alice.contract, EventSigner(alice.contract), publisher)
+        val repository = ExpenseRepository(
+            dao,
+            groups,
+            encryption,
+            alice.contract,
+            EventSigner(alice.contract),
+            publisher,
+            MembershipHistory(dao, groups, alice.contract)
+        )
         val payload = Json.decodeFromString<Expense>(encryption.decrypt(expense().content, key))
         // The shared insert must join the publisher's transaction: a later outbox failure rolls back
         // both the original and the pending-delete promotion, leaving the authenticated delete retryable.

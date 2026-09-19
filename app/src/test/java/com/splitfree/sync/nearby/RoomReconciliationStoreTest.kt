@@ -99,7 +99,7 @@ class RoomReconciliationStoreTest {
      * Isolated device fixture with real storage/ingestion and explicit secure-storage/publication doubles.
      */
     private inner class Device(seed: Int) {
-        val identity = TestIdentity(seed)
+        val identity = TestIdentity(seed).also { every { it.contract.stagedIdentitySwitch() } returns null }
         val pub = identity.pub
         val db: AppDatabase =
             Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)
@@ -126,7 +126,7 @@ class RoomReconciliationStoreTest {
                 giftWrap,
                 groupRepo,
                 identity.contract,
-                db
+                db, settings
             )
         val eventRepo = EventRepository(db, eventDao)
         val rotateGroupKey =
@@ -331,9 +331,8 @@ class RoomReconciliationStoreTest {
     }
 
     /**
-     * A creator `group_meta` authored on [device] under the key for [epoch], optionally backdated.
-     *
-     * - This is what the creator publishes on a rename or after a rotation.
+     * Signs creator metadata under the key for [epoch] without storing or publishing it.
+     * The payload keeps the default keyEpoch; [epoch] selects only the encryption key.
      */
     private fun authorMeta(
         device: Device,
@@ -1138,9 +1137,7 @@ class RoomReconciliationStoreTest {
     }
 
     /**
-     * A signed correction of [original] by its author on [device], persisted through the publisher.
-     *
-     * - [amount] is the corrected amount.
+     * Signs and publishes a correction, using [original] as the expected revision.
      */
     private fun authorCorrection(device: Device, original: NostrEvent, amount: Long): NostrEvent = runBlocking {
         val group = device.group()
@@ -1265,7 +1262,7 @@ class RoomReconciliationStoreTest {
         // The signed event and A's gift-wrapped copy for B are both refused for want of the key.
         assertTrue(b.stats(ep(a)).rejected >= 1)
 
-        // The rotation reaches A's store now (it was published to B by the creator, A is the creator here).
+        // A now publishes B's rotation envelope so it appears in the next inventory.
         val convKey = Nip44.getConversationKey(a.identity.priv, b.pub.hexToBytes())
         val payload = KeyRotation(1, mapOf(b.pub to Nip44.encrypt(key1, convKey)), listOf(a.pub, b.pub), "")
         val rotation = a.signer.createSignedEvent(

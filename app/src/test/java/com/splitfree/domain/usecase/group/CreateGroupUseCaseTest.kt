@@ -63,7 +63,7 @@ class CreateGroupUseCaseTest {
         every { identity.getPublicKeyHex() } returns fakePubkey
         every { encryption.encrypt(any(), any()) } returns "encrypted"
         every { signer.createSignedCommandEvent(any(), any(), any(), any(), any(), any(), any()) } returns fakeEvent
-        every { settings.displayName } returns ""
+        every { settings.displayNameFor(fakePubkey) } returns ""
         coEvery { groupRepo.getById(any()) } returns null
         coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
         coEvery { eventPublisher.publishCreatedGroup(any(), any(), any()) } returns true
@@ -105,7 +105,7 @@ class CreateGroupUseCaseTest {
 
     @Test
     fun `invoke includes creator display name when available`() = runBlocking {
-        every { settings.displayName } returns "Alice"
+        every { settings.displayNameFor(fakePubkey) } returns "Alice"
         val group = useCase("Trip to Goa")
         assertEquals(mapOf(fakePubkey to "Alice"), group.memberNames)
         coVerify {
@@ -374,5 +374,12 @@ class CreateGroupUseCaseTest {
     @Test
     fun `currentAuthor exposes the identity a draft pins`() {
         assertEquals(fakePubkey, useCase.currentAuthor())
+    }
+
+    @Test fun `name publication uses current identity scope instead of last global preference`() = runBlocking {
+        every { settings.displayName } returns "Other identity"
+        every { settings.displayNameFor(fakePubkey) } returns "Current identity"
+        assertEquals("Current identity", useCase("Trip").memberNames[fakePubkey])
+        verify(exactly = 0) { settings.displayName }
     }
 }

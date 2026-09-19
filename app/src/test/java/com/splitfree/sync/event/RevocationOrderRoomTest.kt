@@ -20,6 +20,7 @@ import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.group.ControlOperationLock
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
 import com.splitfree.domain.usecase.group.RotateGroupKeyUseCase
+import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.test.FakeSecureStorage
 import io.mockk.coEvery
@@ -48,10 +49,9 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * The creator's identity revocation is two old-key-signed events, `key_revocation` and the replacement
- * `group_meta`. Relays and couriers deliver them in either order; the compromised key must be
- * tombstoned, and unable to rejoin, in both. Real Room, real crypto, real use cases; only publication
- * is captured.
+ * Deliver the creator's old-key-signed revocation and companion metadata in both orders; neither
+ * may let the retired key rejoin. Uses in-memory Room, real crypto and control use cases with fake
+ * secure storage, captured publication and mocked self-heal/settings; no relay or courier is exercised.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -90,7 +90,9 @@ class RevocationOrderRoomTest {
             journal,
             lock
         )
-        val revocation = RevokeKeyUseCase(identity, groups, encryption, signer, publisher, journal, lock)
+        val revocation = RevokeKeyUseCase(
+            identity, groups, encryption, signer, publisher, journal, lock, mockk(relaxed = true), mockk(relaxed = true)
+        )
         private val post =
             EventPostProcessor(groups, rotation, revocation, mockk(relaxed = true), publisher, identity, scope)
         private val settings = mockk<SettingsContract>().also { every { it.giftWrapEnabled } returns false }
@@ -166,7 +168,11 @@ class RevocationOrderRoomTest {
         val (replacement, revocation, metadata) = creatorRevocation(creator)
 
         assertEquals(IngestOutcome.APPLIED, receiver.ingest(metadata).outcome)
-        assertEquals(replacement, receiver.groups.getById(groupId)!!.createdBy)
+        assertEquals(
+            "metadata alone cannot transfer creator authority",
+            creator.pub,
+            receiver.groups.getById(groupId)!!.createdBy
+        )
         assertFalse(compromised.pub in receiver.members())
 
         val revoked = receiver.ingest(revocation)
@@ -175,6 +181,7 @@ class RevocationOrderRoomTest {
             IngestOutcome.APPLIED,
             revoked.outcome
         )
+        assertEquals(replacement, receiver.groups.getById(groupId)!!.createdBy)
         assertEquals(listOf(replacement), receiver.groups.resolveRoster(groupId, listOf(compromised.pub)))
 
         val rejoined = receiver.ingest(rejoin(compromised, listOf(replacement, receiver.pub)))
@@ -206,6 +213,59 @@ class RevocationOrderRoomTest {
         assertEquals(replacement, receiver.groups.getById(groupId)!!.createdBy)
         assertEquals(listOf(replacement, receiver.pub), receiver.members())
     }
+
+    @Test
+    fun `same second smaller ID rootless rejoin is rejected while real creator history remains admissible`() =
+        runBlocking {
+            val creator = Device(1)
+            val receiver = Device(2)
+            val roster = listOf(creator.pub, receiver.pub)
+            receiver.join(creator.pub, roster)
+            val at = System.currentTimeMillis() / 1000 - 100
+            fun candidate(type: String, payload: String, index: Int) = NostrEvent(
+                pubkey = creator.pub,
+                createdAt = at,
+                kind = 30078,
+                tags = listOf(listOf("g", groupId), listOf("t", type), listOf("d", "$type:$index")),
+                content = payload
+            )
+            val malformedContent = encryption.encrypt(json.encodeToString(GroupMeta(members = roster)), key)
+            val retirementContent = encryption.encrypt(json.encodeToString(KeyRevocation(creator.pub)), key)
+            val malformedUnsigned = (0 until 256).map { candidate("group_meta", malformedContent, it) }
+                .minBy { it.computeId().toHex() }
+            val retirementUnsigned = (0 until 256).map { candidate("key_revocation", retirementContent, it) }
+                .maxBy { it.computeId().toHex() }
+            val privateKey = creator.identity.getPrivateKeyBytes()
+            val malformed: NostrEvent
+            val retirement: NostrEvent
+            try {
+                malformed = malformedUnsigned.sign(privateKey)
+                retirement = retirementUnsigned.sign(privateKey)
+            } finally {
+                privateKey.fill(0)
+            }
+            assertEquals(retirement.createdAt, malformed.createdAt)
+            assertTrue("rejoin must sort before retirement in the same second", malformed.id < retirement.id)
+            val historical = creator.signer.createSignedEvent(
+                groupId,
+                "group_meta",
+                encryption.encrypt(
+                    json.encodeToString(
+                        GroupMeta(name = "Historical", createdBy = creator.pub, createdAt = 1, members = roster)
+                    ),
+                    key
+                ),
+                createdAt = at - 1
+            )
+            assertEquals(IngestOutcome.APPLIED, receiver.ingest(retirement).outcome)
+            assertTrue(receiver.groups.isHistoricalCreator(groupId, creator.pub, malformed.createdAt, malformed.id))
+            assertEquals(IngestOutcome.REJECTED, receiver.ingest(malformed).outcome)
+            assertNull(receiver.db.eventDao().getEvent(malformed.id))
+            assertEquals(IngestOutcome.APPLIED, receiver.ingest(historical).outcome)
+            assertFalse(creator.pub in receiver.members())
+            assertEquals("", receiver.groups.getById(groupId)!!.createdBy)
+            assertEquals(listOf(receiver.pub), receiver.members())
+        }
 
     @Test
     fun `a former member's revocation under an old key is not admitted and leaves no tombstone`() = runBlocking {

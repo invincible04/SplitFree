@@ -1,6 +1,6 @@
 package com.splitfree.domain.repository
 
-/** Public intent and encrypted, pre-signed envelopes only; secret keys remain in secure storage. */
+/** Public intent, pre-signed envelopes and authenticated projection payloads; secret keys remain in secure storage. */
 data class ControlOperation(val id: String, val kind: String, val intentJson: String, val preparedJson: String? = null)
 
 interface ControlOperationJournalContract {
@@ -15,17 +15,19 @@ interface ControlOperationJournalContract {
     suspend fun prepare(id: String, preparedJson: String)
 
     /**
-     * Re-snapshots the source state of an operation that has prepared nothing: nothing has been signed
-     * or published, so following the live state cannot retarget anything already sent. Refused once a
-     * plan exists. The intent's target (removed member, epoch) is the caller's responsibility to keep.
+     * Compare-and-set the source snapshot while no prepared plan is stored.
+     * Callers must preserve the operation's target and must not have published an unjournaled plan.
      */
     suspend fun rebase(id: String, expectedIntentJson: String, intentJson: String)
 
     /**
-     * Compare-and-set of a prepared plan. Callers only append envelopes (for a recipient the snapshot
-     * did not know) or a newer metadata event; the events already in the plan are never replaced.
+     * Compare-and-set a prepared plan. Callers may append deliveries or projection data but must
+     * preserve existing signed envelopes; the journal does not inspect the plan's contents.
      */
     suspend fun amend(id: String, expectedPreparedJson: String, preparedJson: String)
+
+    /** Atomic compare-and-set move; archiving never loses the original intent or signed envelopes. */
+    suspend fun move(operation: ControlOperation, id: String, kind: String)
 
     suspend fun complete(id: String)
 }

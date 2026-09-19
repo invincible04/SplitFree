@@ -52,13 +52,9 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * Real SQLite, the real [EventProcessor] pipeline with the real [EventValidator], real BIP-340 signatures and
- * NIP-44 encryption, projected by [ComputeBalancesUseCase] through the real [EventRepository].
- *
- * A settlement's id travels in the plaintext `x` tag and [EventValidator.isSettlementValid] admits either
- * party as author, so any member can publish a validly signed settlement that reuses another pair's id. Both
- * rows are stored `APPLIED` with distinct event ids; the projection must count both, because a settlement is
- * identified by `(author, id)`, never by its id alone.
+ * Offline Room ingestion with BIP-340 signatures and NIP-44 encryption. Different authors sharing a
+ * settlement id must both count; repeated versions from one author must count once.
+ * Events enter RECONCILIATION directly with fake key storage and mocked transport; no relay or UI is exercised.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -70,7 +66,7 @@ class SettlementIdentityRoomTest {
     private val json = Json { ignoreUnknownKeys = true }
     private val direct = Executor { it.run() }
 
-    /** One phone: identity, Room database, key store and the full ingestion pipeline. */
+    /** Isolated Room peer with fixture identity, fake key storage and production ingestion. */
     private inner class Device(seed: Int) {
         val identity = TestIdentity(seed)
         val pub = identity.pub
@@ -95,7 +91,7 @@ class SettlementIdentityRoomTest {
             giftWrap,
             groupRepo,
             identity.contract,
-            db
+            db, settings
         )
         val rotate = RotateGroupKeyUseCase(
             groupRepo,
@@ -204,14 +200,13 @@ class SettlementIdentityRoomTest {
         assertEquals(-50L, payer.net(payer.pub))
         assertEquals(50L, payer.net(payee.pub))
 
-        // Both settlements are each pair's own, correctly signed and each valid on its own; they only
-        // happen to carry the same settlement uuid, the unrelated pair's with the older clock.
+        // Different authors reuse the settlement uuid; the unrelated pair has the earlier timestamp.
         val uuid = UUID.randomUUID().toString()
         val now = System.currentTimeMillis() / 1000
         val repayment = settlement(payer, payee.pub, amount = 50, id = uuid, createdAt = now - 1_800)
         val unrelated = settlement(otherPayer, otherPayee.pub, amount = 1, id = uuid, createdAt = now - 3_600)
 
-        // Arrival order does not save it: the repayment is ingested and stored first.
+        // Store the repayment first, then the older unrelated settlement.
         assertEquals(IngestOutcome.APPLIED, payer.ingest(repayment))
         assertEquals(IngestOutcome.APPLIED, payer.ingest(unrelated))
         assertNotEquals(repayment.id, unrelated.id)
@@ -220,11 +215,11 @@ class SettlementIdentityRoomTest {
         assertEquals(uuid, payer.row(repayment.id)?.expenseUuid)
         assertEquals(uuid, payer.row(unrelated.id)?.expenseUuid)
 
-        // The unrelated pair's own settlement is projected; it is not the record that is lost.
+        // The unrelated settlement contributes only to its own pair.
         assertEquals(1L, payer.net(otherPayer.pub))
         assertEquals(-1L, payer.net(otherPayee.pub))
 
-        // Both stored settlements must count: the repayment squares the honest pair.
+        // The shared uuid must not suppress the 50 repayment.
         assertEquals("the unrelated pair's uuid suppressed a stored 50 repayment", 0L, payer.net(payee.pub))
         assertEquals("the unrelated pair's uuid suppressed a stored 50 repayment", 0L, payer.net(payer.pub))
     }
@@ -237,7 +232,7 @@ class SettlementIdentityRoomTest {
         listOf(payer, payee).forEach { it.join(members, payer.pub) }
         assertEquals(IngestOutcome.APPLIED, payer.ingest(expense(payee, payer.pub)))
 
-        // A retry re-signs the same payload under a new clock: a new Nostr event id, the same settlement id.
+        // Same author, id and amount, but new payload/envelope timestamps: count one settlement.
         val uuid = UUID.randomUUID().toString()
         val now = System.currentTimeMillis() / 1000
         val first = settlement(payer, payee.pub, amount = 50, id = uuid, createdAt = now - 1_800)

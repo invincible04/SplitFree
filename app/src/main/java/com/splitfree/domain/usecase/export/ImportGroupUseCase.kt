@@ -8,6 +8,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.Settlement
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
+import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
@@ -18,6 +19,7 @@ import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.util.TextSanitizer
+import com.splitfree.domain.util.hexToBytes
 import com.splitfree.domain.util.toHex
 import com.splitfree.domain.validation.EventValidator
 import com.splitfree.util.DebugLog as Log
@@ -29,24 +31,16 @@ import kotlinx.serialization.json.Json
 /**
  * Import group events from a `.splitfree` JSON export.
  *
- * Verifies the file's MAC against a key derived from the user's own private key (see
- * [SplitFreeExport]) before anything else, decrypts and checks every embedded key, then runs the rest
- * inside one transaction: reconcile the key state (see [reconcileKeyState]), create the group if
- * needed, and import events in two passes:
+ * After checking the format version, authenticate the file and validate its root evidence and keys.
+ * Import then runs inside a Room transaction:
+ * 1. Reconcile immutable epoch keys and creator evidence with local state.
+ * 2. Store structural events and replay metadata/revocations before supported rotation boundaries.
+ * 3. Store content using historical membership, with originals before same-author corrections/deletes.
  *
- * 1. `group_meta` / `key_rotation` / `key_revocation` events are stored and replayed so the
- *    member list, creator, name and relays are reconstructed first.
- * 2. Everything else is stored, filtered against the *historical* membership (everyone who was ever
- *    a member according to the structural events) and validated the same way
- *    [com.splitfree.sync.event.EventProcessor] validates live events. Originals are stored before the
- *    corrections and deletes that depend on them, and a correction or delete resolves its original by
- *    `(author, uuid)` (see [com.splitfree.domain.model.expense.ExpenseIdentity]); one whose original is
- *    neither in the backup nor already stored is skipped.
- *
- * Nothing is written before the whole file has been authenticated and every key it carries has been
- * checked against local storage. On a fresh device the group starts with `members = [me]`; filtering
- * before replay would drop every event authored by anyone else, which is exactly what a restore must
- * not do.
+ * Historical membership preserves events from members since removed; the restored current roster
+ * alone is too restrictive. Signed envelopes are verified, while sealed rumors rely on the file MAC.
+ * Decryptable payloads are validated; unreadable ciphertext is retained for later key recovery.
+ * Room changes roll back together, but secure-store key writes can survive a failed import.
  */
 class ImportGroupUseCase
 @Inject
@@ -83,6 +77,21 @@ constructor(
         }
         // Authenticate before touching the key store or the database.
         verifyMac(export)
+        require(
+            if (export.rootCreator.isEmpty()) {
+                export.rootCreatedAt == 0L && export.creatorTransitions.isEmpty()
+            } else {
+                CreatorTransition.validate(
+                    export.groupId,
+                    export.rootCreator,
+                    export.rootCreatedAt,
+                    export.creatorTransitions
+                )
+            }
+        ) { "Backup has invalid original creator or transition evidence" }
+        require(export.creatorTransitions.all { it.hasAdmissibleTimestamp() }) {
+            "Backup contains creator evidence too far in the future"
+        }
         val backupKeys = decryptBackupKeys(export)
 
         val groupId = export.groupId
@@ -92,6 +101,7 @@ constructor(
         return eventRepo.withTransaction {
             val groupKey = reconcileKeyState(export, backupKeys)
             val knownEventIds = eventRepo.getEventIds(groupId).toMutableSet()
+            val newEventIds = mutableSetOf<String>()
             var imported = 0
 
             // Pass 1: membership-defining events, then rebuild the group from them.
@@ -101,21 +111,14 @@ constructor(
                 if (decrypted != null && !eventValidator.isContentSafe(decrypted)) continue
                 eventRepo.insert(candidate.toSnapshot(groupId))
                 knownEventIds += candidate.eventId
+                newEventIds += candidate.eventId
                 imported++
             }
             val stored = eventRepo.getEventsByGroup(groupId)
-            replayPostImport(groupId, stored)
+            replayPostImport(groupId, stored, newEventIds)
 
-            // Pass 2: everything else, filtered against everyone who was ever a member.
-            //
-            // The live path checks membership once, at receipt time: an expense accepted while its
-            // author was a member stays valid history after they are removed (and the balances
-            // still owe/credit them). Filtering by the *current* member list would silently drop
-            // that history on restore, so the filter is the union of every membership the
-            // structural events describe plus the reconstructed current list.
-            //
-            // Corrections and deletes are admitted only against an original the same author stored, so
-            // every original goes first; within each phase the canonical event order applies.
+            // Preserve removed members' history, not just the reconstructed current roster.
+            // Originals precede corrections/deletes so same-author dependency checks can find them.
             val group = groupRepo.getById(groupId)
             val members = group?.let { collectHistoricalMembers(groupId, groupKey, stored) + it.members }
             for (candidate in content.sortedWith(DEPENDENCY_ORDER)) {
@@ -194,7 +197,7 @@ constructor(
         return keys
     }
 
-    /** One NIP-44 self-encrypted group key from the file, required to open and to be 32 bytes of base64. */
+    /** Decrypts a self-encrypted key and requires its base64 value to decode to exactly 32 bytes. */
     private fun decryptGroupKey(encryptedKey: String, convKey: ByteArray, label: String): String {
         val key = try {
             Nip44.decrypt(encryptedKey, convKey)
@@ -215,8 +218,8 @@ constructor(
     }
 
     /**
-     * Merge the backup's key material into local storage and install its epoch, or throw before the
-     * first write. Runs inside the import transaction.
+     * Reconcile keys before writing, then merge creator evidence and advance the key checkpoint.
+     * Runs inside the Room transaction; secure-store keys are not part of that rollback.
      *
      * - Every epoch held by both the backup and this device must carry the same key; a mismatch fails
      *   the import with nothing written. Epoch key material is immutable, so a stored key is never
@@ -224,8 +227,8 @@ constructor(
      * - The key for the backup's epoch must be available, from the backup or from local storage;
      *   older key material is never reused for a newer epoch.
      * - The group's current epoch only moves forward. A backup newer than the group installs its epoch
-     *   through [GroupRepositoryContract.applyKeyRotation], which is guarded by epoch and resolves
-     *   tombstoned identities; the roster itself is reconstructed by the structural replay. An older
+     *   as a key-availability checkpoint, never as a fabricated authenticated rotation. The current
+     *   roster is retained until authenticated current-epoch metadata arrives. An older
      *   or equal backup leaves the epoch alone.
      * - A group unknown to this device is created at the backup's epoch.
      *
@@ -244,26 +247,33 @@ constructor(
             ?: groupRepo.getGroupKeyForEpoch(groupId, export.keyEpoch)
             ?: throw IllegalStateException("No key for group $groupId at epoch ${export.keyEpoch}")
 
-        // Create the group if it doesn't exist locally. The name is cosmetic and replayPostImport
-        // overwrites it from the creator's group_meta anyway, so a blank name is no reason to
-        // skip creation (which would leave every imported event orphaned).
+        if (local != null) mergeBackupCreator(export)
+
+        // A blank cosmetic name must not prevent creating the parent row for imported events.
+        // Authenticated creator metadata can replace this fallback during replay.
         if (local == null) {
             val group = Group(
                 id = groupId,
                 name = sanitizeGroupName(export.groupName),
-                createdBy = "",
-                createdAt = export.exportedAt,
+                createdBy = export.rootCreator,
+                createdAt = if (export.rootCreator.isNotEmpty()) export.rootCreatedAt else export.exportedAt,
                 members = listOf(identity.getPublicKeyHex()),
                 relays = sanitizeRelays(export.relays),
                 keyEpoch = export.keyEpoch
             )
             groupRepo.save(group, groupKey)
+            mergeBackupCreator(export)
         }
-        // Restore all epoch keys so events from before key rotations can be decrypted.
+        // Restore every supplied epoch key, including keys needed for historical ciphertext.
         for ((epoch, key) in backupKeys) groupRepo.saveGroupKeyForEpoch(groupId, epoch, key)
 
         if (local != null && export.keyEpoch > local.keyEpoch) {
-            val advanced = groupRepo.applyKeyRotation(groupId, export.keyEpoch, local.members, local.memberNames)
+            val advanced = if (groupRepo.hasCanonicalProjection(groupId)) {
+                groupRepo.updateKeyEpoch(groupId, export.keyEpoch)
+                groupRepo.getById(groupId)?.keyEpoch == export.keyEpoch
+            } else {
+                groupRepo.applyKeyRotation(groupId, export.keyEpoch, local.members, local.memberNames)
+            }
             if (advanced) {
                 Log.i(TAG, "Backup advanced ${groupId.take(8)} from epoch ${local.keyEpoch} to ${export.keyEpoch}")
             } else {
@@ -271,6 +281,19 @@ constructor(
             }
         }
         return groupKey
+    }
+
+    private suspend fun mergeBackupCreator(export: SplitFreeExport) {
+        if (export.rootCreator.isEmpty()) return
+        val merged = groupRepo.mergeCreatorBootstrap(
+            export.groupId,
+            export.rootCreator,
+            export.rootCreatedAt,
+            export.creatorTransitions
+        )
+        require(merged || !groupRepo.hasCanonicalProjection(export.groupId)) {
+            "Backup creator evidence conflicts with local control history"
+        }
     }
 
     /**
@@ -315,7 +338,7 @@ constructor(
     }
 
     /**
-     * A row from the export that passed authenticity and timestamp checks and is ready to store.
+     * A row that passed envelope authenticity and timestamp checks; payload admission is still pending.
      *
      * @property sig the value to persist: the event's own signature, or the exporter's `seal:`
      *   marker for a rumor (see [EventSnapshot.SEAL_SIG_PREFIX]) so the row stays recognisable as
@@ -381,7 +404,7 @@ constructor(
         return Candidate(parsed, originalJson, eventType, expenseUuid, sig, event.keyEpoch)
     }
 
-    /** Decrypt with the key of the epoch the event was recorded under, falling back to the current key. */
+    /** Use the recorded epoch key, falling back to the backup epoch key when that key is absent. */
     private suspend fun decryptForValidation(candidate: Candidate, groupId: String, groupKey: String): String? =
         decryptWithEpochKey(candidate.parsed.content, candidate.keyEpoch, groupId, groupKey)
 
@@ -466,29 +489,22 @@ constructor(
     }
 
     /**
-     * After pass 1 of the import, replay group_meta events in chronological order so the group
-     * entity reflects the full state (members, name, relays, epoch keys) before pass 2 filters
-     * content events against it.
-     *
-     * An imported group starts with an empty `createdBy`. It is filled in only from a
-     * `group_meta` whose author is the creator the group id was derived from
-     * ([GroupIdentity.matches]); a `created_by` claim by anyone else is ignored, and if no
-     * meta is bound to the id the creator stays unknown.
-     *
-     * Key rotation events are NOT replayed here; all epoch keys and the backup's epoch are installed
-     * by [reconcileKeyState] before event import. A roster that names a tombstoned identity resolves to
-     * its recorded replacement inside [GroupRepositoryContract.updateFromMeta]; the revoked key never
-     * re-enters the roster.
-     *
-     * @param stored every event of the group as read after pass 1
+     * Canonical repositories retain facts instead of clearing visible state: metadata and revocations
+     * establish authority before rotation replay. Existing checkpoints survive a partial backup.
+     * Noncanonical contracts use the reset/replay fallback below.
      */
-    private suspend fun replayPostImport(groupId: String, stored: List<EventSnapshot>) {
-        val allEvents = stored
-            .filter { it.eventType == "group_meta" }
-            .sortedBy { it.createdAt }
+    private suspend fun replayPostImport(groupId: String, stored: List<EventSnapshot>, newEventIds: Set<String>) {
+        val controlEvents = stored
+            .filter { it.eventType in STRUCTURAL_TYPES }
+            .sortedWith(EventSnapshot.CANONICAL_ORDER)
 
+        val canonical = groupRepo.hasCanonicalProjection(groupId)
+        val beforeReset = if (canonical) null else reprojectIfOutOfOrder(groupId, controlEvents, newEventIds)
+
+        var metaCount = 0
         var creatorKnown = false
-        for (event in allEvents) {
+        for (event in controlEvents) {
+            if (event.eventType == "key_rotation") continue
             val key = groupRepo.getGroupKeyForEpoch(groupId, event.keyEpoch)
                 ?: groupRepo.getGroupKey(groupId) ?: continue
             val decrypted = try {
@@ -497,85 +513,286 @@ constructor(
                 null
             } ?: continue
 
-            try {
-                val meta = json.decodeFromString<GroupMeta>(decrypted)
-                if (meta.members.isEmpty()) continue
-
-                var currentGroup = groupRepo.getById(groupId)
-
-                // Bootstrap createdBy only from the author the group id is cryptographically bound to.
-                val bootstrapsCreator = currentGroup != null &&
-                    currentGroup.createdBy.isEmpty() &&
-                    meta.createdBy == event.pubkey &&
-                    GroupIdentity.matches(groupId, event.pubkey, meta.createdAt)
-                val isCreator = currentGroup == null ||
-                    bootstrapsCreator ||
-                    (currentGroup.createdBy.isNotEmpty() && event.pubkey == currentGroup.createdBy)
-                if (isCreator && !InviteLinkCodec.fitsInviteLink(meta.relays.filter(InviteLinkCodec::relayFits))) {
+            if (event.eventType == "key_revocation") {
+                replayRevocation(groupId, event, decrypted)
+                continue
+            }
+            metaCount++
+            if (canonical) {
+                val meta = try {
+                    json.decodeFromString<GroupMeta>(decrypted)
+                } catch (_: Exception) {
                     continue
                 }
-                if (bootstrapsCreator) {
-                    groupRepo.updateCreator(groupId, event.pubkey, meta.createdAt)
-                    currentGroup = checkNotNull(currentGroup).copy(createdBy = event.pubkey, createdAt = meta.createdAt)
-                }
-                if (currentGroup == null || currentGroup.createdBy.isNotEmpty()) creatorKnown = true
-
-                if (!isCreator && currentGroup != null && !InviteLinkCodec.fitsInviteLink(currentGroup.relays)) {
-                    // A member's own change must not re-admit or rewrite a legacy relay list.
-                    groupRepo.applyMemberSelfUpdate(
-                        groupId,
-                        event.pubkey,
-                        event.createdAt,
-                        event.eventId,
-                        join = event.pubkey !in currentGroup.members,
-                        displayName = meta.memberNames[event.pubkey]?.trim().orEmpty().take(50)
-                    )
-                    continue
-                }
-
-                val finalMembers = if (isCreator) {
-                    meta.members
-                } else {
-                    ((currentGroup?.members ?: emptyList()) + event.pubkey).distinct()
-                }
-                val finalName = if (isCreator) meta.name else (currentGroup?.name ?: meta.name)
-                val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
-                val finalMemberNames = if (isCreator) {
-                    meta.memberNames
-                } else {
-                    (currentGroup?.memberNames ?: emptyMap()).toMutableMap().apply {
-                        val authorName = meta.memberNames[event.pubkey]?.trim().orEmpty().take(50)
-                        if (authorName.isNotEmpty()) put(event.pubkey, authorName) else remove(event.pubkey)
-                    }
-                }
-                val trustedCreatedBy = if (currentGroup != null &&
-                    currentGroup.createdBy.isNotEmpty() &&
-                    event.pubkey == currentGroup.createdBy
-                ) {
-                    meta.createdBy.ifEmpty { event.pubkey }
-                } else {
-                    ""
-                }
-
-                groupRepo.updateFromMeta(
+                groupRepo.applyAuthenticatedMeta(
                     groupId,
-                    finalName,
-                    finalMembers,
-                    finalRelays,
+                    meta,
+                    event.pubkey,
                     event.createdAt,
-                    trustedCreatedBy,
-                    finalMemberNames
+                    event.eventId,
+                    event.keyEpoch
                 )
-            } catch (_: Exception) { }
+                creatorKnown = groupRepo.getById(groupId)?.createdBy?.isNotEmpty() == true
+            } else if (replayMeta(groupId, event, decrypted)) {
+                creatorKnown = true
+            }
         }
 
-        if (allEvents.isNotEmpty() && !creatorKnown) {
+        if (canonical) {
+            // Metadata/revocations establish historical creator authority before rotation replay.
+            // Never take ControlOperationLock inside the Room import transaction.
+            for (event in controlEvents.filter { it.eventType == "key_rotation" }) replayRotation(groupId, event)
+        }
+        if (metaCount > 0 && !creatorKnown) {
             Log.w(
                 TAG,
-                "Imported ${allEvents.size} group_meta event(s) for $groupId but none was authored by the " +
+                "Imported $metaCount group_meta event(s) for $groupId but none was authored by the " +
                     "creator the group id is bound to; creator stays unknown"
             )
         }
+        if (beforeReset != null) restoreIfEmptied(groupId, beforeReset)
+    }
+
+    private suspend fun replayRotation(groupId: String, event: EventSnapshot) {
+        val group = groupRepo.getById(groupId) ?: return
+        if (event.pubkey != group.createdBy &&
+            !groupRepo.isHistoricalCreator(groupId, event.pubkey, event.createdAt, event.eventId)
+        ) {
+            return
+        }
+        var plaintext: String? = null
+        for (epoch in group.keyEpoch downTo 0) {
+            val key = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+            plaintext = try {
+                encryption.decrypt(event.contentEncrypted, key)
+            } catch (_: Exception) {
+                null
+            }
+            if (plaintext != null) break
+        }
+        if (plaintext == null) {
+            val envelope = event.originalEventJson?.let(NostrEvent::fromJson) ?: return
+            val recipient = envelope.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1) ?: return
+            val me = identity.getPublicKeyHex()
+            val peer = when (me) {
+                event.pubkey -> recipient
+                recipient -> event.pubkey
+                else -> return
+            }
+            val privateKey = identity.getPrivateKeyBytes()
+            try {
+                val key = Nip44.getConversationKey(privateKey, peer.hexToBytes())
+                try {
+                    plaintext = Nip44.decrypt(event.contentEncrypted, key)
+                } catch (
+                    _: Exception
+                ) {
+                    return
+                } finally {
+                    key.fill(0)
+                }
+            } finally {
+                privateKey.fill(0)
+            }
+        }
+        val rotation = try {
+            json.decodeFromString<KeyRotation>(checkNotNull(plaintext))
+        } catch (
+            _: Exception
+        ) {
+            return
+        }
+        if (rotation.epoch <= 0 ||
+            rotation.epoch > group.keyEpoch ||
+            rotation.members.isEmpty() ||
+            rotation.members.distinct().size != rotation.members.size ||
+            rotation.removedMember in rotation.members
+        ) {
+            return
+        }
+        // Restore only boundaries supported by already validated backup key material. Do not invent
+        // missing epoch keys or transfer encrypted key recipients along identity-succession links.
+        val epochKey = groupRepo.getGroupKeyForEpoch(groupId, rotation.epoch) ?: return
+        rotation.encryptedKeys[identity.getPublicKeyHex()]?.let { encrypted ->
+            val privateKey = identity.getPrivateKeyBytes()
+            try {
+                val key = Nip44.getConversationKey(privateKey, event.pubkey.hexToBytes())
+                try {
+                    val decoded = try {
+                        Nip44.decrypt(encrypted, key)
+                    } catch (_: Exception) {
+                        return
+                    }
+                    require(decoded == epochKey) { "Rotation disagrees with backup epoch key" }
+                } finally {
+                    key.fill(0)
+                }
+            } finally {
+                privateKey.fill(0)
+            }
+        }
+        groupRepo.applyAuthenticatedRotation(groupId, rotation, event.pubkey, event.createdAt, event.eventId)
+    }
+
+    /**
+     * Resets the roster projection when one of [newEventIds] is a control record canonically older than the
+     * group's watermark (see [replayPostImport]).
+     *
+     * @param controlEvents every stored structural event, in canonical order
+     * @return the group as it was before the reset, or null if nothing was reset
+     */
+    private suspend fun reprojectIfOutOfOrder(
+        groupId: String,
+        controlEvents: List<EventSnapshot>,
+        newEventIds: Set<String>
+    ): Group? {
+        val earliestNew = controlEvents.firstOrNull { it.eventId in newEventIds } ?: return null
+        val before = groupRepo.getById(groupId) ?: return null
+        val reset = groupRepo.resetRosterProjection(groupId, earliestNew.createdAt, earliestNew.eventId)
+        if (!reset) return null
+        Log.i(TAG, "Re-projecting the roster of ${groupId.take(8)} from ${controlEvents.size} control record(s)")
+        return before
+    }
+
+    /**
+     * Compatibility fallback after reset/replay: restore [before]'s roster if replay leaves it empty,
+     * and restore its creator only if still unknown. A zero membership clock preserves the watermark.
+     */
+    private suspend fun restoreIfEmptied(groupId: String, before: Group) {
+        val after = groupRepo.getById(groupId) ?: return
+        if (after.members.isNotEmpty()) {
+            if (after.createdBy.isEmpty() && before.createdBy.isNotEmpty()) {
+                groupRepo.updateCreator(groupId, before.createdBy, before.createdAt)
+            }
+            return
+        }
+        Log.w(TAG, "Replaying ${groupId.take(8)} seated nobody; keeping the roster it had before the import")
+        groupRepo.overrideMembership(
+            groupId,
+            before.members,
+            before.memberNames,
+            createdBy = if (after.createdBy.isEmpty()) before.createdBy else "",
+            eventTimestamp = 0,
+            eventId = ""
+        )
+    }
+
+    /** Records one authenticated `key_revocation` row's effect; a malformed or unauthorised one is skipped. */
+    private suspend fun replayRevocation(groupId: String, event: EventSnapshot, decrypted: String) {
+        val revocation = try {
+            json.decodeFromString<KeyRevocation>(decrypted)
+        } catch (_: Exception) {
+            Log.w(TAG, "Skipping key_revocation ${event.eventId.take(8)}: unreadable payload")
+            return
+        }
+        if (!revocation.isAuthorizedBy(event.pubkey)) {
+            Log.w(TAG, "Skipping key_revocation ${event.eventId.take(8)}: not a valid retirement by its author")
+            return
+        }
+        val applied = if (groupRepo.hasCanonicalProjection(groupId)) {
+            groupRepo.applyAuthenticatedRevocation(
+                groupId,
+                revocation.oldPubkey,
+                revocation.newPubkey,
+                event.createdAt,
+                event.eventId,
+                event.keyEpoch,
+                revocation.provesSuccessor(groupId)
+            )
+        } else {
+            groupRepo.applyIdentityRevocation(
+                groupId,
+                revocation.oldPubkey,
+                revocation.newPubkey,
+                event.createdAt,
+                event.eventId,
+                allowAbsent = true,
+                successorProven = revocation.provesSuccessor(groupId)
+            )
+        }
+        if (!applied) Log.w(TAG, "key_revocation ${event.eventId.take(8)} could not be projected onto $groupId")
+    }
+
+    /**
+     * Replays one `group_meta` row onto the group entity.
+     *
+     * @return true if, after this meta, the group's creator is known
+     */
+    private suspend fun replayMeta(groupId: String, event: EventSnapshot, decrypted: String): Boolean {
+        var creatorKnown = false
+        try {
+            val meta = json.decodeFromString<GroupMeta>(decrypted)
+            if (meta.members.isEmpty()) return false
+
+            var currentGroup = groupRepo.getById(groupId)
+
+            // Bootstrap createdBy only from the author the group id is cryptographically bound to.
+            val bootstrapsCreator = currentGroup != null &&
+                currentGroup.createdBy.isEmpty() &&
+                meta.createdBy == event.pubkey &&
+                GroupIdentity.matches(groupId, event.pubkey, meta.createdAt)
+            val isCreator = currentGroup == null ||
+                bootstrapsCreator ||
+                (currentGroup.createdBy.isNotEmpty() && event.pubkey == currentGroup.createdBy)
+            if (isCreator && !InviteLinkCodec.fitsInviteLink(meta.relays.filter(InviteLinkCodec::relayFits))) {
+                return false
+            }
+            if (bootstrapsCreator) {
+                // The recorded creator may be this author's replacement if their revocation was replayed
+                // first, or stay empty if they were revoked without one; read back what was recorded.
+                groupRepo.updateCreator(groupId, event.pubkey, meta.createdAt)
+                currentGroup = groupRepo.getById(groupId)
+            }
+            if (currentGroup == null || currentGroup.createdBy.isNotEmpty()) creatorKnown = true
+
+            if (!isCreator && currentGroup != null && !InviteLinkCodec.fitsInviteLink(currentGroup.relays)) {
+                // A member's own change must not re-admit or rewrite a legacy relay list.
+                groupRepo.applyMemberSelfUpdate(
+                    groupId,
+                    event.pubkey,
+                    event.createdAt,
+                    event.eventId,
+                    join = event.pubkey !in currentGroup.members,
+                    displayName = meta.memberNames[event.pubkey]?.trim().orEmpty().take(50)
+                )
+                return creatorKnown
+            }
+
+            val finalMembers = if (isCreator) {
+                meta.members
+            } else {
+                ((currentGroup?.members ?: emptyList()) + event.pubkey).distinct()
+            }
+            val finalName = if (isCreator) meta.name else (currentGroup?.name ?: meta.name)
+            val finalRelays = if (isCreator) meta.relays else (currentGroup?.relays ?: meta.relays)
+            val finalMemberNames = if (isCreator) {
+                meta.memberNames
+            } else {
+                (currentGroup?.memberNames ?: emptyMap()).toMutableMap().apply {
+                    val authorName = meta.memberNames[event.pubkey]?.trim().orEmpty().take(50)
+                    if (authorName.isNotEmpty()) put(event.pubkey, authorName) else remove(event.pubkey)
+                }
+            }
+            val trustedCreatedBy = if (currentGroup != null &&
+                currentGroup.createdBy.isNotEmpty() &&
+                event.pubkey == currentGroup.createdBy
+            ) {
+                meta.createdBy.ifEmpty { event.pubkey }
+            } else {
+                ""
+            }
+
+            groupRepo.updateFromMeta(
+                groupId,
+                finalName,
+                finalMembers,
+                finalRelays,
+                event.createdAt,
+                trustedCreatedBy,
+                finalMemberNames
+            )
+        } catch (_: Exception) { }
+        return creatorKnown
     }
 
     private fun hexToBytes(hex: String): ByteArray? {

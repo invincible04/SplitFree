@@ -52,7 +52,7 @@ interface GroupDao {
      * @param description new description, or null to leave the stored one untouched (local
      *   mutations such as rotation / revocation / join do not carry one)
      * @param eventId id of the `group_meta` event being applied; `""` for callers without one
-     * @return number of rows updated: 1 if applied, 0 if ([eventTimestamp], [eventId]) was not newer
+     * @return 1 if applied; 0 if the row is missing, the clock is stale or a snapshot guard fails
      */
     @Query(
         "UPDATE `groups` SET name = :name, members = :members, relays = :relays, memberNames = :memberNames, " +
@@ -119,7 +119,7 @@ interface GroupDao {
      * `keyEpoch < :epoch` so a replay is a no-op. Deliberately leaves the creator watermark alone:
      * rotations are ordered by epoch, creator metas by `(lastMetaTimestamp, lastMetaEventId)`.
      *
-     * @return 1 if applied, 0 if the group is already at or past [epoch]
+     * @return 1 if applied; 0 if the row is missing, the epoch is not newer or a snapshot guard fails
      */
     @Query(
         "UPDATE `groups` SET keyEpoch = :epoch, members = :members, memberNames = :memberNames " +
@@ -218,5 +218,57 @@ interface GroupDao {
         createdBy: String,
         createdAt: Long,
         expectedMemberClocks: String? = null
+    ): Int
+
+    /**
+     * Clears roster fields and the creator watermark for replay when an older control record arrives.
+     * Keeps `memberClocks` so replay retains revocation tombstones, replacement links and rename clocks;
+     * other columns, including canonical projection facts, are unchanged.
+     *
+     * @return 1 if reset; 0 if the row is missing or its watermark is not ahead of the supplied clock
+     */
+    @Query(
+        "UPDATE `groups` SET members = '[]', memberNames = '{}', createdBy = '', " +
+            "lastMetaTimestamp = 0, lastMetaEventId = '' " +
+            "WHERE groupId = :groupId " +
+            "AND (lastMetaTimestamp > :eventTimestamp " +
+            "OR (lastMetaTimestamp = :eventTimestamp AND lastMetaEventId > :eventId))"
+    )
+    suspend fun resetRosterProjection(groupId: String, eventTimestamp: Long, eventId: String): Int
+
+    /** Facts and their complete projection land together; no intermediate cleared roster is observable. */
+    @Query(
+        "UPDATE `groups` SET name = :name, description = :description, members = :members, " +
+            "memberNames = :memberNames, memberClocks = :memberClocks, createdBy = :createdBy, " +
+            "createdAt = :createdAt, relays = :relays, keyEpoch = :epoch, " +
+            "lastMetaTimestamp = :timestamp, lastMetaEventId = :eventId, projectionJson = :projection " +
+            "WHERE groupId = :groupId AND projectionJson = :expectedProjection " +
+            "AND keyEpoch = :expectedEpoch AND members = :expectedMembers " +
+            "AND memberClocks = :expectedClocks AND memberNames = :expectedNames " +
+            "AND createdBy = :expectedCreator AND lastMetaTimestamp = :expectedTimestamp " +
+            "AND lastMetaEventId = :expectedEventId"
+    )
+    suspend fun writeProjection(
+        groupId: String,
+        name: String,
+        description: String,
+        members: String,
+        memberNames: String,
+        memberClocks: String,
+        createdBy: String,
+        createdAt: Long,
+        relays: String,
+        epoch: Int,
+        timestamp: Long,
+        eventId: String,
+        projection: String,
+        expectedProjection: String,
+        expectedEpoch: Int,
+        expectedMembers: String,
+        expectedClocks: String,
+        expectedNames: String,
+        expectedCreator: String,
+        expectedTimestamp: Long,
+        expectedEventId: String
     ): Int
 }

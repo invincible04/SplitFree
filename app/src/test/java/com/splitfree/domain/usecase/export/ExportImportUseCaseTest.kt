@@ -65,12 +65,16 @@ class ExportImportUseCaseTest {
         every { android.util.Log.w(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
-        // The relaxed repo would otherwise swallow the transaction body; run it like Room does.
+        // Execute the mocked transaction body; this does not model Room isolation or rollback.
         coEvery { eventRepo.withTransaction(captureLambda<suspend () -> Int>()) } coAnswers {
             lambda<suspend () -> Int>().captured.invoke()
         }
         // Import decrypts with the epoch key of each row when available; default to "not stored".
         coEvery { groupRepo.getGroupKeyForEpoch(any(), any()) } returns null
+        // Default mocks use legacy replay without persisted canonical projection or bootstrap support.
+        coEvery { groupRepo.resetRosterProjection(any(), any(), any()) } returns false
+        coEvery { groupRepo.hasCanonicalProjection(any()) } returns false
+        coEvery { groupRepo.mergeCreatorBootstrap(any(), any(), any(), any()) } returns false
     }
 
     @After
@@ -113,7 +117,7 @@ class ExportImportUseCaseTest {
             relays = listOf("wss://relay.test")
         )
 
-    /** A decrypted expense payload that is valid for [paidBy] as long as they are a member. */
+    /** Expense payload whose sole participant [paidBy] pays and bears the entire split. */
     private fun expenseJson(id: String = "uuid1", paidBy: String = memberPubkey, amount: Long = 100): String =
         """{"id":"$id","amount":$amount,"currency":"USD","description":"test","paid_by":"$paidBy",""" +
             """"split_type":"equal","split_among":[{"pubkey":"$paidBy","share":$amount}],"timestamp":1000}"""
@@ -156,7 +160,7 @@ class ExportImportUseCaseTest {
     // --- ExportGroupUseCase ---
 
     @Test
-    fun `export produces version 2 JSON whose MAC verifies under the exporter's identity key`() = runBlocking {
+    fun `export produces version 3 JSON whose MAC verifies under the exporter's identity key`() = runBlocking {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getById(groupId) } returns group
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
@@ -169,7 +173,7 @@ class ExportImportUseCaseTest {
         val result = useCase(groupId)
         val export = json.decodeFromString<SplitFreeExport>(result)
 
-        assertEquals(2, export.version)
+        assertEquals(SplitFreeExport.CURRENT_VERSION, export.version)
         assertEquals(groupId, export.groupId)
         assertEquals(1, export.events.size)
         assertEquals("evt1", export.events[0].eventId)
@@ -249,7 +253,13 @@ class ExportImportUseCaseTest {
         export.copy(hmac = independentMac(export, privKey))
 
     private fun buildExportJson(events: List<ExportedEvent>, hmac: String = "", gid: String = groupId): String {
-        val export = SplitFreeExport(version = 2, groupId = gid, exportedAt = 1700000000, events = events)
+        val export =
+            SplitFreeExport(
+                version = SplitFreeExport.CURRENT_VERSION,
+                groupId = gid,
+                exportedAt = 1700000000,
+                events = events
+            )
         val authenticated = if (hmac.isEmpty()) signed(export) else export.copy(hmac = hmac)
         return Json.encodeToString(SplitFreeExport.serializer(), authenticated)
     }
@@ -339,8 +349,8 @@ class ExportImportUseCaseTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects a newer version`() = runBlocking {
-        val v3 = """{"version":3,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
-        newImport()(v3)
+        val v4 = """{"version":4,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"abc"}"""
+        newImport()(v4)
         Unit
     }
 
@@ -355,7 +365,7 @@ class ExportImportUseCaseTest {
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects missing HMAC`() = runBlocking {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        val noHmac = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
+        val noHmac = """{"version":3,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":""}"""
         newImport()(noHmac)
         Unit
     }
@@ -373,17 +383,17 @@ class ExportImportUseCaseTest {
     @Test(expected = IllegalArgumentException::class)
     fun `import rejects invalid HMAC hex`() = runBlocking {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        val badJson = """{"version":2,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
+        val badJson = """{"version":3,"groupId":"$groupId","exportedAt":0,"events":[],"hmac":"xyz"}"""
         newImport()(badJson)
         Unit
     }
 
     // --- ImportGroupUseCase: the MAC covers the whole file and is bound to the identity ---
 
-    /** A fully populated, correctly signed export that the tamper tests mutate one field of. */
+    /** MAC-authenticated export with a signed event; tamper tests mutate its authenticated fields. */
     private fun signedFullExport(gid: String = groupId): SplitFreeExport = signed(
         SplitFreeExport(
-            version = 2,
+            version = SplitFreeExport.CURRENT_VERSION,
             groupId = gid,
             exportedAt = 1700000100,
             events = listOf(buildSignedExportedEvent(gid = gid)),
@@ -445,7 +455,13 @@ class ExportImportUseCaseTest {
     @Test
     fun `MAC signed by another identity is rejected and attributed to an identity mismatch`() {
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, 0) } returns groupKey
-        val export = SplitFreeExport(version = 2, groupId = groupId, exportedAt = 1700000100, events = emptyList())
+        val export =
+            SplitFreeExport(
+                version = SplitFreeExport.CURRENT_VERSION,
+                groupId = groupId,
+                exportedAt = 1700000100,
+                events = emptyList()
+            )
         val foreign = signed(export, privKey = strangerPrivKey)
 
         val e = assertThrows(IllegalArgumentException::class.java) {
@@ -680,9 +696,15 @@ class ExportImportUseCaseTest {
 
     private fun stubReplayRepo(snapshots: List<EventSnapshot>) {
         coEvery { groupRepo.getGroupKeyForEpoch(boundGroupId, any()) } returns groupKey
-        coEvery { groupRepo.getById(boundGroupId) } returns legacyGroup
-        coEvery { groupRepo.updateCreator(any(), any(), any()) } just Runs
+        // Like the real repository: a recorded creator is visible to the next read.
+        var current = legacyGroup
+        coEvery { groupRepo.getById(boundGroupId) } answers { current }
+        coEvery { groupRepo.updateCreator(boundGroupId, any(), any()) } answers {
+            if (current.createdBy.isEmpty()) current = current.copy(createdBy = secondArg(), createdAt = thirdArg())
+        }
         coEvery { groupRepo.updateFromMeta(any(), any(), any(), any(), any(), any(), any()) } returns true
+        coEvery { groupRepo.resetRosterProjection(any(), any(), any()) } returns false
+        coEvery { groupRepo.hasCanonicalProjection(any()) } returns false
         coEvery { eventRepo.getEventIds(boundGroupId) } returns emptyList()
         coEvery { eventRepo.insert(any<EventSnapshot>()) } just Runs
         coEvery { eventRepo.getEventsByGroup(boundGroupId) } returns snapshots
@@ -690,7 +712,7 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `replayPostImport sets createdBy only for the author the group id is bound to`() = runBlocking {
-        // Stranger publishes FIRST (earliest group_meta) and claims to be the creator.
+        // The earlier metadata claims a creator whose key is not bound to the group id.
         val strangerMeta = buildSignedExportedEvent(
             privateKey = strangerPrivKey,
             eventType = "group_meta",
@@ -719,7 +741,7 @@ class ExportImportUseCaseTest {
         assertEquals(2, count)
         coVerify(exactly = 1) { groupRepo.updateCreator(boundGroupId, memberPubkey, boundCreatedAt) }
         coVerify(exactly = 0) { groupRepo.updateCreator(any(), strangerPubkey, any()) }
-        // Stranger's meta was applied in restricted mode (name preserved, no createdBy) ...
+        // Unbound metadata must preserve the existing name and cannot assign a creator.
         coVerify {
             groupRepo.updateFromMeta(
                 boundGroupId,
@@ -731,7 +753,7 @@ class ExportImportUseCaseTest {
                 any()
             )
         }
-        // ... while the bound creator's meta was applied with full authority.
+        // Bound creator metadata may update the name, roster and creator.
         coVerify {
             groupRepo.updateFromMeta(
                 boundGroupId,
@@ -1012,7 +1034,7 @@ class ExportImportUseCaseTest {
         relays: List<String> = listOf("wss://relay.test")
     ): String {
         val export = SplitFreeExport(
-            version = 2,
+            version = SplitFreeExport.CURRENT_VERSION,
             groupId = gid,
             exportedAt = 1700000100,
             events = events,
@@ -1027,14 +1049,13 @@ class ExportImportUseCaseTest {
 
     @Test
     fun `fresh-device import restores events from every member by rebuilding membership first`() = runBlocking {
-        // The stranger created the group; I (memberPubkey) and a third person joined later.
+        // The creator is strangerPubkey; the backup owner and thirdPubkey are members.
         val createdAt = 1_690_000_000L
         val gid = GroupIdentity.derive(strangerPubkey, createdAt)
         val store = FakeStore()
         wireFakeStore(gid, store)
 
-        // Creator's group_meta arrived direct (signed). Its position in the file is AFTER the
-        // expenses, which is exactly what defeats a single-pass importer.
+        // Signed creator metadata follows the expenses in the file; membership must be rebuilt before filtering.
         val creatorMeta = buildSignedExportedEvent(
             privateKey = strangerPrivKey,
             eventType = "group_meta",
@@ -1043,7 +1064,7 @@ class ExportImportUseCaseTest {
             createdAt = createdAt + 5,
             gid = gid
         )
-        // My own expense (signed by me).
+        // The backup owner retains a directly signed expense.
         val mine = buildSignedExportedEvent(
             privateKey = memberPrivKey,
             expenseUuid = "u-me",
@@ -1051,7 +1072,7 @@ class ExportImportUseCaseTest {
             createdAt = createdAt + 10,
             gid = gid
         )
-        // Expenses from the two others arrived gift-wrapped: unsigned rumors, seal-marked rows.
+        // Model received gift wraps as unsigned rumors with seal-marked rows; no transport is exercised.
         val strangers = buildSealedRumorExportedEvent(
             privateKey = strangerPrivKey,
             expenseUuid = "u-stranger",
@@ -1086,7 +1107,7 @@ class ExportImportUseCaseTest {
         assertEquals(setOf(strangerPubkey, memberPubkey, thirdPubkey), restored.members.toSet())
         assertEquals(strangerPubkey, restored.createdBy)
         assertEquals("Trip", restored.name)
-        // Rumor rows keep their seal marker; my own event keeps its real signature.
+        // Restored rumors retain their seal marker; the backup owner's event retains its signature.
         assertEquals(sealMarker, store.events.single { it.pubkey == strangerPubkey && it.eventType == "expense" }.sig)
         assertEquals(sealMarker, store.events.single { it.pubkey == thirdPubkey }.sig)
         assertTrue(EventSnapshot.isThirdPartyVerifiable(store.events.single { it.pubkey == memberPubkey }.sig))
@@ -1619,9 +1640,9 @@ class ExportImportUseCaseTest {
         )
 
         assertEquals(3, count)
-        // The final membership no longer contains the third member ...
+        // Removing a member from the current roster must not erase their accepted history.
         assertEquals(setOf(strangerPubkey, memberPubkey), store.group!!.members.toSet())
-        // ... but their expense (accepted while they were a member) is still part of the history.
+        // The former member's expense remains stored.
         assertEquals(1, store.events.count { it.eventType == "expense" && it.pubkey == thirdPubkey })
     }
 

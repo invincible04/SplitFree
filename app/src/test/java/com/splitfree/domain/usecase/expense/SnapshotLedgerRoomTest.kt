@@ -11,6 +11,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -33,9 +34,9 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * Real SQLite, real [EventRepository], real signing and NIP-44 encryption. An expense that is inserted after
- * the snapshot's ledger read but before its publication must stay outside the snapshot's coverage, so that
- * snapshot-seeded and full-replay balances agree and the late expense is never lost.
+ * Room, signing and NIP-44 encryption with a mocked publisher. A scripted insert after the ledger read
+ * must remain outside snapshot coverage; snapshot-seeded and full replay must both count the late expense.
+ * This exercises a deterministic interleaving, not concurrent writers or relay publication.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -56,7 +57,7 @@ class SnapshotLedgerRoomTest {
     /** Row that the scripted repository commits right before the snapshot transaction opens. */
     private var arriving: EventEntity? = null
 
-    /** The real repository, except that [arriving] is committed just before any transaction opens. */
+    /** Delegates to Room after inserting [arriving], if set, before the next transaction. */
     private lateinit var repo: EventRepositoryContract
 
     @Before
@@ -85,6 +86,7 @@ class SnapshotLedgerRoomTest {
             relays = emptyList()
         )
         coEvery { groups.getGroupKeyForEpoch(groupId, 0) } returns key
+        coEvery { groups.retiredIdentities(groupId) } returns RetiredIdentities.NONE
         signer = EventSigner(identity)
     }
 

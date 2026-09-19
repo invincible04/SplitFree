@@ -65,9 +65,8 @@ constructor(
     /**
      * Result of [process].
      *
-     * @property stored true when the row is durably persisted: [IngestOutcome.APPLIED] and
-     *   [IngestOutcome.DEFERRED]. False for [IngestOutcome.REJECTED] and for a duplicate
-     *   ([IngestOutcome.ALREADY_APPLIED]), which persisted nothing new.
+     * @property stored true when a persisted row is applied or pending, including a retried row.
+     *   False for duplicates and rejections; a rejected effect may still leave a failed row for deduplication.
      * @property outcome what happened to the record; the vocabulary shared with the nearby wire protocol
      * @property reason short diagnostic for a non-applied outcome, never shown to users
      * @property eventId id of the inner (unwrapped) event, once it is known
@@ -101,9 +100,8 @@ constructor(
      * @param lenientTimestamp if true, allows events older than 30 days (for initial/full sync)
      * @param context why the event is being ingested; [IngestionContext.RECONCILIATION] implies
      *   [lenientTimestamp], skips the in-memory rate counters and admits pre-removal history
-     * @param expectedGroupId when set, the event (after unwrapping) must belong to exactly this group or
-     *   it is rejected before anything is read or written. A nearby session is authenticated for one
-     *   group; an envelope it delivers must not be able to mutate another.
+     * @param expectedGroupId when set, takes precedence over [knownGroupId]. An unwrapped event for
+     *   another group is rejected before event or group DB access; unwrapping may read identity storage.
      * @return [ProcessResult] with the [IngestOutcome] and, when stored, the event's metadata
      */
     @Suppress("UNUSED_PARAMETER")
@@ -177,8 +175,8 @@ constructor(
             return rejected("invalid timestamp", inner.id, eventType, authorHex)
         }
 
-        // 5. Rate limits, LIVE only: unsolicited traffic is bounded here, before any DB read so a flood
-        //    of junk costs only the in-memory counters. A reconciliation is bounded by its caller.
+        // 5. LIVE rate limits run after the duplicate lookup but before group reads and decryption.
+        //    Reconciliation is bounded by its caller instead.
         if (context == IngestionContext.LIVE) {
             if (!eventValidator.isWithinRateLimit(authorHex)) {
                 Log.w(TAG, "Rate-limiting events from $authorHex")
@@ -207,7 +205,7 @@ constructor(
 
         // 7. Decrypt: use cached self-join decryption if available, else try epoch keys
         val decryptedContent: Decrypted =
-            membershipResult.cachedDecrypted?.let { Decrypted(it, group.keyEpoch) }
+            membershipResult.cachedDecrypted?.let { Decrypted(it, membershipResult.cachedEpoch ?: group.keyEpoch) }
                 ?: decryptContent(inner.content, eventType, authorHex, group, groupId)
                 ?: run {
                     // There is no legitimate reason to store ciphertext we cannot read: the epoch
@@ -243,15 +241,23 @@ constructor(
         if (rules == BusinessRules.REJECTED) return rejected("business rule", inner.id, eventType, authorHex)
         val awaitsOriginal = rules == BusinessRules.MISSING_ORIGINAL
 
-        // 8b. Validate remote payloads before storing. Participants may include past members when
-        //     reconciling history; live traffic is checked against the current roster only.
+        // 8b. Settlement counterparties use the same history in live and catch-up ingestion; an
+        // offline peer must not reject a repayment an online peer accepted. This expands payload
+        // participants only: the author's membership and removal-epoch checks above still apply.
         val participants =
             if (context == IngestionContext.RECONCILIATION) {
                 group.members.toSet() + historical()
             } else {
                 group.members.toSet()
             }
-        when (validatePayload(eventType, decrypted, authorHex, expenseUuid, participants, inner.id)) {
+        var payloadVerdict = validatePayload(eventType, decrypted, authorHex, expenseUuid, participants, inner.id)
+        if (payloadVerdict == PayloadValidation.MISSING_PARTICIPANT &&
+            eventType == "settlement"
+        ) {
+            val withFormer = participants + membershipHistory.formerMembers(groupId)
+            payloadVerdict = validatePayload(eventType, decrypted, authorHex, expenseUuid, withFormer, inner.id)
+        }
+        when (payloadVerdict) {
             PayloadValidation.INVALID -> return rejected("invalid payload", inner.id, eventType, authorHex)
             PayloadValidation.MISSING_PARTICIPANT ->
                 return rejected("missing participant", inner.id, eventType, authorHex)
@@ -501,7 +507,7 @@ constructor(
 
     private data class Tags(val groupId: String?, val eventType: String, val expenseUuid: String?)
 
-    /** Reads the first `g`, `t` and `x` tags; the group comes from the signed event alone. */
+    /** Uses the first `g` and last `t`/`x` values; the caller cannot override the signed group tag. */
     private fun extractTags(inner: NostrEvent): Tags {
         var groupId: String? = null
         var eventType = "unknown"
@@ -571,7 +577,8 @@ constructor(
     private data class MembershipResult(
         val allowed: Boolean,
         val cachedDecrypted: String? = null,
-        val historical: Boolean = false
+        val historical: Boolean = false,
+        val cachedEpoch: Int? = null
     )
 
     private suspend fun validateMembership(
@@ -585,27 +592,25 @@ constructor(
     ): MembershipResult {
         if (authorHex !in group.members) {
             if (eventType == TYPE_KEY_REVOCATION) {
-                // A revocation and the replacement metadata it travels with are both signed by the old
-                // key, and the metadata may land first: the roster then already names the successor and
-                // the old key is nobody here. Its revocation must still tombstone it, or the compromised
-                // key, which holds the unrotated group key, could rejoin. Admit exactly that case: sealed
-                // under the current key (a removed member has only older ones) and naming as successor an
-                // identity that is already a member (so the payload can add nobody). Anything else is a
-                // stranger's or a not-yet-joined member's revocation and stays retryable, unstored.
-                val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return MembershipResult(false)
-                val decryptedContent = tryDecrypt(inner.content, key)
-                val completesTransition = try {
-                    decryptedContent != null &&
-                        json.decodeFromString<KeyRevocation>(decryptedContent).let {
-                            it.oldPubkey == authorHex && it.newPubkey in group.members
-                        }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Revocation check failed for $authorHex in $groupId: ${e.message}")
-                    false
-                }
-                if (completesTransition) {
-                    Log.i(TAG, "Admitting key_revocation from replaced identity ${authorHex.take(8)} in $groupId")
-                    return MembershipResult(true, decryptedContent)
+                // Admit either an old-key revocation completing a current-epoch replacement, or a
+                // competing revocation with successor proof and a prior retirement in its retained epoch.
+                // This admits control evidence, not a self-join; post-processing still checks authority.
+                for (epoch in group.keyEpoch downTo 0) {
+                    val key = groupRepo.getGroupKeyForEpoch(groupId, epoch) ?: continue
+                    val plaintext = tryDecrypt(inner.content, key) ?: continue
+                    val revocation = try {
+                        json.decodeFromString<KeyRevocation>(plaintext)
+                    } catch (
+                        _: Exception
+                    ) {
+                        continue
+                    }
+                    val completesTransition = epoch == group.keyEpoch && revocation.newPubkey in group.members
+                    val competes =
+                        groupRepo.hasRevocationInEpoch(groupId, authorHex, epoch) && revocation.provesSuccessor(groupId)
+                    if (revocation.isAuthorizedBy(authorHex) && (completesTransition || competes)) {
+                        return MembershipResult(true, plaintext, cachedEpoch = epoch)
+                    }
                 }
                 Log.w(TAG, "Rejecting key_revocation from non-member $authorHex in group $groupId")
                 return MembershipResult(false)
@@ -628,19 +633,47 @@ constructor(
         if (eventType == "group_meta") {
             val isCreator = group.createdBy.isNotEmpty() && authorHex == group.createdBy
             if (!isCreator && authorHex !in group.members) {
+                val historical = decryptContent(inner.content, eventType, authorHex, group, groupId)
+                val meta = historical?.let {
+                    try {
+                        json.decodeFromString<GroupMeta>(it.content)
+                    } catch (_: kotlinx.serialization.SerializationException) {
+                        null
+                    } catch (_: IllegalArgumentException) {
+                        null
+                    }
+                }
+                if (historical != null && meta != null && meta.creatorTransitions.isNotEmpty()) {
+                    val preview = groupRepo.previewCreatorBootstrap(
+                        groupId,
+                        meta.originalCreator,
+                        meta.createdAt,
+                        meta.creatorTransitions
+                    )
+                    val carriesProof = meta.creatorTransitions.any {
+                        it.oldPubkey == authorHex && it.newPubkey == meta.createdBy
+                    }
+                    if (preview != null && (preview.createdBy == authorHex || carriesProof)) {
+                        return MembershipResult(true, historical.content, cachedEpoch = historical.epoch)
+                    }
+                }
+                if (historical != null &&
+                    meta != null &&
+                    groupRepo.isHistoricalCreatorMeta(group, meta, authorHex, inner.createdAt, inner.id)
+                ) {
+                    return MembershipResult(true, historical.content, cachedEpoch = historical.epoch)
+                }
                 // A tombstoned key cannot come back as a member, however it was sealed.
                 if (groupRepo.resolveRoster(groupId, listOf(authorHex)) != listOf(authorHex)) {
                     Log.w(TAG, "Rejecting group_meta from revoked identity ${authorHex.take(8)} in group $groupId")
                     return MembershipResult(false)
                 }
                 val key = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: return MembershipResult(false)
-                val decryptedContent = tryDecrypt(inner.content, key)
-                // A self-join is a meta, sealed under the CURRENT group key (so its author holds an
-                // invite), whose roster adds nobody but its author. What it says about the name,
-                // relays or other members is irrelevant: applyMemberSelfUpdate only ever records the
-                // author's own membership and display name. Two members joining concurrently (each
-                // unaware of the other) or a joiner unaware of a recent rename are therefore admitted
-                // in any arrival order; a removed member cannot pass because they lack the current key.
+                val decryptedContent = historical?.takeIf { it.epoch == group.keyEpoch }?.content
+                    ?: tryDecrypt(inner.content, key)
+                // A self-join must use the current key and add nobody but its author. Omitted members
+                // and stale group fields are allowed: post-processing applies only the author's join/name,
+                // so concurrent joiners need not know about each other.
                 val isSelfJoin = try {
                     if (decryptedContent == null) {
                         false

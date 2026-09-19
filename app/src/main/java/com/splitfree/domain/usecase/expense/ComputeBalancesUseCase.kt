@@ -7,6 +7,7 @@ import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.expense.Settlement
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -31,10 +32,13 @@ import kotlinx.serialization.json.Json
  * only affects the original signed by the same pubkey, so a member reusing (or front-running) someone else's
  * UUID cannot alter or erase that person's expense. Both records are kept and the collision is logged.
  *
- * Money is all or nothing: a money event this device cannot read (missing epoch key, failed decryption,
- * malformed payload) or cannot add without overflow raises [BalanceUnavailableException] rather than being
- * skipped, so a caller never receives a partial total that looks authoritative. Snapshot and coverage are
- * derived from the same ledger list as the replay, never from a second read.
+ * Settlements are identified by `(author, settlement id)`. When one author signs several payloads under one
+ * id, the earliest by [EventSnapshot.CANONICAL_ORDER] is the only one counted, in any input order and with
+ * or without a snapshot: a snapshot that counted another version is ignored and the ledger replayed.
+ *
+ * A payload needed for replay or reversal must decrypt and parse, and arithmetic must not overflow;
+ * failures raise [BalanceUnavailableException] rather than returning partial totals. Covered or superseded
+ * expense payloads need not be opened. Snapshot selection and coverage use the same ledger list as replay.
  */
 class ComputeBalancesUseCase
 @Inject
@@ -69,7 +73,7 @@ constructor(
      *
      * @param groupId target group UUID
      * @return [BalanceResult] with per-member balances and the exact identities of deleted expenses.
-     * @throws BalanceUnavailableException if any money event is unreadable or a total overflows
+     * @throws BalanceUnavailableException if a payload needed for replay is unreadable or a total overflows
      */
     suspend fun computeWithExclusions(groupId: String): BalanceResult =
         computeWithExclusions(groupId, eventRepo.getEventsByGroup(groupId))
@@ -82,21 +86,34 @@ constructor(
      * [useSnapshots] false every event is replayed and no snapshot is trusted, which is what a new snapshot
      * needs so that its balances describe exactly the ids it hashes.
      *
+     * [resolveIdentities] folds totals through [RetiredIdentities] after replay. Snapshot authors pass
+     * false so stored totals retain the signed identities; readers apply their current succession
+     * evidence equally to snapshot-seeded and fully replayed balances.
+     *
      * @param groupId target group UUID
      * @param events applied events of [groupId], in any order
      * @param useSnapshots false to ignore any snapshot in [events] and replay everything
-     * @throws BalanceUnavailableException if any money event is unreadable or a total overflows
+     * @param resolveIdentities false to keep every total under the exact key the signed events name
+     * @throws BalanceUnavailableException if a payload needed for replay is unreadable or a total overflows
      */
     suspend fun computeWithExclusions(
         groupId: String,
         events: List<EventSnapshot>,
-        useSnapshots: Boolean = true
+        useSnapshots: Boolean = true,
+        resolveIdentities: Boolean = true
     ): BalanceResult = withContext(Dispatchers.Default) {
         val keyCache = mutableMapOf<Int, String>()
         // Key: (pubkey, currency) -> net amount
         val balances = mutableMapOf<Pair<String, String>, Long>()
 
-        val covered = if (useSnapshots) seedFromSnapshot(groupId, events, keyCache, balances) else emptySet()
+        var covered = if (useSnapshots) seedFromSnapshot(groupId, events, keyCache, balances) else emptySet()
+        if (covered.isNotEmpty() && snapshotCountsNonCanonicalSettlement(events, covered)) {
+            // The seed counts a noncanonical settlement version. Replay instead of trusting that amount;
+            // reversing it would require decrypting the covered payload anyway.
+            Log.w(TAG, "Snapshot counts a settlement version that is not canonical, replaying every event")
+            balances.clear()
+            covered = emptySet()
+        }
         val index = ExpenseIndex(events, covered)
 
         for (identity in index.identities) {
@@ -110,13 +127,40 @@ constructor(
 
         applySettlements(events, covered, groupId, keyCache, balances)
 
+        val attributed =
+            if (resolveIdentities) foldRetiredIdentities(balances, groupRepo.retiredIdentities(groupId)) else balances
+
         BalanceResult(
-            balances = balances.map { (key, net) -> Balance(key.first, net, key.second) },
+            balances = attributed.map { (key, net) -> Balance(key.first, net, key.second) },
             excludedExpenses = index.excludedExpenses()
         )
     }
 
     suspend operator fun invoke(groupId: String): List<Balance> = computeWithExclusions(groupId).balances
+
+    /**
+     * Re-keys every `(pubkey, currency)` total to [RetiredIdentities.resolve] of its pubkey, summing the totals
+     * that land on one successor. Keys with no successor, including revoked identities nobody replaced, are
+     * kept as they are so a departed member's position is never silently dropped.
+     *
+     * @throws BalanceUnavailableException if two positions folded together overflow
+     */
+    private fun foldRetiredIdentities(
+        balances: Map<Pair<String, String>, Long>,
+        retired: RetiredIdentities
+    ): Map<Pair<String, String>, Long> {
+        if (retired.successors.isEmpty()) return balances
+        val folded = LinkedHashMap<Pair<String, String>, Long>()
+        for ((key, net) in balances) {
+            val target = retired.resolve(key.first) to key.second
+            try {
+                folded[target] = Math.addExact(folded[target] ?: 0L, net)
+            } catch (e: ArithmeticException) {
+                throw BalanceUnavailableException("Balances of ${key.first.take(8)} and its successor overflow", e)
+            }
+        }
+        return folded
+    }
 
     /**
      * Seeds [balances] from the latest snapshot in [events] if it is trustworthy: authored by the group creator
@@ -210,6 +254,11 @@ constructor(
      * seed the dedup set from `(pubkey, x tag)` without decryption; snapshot admission guarantees every
      * covered row is present locally.
      *
+     * When one author signs several payloads under one settlement id, the canonical version is the earliest
+     * by [EventSnapshot.CANONICAL_ORDER]; pending rows are visited in that order so the result never depends
+     * on storage or input order, and [snapshotCountsNonCanonicalSettlement] guarantees that a trusted snapshot
+     * counted the same version.
+     *
      * @throws BalanceUnavailableException if a settlement is unreadable, malformed or overflows a total
      */
     private suspend fun applySettlements(
@@ -219,7 +268,9 @@ constructor(
         keyCache: MutableMap<Int, String>,
         balances: MutableMap<Pair<String, String>, Long>
     ) {
-        val pending = events.filter { it.eventType == "settlement" && it.eventId !in covered }
+        val pending = events
+            .filter { it.eventType == "settlement" && it.eventId !in covered }
+            .sortedWith(EventSnapshot.CANONICAL_ORDER)
         if (pending.isEmpty()) return
         // Key: (author pubkey, settlement id)
         val seenSettlements = events
@@ -244,6 +295,25 @@ constructor(
                 throw BalanceUnavailableException("Settlement ${e.eventId} overflows a balance", ex)
             }
         }
+    }
+
+    /**
+     * True if the snapshot covers some version of a settlement `(author, x tag)` while the canonical version
+     * of that settlement, the earliest by [EventSnapshot.CANONICAL_ORDER], is a local row it does not cover.
+     * The creator then counted a payload full replay would skip, and its seed must not be trusted. Decided
+     * from metadata alone: covered rows are never decrypted.
+     */
+    private fun snapshotCountsNonCanonicalSettlement(events: List<EventSnapshot>, covered: Set<String>): Boolean {
+        val canonical = HashMap<Pair<String, String>, EventSnapshot>()
+        val coveredKeys = HashSet<Pair<String, String>>()
+        for (e in events) {
+            if (e.eventType != "settlement") continue
+            val key = e.pubkey to (e.expenseUuid ?: continue)
+            if (e.eventId in covered) coveredKeys += key
+            val current = canonical[key]
+            if (current == null || EventSnapshot.CANONICAL_ORDER.compare(e, current) < 0) canonical[key] = e
+        }
+        return coveredKeys.any { canonical.getValue(it).eventId !in covered }
     }
 
     /**
@@ -388,7 +458,7 @@ constructor(
     companion object {
         private const val TAG = "ComputeBalances"
 
-        /** A snapshot with fewer hashes than this cannot be meaningfully verified. */
+        /** Minimum coverage accepted for snapshot seeding; smaller ledgers are replayed. */
         private const val MIN_SNAPSHOT_HASHES = 10
 
         /** The only hash form a snapshot may carry: [HashUtil.eventHashPrefix] of an event id. */
@@ -397,9 +467,8 @@ constructor(
 }
 
 /**
- * Raised when a group's balances cannot be stated in full: a money event is unreadable on this device
- * (missing epoch key, failed decryption, malformed payload) or a total overflows. Callers present the
- * balances as unavailable and offer a retry; they never fall back to a partial total.
+ * A payload needed to compute balances is unreadable, or a total overflows. Callers must present
+ * balances as unavailable rather than substituting a partial total.
  */
 class BalanceUnavailableException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 

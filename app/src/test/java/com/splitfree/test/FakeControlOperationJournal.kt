@@ -27,6 +27,11 @@ class FakeControlOperationJournal : ControlOperationJournalContract {
         check(operation.preparedJson == expectedPreparedJson)
         operations[id] = operation.copy(preparedJson = preparedJson)
     }
+    override suspend fun move(operation: ControlOperation, id: String, kind: String) {
+        check(operations[operation.id] == operation && id !in operations)
+        operations[id] = operation.copy(id = id, kind = kind)
+        operations.remove(operation.id)
+    }
     override suspend fun complete(id: String) {
         operations.remove(id)
     }

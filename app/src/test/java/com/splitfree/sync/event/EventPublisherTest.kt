@@ -90,6 +90,7 @@ class EventPublisherTest {
     @Before
     fun setup() = runBlocking {
         every { identity.hasPendingKeyPair() } returns false
+        every { identity.stagedIdentitySwitch() } returns null
         every { identity.getPublicKeyHex() } returns myPub
         every { keyStore.getString(any(), any()) } returns "group-key"
         every { giftWrap.enabled } returns true
@@ -122,7 +123,8 @@ class EventPublisherTest {
                 giftWrap,
                 groupRepo,
                 identity,
-                db
+                db,
+                mockk(relaxed = true)
             )
     }
 
@@ -153,10 +155,18 @@ class EventPublisherTest {
                 tags = listOf(listOf("d", address), listOf("g", firstArg()), listOf("t", secondArg()))
             )
         }
-        return ExpenseRepository(db.eventDao(), groupRepo, encryption, identity, signer, publisher)
+        return ExpenseRepository(
+            db.eventDao(),
+            groupRepo,
+            encryption,
+            identity,
+            signer,
+            publisher,
+            MembershipHistory(db.eventDao(), groupRepo, identity)
+        )
     }
 
-    /** A signed event addressed under [commandId], as [EventSigner.createSignedCommandEvent] would produce. */
+    /** Command-address fixture with a dummy signature; tests publication bookkeeping, not signing. */
     private fun commandEvent(id: String, type: String, commandId: String, createdAt: Long = 1000) = event.copy(
         id = id,
         createdAt = createdAt,
@@ -292,13 +302,8 @@ class EventPublisherTest {
         val encryption = mockk<GroupEncryption>()
         every { encryption.generateGroupKey() } returns "rotated-key"
         every { encryption.encrypt(any(), "rotated-key") } answers { "meta:${firstArg<String>()}" }
-        val signer = mockk<EventSigner>()
-        every { signer.createSignedEvent(any(), "key_rotation", any(), any(), any()) } answers {
-            event.copy(id = UUID.randomUUID().toString(), pubkey = creator, content = thirdArg())
-        }
-        every { signer.createSignedEvent(any(), "group_meta", any(), any()) } answers {
-            event.copy(id = "post-rotation-meta", pubkey = creator, content = thirdArg())
-        }
+        every { encryption.decrypt(any(), "rotated-key") } answers { firstArg<String>().removePrefix("meta:") }
+        val signer = EventSigner(identity)
 
         RotateGroupKeyUseCase(
             groupRepo,
@@ -577,7 +582,7 @@ class EventPublisherTest {
         assertEquals(3, queued)
         assertEquals(5000, db.outboxDao().count())
         verify(exactly = 3) { throttler.enqueue(any()) }
-        // Every queued row is a genuine redelivery wrap, not a pre-existing filler row.
+        // Every queued row came from the mock rewrap, not a pre-existing filler row.
         val redeliveries = db.outboxDao().getAll().filter { it.eventId.startsWith("exp") }
         assertEquals(3, redeliveries.size)
     }

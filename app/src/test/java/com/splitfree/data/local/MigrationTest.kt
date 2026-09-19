@@ -30,8 +30,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.SQLiteMode
 
 /**
- * Opens seeded v1 and v3 fixture database files through Room's schema validation. The v3 fixture uses the
- * exported schema and production revision triggers; migration must retain every row and trigger.
+ * Opens seeded v1, v3 and v4 files through Room's v5 schema validation. The v3 fixture uses the
+ * exported schema and production revision triggers; the v4 fixture adds relay cursors to it.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -63,17 +63,22 @@ class MigrationTest {
 
     private fun openCurrent(name: String = dbName): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5
+            )
             .addCallback(AppDatabase.SYNC_REVISION_CALLBACK)
             .allowMainThreadQueries()
             .build()
             .also { db = it }
 
     @Test
-    fun `migrated database reports version 4`() {
+    fun `migrated database reports version 5`() {
         val migrated = openCurrent()
 
-        assertEquals(4, migrated.openHelper.readableDatabase.version)
+        assertEquals(5, migrated.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -178,8 +183,7 @@ class MigrationTest {
 
     @Test
     fun `migration does not run the destructive fallback`() = runBlocking {
-        // Sanity check on the fixture: without the migration Room must refuse to open v1 as the current version
-        // rather than silently wiping it.
+        // Without a registered migration, opening v1 must fail rather than wipe its data.
         val failure = runCatching {
             Room.databaseBuilder(context, AppDatabase::class.java, dbName)
                 .allowMainThreadQueries()
@@ -197,7 +201,7 @@ class MigrationTest {
         db?.close()
         db = null
 
-        // ...and with it, nothing was lost.
+        // Registering the migration recovers the seeded group.
         assertNotNull(openCurrent().groupDao().getById("g1"))
     }
 
@@ -216,7 +220,7 @@ class MigrationTest {
         assertEquals(EventEntity.APPLY_STATE_APPLIED, prod.eventDao().getEvent("e1")!!.applyState)
         assertEquals(1, prod.outboxDao().count())
         assertNull(prod.deliveryDao().get("nope"))
-        assertEquals(4, prod.openHelper.readableDatabase.version)
+        assertEquals(5, prod.openHelper.readableDatabase.version)
     }
 
     @Test
@@ -268,17 +272,22 @@ class MigrationTest {
     }
 
     @Test
-    fun `v3 to v4 preserves every v3 table and revision trigger without trusting global sync`() = runBlocking {
+    fun `v3 to v5 preserves every v3 table and revision trigger without trusting global sync`() = runBlocking {
         val fixture = createV3Database(dbName)
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_3_4)
+            .addMigrations(AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5)
             .allowMainThreadQueries()
             .build()
             .also { db = it }
         val sql = migrated.openHelper.writableDatabase
 
-        assertEquals(4, sql.version)
-        assertEquals(fixture.rows, tableRows(sql, fixture.rows.keys))
+        assertEquals(5, sql.version)
+        assertEquals(
+            fixture.rows,
+            tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
+                if (table == "groups") rows.map { it.dropLast(1) } else rows
+            }
+        )
         assertEquals(9, fixture.triggers.size)
         assertEquals(fixture.triggers, triggerDefinitions(sql))
         val cursors = RelaySyncCursors(migrated)
@@ -307,15 +316,46 @@ class MigrationTest {
     }
 
     @Test
-    fun `DatabaseModule registers direct v3 to v4 migration without data loss`() = runBlocking {
+    fun `DatabaseModule registers v3 to v5 migration without data loss`() = runBlocking {
         val fixture = createV3Database(PROD_DB_NAME)
         val migrated = DatabaseModule.provideDatabase(context).also { db = it }
         val sql = migrated.openHelper.readableDatabase
 
-        assertEquals(4, sql.version)
-        assertEquals(fixture.rows, tableRows(sql, fixture.rows.keys))
+        assertEquals(5, sql.version)
+        assertEquals(
+            fixture.rows,
+            tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
+                if (table == "groups") rows.map { it.dropLast(1) } else rows
+            }
+        )
         assertEquals(fixture.triggers, triggerDefinitions(sql))
         assertTrue(migrated.relaySyncCursorDao().get("g1", "alice").isEmpty())
+    }
+
+    @Test
+    fun `v4 upgrade preserves all data and adds empty recovery publications`() = runBlocking {
+        val fixture = createV3Database(dbName)
+        val raw = SQLiteDatabase.openDatabase(context.getDatabasePath(dbName).path, null, SQLiteDatabase.OPEN_READWRITE)
+        raw.execSQL(
+            "CREATE TABLE relay_sync_cursors (groupId TEXT NOT NULL, relayUrl TEXT NOT NULL, " +
+                "recipientPubkey TEXT NOT NULL, throughTimestamp INTEGER NOT NULL, PRIMARY KEY(groupId,relayUrl,recipientPubkey))"
+        )
+        raw.execSQL("INSERT INTO relay_sync_cursors VALUES ('g1','wss://relay.test','alice',123)")
+        raw.version = 4
+        raw.close()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
+            .addMigrations(AppDatabase.MIGRATION_4_5).allowMainThreadQueries().build().also { db = it }
+        val sql = migrated.openHelper.readableDatabase
+        assertEquals(5, sql.version)
+        assertEquals(
+            fixture.rows,
+            tableRows(sql, fixture.rows.keys).mapValues { (table, rows) ->
+                if (table == "groups") rows.map { it.dropLast(1) } else rows
+            }
+        )
+        assertEquals("", migrated.groupDao().getById("g1")!!.projectionJson)
+        assertNull(migrated.displayNameDao().getIntent("alice"))
+        assertEquals(fixture.triggers, triggerDefinitions(sql))
     }
 
     private fun createV3Database(name: String): V3Fixture {

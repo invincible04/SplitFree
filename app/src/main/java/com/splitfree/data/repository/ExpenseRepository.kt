@@ -16,6 +16,7 @@ import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.MembershipHistoryContract
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,7 +44,8 @@ constructor(
     private val encryption: GroupEncryption,
     private val identity: IdentityContract,
     private val signer: EventSigner,
-    private val eventPublisher: EventPublisherContract
+    private val eventPublisher: EventPublisherContract,
+    private val membershipHistory: MembershipHistoryContract
 ) : ExpenseRepositoryContract {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -54,10 +56,8 @@ constructor(
     }
 
     /**
-     * The author is pinned once up front and re-verified exactly once more, immediately before the
-     * publish. Every identity change in between is caught by that final check (the signed event's
-     * pubkey is compared as well), so no intermediate re-checks are needed; each one would cost
-     * a Keystore round-trip.
+     * Pins the author for saved-command lookup and verifies both the active identity and signed
+     * event before publication. These checks detect mismatches, not every intervening identity switch.
      */
     override suspend fun addExpense(expense: Expense, groupId: String, expectedAuthorPubkey: String?) {
         val author = checkedAuthor(expectedAuthorPubkey)
@@ -189,20 +189,33 @@ constructor(
         }
     }
 
+    /**
+     * The author must be a current member and a settlement party. A counterparty established by
+     * [MembershipHistoryContract.formerMembers] is also allowed so leaving does not strand balances.
+     */
     override suspend fun addSettlement(settlement: Settlement, groupId: String) {
         val myPubkey = checkedAuthor(null)
         require(settlement.from == myPubkey || settlement.to == myPubkey) {
             "You can only record settlements you're involved in"
         }
+        require(settlement.from != settlement.to) { "A settlement needs two different parties" }
         require(settlement.id.isNotBlank()) { "Settlement ID must not be blank" }
         require(settlement.amount > 0) { "Settlement amount must be positive" }
         require(settlement.amount <= MAX_AMOUNT) { "Settlement amount exceeds maximum" }
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(myPubkey in group.members) { "You are no longer a member of this group" }
-        require(settlement.from in group.members) { "Payer is no longer a member of this group" }
-        require(settlement.to in group.members) { "Recipient is no longer a member of this group" }
-        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
+        val counterparty = if (settlement.from == myPubkey) settlement.to else settlement.from
+        if (counterparty !in group.members) {
+            require(counterparty in membershipHistory.formerMembers(groupId)) {
+                if (counterparty == settlement.from) {
+                    "Payer is not a member of this group"
+                } else {
+                    "Recipient is not a member of this group"
+                }
+            }
+        }
+        // Pin encryption to the loaded epoch; the legacy un-epoched fallback is valid only at epoch 0.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Settlement.serializer(), settlement)
         val encrypted = encryption.encrypt(plaintext, groupKey)
@@ -234,7 +247,7 @@ constructor(
 
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
-        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
+        // Pin encryption to the loaded epoch; the legacy un-epoched fallback is valid only at epoch 0.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(
             MapSerializer(String.serializer(), String.serializer()),
@@ -296,7 +309,7 @@ constructor(
         val group = groupRepo.getById(groupId) ?: error("Group $groupId not found")
         require(author in group.members) { "You are no longer a member of this group" }
         validateExpensePayload(corrected, group)
-        // Encrypt with the loaded group's current epoch key only, never an older epoch's key or the un-epoched entry.
+        // Pin encryption to the loaded epoch; the legacy un-epoched fallback is valid only at epoch 0.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, group.keyEpoch) ?: error("Group key not found")
         val plaintext = json.encodeToString(Expense.serializer(), corrected)
         val encrypted = encryption.encrypt(plaintext, groupKey)

@@ -107,6 +107,19 @@ class InviteFreshnessTest {
     private fun invite(vm: GroupDetailViewModel) = InviteLinkCodec.decode(checkNotNull(vm.inviteLink.value))
 
     @Test
+    fun `excess creator history clears stale invite and reports explicit limit`() = runTest {
+        val vm = model()
+        assertNotNull(vm.inviteLink.value)
+        groups.value = initial.copy(
+            creatorTransitions = List(5) {
+                com.splitfree.domain.model.group.CreatorTransition("", 1, 0, creator, remaining, "", "")
+            }
+        )
+        assertNull(vm.inviteLink.value)
+        assertEquals(UiMessage.Res(R.string.invite_creator_history_too_long), vm.uiState.value.inviteError)
+    }
+
+    @Test
     fun `removal on the open screen refreshes epoch and key`() = runTest {
         val vm = model()
         assertEquals(0, invite(vm).keyEpoch)

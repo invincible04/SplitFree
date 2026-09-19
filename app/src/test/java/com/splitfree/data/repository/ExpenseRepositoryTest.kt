@@ -16,6 +16,7 @@ import com.splitfree.domain.repository.ExpenseRevisionConflictException
 import com.splitfree.domain.repository.ExpenseSaveConflictException
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.repository.MembershipHistoryContract
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -39,8 +40,12 @@ class ExpenseRepositoryTest {
     private val identity = mockk<IdentityContract>(relaxed = true)
     private val signer = mockk<EventSigner>(relaxed = true)
     private val eventPublisher = mockk<EventPublisherContract>(relaxed = true)
+    private val membershipHistory = mockk<MembershipHistoryContract>().also {
+        coEvery { it.formerMembers(any()) } returns emptySet()
+    }
 
-    private fun repo() = ExpenseRepository(eventDao, groupRepo, encryption, identity, signer, eventPublisher)
+    private fun repo() =
+        ExpenseRepository(eventDao, groupRepo, encryption, identity, signer, eventPublisher, membershipHistory)
 
     private val testEvent = NostrEvent("eid", "alice", 1, 30078, listOf(listOf("g", "g1")), "enc", "sig")
 
@@ -72,7 +77,7 @@ class ExpenseRepositoryTest {
         coEvery { eventDao.getEventsByTypeAndAuthor(any(), any(), any()) } returns emptyList()
     }
 
-    /** The current identity signs as [pubkey]; the repository compares the signed event against the pinned author. */
+    /** Stub identity and signer output as [pubkey] to exercise the repository's pinned-author checks. */
     private fun signsAs(pubkey: String) {
         every { identity.getPublicKeyHex() } returns pubkey
         every { signer.createSignedEvent(any(), any(), any(), any()) } returns testEvent.copy(pubkey = pubkey)
@@ -892,7 +897,7 @@ class ExpenseRepositoryTest {
         coVerify(exactly = 0) { eventPublisher.publishExpense(any(), any(), any()) }
     }
 
-    // --- identity lookups are a Keystore round-trip each; keep them to the two that matter ---
+    // --- identity lookup counts: pin the author and re-check before publication ---
 
     @Test
     fun `addExpense reads the identity exactly twice on the publish path`() = runTest {
@@ -959,7 +964,7 @@ class ExpenseRepositoryTest {
     private fun aliceDeletion(eventId: String) =
         EventEntity(eventId, "g1", "alice", 20, 30078, "enc", "expense_delete", "u1", "sig", receivedAt = 20)
 
-    /** Alice's committed correction row addressed under [commandId], with its signed JSON. */
+    /** Stub a saved correction addressed under [commandId]; its JSON has a dummy signature. */
     private fun savedCorrectionRow(commandId: String) = savedEvent().copy(
         eventId = "saved-$commandId",
         eventType = "expense_correction",

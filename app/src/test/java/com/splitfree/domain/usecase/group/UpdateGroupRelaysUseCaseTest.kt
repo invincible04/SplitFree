@@ -5,6 +5,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupMeta
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.NostrClientContract
@@ -20,6 +21,7 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,9 +74,7 @@ class UpdateGroupRelaysUseCaseTest {
         coEvery { groupRepo.getById("g1") } returns group
         coEvery { groupRepo.getGroupKeyForEpoch("g1", 0) } returns fakeGroupKey
         coEvery {
-            groupRepo.updateFromMeta(
-                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
-            )
+            groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any())
         } returns true
 
         useCase =
@@ -98,19 +98,16 @@ class UpdateGroupRelaysUseCaseTest {
 
         useCase("g1", newRelays)
 
-        // The local write is ordered by the published event's own (created_at, id) clock, with every
-        // other field carried over from the stored group so the LWW update changes only the relays.
+        // Submit the event's clock and stored-group precondition; the metadata changes only the relays.
         coVerify {
-            groupRepo.updateFromMeta(
+            groupRepo.applyAuthenticatedMeta(
                 groupId = "g1",
-                name = "Trip",
-                members = listOf(pubkey),
-                relays = newRelays,
-                eventTimestamp = 1000,
-                createdBy = pubkey,
-                memberNames = match { it[pubkey] == "Alice" },
-                description = "",
-                eventId = "evt1"
+                meta = metadata(group, newRelays),
+                author = pubkey,
+                timestamp = 1000,
+                eventId = "evt1",
+                epoch = 0,
+                expectedGroup = group
             )
         }
         verify { encryption.encrypt(match { it.contains("new.relay") && it.contains("another.relay") }, fakeGroupKey) }
@@ -123,7 +120,15 @@ class UpdateGroupRelaysUseCaseTest {
 
         coVerifyOrder {
             signer.createSignedEvent("g1", "group_meta", "encrypted", null)
-            groupRepo.updateFromMeta(any(), any(), any(), any(), 1000, any(), any(), any(), "evt1", any())
+            groupRepo.applyAuthenticatedMeta(
+                "g1",
+                metadata(group, listOf("wss://x.relay")),
+                pubkey,
+                1000,
+                "evt1",
+                0,
+                group
+            )
             eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta")
         }
     }
@@ -135,16 +140,14 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", listOf("wss://x.relay"))
 
         coVerify {
-            groupRepo.updateFromMeta(
+            groupRepo.applyAuthenticatedMeta(
                 "g1",
-                "Trip",
-                listOf(pubkey),
-                listOf("wss://x.relay"),
-                1000,
+                metadata(group.copy(description = "Ski week"), listOf("wss://x.relay")),
                 pubkey,
-                mapOf(pubkey to "Alice"),
-                "Ski week",
-                "evt1"
+                1000,
+                "evt1",
+                0,
+                group.copy(description = "Ski week")
             )
         }
     }
@@ -186,17 +189,14 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", listOf("wss://solo.relay"))
 
         coVerify {
-            groupRepo.updateFromMeta(
+            groupRepo.applyAuthenticatedMeta(
                 "g1",
-                any(),
-                any(),
-                eq(listOf("wss://solo.relay")),
-                any(),
-                any(),
-                any(),
-                any(),
-                any(),
-                any()
+                metadata(group, listOf("wss://solo.relay")),
+                pubkey,
+                1000,
+                "evt1",
+                0,
+                group
             )
         }
         coVerify { eventPublisher.publishDirect(any(), "g1", any(), "group_meta") }
@@ -223,7 +223,26 @@ class UpdateGroupRelaysUseCaseTest {
 
         useCase("g1", listOf("wss://r"))
 
-        verify { encryption.encrypt(any(), "epoch3key") }
+        verify {
+            encryption.encrypt(
+                match {
+                    Json.decodeFromString<GroupMeta>(it) ==
+                        metadata(group.copy(keyEpoch = 3), listOf("wss://r"))
+                },
+                "epoch3key"
+            )
+        }
+        coVerify {
+            groupRepo.applyAuthenticatedMeta(
+                "g1",
+                metadata(group.copy(keyEpoch = 3), listOf("wss://r")),
+                pubkey,
+                1000,
+                "evt1",
+                3,
+                group.copy(keyEpoch = 3)
+            )
+        }
         coVerify(exactly = 0) { groupRepo.getGroupKey(any()) }
     }
 
@@ -260,9 +279,7 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", relays)
 
         coVerify {
-            groupRepo.updateFromMeta(
-                "g1", any(), any(), relays, any(), any(), any(), any(), any(), any(), any(), any()
-            )
+            groupRepo.applyAuthenticatedMeta("g1", metadata(group, relays), pubkey, 1000, "evt1", 0, group)
             eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta")
         }
     }
@@ -274,9 +291,7 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", relays)
 
         coVerify {
-            groupRepo.updateFromMeta(
-                "g1", any(), any(), relays, any(), any(), any(), any(), any(), any(), any(), any()
-            )
+            groupRepo.applyAuthenticatedMeta("g1", metadata(group, relays), pubkey, 1000, "evt1", 0, group)
             eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta")
         }
     }
@@ -285,9 +300,7 @@ class UpdateGroupRelaysUseCaseTest {
     fun `a rejected local update throws instead of reconnecting publishing healing or reporting success`() =
         runBlocking {
             coEvery {
-                groupRepo.updateFromMeta(
-                    any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
-                )
+                groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any())
             } returns false
 
             val failure = runCatching { useCase("g1", listOf("wss://new.relay")) }.exceptionOrNull()
@@ -295,9 +308,7 @@ class UpdateGroupRelaysUseCaseTest {
             assertTrue(failure is IllegalStateException)
             assertTrue(failure!!.message!!.contains("could be saved"))
             coVerify(exactly = 1) {
-                groupRepo.updateFromMeta(
-                    any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
-                )
+                groupRepo.applyAuthenticatedMeta(any(), any(), any(), any(), any(), any(), any())
             }
             coVerify { listOf(eventPublisher, nostrClient, selfHeal) wasNot Called }
         }
@@ -311,14 +322,31 @@ class UpdateGroupRelaysUseCaseTest {
         useCase("g1", replacement)
 
         coVerify {
-            groupRepo.updateFromMeta(
-                "g1", any(), any(), replacement, any(), any(), any(), any(), any(), any(), any(), any()
+            groupRepo.applyAuthenticatedMeta(
+                "g1",
+                metadata(group, replacement),
+                pubkey,
+                1000,
+                "evt1",
+                0,
+                group.copy(relays = savedRelays)
             )
             nostrClient.connect(savedRelays + replacement)
             eventPublisher.publishDirect(fakeEvent, "g1", "encrypted", "group_meta")
             selfHeal("g1")
         }
     }
+
+    private fun metadata(source: Group, relays: List<String>) = GroupMeta(
+        source.name,
+        source.description,
+        source.createdBy,
+        source.createdAt,
+        source.members,
+        relays,
+        source.memberNames,
+        source.keyEpoch
+    )
 
     private fun budgetRelays(secondPathLength: Int = 107): List<String> = listOf(
         "wss://relay.example/" + "a".repeat(107),

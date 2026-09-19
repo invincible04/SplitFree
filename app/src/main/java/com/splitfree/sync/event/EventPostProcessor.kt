@@ -5,6 +5,7 @@ import com.splitfree.domain.invite.InviteLinkCodec
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -73,7 +74,7 @@ constructor(
             "group_meta" ->
                 handleGroupMeta(decrypted, authorHex, groupId, createdAt, nonCancellable, eventId, keyEpoch)
             "key_rotation" -> runSafe(nonCancellable, "key_rotation", groupId) {
-                when (rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt)) {
+                when (rotateGroupKey.handleKeyRotation(decrypted, authorHex, groupId, createdAt, eventId)) {
                     RotationOutcome.APPLIED -> PostProcessOutcome.APPLIED
                     RotationOutcome.DEFERRED_EPOCH_GAP,
                     RotationOutcome.DEFERRED_MEMBERSHIP -> PostProcessOutcome.DEFERRED
@@ -83,7 +84,22 @@ constructor(
                 }
             }
             "key_revocation" -> runSafe(nonCancellable, "key_revocation", groupId) {
-                if (revokeKey.handleRevocation(decrypted, authorHex, groupId, createdAt, eventId)) {
+                val applied = if (groupRepo.hasCanonicalProjection(groupId)) {
+                    val revocation = json.decodeFromString<KeyRevocation>(decrypted)
+                    revocation.isAuthorizedBy(authorHex) &&
+                        groupRepo.applyAuthenticatedRevocation(
+                            groupId,
+                            revocation.oldPubkey,
+                            revocation.newPubkey,
+                            createdAt,
+                            eventId,
+                            keyEpoch.takeUnless { it == Int.MAX_VALUE } ?: (groupRepo.getById(groupId)?.keyEpoch ?: 0),
+                            revocation.provesSuccessor(groupId)
+                        )
+                } else {
+                    revokeKey.handleRevocation(decrypted, authorHex, groupId, createdAt, eventId)
+                }
+                if (applied) {
                     PostProcessOutcome.APPLIED
                 } else {
                     PostProcessOutcome.REJECTED
@@ -111,15 +127,19 @@ constructor(
         }
         if (meta.members.isEmpty()) return@runSafe PostProcessOutcome.REJECTED
 
-        val currentGroup = groupRepo.getById(groupId)
+        val storedGroup = groupRepo.getById(groupId)
+        val currentGroup = if (meta.creatorTransitions.isNotEmpty()) {
+            groupRepo.previewCreatorBootstrap(groupId, meta.originalCreator, meta.createdAt, meta.creatorTransitions)
+                ?: return@runSafe PostProcessOutcome.REJECTED
+        } else {
+            storedGroup
+        }
         val isKnownCreator =
             currentGroup != null &&
                 currentGroup.createdBy.isNotEmpty() &&
                 authorHex == currentGroup.createdBy
-        // A group imported from a backup before its first creator-signed meta has no creator on
-        // record. The only author allowed to fill that gap is the one the group id was derived
-        // from, a claim anyone can verify, so a non-creator cannot promote themselves by
-        // publishing a group_meta.
+        // A missing creator binding requires the original creator's signature and a matching
+        // deterministic group id; self-declaring createdBy is not enough.
         val bootstrapsCreator =
             currentGroup != null &&
                 currentGroup.createdBy.isEmpty() &&
@@ -127,7 +147,54 @@ constructor(
                 GroupIdentity.matches(groupId, authorHex, meta.createdAt)
         val isCreator = currentGroup == null || isKnownCreator || bootstrapsCreator
 
-        if (isCreator) {
+        val canonical = groupRepo.hasCanonicalProjection(groupId)
+        val hasCreatorAuthority = if (canonical) {
+            isKnownCreator ||
+                (bootstrapsCreator && groupRepo.resolveRoster(groupId, listOf(authorHex)) == listOf(authorHex)) ||
+                (
+                    currentGroup != null &&
+                        groupRepo.isHistoricalCreatorMeta(currentGroup, meta, authorHex, createdAt, eventId)
+                    )
+        } else {
+            isCreator
+        }
+        // A retired author may relay its portable certificate in the journaled companion. This
+        // exempts only transport admission; the reducer still refuses post-retirement metadata writes.
+        val proofCarrier = meta.creatorTransitions.any { it.oldPubkey == authorHex && it.newPubkey == meta.createdBy }
+        if (currentGroup != null && !hasCreatorAuthority && !proofCarrier) {
+            // A retained old epoch does not authorize rejoining the current roster. Recheck this
+            // when retrying metadata that was admitted before the author was removed.
+            if (authorHex !in currentGroup.members &&
+                (
+                    keyEpoch != Int.MAX_VALUE &&
+                        keyEpoch != currentGroup.keyEpoch ||
+                        authorHex !in meta.members ||
+                        (meta.members.toSet() - currentGroup.members.toSet() - authorHex).isNotEmpty()
+                    )
+            ) {
+                return@runSafe PostProcessOutcome.REJECTED
+            }
+            // Reject rather than mark a tombstoned self-join applied: applied rows are offered to peers.
+            if (authorHex !in currentGroup.members &&
+                groupRepo.resolveRoster(groupId, listOf(authorHex)) != listOf(authorHex)
+            ) {
+                Log.w(TAG, "Rejecting self-join of revoked identity ${authorHex.take(8)} in $groupId")
+                return@runSafe PostProcessOutcome.REJECTED
+            }
+        }
+        if (canonical) {
+            if (!groupRepo.applyAuthenticatedMeta(
+                    groupId,
+                    meta,
+                    authorHex,
+                    createdAt,
+                    eventId,
+                    keyEpoch.takeUnless { it == Int.MAX_VALUE } ?: (currentGroup?.keyEpoch ?: 0)
+                )
+            ) {
+                return@runSafe PostProcessOutcome.REJECTED
+            }
+        } else if (isCreator) {
             if (!InviteLinkCodec.fitsInviteLink(meta.relays.filter(InviteLinkCodec::relayFits))) {
                 return@runSafe PostProcessOutcome.REJECTED
             }
@@ -145,26 +212,6 @@ constructor(
             )
         } else {
             val group = checkNotNull(currentGroup)
-            // A previously valid rename may be retried after removal. Its original epoch is proof
-            // of history, never permission to join the current roster. Recheck on every apply path.
-            if (authorHex !in group.members &&
-                (
-                    keyEpoch != Int.MAX_VALUE &&
-                        keyEpoch != group.keyEpoch ||
-                        authorHex !in meta.members ||
-                        (meta.members.toSet() - group.members.toSet() - authorHex).isNotEmpty()
-                    )
-            ) {
-                return@runSafe PostProcessOutcome.REJECTED
-            }
-            // A join by a tombstoned key is refused outright rather than stored as a no-op: the row
-            // would otherwise be offered to peers as a valid self-join.
-            if (authorHex !in group.members &&
-                groupRepo.resolveRoster(groupId, listOf(authorHex)) != listOf(authorHex)
-            ) {
-                Log.w(TAG, "Rejecting self-join of revoked identity ${authorHex.take(8)} in $groupId")
-                return@runSafe PostProcessOutcome.REJECTED
-            }
             applyMemberSelfMeta(
                 meta,
                 authorHex,
@@ -176,18 +223,29 @@ constructor(
             )
         }
 
-        // Members that just appeared could not decrypt any gift wrap I published before now,
-        // so re-deliver my history to them. This also covers the creator's solo period: the
-        // expenses added before anyone joined produced zero deliveries, and the first member's
-        // self-join group_meta lands here with newMembers = {them}.
-        //
-        // Diff the PERSISTED member list, not the meta's: both write paths are ordered (LWW
-        // watermark for the creator, per-member clock for self-updates), and a stale meta replayed
-        // from a relay may still list someone removed by a later rotation. Wrapping my history for
-        // them would hand it to a non-member.
-        val persistedMembers = groupRepo.getById(groupId)?.members?.toSet() ?: emptySet()
+        // Use the persisted projection for relay migration and membership changes, not the payload:
+        // stale metadata may name removed members. Newly persisted members need fresh gift wraps of
+        // authored history, including expenses created before the group had any other recipients.
+        val persisted = groupRepo.getById(groupId)
+        if (canonical &&
+            hasCreatorAuthority &&
+            currentGroup != null &&
+            persisted != null &&
+            currentGroup.relays.toSet() != persisted.relays.toSet()
+        ) {
+            appScope.launch {
+                try {
+                    selfHeal(groupId)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Relay migration deferred for $groupId: ${e.message}")
+                }
+            }
+        }
+        val persistedMembers = persisted?.members?.toSet() ?: emptySet()
         val newMembers =
-            persistedMembers - (currentGroup?.members?.toSet() ?: emptySet()) - identity.getPublicKeyHex()
+            persistedMembers - (storedGroup?.members?.toSet() ?: emptySet()) - identity.getPublicKeyHex()
         if (newMembers.isNotEmpty()) {
             Log.i(TAG, "${newMembers.size} new member(s) in $groupId, re-delivering authored history")
             appScope.launch {
@@ -204,11 +262,11 @@ constructor(
     }
 
     /**
-     * The creator's (or a bootstrapping / first-seen) meta is authoritative for the group: name,
-     * relays, names and description come from the payload, ordered by the LWW watermark
-     * `(createdAt, eventId)` inside [GroupRepositoryContract.updateFromMeta]. The roster is taken only
-     * when [applyRoster]: a meta sealed under an older key epoch predates a rotation and must not
-     * re-add whoever that rotation removed (or drop whoever it kept).
+     * Legacy metadata path; canonical groups use the authenticated reducer instead.
+     *
+     * - [GroupRepositoryContract.updateFromMeta] orders creator fields by `(createdAt, eventId)`;
+     *   a member's newer self-rename retains precedence over the creator's name map.
+     * - [applyRoster] and the repository's epoch guard prevent old-key metadata from undoing a rotation.
      */
     private suspend fun applyCreatorMeta(
         meta: GroupMeta,
@@ -268,8 +326,8 @@ constructor(
     }
 
     /**
-     * A non-creator's meta may only speak for its author: joining the group and setting their own
-     * display name. It goes through [GroupRepositoryContract.applyMemberSelfUpdate], which orders it
+     * Legacy non-creator metadata may only join its author and update their display name.
+     * [GroupRepositoryContract.applyMemberSelfUpdate] orders it
      * by the author's own `(createdAt, eventId)` clock and never advances the creator's watermark, so a
      * member's future-dated rename can no longer block an older-but-authoritative creator meta.
      *
@@ -320,4 +378,19 @@ constructor(
     companion object {
         private const val TAG = "EventPostProcessor"
     }
+}
+
+internal suspend fun GroupRepositoryContract.isHistoricalCreatorMeta(
+    group: Group,
+    meta: GroupMeta,
+    author: String,
+    timestamp: Long,
+    eventId: String
+): Boolean {
+    // An old key's rootless self-join must not masquerade as creator history by backdating its event.
+    if (meta.createdAt <= 0 || meta.createdAt != group.createdAt || meta.createdBy.isEmpty()) return false
+    if (!isHistoricalCreator(group.id, author, timestamp, eventId)) return false
+    if (meta.createdBy == author) return true
+    val retired = retiredIdentities(group.id)
+    return author in retired.revoked && retired.successors[author] == meta.createdBy
 }

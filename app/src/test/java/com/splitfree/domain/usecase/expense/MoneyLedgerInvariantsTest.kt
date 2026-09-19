@@ -6,6 +6,7 @@ import com.splitfree.domain.crypto.GroupEncryption
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.model.balance.BalanceSnapshot
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.EventSnapshot
@@ -62,6 +63,7 @@ class MoneyLedgerInvariantsTest {
             relays = emptyList()
         )
         coEvery { groups.getGroupKeyForEpoch(groupId, 0) } returns key
+        coEvery { groups.retiredIdentities(groupId) } returns RetiredIdentities.NONE
         coEvery { events.getEventsByGroup(groupId) } answers { ledger.toList() }
         coEvery { events.getEventCount(groupId) } answers { ledger.size }
         coEvery { events.getEventIds(groupId) } answers { ledger.map { it.eventId } }
@@ -113,7 +115,7 @@ class MoneyLedgerInvariantsTest {
         val arriving = expense(11)
         val publisher = mockk<EventPublisherContract>()
         coEvery { publisher.saveAndQueue(any(), groupId, any(), "snapshot", any()) } answers {
-            // The eleventh expense commits just before the snapshot row does.
+            // The scripted ledger appends the eleventh expense immediately before the snapshot row.
             ledger += arriving
             ledger += row(firstArg(), "snapshot")
         }

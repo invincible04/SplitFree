@@ -60,9 +60,9 @@ class ExportImportFormatTest {
     }
 
     @Test
-    fun `default version is the current version 2`() {
+    fun `default version is the current version 3`() {
         val export = SplitFreeExport(groupId = "g", exportedAt = 0, events = emptyList())
-        assertEquals(2, SplitFreeExport.CURRENT_VERSION)
+        assertEquals(3, SplitFreeExport.CURRENT_VERSION)
         assertEquals(SplitFreeExport.CURRENT_VERSION, export.version)
     }
 
@@ -76,7 +76,7 @@ class ExportImportFormatTest {
 
     @Test
     fun `deserialization ignores unknown fields`() {
-        val jsonStr = """{"version":2,"groupId":"g","exportedAt":0,"events":[],"extra":"field"}"""
+        val jsonStr = """{"version":3,"groupId":"g","exportedAt":0,"events":[],"extra":"field"}"""
         val export = json.decodeFromString<SplitFreeExport>(jsonStr)
         assertEquals("g", export.groupId)
     }
@@ -147,7 +147,7 @@ class ExportImportFormatTest {
         val minimal = SplitFreeExport(groupId = "g", exportedAt = 0, events = emptyList())
         val body = minimal.canonicalBody()
         // Defaults are present so an omitted field and an explicit default hash identically.
-        assertTrue(body.contains("\"version\":2"))
+        assertTrue(body.contains("\"version\":3"))
         assertTrue(body.contains("\"groupName\":\"\""))
         assertTrue(body.contains("\"relays\":[]"))
         assertTrue(body.contains("\"encryptedEpochKeys\":{}"))
@@ -167,7 +167,7 @@ class ExportImportFormatTest {
     @Test
     fun `canonical body changes when any authenticated field changes`() {
         val base = sample.canonicalBody()
-        assertNotEquals(base, sample.copy(version = 3).canonicalBody())
+        assertNotEquals(base, sample.copy(version = 4).canonicalBody())
         assertNotEquals(base, sample.copy(groupId = "h").canonicalBody())
         assertNotEquals(base, sample.copy(exportedAt = 43).canonicalBody())
         assertNotEquals(base, sample.copy(events = emptyList()).canonicalBody())
@@ -177,5 +177,7 @@ class ExportImportFormatTest {
         assertNotEquals(base, sample.copy(keyEpoch = 1).canonicalBody())
         assertNotEquals(base, sample.copy(encryptedEpochKeys = mapOf("0" to "k0")).canonicalBody())
         assertNotEquals(base, sample.copy(events = sample.events.map { it.copy(sig = "seal:x") }).canonicalBody())
+        assertNotEquals(base, sample.copy(rootCreator = "creator").canonicalBody())
+        assertNotEquals(base, sample.copy(rootCreatedAt = 1).canonicalBody())
     }
 }

@@ -141,6 +141,7 @@
     <string name="share">Share</string>
     <string name="share_invite_warning">Anyone with this link holds the group key and can read the whole history. Share it only in a private message.</string>
     <string name="invite_qr_content_desc">Invite QR code</string>
+    <string name="invite_creator_history_too_long">This group’s creator history exceeds the compact invitation limit. An invitation cannot be generated safely.</string>
     <string name="create_invite_failed">Could not create an invitation. Retry to read the current group and key.</string>
     <string name="invite_group_unavailable">The current group is unavailable. Retry before sharing an invitation.</string>
     <string name="invite_relays_need_edit">This relay list is too large for an invitation. All saved relays are still used for sync. The group creator must edit the list before sharing.</string>
@@ -208,6 +209,11 @@
     <string name="importing_backup">Importing backup…</string>
     <string name="continue_button">Continue</string>
     <string name="invalid_key_input">Invalid key. Enter a hex private key or your 24 recovery words.</string>
+    <string name="identity_storage_unavailable">Your key is fine, but this phone\'s secure storage did not respond. Try again in a moment.</string>
+    <string name="identity_recovery_required">This phone can no longer unlock the identity it stored. Restore it with your recovery phrase, or start fresh with a new one.</string>
+    <string name="identity_storage_unavailable_title">Secure storage is not responding</string>
+    <string name="identity_storage_unavailable_body">Your identity is still stored on this phone, but it cannot be unlocked right now. Nothing has been lost. Try again in a moment.</string>
+    <string name="retry">Retry</string>
     <plurals name="backup_restored_events">
         <item quantity="one">Restored %1$d event</item>
         <item quantity="other">Restored %1$d events</item>
@@ -295,6 +301,7 @@
     <string name="new_pubkey">New pubkey: %1$s…</string>
 
     <!-- Settings: profile sheet -->
+    <string name="display_name_save_failed">Could not save your display name. Try again.</string>
     <string name="display_name">Display name</string>
     <string name="display_name_placeholder">How friends see you</string>
     <string name="settings_profile_title">Your display name</string>

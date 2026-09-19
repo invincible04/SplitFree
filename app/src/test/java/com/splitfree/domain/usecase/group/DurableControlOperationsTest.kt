@@ -12,7 +12,9 @@ import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.group.Group
 import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.KeyRevocation
 import com.splitfree.domain.model.group.KeyRotation
+import com.splitfree.domain.repository.ControlOperation
 import com.splitfree.domain.repository.ControlOperationJournalContract
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.GroupRepositoryContract
@@ -25,8 +27,10 @@ import io.mockk.every
 import io.mockk.mockk
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -137,7 +141,9 @@ class DurableControlOperationsTest {
         signer,
         publisher,
         journal,
-        lock
+        lock,
+        mockk(relaxed = true),
+        mockk(relaxed = true)
     )
 
     @Test
@@ -234,13 +240,14 @@ class DurableControlOperationsTest {
     @Test
     fun `revocation restart repairs local projection before promoting identity`() = runBlocking {
         val failingGroups = object : GroupRepositoryContract by groups {
-            override suspend fun applyIdentityRevocation(
+            override suspend fun applyAuthenticatedRevocation(
                 groupId: String,
                 oldPubkey: String,
                 newPubkey: String,
-                eventTimestamp: Long,
+                timestamp: Long,
                 eventId: String,
-                allowAbsent: Boolean
+                epoch: Int,
+                successorProven: Boolean
             ): Boolean {
                 error("injected projection failure")
             }
@@ -296,9 +303,8 @@ class DurableControlOperationsTest {
     }
 
     /**
-     * Crash after the epoch key was stored but before anything was signed, then a member joins. The
-     * unprepared intent follows the live roster (same removal, same epoch, same key) instead of failing
-     * on the stale snapshot forever, and neither a later removal nor an identity revocation is blocked.
+     * Fail after storing the epoch key, then add a member before recovery. Rebase the unsigned intent
+     * onto the live roster without changing its removal, epoch or key; later operations must still run.
      */
     @Test
     fun `resuming an unprepared intent rebases onto the live roster then later removal and revocation succeed`() =
@@ -340,9 +346,8 @@ class DurableControlOperationsTest {
         }
 
     /**
-     * Crash while the signed envelopes were going out, then a member joins under the old epoch. The plan
-     * is kept and re-published as it is; the joiner gets its own envelope for the same key, and a
-     * corrective meta dated after the plan's carries the live roster.
+     * Interrupt publication, then add a member under the old epoch. Replay the saved events unchanged,
+     * adding the joiner's key envelope and newer metadata for the current roster.
      */
     @Test
     fun `resuming a prepared intent after a join appends the joiner's envelope and a corrective meta`() = runBlocking {
@@ -404,9 +409,8 @@ class DurableControlOperationsTest {
         }
 
     /**
-     * I revoke as a plain member of `h`. Before the local projection runs, a valid creator snapshot at
-     * the same epoch that predates my join lands and drops me. The revocation still completes: the
-     * tombstone is recorded, nobody is re-added, the replacement is promoted and the journal clears.
+     * A creator snapshot removes the revoking member from `h` before local projection. Recovery must
+     * retire the old key without restoring membership, promote the replacement and clear the journal.
      */
     @Test
     fun `revocation completes with a tombstone when a creator snapshot dropped the user before projection`() =
@@ -443,7 +447,7 @@ class DurableControlOperationsTest {
             assertEquals(replacement, identity.getPublicKeyHex())
             assertFalse(identity.hasPendingKeyPair())
             assertNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
-            // Every journaled event went out unchanged (revocations first, then metadata).
+            // Every saved event reaches the mocked publisher unchanged; this assertion ignores order.
             assertEquals(prepared.events.map { it.eventJson }.toSet(), published.drop(3).map { it.toJson() }.toSet())
             assertEquals(prepared.events.size, published.drop(3).size)
             val club = groups.getById("h")!!
@@ -457,6 +461,86 @@ class DurableControlOperationsTest {
             assertEquals(3 + prepared.events.size, published.size)
         }
 
+    /**
+     * A prepared revocation without a successor proof must remain unproven on replay. Compare retired-key
+     * attribution and roster in independent repositories; recovery must not invent a local-only transfer.
+     */
+    @Test
+    fun `resuming a legacy prepared journal projects exactly what peers receive`() = runBlocking {
+        val group = groups.getById("g")!!
+        val key = checkNotNull(groups.getGroupKeyForEpoch("g", 0))
+        val successor = identity.generatePendingKeyPair()
+        identity.markRevocationStarted()
+        val legacyPayload = json.encodeToString(KeyRevocation(creator, successor, "Key compromised"))
+        val meta = GroupMeta(
+            group.name,
+            group.description,
+            successor,
+            group.createdAt,
+            group.members.map { if (it == creator) successor else it },
+            group.relays,
+            group.memberNames,
+            keyEpoch = group.keyEpoch
+        )
+        val plan = listOf("key_revocation" to legacyPayload, "group_meta" to json.encodeToString(meta))
+            .map { (type, payload) ->
+                val event = signer.createSignedEvent("g", type, encryption.encrypt(payload, key))
+                PreparedControlEvent("g", type, event.toJson())
+            }
+        journal.insert(
+            ControlOperation(
+                RotateGroupKeyUseCase.REVOCATION_ID,
+                "revocation",
+                json.encodeToString(RevocationIntent(creator, listOf(group))),
+                json.encodeToString(PreparedRevocation(successor, plan))
+            )
+        )
+        reopen()
+
+        revocation.resumeIfNeeded()
+
+        // Replay preserves the saved event bytes and order.
+        assertEquals(plan.map { it.eventJson }, published.map { it.toJson() })
+        // Without a successor proof, retirement does not redirect ledger attribution.
+        val retired = groups.retiredIdentities("g")
+        assertTrue(retired.isRetired(creator))
+        assertEquals(creator, retired.resolve(creator))
+        assertTrue(retired.successors.isEmpty())
+        // Roster replacement is independent of ledger attribution.
+        val roster = groups.getById("g")!!.members
+        assertFalse(creator in roster)
+        assertTrue(successor in roster)
+        // Identity promotion completes even though ledger attribution stays with the retired key.
+        assertEquals(successor, identity.getPublicKeyHex())
+        assertFalse(identity.hasPendingKeyPair())
+        assertNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
+
+        // Apply the same decrypted event to an independent repository and compare projections.
+        val peerDb = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val peerGroups = GroupRepository(peerDb.groupDao(), FakeSecureStorage())
+            peerGroups.save(group, key)
+            val event = published.single { it.tags.contains(listOf("t", "key_revocation")) }
+            assertTrue(
+                newRevocation(peerGroups).handleRevocation(
+                    encryption.decrypt(event.content, key),
+                    event.pubkey,
+                    "g",
+                    event.createdAt,
+                    event.id
+                )
+            )
+            assertEquals(
+                groups.retiredIdentities("g").resolve(creator),
+                peerGroups.retiredIdentities("g").resolve(creator)
+            )
+            assertEquals(groups.retiredIdentities("g").successors, peerGroups.retiredIdentities("g").successors)
+            assertEquals(groups.getById("g")!!.members, peerGroups.getById("g")!!.members)
+        } finally {
+            peerDb.close()
+        }
+    }
+
     @Test
     fun `revocation refuses before journaling when a group's current key is missing`() = runBlocking {
         groups.save(
@@ -468,7 +552,7 @@ class DurableControlOperationsTest {
         assertNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
         assertFalse(identity.hasPendingKeyPair())
         assertTrue(published.isEmpty())
-        // Nothing is wedged: the creator can still rotate g.
+        // Refusal leaves no pending revocation to block a rotation in g.
         rotation("g", removed)
         assertEquals(1, groups.getById("g")!!.keyEpoch)
     }
@@ -511,9 +595,422 @@ class DurableControlOperationsTest {
         assertEquals(listOf(creator, peer), groups.getById("g")!!.members)
     }
 
+    private fun identitySwitch(contract: ControlOperationJournalContract = journal) =
+        IdentitySwitchCoordinator(identity, contract, lock, Dispatchers.IO)
+
+    private suspend fun prepareInterruptedRevocation(): ControlOperation {
+        failPublishAt = publishCalls + 1
+        assertTrue(runCatching { revocation() }.isFailure)
+        failPublishAt = 0
+        return checkNotNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
+    }
+
+    private suspend fun makeLegacy(operation: ControlOperation): PreparedRevocation {
+        val prepared = json.decodeFromString<PreparedRevocation>(operation.preparedJson!!)
+        val legacy = prepared.copy(events = prepared.events.map { it.copy(projection = null) })
+        journal.amend(operation.id, operation.preparedJson, json.encodeToString(legacy))
+        return legacy
+    }
+
+    @Test
+    fun `self contained revocation survives epoch key loss and publishes exact original envelopes`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val prepared = json.decodeFromString<PreparedRevocation>(operation.preparedJson!!)
+        val payload = prepared.events.first().projection!!.payload
+        groupStorage.remove("g:0")
+        groupStorage.remove("g")
+        published.clear()
+        reopen()
+        revocation.resumeIfNeeded()
+        assertEquals(prepared.events.map { it.eventJson }, published.map { it.toJson() })
+        assertEquals(prepared.newPubkey, identity.getPublicKeyHex())
+        assertTrue(json.decodeFromString<KeyRevocation>(payload).provesSuccessor("g"))
+        assertEquals(prepared.newPubkey, groups.retiredIdentities("g").resolve(creator))
+        assertNull(journal.get(operation.id))
+    }
+
+    @Test
+    fun `legacy missing epoch key fails before any resumed publication and keeps original bytes`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val legacy = makeLegacy(operation)
+        groupStorage.remove("g:0")
+        groupStorage.remove("g")
+        published.clear()
+        reopen()
+        assertTrue(runCatching { revocation.resumeIfNeeded() }.isFailure)
+        assertTrue(published.isEmpty())
+        assertEquals(json.encodeToString(legacy), journal.get(operation.id)!!.preparedJson)
+        assertEquals(legacy.newPubkey, identity.getPendingPublicKeyHex())
+        assertEquals(creator, identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `legacy upgrade persists whole batch before publication and no longer needs decryption key`() = runBlocking {
+        val legacy = makeLegacy(prepareInterruptedRevocation())
+        failPublishAt = publishCalls + 1
+        assertTrue(runCatching { revocation.resumeIfNeeded() }.isFailure)
+        val upgraded = json.decodeFromString<PreparedRevocation>(
+            journal.get(RotateGroupKeyUseCase.REVOCATION_ID)!!.preparedJson!!
+        )
+        assertEquals(legacy.events.map { it.eventJson }, upgraded.events.map { it.eventJson })
+        assertNotNull(upgraded.events.first().projection)
+        groupStorage.remove("g:0")
+        groupStorage.remove("g")
+        published.clear()
+        failPublishAt = 0
+        reopen()
+        revocation.resumeIfNeeded()
+        assertEquals(legacy.events.map { it.eventJson }, published.map { it.toJson() })
+    }
+
+    @Test
+    fun `missing last group legacy key preflights whole batch without publishing earlier groups`() = runBlocking {
+        val second = groups.getById("g")!!.copy(id = "z")
+        groups.save(second, encryption.generateGroupKey())
+        val operation = prepareInterruptedRevocation()
+        makeLegacy(operation)
+        groupStorage.remove("z:0")
+        groupStorage.remove("z")
+        published.clear()
+        reopen()
+        assertTrue(runCatching { revocation.resumeIfNeeded() }.isFailure)
+        assertTrue(published.isEmpty())
+        val unchanged = json.decodeFromString<PreparedRevocation>(journal.get(operation.id)!!.preparedJson!!)
+        assertTrue(unchanged.events.all { it.projection == null })
+    }
+
+    @Test
+    fun `tampered last projection cannot publish a valid earlier group`() = runBlocking {
+        groups.save(groups.getById("g")!!.copy(id = "z"), encryption.generateGroupKey())
+        val operation = prepareInterruptedRevocation()
+        val prepared = json.decodeFromString<PreparedRevocation>(operation.preparedJson!!)
+        val corrupted = prepared.copy(
+            events = prepared.events.map {
+                if (it.groupId == "z" && it.projection != null) {
+                    it.copy(
+                        projection = it.projection.copy(
+                            payload = it.projection.payload.replace("Key compromised", "forged")
+                        )
+                    )
+                } else {
+                    it
+                }
+            }
+        )
+        journal.amend(operation.id, operation.preparedJson, json.encodeToString(corrupted))
+        published.clear()
+        reopen()
+        assertTrue(runCatching { revocation.resumeIfNeeded() }.isFailure)
+        assertTrue(published.isEmpty())
+        assertEquals(creator, identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `distinct identity switch archives possibly public successor and unblocks unrelated rotation`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val replacement = identity.getPendingPublicKeyHex()
+        val imported = identitySwitch().importKey("00".repeat(31) + "05")
+        assertFalse(identity.hasPendingKeyPair())
+        assertEquals(replacement, identity.getArchivedPendingPublicKeyHex(creator))
+        assertNull(journal.get(operation.id))
+        assertEquals(operation.preparedJson, journal.getAll("archived:revocation").single().preparedJson)
+        published.clear()
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        revocation.resumeIfNeeded()
+        groups.save(
+            Group(
+                "other",
+                "Other",
+                createdBy = imported,
+                createdAt = 1,
+                members = listOf(imported, peer),
+                relays = emptyList()
+            ),
+            encryption.generateGroupKey()
+        )
+        rotation("other", peer)
+        assertEquals(1, groups.getById("other")!!.keyEpoch)
+        assertTrue(published.none { it.tags.contains(listOf("g", "g")) })
+        assertEquals(replacement, identity.getArchivedPendingPublicKeyHex(creator))
+    }
+
+    @Test
+    fun `same identity switch keeps its exact pending journal and successor`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val replacement = identity.getPendingPublicKeyHex()
+        identitySwitch().importKey("00".repeat(31) + "01")
+        reopen()
+        assertEquals(operation, journal.get(operation.id))
+        assertEquals(replacement, identity.getPendingPublicKeyHex())
+        assertTrue(journal.getAll("archived:revocation").isEmpty())
+    }
+
+    @Test
+    fun `returning to archived identity restores pending key and original journal then completes`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val replacement = identity.getPendingPublicKeyHex()
+        identitySwitch().importKey("00".repeat(31) + "05")
+        reopen()
+        identitySwitch().importKey("00".repeat(31) + "01")
+        assertEquals(operation, journal.get(operation.id))
+        assertEquals(replacement, identity.getPendingPublicKeyHex())
+        published.clear()
+        revocation.resumeIfNeeded()
+        assertEquals(replacement, identity.getPublicKeyHex())
+        assertEquals(
+            json.decodeFromString<PreparedRevocation>(operation.preparedJson!!).events.map { it.eventJson },
+            published.map { it.toJson() }
+        )
+    }
+
+    @Test
+    fun `identity switch resumes after secure stage landed before Room intent`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        identityStorage.failAfterPut = "identity_switch"
+        assertTrue(runCatching { identitySwitch().importKey("00".repeat(31) + "05") }.isFailure)
+        val target = identity.stagedIdentitySwitch()!!
+        assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        assertEquals(creator, identity.getPublicKeyHex())
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        assertEquals(target.newPubkey, identity.getPublicKeyHex())
+        assertNull(journal.get(operation.id))
+        assertNotNull(identity.getArchivedPendingPublicKeyHex(creator))
+    }
+
+    @Test
+    fun `identity switch resumes every active write and archive cleanup boundary`() = runBlocking {
+        val boundaries = listOf(
+            "before:nsec", "after:nsec", "before:npub", "after:npub",
+            "after:identity_pending_archive", "remove:npub_pending", "remove:revocation_event_ids",
+            "remove:revocation_start", "remove:nsec_pending", "remove:identity_switch"
+        )
+        for (boundary in boundaries) {
+            val originalKey = identity.getPrivateKeyHex()
+            val operation = prepareInterruptedRevocation()
+            val replacement = identity.getPendingPublicKeyHex()
+            when {
+                boundary.startsWith("before:") -> identityStorage.failBeforePut = boundary.substringAfter(':')
+                boundary.startsWith("after:") ->
+                    identityStorage.failAfterPut =
+                        if (boundary.endsWith(
+                                "identity_pending_archive"
+                            )
+                        ) {
+                            "identity_pending_archive:$creator"
+                        } else {
+                            boundary.substringAfter(':')
+                        }
+                else -> identityStorage.failAfterRemove = boundary.substringAfter(':')
+            }
+            assertTrue(boundary, runCatching { identitySwitch().importKey("00".repeat(31) + "05") }.isFailure)
+            reopen()
+            identitySwitch().resumeIfNeeded()
+            assertEquals(boundary, pubkey(5), identity.getPublicKeyHex())
+            assertEquals(boundary, replacement, identity.getArchivedPendingPublicKeyHex(creator))
+            assertNull(journal.get(operation.id))
+            assertNull(identity.stagedIdentitySwitch())
+            assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+            identitySwitch().importKey(originalKey)
+            revocation.resumeIfNeeded()
+            creator = identity.getPublicKeyHex()
+        }
+    }
+
+    @Test
+    fun `identity switch journal move and completion failures resume without losing original plan`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val replacement = identity.getPendingPublicKeyHex()
+        var failed = false
+        val failing = object : ControlOperationJournalContract by journal {
+            override suspend fun move(operation: ControlOperation, id: String, kind: String) {
+                journal.move(operation, id, kind)
+                if (!failed) {
+                    failed = true
+                    error("after atomic journal move")
+                }
+            }
+        }
+        assertTrue(runCatching { identitySwitch(failing).importKey("00".repeat(31) + "05") }.isFailure)
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        assertEquals(replacement, identity.getArchivedPendingPublicKeyHex(creator))
+        assertEquals(operation.preparedJson, journal.getAll("archived:revocation").single().preparedJson)
+        assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+    }
+
+    @Test
+    fun `identity switch waits for shared revocation lock before staging an unrelated key`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        coEvery { publisher.publishDirect(any(), any(), any(), any(), any()) } coAnswers {
+            entered.complete(Unit)
+            release.await()
+        }
+        val revoke = async(Dispatchers.IO) { revocation() }
+        entered.await()
+        val switched = async(Dispatchers.IO) { identitySwitch().importKey("00".repeat(31) + "05") }
+        assertEquals(creator, identity.getPublicKeyHex())
+        assertNull(identity.stagedIdentitySwitch())
+        release.complete(Unit)
+        revoke.await()
+        assertEquals(pubkey(5), switched.await())
+        assertNull(journal.get(RotateGroupKeyUseCase.REVOCATION_ID))
+        assertFalse(identity.hasPendingKeyPair())
+    }
+
+    @Test
+    fun `explicit import after staged wrapping key loss archives obsolete switch and restores access`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        identityStorage.failBeforePut = "nsec"
+        assertTrue(runCatching { identitySwitch().importKey("00".repeat(31) + "05") }.isFailure)
+        val abandoned = journal.get(IdentitySwitchCoordinator.SWITCH_ID)!!
+        identityStorage.keyLost = true
+        reopen()
+        assertTrue(runCatching { identitySwitch().resumeIfNeeded() }.isFailure)
+        assertTrue(runCatching { identitySwitch().importKey("not a private key") }.isFailure)
+        assertEquals(abandoned, journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        assertEquals(0, identityStorage.resets)
+        assertEquals(pubkey(6), identitySwitch().importKey("00".repeat(31) + "06"))
+        assertEquals(1, identityStorage.resets)
+        assertEquals(abandoned.intentJson, journal.getAll("archived:identity-switch").single().intentJson)
+        assertEquals(operation.preparedJson, journal.getAll("archived:revocation").single().preparedJson)
+        assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        assertEquals(pubkey(6), identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `transient staged key read failure cannot supersede or reset the switch`() = runBlocking {
+        prepareInterruptedRevocation()
+        identityStorage.failBeforePut = "nsec"
+        assertTrue(runCatching { identitySwitch().importKey("00".repeat(31) + "05") }.isFailure)
+        val staged = identity.stagedIdentitySwitch()
+        val operation = journal.get(IdentitySwitchCoordinator.SWITCH_ID)
+        identityStorage.transientFailure = SecureStorageException("temporary")
+        assertTrue(runCatching { identitySwitch().importKey("00".repeat(31) + "06") }.isFailure)
+        identityStorage.transientFailure = null
+        assertEquals(0, identityStorage.resets)
+        assertEquals(staged, identity.stagedIdentitySwitch())
+        assertEquals(operation, journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        assertEquals(pubkey(5), identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `unknown previous identity preserves readable pending successor when restoring a key`() = runBlocking {
+        val pending = identity.generatePendingKeyPair()
+        identity.setRevocationEventIds(listOf("possibly-public"))
+        identityStorage.hideActive = true
+        reopen()
+        identitySwitch().importKey("00".repeat(31) + "05")
+        assertEquals(pending, identity.getPendingPublicKeyHex())
+        assertEquals(listOf("possibly-public"), identity.getRevocationEventIds())
+        assertTrue(journal.getAll("archived:revocation").isEmpty())
+        assertEquals(pubkey(5), identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `crash after final switch journal deletion does not recreate or retarget completed switch`() = runBlocking {
+        prepareInterruptedRevocation()
+        var failed = false
+        val failing = object : ControlOperationJournalContract by journal {
+            override suspend fun complete(id: String) {
+                journal.complete(id)
+                if (id == IdentitySwitchCoordinator.SWITCH_ID && !failed) {
+                    failed = true
+                    error("after final journal delete")
+                }
+            }
+        }
+        assertTrue(runCatching { identitySwitch(failing).importKey("00".repeat(31) + "05") }.isFailure)
+        assertNull(identity.stagedIdentitySwitch())
+        assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        reopen()
+        identitySwitch().resumeIfNeeded()
+        assertEquals(pubkey(5), identity.getPublicKeyHex())
+        assertEquals(1, journal.getAll("archived:revocation").size)
+    }
+
+    @Test
+    fun `invalid legacy metadata preflights before publishing an earlier valid revocation`() = runBlocking {
+        val operation = prepareInterruptedRevocation()
+        val legacy = makeLegacy(operation)
+        val key = groups.getGroupKeyForEpoch("g", 0)!!
+        val invalid = legacy.copy(
+            events = legacy.events.map {
+                if (it.eventType == "group_meta") {
+                    val meta = json.decodeFromString<GroupMeta>(encryption.decrypt(it.event().content, key))
+                    it.copy(
+                        eventJson = signer.createSignedEvent(
+                            "g",
+                            "group_meta",
+                            encryption.encrypt(json.encodeToString(meta.copy(keyEpoch = 99)), key)
+                        ).toJson()
+                    )
+                } else {
+                    it
+                }
+            }
+        )
+        journal.amend(operation.id, json.encodeToString(legacy), json.encodeToString(invalid))
+        published.clear()
+        reopen()
+        assertTrue(runCatching { revocation.resumeIfNeeded() }.isFailure)
+        assertTrue(published.isEmpty())
+        assertEquals(json.encodeToString(invalid), journal.get(operation.id)!!.preparedJson)
+        assertEquals(creator, identity.getPublicKeyHex())
+    }
+
+    @Test
+    fun `retrying interrupted identity generation returns the staged target without generating another`() =
+        runBlocking {
+            identityStorage.failBeforePut = "npub"
+            assertTrue(runCatching { identitySwitch().generateKeyPair() }.isFailure)
+            val staged = identity.stagedIdentitySwitch()!!
+            reopen()
+            assertEquals(staged.newPubkey, identitySwitch().generateKeyPair())
+            assertEquals(staged.newPubkey, identity.getPublicKeyHex())
+            assertNull(identity.stagedIdentitySwitch())
+            assertNull(journal.get(IdentitySwitchCoordinator.SWITCH_ID))
+        }
+
+    @Test
+    fun `identity guarded local write refuses stale identity and unfinished switch`() = runBlocking {
+        var writes = 0
+        identitySwitch().withIdentity(creator) { writes++ }
+        assertEquals(1, writes)
+        assertTrue(runCatching { identitySwitch().withIdentity(pubkey(5)) { writes++ } }.isFailure)
+        identity.stageIdentitySwitch("00".repeat(31) + "05")
+        assertTrue(runCatching { identitySwitch().withIdentity(creator) { writes++ } }.isFailure)
+        assertEquals(1, writes)
+    }
+
+    @Test
+    fun `completed local rotation stores original authenticated payloads and exact metadata facts`() = runBlocking {
+        rotation("g", removed)
+        val row = db.groupDao().getById("g")!!
+        val projection = json.decodeFromString<com.splitfree.domain.model.group.GroupProjection>(row.projectionJson)
+        val rotations = projection.facts.filter { it.kind == "rotation" }
+        val sentRotations = published.filter { it.tags.contains(listOf("t", "key_rotation")) }
+        assertEquals(sentRotations.map { it.id }.toSet(), rotations.map { it.id }.toSet())
+        for (event in sentRotations) {
+            val recipient = event.tags.single { it.first() == "p" }[1]
+            val key = Nip44.getConversationKey(identity.getPrivateKeyBytes(), recipient.hexToBytes())
+            val raw = json.decodeFromString<KeyRotation>(Nip44.decrypt(event.content, key))
+            assertEquals(raw, rotations.single { it.id == event.id }.rotation)
+        }
+        val metaEvent = published.single { it.tags.contains(listOf("t", "group_meta")) }
+        val rawMeta = decryptMeta(metaEvent, groups.getGroupKeyForEpoch("g", 1)!!)
+        assertEquals(rawMeta, projection.facts.single { it.id == metaEvent.id }.meta)
+    }
+
     private fun pubkey(value: Byte): String = NostrEvent.pubkeyFromPrivkey(ByteArray(32).also { it[31] = value })
 
-    /** Every published `key_rotation` envelope, decrypted with the sender's (my current) key, by recipient. */
+    /** Last captured rotation per recipient, decrypted using the current sender identity. */
     private fun decryptedRotations(): Map<String, KeyRotation> = published
         .filter { it.tags.contains(listOf("t", "key_rotation")) }
         .associate { event ->
@@ -530,6 +1027,20 @@ class DurableControlOperationsTest {
 
     private class FailingStorage(private val storage: FakeSecureStorage = FakeSecureStorage()) :
         SecureStorage by storage {
+        var keyLost: Boolean
+            get() = storage.keyLost
+            set(value) {
+                storage.keyLost = value
+            }
+        var transientFailure: SecureStorageException?
+            get() = storage.transientFailure
+            set(value) {
+                storage.transientFailure = value
+            }
+        val resets: Int get() = storage.resets
+        var hideActive = false
+        override fun getString(key: String, default: String?): String? =
+            if (hideActive && (key == "nsec" || key == "npub")) default else storage.getString(key, default)
         var failBeforePut: String? = null
         var failAfterPut: String? = null
         var failAfterRemove: String? = null
@@ -539,6 +1050,7 @@ class DurableControlOperationsTest {
                 throw SecureStorageException("injected before $key")
             }
             storage.putString(key, value)
+            if (key == "nsec") hideActive = false
             if (key == failAfterPut) {
                 failAfterPut = null
                 throw SecureStorageException("injected after $key")

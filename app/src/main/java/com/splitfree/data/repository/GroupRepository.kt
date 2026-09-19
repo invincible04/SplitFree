@@ -3,7 +3,15 @@ package com.splitfree.data.repository
 import com.splitfree.data.local.dao.GroupDao
 import com.splitfree.data.local.entities.GroupEntity
 import com.splitfree.domain.invite.InviteLinkCodec
+import com.splitfree.domain.model.group.CreatorTransition
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.model.group.GroupControlFact
+import com.splitfree.domain.model.group.GroupIdentity
+import com.splitfree.domain.model.group.GroupMeta
+import com.splitfree.domain.model.group.GroupProjection
+import com.splitfree.domain.model.group.GroupProjectionReducer
+import com.splitfree.domain.model.group.KeyRotation
+import com.splitfree.domain.model.group.RetiredIdentities
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.SecureStorage
 import com.splitfree.domain.util.RelayDefaults
@@ -81,12 +89,8 @@ constructor(
     override suspend fun getMembers(groupId: String): List<String> = getById(groupId)?.members ?: emptyList()
 
     /**
-     * Remove every key stored for [groupId]: the un-epoched entry under the plain `groupId` plus `"$groupId:$epoch"`
-     * for each epoch up to the group's current one. If the Room row is already gone the epoch is
-     * unknown, so epochs `0..MAX_ORPHAN_EPOCH_SWEEP` are swept instead.
-     *
-     * No caller yet. A "leave group" flow must call it so
-     * the device stops being able to decrypt a group it no longer belongs to.
+     * Removes the un-epoched key and epochs through the stored current epoch. Without a Room row,
+     * the sweep is bounded by [MAX_ORPHAN_EPOCH_SWEEP]; keys beyond that range are not removed.
      */
     override suspend fun deleteGroupKey(groupId: String) {
         val maxEpoch = groupDao.getById(groupId)?.keyEpoch ?: MAX_ORPHAN_EPOCH_SWEEP
@@ -99,27 +103,47 @@ constructor(
     suspend fun getGroupEntity(groupId: String): GroupEntity? = groupDao.getById(groupId)
 
     override suspend fun save(group: Group, groupKey: String) {
-        // Persist the key FIRST. SecureStorage.putString commits synchronously and throws
-        // SecureStorageException on failure, so if the key cannot be stored we never reach
-        // groupDao.insert and no Room row exists without a recoverable key behind it.
+        val rootKnown = GroupIdentity.matches(group.id, group.originalCreator, group.createdAt)
+        require(
+            group.creatorTransitions.isEmpty() ||
+                CreatorTransition.validate(group.id, group.originalCreator, group.createdAt, group.creatorTransitions)
+        )
+        require(group.creatorTransitions.all { it.hasAdmissibleTimestamp() })
+        val state = GroupProjection(
+            checkpoint = group.copy(
+                createdBy = if (rootKnown) group.originalCreator else group.createdBy,
+                creatorTransitions = emptyList()
+            ),
+            incomplete = group.createdBy.isEmpty() || group.keyEpoch > 0,
+            rootCreator = if (rootKnown) group.originalCreator else "",
+            rootCreatedAt = if (rootKnown) group.createdAt else 0,
+            creatorTransitions = group.creatorTransitions,
+            facts = group.creatorTransitions.map { it.fact() }
+        )
+        val reduced = GroupProjectionReducer.reduce(state)
+        val projected = reduced.group
+        // Persist key material before the Room row; a reported storage failure aborts the insert.
         lockFor(group.id).withLock {
             saveEpochKey(group.id, group.keyEpoch, groupKey)
-            // At epoch 0 the key is also stored under the plain groupId, the un-epoched entry
-            // that getGroupKeyForEpoch accepts for epoch 0 only.
+            // Preserve the legacy lookup for epoch 0 only.
             if (group.keyEpoch == 0) keyStore.putString(group.id, groupKey)
         }
-        val safeMemberNames = sanitizeMemberNames(group.memberNames, group.members)
+        val safeMemberNames = sanitizeMemberNames(projected.memberNames, projected.members)
         groupDao.insert(
             GroupEntity(
                 groupId = group.id,
-                name = group.name,
-                description = group.description,
-                createdBy = group.createdBy,
-                createdAt = group.createdAt,
-                members = json.encodeToString(stringListSerializer, group.members),
-                relays = json.encodeToString(stringListSerializer, group.relays),
+                name = projected.name,
+                description = projected.description,
+                createdBy = projected.createdBy,
+                createdAt = projected.createdAt,
+                members = json.encodeToString(stringListSerializer, projected.members),
+                relays = json.encodeToString(stringListSerializer, projected.relays),
                 memberNames = json.encodeToString(nameMapSerializer, safeMemberNames),
-                keyEpoch = group.keyEpoch
+                keyEpoch = projected.keyEpoch,
+                memberClocks = json.encodeToString(nameMapSerializer, reduced.clocks),
+                lastMetaTimestamp = reduced.timestamp,
+                lastMetaEventId = reduced.eventId,
+                projectionJson = json.encodeToString(GroupProjection.serializer(), state)
             )
         )
     }
@@ -148,7 +172,23 @@ constructor(
     }
 
     override suspend fun updateKeyEpoch(groupId: String, epoch: Int) {
-        groupDao.updateKeyEpoch(groupId, epoch)
+        require(epoch >= 0)
+        updateGroup(groupId) { row ->
+            if (epoch <= row.keyEpoch) return@updateGroup false
+            val group = row.toDomain()
+            // Key possession from a backup is a checkpoint, not a signed rotation roster.
+            appendFact(
+                row,
+                GroupControlFact(
+                    "key-checkpoint:$epoch",
+                    "checkpoint",
+                    0,
+                    epoch,
+                    meta = GroupMeta(members = group.members, memberNames = group.memberNames)
+                ),
+                successfulNoOp = true
+            )
+        }
     }
 
     override suspend fun updateCreator(groupId: String, createdBy: String, createdAt: Long) {
@@ -156,8 +196,17 @@ constructor(
         updateGroup(groupId) { entity ->
             if (entity.createdBy.isNotEmpty()) return@updateGroup false
             val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
-            if ("revoked:$createdBy" in clocks) return@updateGroup false
-            groupDao.updateCreator(groupId, createdBy, createdAt, entity.memberClocks)
+            // The creator's own revocation may have been applied before their metadata arrived (a
+            // restore in clock order, a skewed clock): the role then belongs to where their chain ends.
+            val creator = resolveRoster(listOf(createdBy), clocks).members.singleOrNull()
+                ?: return@updateGroup false
+            if (creator != createdBy) {
+                Log.i(
+                    TAG,
+                    "Creator ${createdBy.take(8)} of ${groupId.take(8)} was replaced; recording ${creator.take(8)}"
+                )
+            }
+            groupDao.updateCreator(groupId, creator, createdAt, entity.memberClocks)
                 .let { if (it == 1) true else null }
         }
     }
@@ -195,6 +244,28 @@ constructor(
         }
         return updateGroup(groupId) { entity ->
             if (expectedCreator != null && entity.createdBy != expectedCreator) return@updateGroup false
+            if (entity.projectionJson.isNotEmpty()) {
+                val fact = GroupControlFact(
+                    eventId,
+                    "meta",
+                    eventTimestamp,
+                    expectedKeyEpoch ?: entity.keyEpoch,
+                    author = expectedCreator ?: entity.createdBy,
+                    meta = GroupMeta(
+                        name,
+                        description ?: entity.description,
+                        createdBy,
+                        entity.createdAt,
+                        members,
+                        safeRelays,
+                        memberNames,
+                        expectedKeyEpoch ?: entity.keyEpoch
+                    ),
+                    roster = applyRoster,
+                    trusted = expectedCreator == null
+                )
+                return@updateGroup appendFact(entity, fact, successfulNoOp = false)
+            }
             if (!isNewerClock(eventTimestamp, eventId, entity.lastMetaTimestamp to entity.lastMetaEventId)) {
                 return@updateGroup false
             }
@@ -259,10 +330,21 @@ constructor(
             if (epoch <= entity.keyEpoch) return@updateGroup false
             val storedMembers = decodeList(entity.members, groupId, "members")
             if (expectedMembers != null && storedMembers != expectedMembers) return@updateGroup false
+            if (entity.projectionJson.isNotEmpty()) {
+                return@updateGroup appendFact(
+                    entity,
+                    GroupControlFact(
+                        "rotation:$epoch",
+                        "rotation",
+                        0,
+                        epoch,
+                        meta = GroupMeta(members = members, memberNames = memberNames)
+                    ),
+                    successfulNoOp = false
+                )
+            }
             val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
-            // A rotation authored before its creator saw a revocation still names the revoked key.
-            // Installing the recorded replacement keeps this device on the new epoch; refusing the
-            // rotation would leave it behind for good (every later epoch is then a gap).
+            // Resolve stale roster identities so a known revocation does not block epoch advancement.
             val resolved = resolveRoster(members, clocks)
             if (resolved.members != members) {
                 Log.i(TAG, "key_rotation to epoch $epoch of ${groupId.take(8)} named revoked identities; resolved")
@@ -311,67 +393,31 @@ constructor(
         newPubkey: String,
         eventTimestamp: Long,
         eventId: String,
-        allowAbsent: Boolean
+        allowAbsent: Boolean,
+        successorProven: Boolean
     ): Boolean {
         require(oldPubkey.isNotEmpty() && oldPubkey != newPubkey) { "Revocation needs distinct identities" }
         require(eventTimestamp > 0) { "Revocation needs the event's created_at to be ordered" }
+        val successor = newPubkey.takeIf { it.isNotEmpty() }
         return updateGroup(groupId) { entity ->
             val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
-            val revokedKey = "revoked:$oldPubkey"
-            if (revokedKey in clocks) return@updateGroup true
             val members = decodeList(entity.members, groupId, "members")
-            if (oldPubkey !in members && (newPubkey.isEmpty() || newPubkey !in members)) {
-                if (!allowAbsent) return@updateGroup false
-                Log.i(TAG, "Revocation of ${oldPubkey.take(8)} in ${groupId.take(8)}: identity absent, tombstone only")
+            if ("revoked:$oldPubkey" !in clocks && oldPubkey !in members && successor !in members && !allowAbsent) {
+                return@updateGroup false
             }
-            val replacement = newPubkey.takeIf { it.isNotEmpty() && "revoked:$it" !in clocks }
-            val newMembers = when {
-                replacement != null && replacement !in members -> members.map {
-                    if (it ==
-                        oldPubkey
-                    ) {
-                        replacement
-                    } else {
-                        it
-                    }
-                }
-                else -> members - oldPubkey
-            }
-            val names = decodeMap(entity.memberNames, groupId, "memberNames").toMutableMap()
-            val oldName = names.remove(oldPubkey)
-            if (replacement != null && oldName != null && replacement !in names) names[replacement] = oldName
-            val creator = if (entity.createdBy == oldPubkey) replacement.orEmpty() else entity.createdBy
-            val newClocks = clocks.toMutableMap().apply {
-                put(revokedKey, "$eventTimestamp:$eventId")
-                // Lets a roster authored without knowledge of this revocation resolve to the successor.
-                if (replacement != null) put("$REPLACED_PREFIX$oldPubkey", replacement)
-            }
-            val watermark = if (isNewerClock(
-                    eventTimestamp,
+            appendFact(
+                entity,
+                GroupControlFact(
                     eventId,
-                    entity.lastMetaTimestamp to entity.lastMetaEventId
-                )
-            ) {
-                eventTimestamp to eventId
-            } else {
-                entity.lastMetaTimestamp to entity.lastMetaEventId
-            }
-            groupDao.applyIdentityRevocation(
-                groupId,
-                json.encodeToString(stringListSerializer, newMembers),
-                json.encodeToString(nameMapSerializer, sanitizeMemberNames(names, newMembers)),
-                json.encodeToString(nameMapSerializer, newClocks),
-                creator,
-                watermark.first,
-                watermark.second,
-                expectedKeyEpoch = entity.keyEpoch,
-                expectedMembers = entity.members,
-                expectedMemberNames = entity.memberNames,
-                expectedMemberClocks = entity.memberClocks,
-                expectedMetaTimestamp = entity.lastMetaTimestamp,
-                expectedMetaEventId = entity.lastMetaEventId,
-                expectedCreatedBy = entity.createdBy
-            ).let { if (it == 1) true else null }
+                    "revocation",
+                    eventTimestamp,
+                    entity.keyEpoch,
+                    author = oldPubkey,
+                    successor = newPubkey,
+                    proven = successorProven
+                ),
+                successfulNoOp = true
+            )
         }
     }
 
@@ -396,6 +442,21 @@ constructor(
             }
             val clocks = decodeMap(entity.memberClocks, groupId, "memberClocks")
             if ("revoked:$author" in clocks) return@updateGroup false
+            if (entity.projectionJson.isNotEmpty()) {
+                return@updateGroup appendFact(
+                    entity,
+                    GroupControlFact(
+                        eventId,
+                        "self",
+                        eventTimestamp,
+                        expectedKeyEpoch ?: entity.keyEpoch,
+                        author = author,
+                        join = join,
+                        displayName = displayName
+                    ),
+                    successfulNoOp = false
+                )
+            }
             val ownClock = clocks[author]?.let(::parseMemberClock)
             // Names and joins are independent registers; a null name must not hide an older rename.
             val joinClockKey = "join:$author"
@@ -448,6 +509,45 @@ constructor(
         return resolveRoster(members, decodeMap(entity.memberClocks, groupId, "memberClocks")).members
     }
 
+    override suspend fun retiredIdentities(groupId: String): RetiredIdentities {
+        val entity = groupDao.getById(groupId) ?: return RetiredIdentities.NONE
+        return retiredIdentities(decodeMap(entity.memberClocks, groupId, "memberClocks"))
+    }
+
+    /**
+     * Only proven `succeeded:` links move balances; roster-only `replaced:` links are insufficient.
+     * A cut chain retains obligations at its terminal revoked identity. A loop or overlong chain
+     * records no successor, leaving the balance on the original key rather than an arbitrary hop.
+     */
+    private fun retiredIdentities(clocks: Map<String, String>): RetiredIdentities {
+        val revoked = clocks.keys.filter { it.startsWith(REVOKED_PREFIX) }.mapTo(HashSet()) {
+            it.removePrefix(REVOKED_PREFIX)
+        }
+        if (revoked.isEmpty()) return RetiredIdentities.NONE
+        val successors = HashMap<String, String>()
+        for (old in revoked) {
+            val end = followChain(old, clocks, SUCCEEDED_PREFIX) ?: continue
+            if (end != old) successors[old] = end
+        }
+        return RetiredIdentities(revoked, successors)
+    }
+
+    /**
+     * Follows [linkPrefix] links only while the current identity is tombstoned. Returns the live
+     * endpoint or a revoked identity with no link; null rejects loops and overlong chains.
+     */
+    private fun followChain(start: String, clocks: Map<String, String>, linkPrefix: String): String? {
+        var current = start
+        val seen = HashSet<String>()
+        while ("$REVOKED_PREFIX$current" in clocks) {
+            if (!seen.add(current) || seen.size > MAX_CHAIN_LENGTH) return null
+            val next = clocks["$linkPrefix$current"]
+            if (next.isNullOrEmpty()) break
+            current = next
+        }
+        return current
+    }
+
     /** A roster with tombstoned identities replaced or dropped, plus how each original identity moved. */
     private class ResolvedRoster(val members: List<String>, private val moved: Map<String, String>) {
         /** Names keyed by the original identities, re-keyed to where they resolved; explicit entries win. */
@@ -463,24 +563,376 @@ constructor(
         }
     }
 
+    /**
+     * Seats each of [members] at the live end of its `replaced:` chain. A tombstoned identity whose chain is
+     * cut (no replacement), ends on another tombstoned identity, loops or exceeds [MAX_CHAIN_LENGTH] has no
+     * live seat and drops out; an intermediate identity is never seated.
+     */
     private fun resolveRoster(members: List<String>, clocks: Map<String, String>): ResolvedRoster {
         val moved = LinkedHashMap<String, String>()
         val resolved = ArrayList<String>(members.size)
         for (member in members) {
-            var current = member
-            var hops = 0
-            while ("revoked:$current" in clocks && hops++ < MAX_REPLACEMENT_HOPS) {
-                current = clocks["$REPLACED_PREFIX$current"] ?: ""
-                if (current.isEmpty()) break
-            }
-            if (current.isEmpty() || "revoked:$current" in clocks) {
+            val end = followChain(member, clocks, REPLACED_PREFIX)
+            if (end == null || end.isEmpty() || "$REVOKED_PREFIX$end" in clocks) {
                 moved[member] = ""
                 continue
             }
-            if (current != member) moved[member] = current
-            if (current !in resolved) resolved += current
+            if (end != member) moved[member] = end
+            if (end !in resolved) resolved += end
         }
         return ResolvedRoster(resolved, moved)
+    }
+
+    override suspend fun resetRosterProjection(groupId: String, eventTimestamp: Long, eventId: String): Boolean {
+        val reset = groupDao.resetRosterProjection(groupId, eventTimestamp, eventId) == 1
+        if (reset) {
+            Log.i(
+                TAG,
+                "Roster projection of ${groupId.take(8)} reset: history older than its watermark arrived " +
+                    "(${eventId.take(8)} at $eventTimestamp)"
+            )
+        }
+        return reset
+    }
+
+    override suspend fun hasCanonicalProjection(groupId: String): Boolean = groupDao.getById(groupId) != null
+
+    override suspend fun nameClockFloor(groupId: String, author: String): Long {
+        val row = groupDao.getById(groupId) ?: return 0
+        val clocks = json.decodeFromString(nameMapSerializer, row.memberClocks)
+        val own =
+            clocks[author]?.let { checkNotNull(parseMemberClock(it)) { "Unreadable display-name clock" }.first } ?: 0
+        return maxOf(row.lastMetaTimestamp, own)
+    }
+
+    private fun projection(row: GroupEntity): GroupProjection = if (row.projectionJson.isNotEmpty()) {
+        json.decodeFromString(GroupProjection.serializer(), row.projectionJson)
+    } else {
+        // A legacy checkpoint is explicitly incomplete. Its epoch and tombstones cannot be reset
+        // merely because a partial backup lacks the signed events that originally established them.
+        GroupProjection(
+            row.toDomain(),
+            json.decodeFromString(nameMapSerializer, row.memberClocks),
+            row.lastMetaTimestamp,
+            row.lastMetaEventId,
+            incomplete = true
+        )
+    }
+
+    override suspend fun previewCreatorBootstrap(
+        groupId: String,
+        originalCreator: String,
+        createdAt: Long,
+        transitions: List<CreatorTransition>
+    ): Group? {
+        val row = groupDao.getById(groupId) ?: return null
+        val next = mergeBootstrap(projection(row), originalCreator, createdAt, transitions) ?: return null
+        return GroupProjectionReducer.reduce(next).group
+    }
+
+    override suspend fun mergeCreatorBootstrap(
+        groupId: String,
+        originalCreator: String,
+        createdAt: Long,
+        transitions: List<CreatorTransition>
+    ): Boolean = updateGroup(groupId) { row ->
+        val state = projection(row)
+        val next = mergeBootstrap(state, originalCreator, createdAt, transitions) ?: return@updateGroup false
+        if (next == state) true else writeProjection(row, next, successfulNoOp = true)
+    }
+
+    private fun mergeBootstrap(
+        state: GroupProjection,
+        originalCreator: String,
+        createdAt: Long,
+        transitions: List<CreatorTransition>
+    ): GroupProjection? {
+        if (!CreatorTransition.validate(state.checkpoint.id, originalCreator, createdAt, transitions)) return null
+        val root = state.verifiedRoot()
+        if (root != null && root != (originalCreator to createdAt)) return null
+        val facts = state.facts.toMutableList()
+        val proofs = state.creatorTransitions.toMutableList()
+        for (transition in transitions) {
+            val fact = transition.fact()
+            val existing = facts.firstOrNull { it.id == fact.id }
+            if (existing != null && existing != fact) return null
+            if (proofs.any { it.eventId == transition.eventId && it.fact() != fact }) return null
+            // Retained facts remain valid after clock rollback; only new evidence needs admission.
+            if (existing == null && !transition.hasAdmissibleTimestamp()) return null
+            if (existing == null) facts += fact
+            if (proofs.none { it.eventId == transition.eventId }) proofs += transition
+        }
+        if (proofs.size > CreatorTransition.MAX_TRANSITIONS) return null
+        return state.copy(
+            rootCreator = originalCreator,
+            rootCreatedAt = createdAt,
+            creatorTransitions = proofs.sortedWith(compareBy({ it.timestamp }, { it.eventId })),
+            facts = facts
+        )
+    }
+
+    override suspend fun applyAuthenticatedRevocation(
+        groupId: String,
+        oldPubkey: String,
+        newPubkey: String,
+        timestamp: Long,
+        eventId: String,
+        epoch: Int,
+        successorProven: Boolean
+    ): Boolean = updateGroup(groupId) { row ->
+        require(oldPubkey.isNotEmpty() && oldPubkey != newPubkey && timestamp > 0)
+        appendFact(
+            row,
+            GroupControlFact(
+                eventId,
+                "revocation",
+                timestamp,
+                epoch,
+                author = oldPubkey,
+                successor = newPubkey,
+                proven = successorProven
+            ),
+            successfulNoOp = true
+        )
+    }
+
+    override suspend fun hasRevocationInEpoch(groupId: String, author: String, epoch: Int): Boolean {
+        val row = groupDao.getById(groupId) ?: return false
+        return projection(row).facts.any { it.kind == "revocation" && it.author == author && it.epoch == epoch }
+    }
+
+    override suspend fun isHistoricalCreator(
+        groupId: String,
+        author: String,
+        timestamp: Long,
+        eventId: String
+    ): Boolean {
+        val row = groupDao.getById(groupId) ?: return false
+        val state = projection(row)
+        val earlier = state.facts.filter { it.timestamp < timestamp || (it.timestamp == timestamp && it.id < eventId) }
+        return GroupProjectionReducer.reduce(state.copy(facts = earlier)).group.createdBy == author
+    }
+
+    override suspend fun applyAuthenticatedMeta(
+        groupId: String,
+        meta: GroupMeta,
+        author: String,
+        timestamp: Long,
+        eventId: String,
+        epoch: Int,
+        expectedGroup: Group?
+    ): Boolean {
+        if (timestamp <= 0 ||
+            meta.members.isEmpty() ||
+            meta.members.size > RelayDefaults.MAX_GROUP_MEMBERS
+        ) {
+            return false
+        }
+        val safeRelays = meta.relays.filter(InviteLinkCodec::relayFits)
+        if (!InviteLinkCodec.fitsInviteLink(safeRelays)) return false
+        return updateGroup(groupId) { row ->
+            val guardedJoin = expectedGroup != null && expectedGroup.createdBy != author
+            if (expectedGroup != null) {
+                if (row.toDomain() != expectedGroup || row.keyEpoch != epoch) return@updateGroup false
+                if (guardedJoin) {
+                    val clocks = decodeMap(row.memberClocks, groupId, "memberClocks")
+                    if ("revoked:$author" in clocks ||
+                        author !in meta.members ||
+                        meta.keyEpoch != epoch ||
+                        meta.originalCreator != expectedGroup.originalCreator ||
+                        meta.createdBy != expectedGroup.createdBy ||
+                        meta.createdAt != expectedGroup.createdAt ||
+                        meta.creatorTransitions != expectedGroup.creatorTransitions ||
+                        (meta.members.toSet() - expectedGroup.members.toSet() - author).isNotEmpty()
+                    ) {
+                        return@updateGroup false
+                    }
+                } else if (!isNewerClock(timestamp, eventId, row.lastMetaTimestamp to row.lastMetaEventId)) {
+                    return@updateGroup false
+                }
+            }
+            val state = projection(row)
+            val next = if (meta.originalCreator.isNotEmpty() || meta.creatorTransitions.isNotEmpty()) {
+                mergeBootstrap(state, meta.originalCreator, meta.createdAt, meta.creatorTransitions)
+                    ?: return@updateGroup false
+            } else {
+                state
+            }
+            val fact = GroupControlFact(
+                eventId,
+                "meta",
+                timestamp,
+                epoch,
+                author = author,
+                meta = meta.copy(relays = safeRelays)
+            )
+            val canonical = canonicalizeLegacyJoin(next, fact)
+            if (guardedJoin) {
+                val result = GroupProjectionReducer.reduce(canonical.copy(facts = canonical.facts + fact))
+                if (author !in result.group.members || "revoked:$author" in result.clocks) return@updateGroup false
+            }
+            appendFact(row, fact, successfulNoOp = expectedGroup == null || guardedJoin, state = canonical)
+        }
+    }
+
+    override suspend fun authenticatedRotations(groupId: String): Map<String, KeyRotation> {
+        val row = groupDao.getById(groupId) ?: return emptyMap()
+        return projection(row).facts.filter { it.kind in setOf("rotation", "rotation-history") && it.rotation != null }
+            .associate { it.id to checkNotNull(it.rotation) }
+    }
+
+    override suspend fun retainAuthenticatedRotationHistory(
+        groupId: String,
+        rotation: KeyRotation,
+        author: String,
+        timestamp: Long,
+        eventId: String
+    ): Boolean = updateGroup(groupId) { row ->
+        if (eventId.isEmpty() ||
+            rotation.epoch <= 0 ||
+            timestamp <= 0 ||
+            rotation.members.size > RelayDefaults.MAX_GROUP_MEMBERS
+        ) {
+            return@updateGroup false
+        }
+        val fact = GroupControlFact(
+            eventId,
+            "rotation-history",
+            timestamp,
+            rotation.epoch,
+            author = author,
+            rotation = rotation
+        )
+        val existing = projection(row).facts.firstOrNull { it.id == eventId }
+        if (existing?.kind == "rotation") {
+            check(existing == fact.copy(kind = "rotation")) { "Authenticated control event changed its meaning" }
+            true
+        } else {
+            appendFact(row, fact, successfulNoOp = true)
+        }
+    }
+
+    override suspend fun applyAuthenticatedRotation(
+        groupId: String,
+        rotation: KeyRotation,
+        author: String,
+        timestamp: Long,
+        eventId: String,
+        expectedMembers: List<String>?
+    ): Boolean = updateGroup(groupId) { row ->
+        if (rotation.epoch <= 0 ||
+            timestamp <= 0 ||
+            rotation.members.size > RelayDefaults.MAX_GROUP_MEMBERS
+        ) {
+            return@updateGroup false
+        }
+        if (expectedMembers != null && row.toDomain().members != expectedMembers) return@updateGroup false
+        val fact = GroupControlFact(
+            eventId.ifEmpty { "rotation:${rotation.epoch}:$author:$timestamp" },
+            "rotation",
+            timestamp,
+            rotation.epoch,
+            author = author,
+            rotation = rotation
+        )
+        val state = projection(row)
+        val existing = state.facts.firstOrNull { it.id == fact.id }
+        if (existing?.kind == "rotation-history") {
+            check(existing == fact.copy(kind = "rotation-history")) {
+                "Authenticated control event changed its meaning"
+            }
+            val next = state.copy(facts = state.facts.map { if (it.id == fact.id) fact else it })
+            if (GroupProjectionReducer.reduce(next) == GroupProjectionReducer.reduce(state)) {
+                writeProjection(row, next, true)
+            } else {
+                true
+            }
+        } else {
+            appendFact(row, fact, successfulNoOp = true, state = state)
+        }
+    }
+
+    private fun canonicalizeLegacyJoin(state: GroupProjection, fact: GroupControlFact): GroupProjection {
+        val old = state.facts.firstOrNull { it.id == fact.id } ?: return state
+        if (old.kind != "self" || fact.id.length != 64 || fact.id.any { it !in "0123456789abcdef" }) return state
+        val meta = checkNotNull(fact.meta)
+        val expected = GroupControlFact(
+            fact.id,
+            "self",
+            fact.timestamp,
+            fact.epoch,
+            author = fact.author,
+            join = true,
+            displayName = meta.memberNames[fact.author]?.takeIf { it.isNotBlank() }
+        )
+        if (old != expected || fact.author !in meta.members || meta.keyEpoch != fact.epoch) return state
+        val canonical = state.copy(facts = state.facts.map { if (it.id == fact.id) fact else it })
+        val before = GroupProjectionReducer.reduce(state)
+        val after = GroupProjectionReducer.reduce(canonical)
+        // Pre-fix joins kept only their self fields. Upgrade authenticated replay only when it preserves
+        // their entire projected meaning, apart from the obsolete local-only join clock.
+        val joinClock = "join:${fact.author}"
+        return if (before.copy(clocks = before.clocks - joinClock) == after.copy(clocks = after.clocks - joinClock)) {
+            canonical
+        } else {
+            state
+        }
+    }
+
+    /** Null means the row changed concurrently: re-read and recompute, without acquiring a Room-crossing mutex. */
+    private suspend fun appendFact(
+        row: GroupEntity,
+        fact: GroupControlFact,
+        successfulNoOp: Boolean,
+        state: GroupProjection = projection(row)
+    ): Boolean? {
+        // Local retries share a kind/author/timestamp ID; conflicting facts with that ID are rejected.
+        val normalized = if (fact.id.isEmpty()) {
+            fact.copy(
+                id = "local:${fact.kind}:${fact.author}:${fact.timestamp}"
+            )
+        } else {
+            fact
+        }
+        val existing = state.facts.firstOrNull { it.id == normalized.id }
+        if (existing != null) {
+            check(existing == normalized) { "Authenticated control event changed its meaning" }
+            return if (state == projection(row)) successfulNoOp else writeProjection(row, state, successfulNoOp)
+        }
+        val next = state.copy(
+            facts = state.facts + normalized,
+            incomplete = state.incomplete || normalized.kind == "checkpoint"
+        )
+        return writeProjection(row, next, successfulNoOp)
+    }
+
+    private suspend fun writeProjection(row: GroupEntity, next: GroupProjection, successfulNoOp: Boolean): Boolean? {
+        val result = GroupProjectionReducer.reduce(next)
+        val group = result.group
+        if (group.members.size > RelayDefaults.MAX_GROUP_MEMBERS) return false
+        val changed = row.members != json.encodeToString(stringListSerializer, group.members) ||
+            row.memberNames != json.encodeToString(nameMapSerializer, group.memberNames) ||
+            row.memberClocks != json.encodeToString(nameMapSerializer, result.clocks) ||
+            row.createdBy != group.createdBy ||
+            row.name != group.name ||
+            row.description != group.description ||
+            row.relays != json.encodeToString(stringListSerializer, group.relays) ||
+            row.keyEpoch != group.keyEpoch ||
+            row.lastMetaTimestamp != result.timestamp ||
+            row.lastMetaEventId != result.eventId
+        val wrote = groupDao.writeProjection(
+            row.groupId, group.name, group.description,
+            json.encodeToString(
+                stringListSerializer,
+                group.members
+            ),
+            json.encodeToString(nameMapSerializer, group.memberNames),
+            json.encodeToString(nameMapSerializer, result.clocks), group.createdBy, group.createdAt,
+            json.encodeToString(stringListSerializer, group.relays), group.keyEpoch, result.timestamp, result.eventId,
+            json.encodeToString(GroupProjection.serializer(), next), row.projectionJson, row.keyEpoch,
+            row.members, row.memberClocks, row.memberNames, row.createdBy, row.lastMetaTimestamp, row.lastMetaEventId
+        )
+        return if (wrote == 1) changed || successfulNoOp else null
     }
 
     private suspend fun updateGroup(groupId: String, update: suspend (GroupEntity) -> Boolean?): Boolean {
@@ -523,6 +975,9 @@ constructor(
         val decodedMembers = decodeList(members, groupId, "members")
         val decodedRelays = decodeList(relays, groupId, "relays")
         val decodedNames = decodeMap(memberNames, groupId, "memberNames")
+        val state = if (projectionJson.isNotEmpty()) json.decodeFromString<GroupProjection>(projectionJson) else null
+        val root = state?.verifiedRoot()
+            ?: (createdBy to createdAt).takeIf { GroupIdentity.matches(groupId, createdBy, createdAt) }
         return Group(
             id = groupId,
             name = name,
@@ -532,7 +987,9 @@ constructor(
             members = decodedMembers,
             relays = decodedRelays,
             memberNames = sanitizeMemberNames(decodedNames, decodedMembers),
-            keyEpoch = keyEpoch
+            keyEpoch = keyEpoch,
+            originalCreator = root?.first.orEmpty(),
+            creatorTransitions = state?.verifiedCreatorTransitions().orEmpty()
         )
     }
 
@@ -553,17 +1010,19 @@ constructor(
         /** Display names are trimmed and truncated to this many characters before persisting. */
         private const val MAX_DISPLAY_NAME_LENGTH = 50
 
-        /**
-         * Highest epoch [deleteGroupKey] sweeps when the group row is gone and the real epoch is
-         * unknown. Rotations are rare (one per member removal), so this comfortably covers any
-         * realistic group's lifetime.
-         */
+        /** Bounds orphan cleanup when the current epoch is unknown; higher epoch keys may remain. */
         private const val MAX_ORPHAN_EPOCH_SWEEP = 64
 
         /** `memberClocks` entry recording which identity replaced a tombstoned one. */
         private const val REPLACED_PREFIX = "replaced:"
 
-        /** A revoked identity replaced by another revoked identity is followed at most this far. */
-        private const val MAX_REPLACEMENT_HOPS = 8
+        /** `memberClocks` entry recording that an identity was revoked, keyed by its pubkey. */
+        private const val REVOKED_PREFIX = "revoked:"
+
+        /** Successor-authorized link used to reattribute balances, unlike a roster-only replacement. */
+        private const val SUCCEEDED_PREFIX = "succeeded:"
+
+        /** Maximum tombstoned identities visited; exceeding it rejects the chain rather than choosing a hop. */
+        private const val MAX_CHAIN_LENGTH = 1024
     }
 }

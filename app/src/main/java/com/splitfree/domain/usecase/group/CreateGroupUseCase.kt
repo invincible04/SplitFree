@@ -19,12 +19,12 @@ import kotlinx.serialization.json.Json
 /**
  * Creates a new expense group, generates its symmetric key, and publishes `group_meta` to relays.
  *
- * The group id is derived from `(creator, createdAt)` via [GroupIdentity] so that invite links
- * and imported metadata can prove who created the group.
+ * [GroupIdentity] binds the group id to `(creator, createdAt)`, allowing invite links and imported
+ * metadata to reject a different original creator for the same group.
  *
- * Creation is one durable command: the group row, its key, the first `group_meta` event and its outbox
- * entry land in one transaction, and a retry with the same `(createdAt, commandId)` after an interruption
- * returns the group that was already created instead of creating a second one.
+ * The group row, first `group_meta` and outbox entry commit in one Room transaction. The secure-store
+ * key is written first and may survive rollback, so retries reuse it. With the same identity,
+ * `(createdAt, commandId)` and group details, a retry returns the earlier creation instead of duplicating it.
  */
 class CreateGroupUseCase
 @Inject
@@ -70,7 +70,7 @@ constructor(
         require(InviteLinkCodec.fitsInviteLink(relays)) { "Relays do not fit in an invite link" }
         // An attempt that stored the key but rolled back the row continues with the same key material.
         val groupKey = groupRepo.getGroupKeyForEpoch(groupId, 0) ?: encryption.generateGroupKey()
-        val myName = settings.displayName
+        val myName = settings.displayNameFor(pubkey)
         val names = if (myName.isNotBlank()) mapOf(pubkey to myName) else emptyMap()
         val group =
             Group(
@@ -113,9 +113,8 @@ constructor(
     fun currentAuthor(): String = identity.getPublicKeyHex().also { check(it.isNotBlank()) { "Identity unavailable" } }
 
     /**
-     * The group already stored under this command's id. It is the result of an earlier attempt of the same
-     * command only if its `group_meta` carries [commandId] and its identity and details match; anything else
-     * is a different group and the command is refused rather than overwriting it.
+     * Reuse the stored group only when its creation event carries [commandId] and identity/details
+     * still match. A colliding group id must never overwrite another creation.
      */
     private suspend fun reconcile(
         group: Group,

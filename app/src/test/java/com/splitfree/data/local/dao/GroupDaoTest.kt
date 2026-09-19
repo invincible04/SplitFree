@@ -22,9 +22,8 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * Exercises the real SQL behind the metadata last-writer-wins updates against an
- * in-memory Room database, so the single-statement guarantees are verified rather
- * than assumed.
+ * Exercises metadata ordering and roster projections with in-memory Room. Scripted interleavings
+ * check stale-read protection; these tests do not explore arbitrary concurrent schedules.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
@@ -219,6 +218,60 @@ class GroupDaoTest {
         // Historical metas newer than the watermark still apply after the creator is recorded.
         assertEquals(1, dao.updateMetaIfNewer("legacy", "Trip", entity.members, entity.relays, "", 600, "{}"))
         assertEquals("creator", dao.getById("g1")!!.createdBy) // other rows untouched
+    }
+
+    // --- resetRosterProjection (out-of-order history on import) ---
+
+    @Test
+    fun `resetRosterProjection clears the projection but keeps clocks epoch name description and relays`() =
+        runBlocking {
+            val clocks = """{"revoked:bob":"400:r","replaced:bob":"bob2","succeeded:bob":"bob2","seated:bob":"bob2"}"""
+            dao.insert(
+                entity.copy(
+                    groupId = "p",
+                    description = "Ski",
+                    memberClocks = clocks,
+                    keyEpoch = 3,
+                    lastMetaEventId = "e-500",
+                    lastSyncTimestamp = 77
+                )
+            )
+
+            // A record at 400 is older than the watermark (500, "e-500"): the projection is reset.
+            assertEquals(1, dao.resetRosterProjection("p", 400, "r"))
+
+            val row = dao.getById("p")!!
+            assertEquals("[]", row.members)
+            assertEquals("{}", row.memberNames)
+            assertEquals("", row.createdBy)
+            assertEquals(0L, row.lastMetaTimestamp)
+            assertEquals("", row.lastMetaEventId)
+            assertEquals(clocks, row.memberClocks)
+            assertEquals(3, row.keyEpoch)
+            assertEquals("Trip", row.name)
+            assertEquals("Ski", row.description)
+            assertEquals(entity.relays, row.relays)
+            assertEquals(1000L, row.createdAt)
+            assertEquals(77L, row.lastSyncTimestamp)
+            assertEquals(entity, dao.getById("g1")) // other rows untouched
+        }
+
+    @Test
+    fun `resetRosterProjection is a no-op unless the watermark is canonically newer than the record`() = runBlocking {
+        dao.insert(entity.copy(groupId = "p", lastMetaEventId = "e-500"))
+        val before = dao.getById("p")!!
+
+        // Newer than, equal to, and same instant with a greater id than the watermark: nothing to re-project.
+        assertEquals(0, dao.resetRosterProjection("p", 600, "a"))
+        assertEquals(0, dao.resetRosterProjection("p", 500, "e-500"))
+        assertEquals(0, dao.resetRosterProjection("p", 500, "e-501"))
+        assertEquals(before, dao.getById("p"))
+
+        // Same instant, lower id: canonically older, so it is reset.
+        assertEquals(1, dao.resetRosterProjection("p", 500, "e-499"))
+        assertEquals("[]", dao.getById("p")!!.members)
+        // Once reset the watermark is zero and nothing is older than it.
+        assertEquals(0, dao.resetRosterProjection("p", 1, ""))
     }
 
     // --- ordering ---
@@ -737,6 +790,7 @@ class GroupDaoTest {
         assertEquals(listOf("creator", "bob2"), repo.getById("g1")!!.members)
         assertEquals(mapOf("bob2" to "Bob"), repo.getById("g1")!!.memberNames)
         assertEquals(
+            // The durable checkpoint and facts replace the lossy seated marker.
             mapOf("revoked:bob" to "600:revoke", "replaced:bob" to "bob2"),
             Json.decodeFromString<Map<String, String>>(revoked.memberClocks)
         )
@@ -880,9 +934,8 @@ class GroupDaoTest {
     }
 
     /**
-     * The creator rotated before it saw bob's revocation, so its signed roster still names bob. Refusing
-     * the rotation would strand this device at epoch 0 for good (epoch 2 would then be a gap); instead
-     * the tombstoned key resolves to the successor this device recorded, and the epoch advances.
+     * A rotation based on a pre-revocation roster must resolve bob to his recorded successor and
+     * advance the epoch. This exercises repository projection, not signature verification.
      */
     @Test
     fun `rotation naming a tombstoned identity installs its recorded successor and still advances`() = runBlocking {

@@ -29,16 +29,13 @@ import kotlinx.serialization.json.Json
  * leaves with it and never receives the new epoch key, unless it was already an independent member when
  * the removal was decided. The payload still names the key the creator selected.
  *
- * An interrupted removal is finished from its journal entry, whatever happened to the roster meanwhile:
- * - Nothing prepared yet: nothing was signed or published, so the intent is rebased onto the live
- *   roster (same removed member, same epoch, same key if one was already stored).
- * - Prepared: the signed envelopes are kept and re-published as they are. A member the plan did not
- *   cover (a join, or the successor of another member's revoked key) gets its own envelope for the same
- *   key, and whenever the newest prepared `group_meta` does not carry the live roster a corrective one
- *   is appended, dated strictly after every prepared metadata so it wins on every receiver whatever the
- *   arrival order, even when the roster drifted away and back.
- * The removal can therefore always complete; only a change of creator authority or an epoch this device
- * did not produce fails closed.
+ * Recovery keeps the selected member and target epoch fixed:
+ * - Unprepared intents rebase onto the live roster, reusing any stored target-epoch key.
+ * - Prepared envelopes are immutable. Missing recipients get envelopes for the same key, and
+ *   roster drift appends metadata newer than every prepared meta, even if the roster changed back.
+ *
+ * Recovery rejects changed creator authority, conflicting epoch/key state or failed projection.
+ * The journal remains until publication and local projection complete.
  */
 class RotateGroupKeyUseCase
 @Inject
@@ -57,6 +54,12 @@ constructor(
     suspend operator fun invoke(groupId: String, removePubkey: String) {
         withContext(NonCancellable) {
             operationLock.withLock {
+                check(
+                    identity.stagedIdentitySwitch() == null && journal.get(IdentitySwitchCoordinator.SWITCH_ID) == null
+                ) {
+                    "Finish the pending identity switch first"
+                }
+                reconcileIdentityOperations(identity, journal)
                 check(journal.get(REVOCATION_ID) == null && !identity.hasPendingKeyPair()) {
                     "Finish the pending identity revocation before removing members"
                 }
@@ -83,6 +86,12 @@ constructor(
     suspend fun resumeIfNeeded() {
         withContext(NonCancellable) {
             operationLock.withLock {
+                check(
+                    identity.stagedIdentitySwitch() == null && journal.get(IdentitySwitchCoordinator.SWITCH_ID) == null
+                ) {
+                    "Finish the pending identity switch first"
+                }
+                reconcileIdentityOperations(identity, journal)
                 val me = identity.getPublicKeyHex()
                 val pending = journal.getAll(ROTATION_KIND).associateBy { it.id }.toMutableMap()
                 for (group in groupRepo.getAll()) {
@@ -119,7 +128,7 @@ constructor(
         // successor is already gone from it, so a later resume keeps recognising it as departing.
         val departing = departingSuccessors(intent)
         if (op.preparedJson == null && live != intent.group) {
-            // Nothing signed or published yet: follow the live roster instead of failing on the stale one.
+            // No durable prepared batch was published: rebase instead of retaining a stale roster.
             check(!landed) { "Epoch ${intent.epoch} advanced without this device publishing it" }
             val rebased = RotationIntent(
                 live.copy(members = live.members - departing, memberNames = live.memberNames - departing),
@@ -132,7 +141,6 @@ constructor(
             intent = rebased
         }
         val target = if (landed) live.members else live.members - intent.removedMember - departing
-        val names = live.memberNames.filterKeys { it in target }
 
         val events: List<PreparedControlEvent>
         if (op.preparedJson == null) {
@@ -148,17 +156,77 @@ constructor(
             }
             events = extendPlan(op, intent, live, target, key)
         }
+        val rotations = events.filter { it.eventType == "key_rotation" }.map { envelope ->
+            envelope.event() to decryptPreparedRotation(envelope)
+        }
+        val epochKey =
+            checkNotNull(groupRepo.getGroupKeyForEpoch(groupId, intent.epoch)) { "Prepared rotation key unavailable" }
+        val metas = events.filter { it.eventType == "group_meta" }.map { envelope ->
+            val event = envelope.event()
+            event to json.decodeFromString<GroupMeta>(encryption.decrypt(event.content, epochKey))
+        }
+        check(
+            rotations.isNotEmpty() &&
+                metas.isNotEmpty() &&
+                rotations.all { (event, payload) ->
+                    event.pubkey == intent.group.createdBy &&
+                        payload.epoch == intent.epoch &&
+                        payload.removedMember == intent.removedMember
+                } &&
+                metas.all { (event, payload) ->
+                    event.pubkey == intent.group.createdBy && payload.keyEpoch == intent.epoch
+                }
+        ) {
+            "Prepared rotation does not match its authenticated intent"
+        }
         events.filter { it.eventType == "key_rotation" }.forEach { it.publish(eventPublisher) }
-        if (!landed) {
-            // Guarded by the roster this attempt planned for: a membership change that slipped in since
-            // fails the write, and the next attempt re-reads and extends the plan for it.
-            check(groupRepo.applyKeyRotation(groupId, intent.epoch, target, names, expectedMembers = live.members)) {
+        for ((index, pair) in rotations.withIndex()) {
+            val (event, payload) = pair
+            check(
+                groupRepo.applyAuthenticatedRotation(
+                    groupId,
+                    payload,
+                    event.pubkey,
+                    event.createdAt,
+                    event.id,
+                    expectedMembers = if (!landed && index == 0) live.members else null
+                )
+            ) {
                 "Group changed during rotation"
             }
         }
-        // This must also run when the epoch transition already landed before the crash.
         events.filter { it.eventType == "group_meta" }.forEach { it.publish(eventPublisher) }
+        for ((event, payload) in metas) {
+            check(
+                groupRepo.applyAuthenticatedMeta(
+                    groupId,
+                    payload,
+                    event.pubkey,
+                    event.createdAt,
+                    event.id,
+                    intent.epoch
+                )
+            ) {
+                "Could not project prepared rotation metadata"
+            }
+        }
         journal.complete(op.id)
+    }
+
+    private fun decryptPreparedRotation(envelope: PreparedControlEvent): KeyRotation {
+        val event = envelope.event()
+        val recipient = checkNotNull(envelope.recipient()) { "Prepared rotation recipient missing" }
+        val privateKey = identity.getPrivateKeyBytes()
+        try {
+            val conversationKey = Nip44.getConversationKey(privateKey, recipient.hexToBytes())
+            try {
+                return json.decodeFromString<KeyRotation>(Nip44.decrypt(event.content, conversationKey))
+            } finally {
+                conversationKey.fill(0)
+            }
+        } finally {
+            privateKey.fill(0)
+        }
     }
 
     /**
@@ -270,7 +338,11 @@ constructor(
             members,
             group.relays,
             group.memberNames.filterKeys { it in members },
-            keyEpoch = epoch
+            keyEpoch = epoch,
+            originalCreator = group.originalCreator.takeIf {
+                com.splitfree.domain.model.group.GroupIdentity.matches(group.id, it, group.createdAt)
+            }.orEmpty(),
+            creatorTransitions = group.creatorTransitions
         )
         val encrypted = encryption.encrypt(json.encodeToString(meta), key)
         val event = if (notBefore > 0L) {
@@ -334,19 +406,20 @@ constructor(
     /**
      * Handle an incoming key_rotation event: decrypt new key and update local state.
      *
-     * @param createdAt the rotation event's `created_at` (diagnostics only; ordering is by epoch)
+     * @param createdAt signed event time retained with [eventId] for canonical projection ordering
      * @return [RotationOutcome.APPLIED] once the epoch and roster are installed (or my own removal
      *   recorded), [RotationOutcome.DEFERRED_EPOCH_GAP] when an earlier epoch has not landed yet,
      *   [RotationOutcome.DEFERRED_MEMBERSHIP] when it names a member whose join has not landed yet
-     *   (caller keeps the row pending and retries both), [RotationOutcome.IGNORED] for a replay of the
-     *   current or an older epoch, [RotationOutcome.REJECTED] for anything malformed, unauthorized or
-     *   inconsistent with key material already installed
+     *   (caller keeps the row pending and retries both), [RotationOutcome.IGNORED] for a replay of an
+     *   older epoch (or the current epoch without an event id). Same-epoch events with ids still reach
+     *   projection. [RotationOutcome.REJECTED] covers invalid input, authority, key or projection conflicts
      */
     suspend fun handleKeyRotation(
         decryptedContent: String,
         authorPubkey: String,
         groupId: String,
-        createdAt: Long
+        createdAt: Long,
+        eventId: String = ""
     ): RotationOutcome {
         val rotation = try {
             json.decodeFromString<KeyRotation>(decryptedContent)
@@ -356,7 +429,7 @@ constructor(
         }
 
         return operationLock.withLock {
-            applyKeyRotation(rotation, authorPubkey, groupId, createdAt)
+            applyKeyRotation(rotation, authorPubkey, groupId, createdAt, eventId)
         }
     }
 
@@ -364,7 +437,8 @@ constructor(
         rotation: KeyRotation,
         authorPubkey: String,
         groupId: String,
-        createdAt: Long
+        createdAt: Long,
+        eventId: String
     ): RotationOutcome {
         val group = groupRepo.getById(groupId) ?: return RotationOutcome.REJECTED
         if (authorPubkey != group.createdBy) {
@@ -372,15 +446,16 @@ constructor(
             return RotationOutcome.REJECTED
         }
 
-        // Already processed this epoch (or a later one). This must run BEFORE the
-        // "I was removed" branch: a replayed old rotation that predates our re-invite
-        // would otherwise remove us again.
-        if (group.keyEpoch >= rotation.epoch) return RotationOutcome.IGNORED
+        // Ignore stale epochs before evaluating removal, so an old rotation cannot undo a re-invite.
+        // Same-epoch envelopes with ids still carry facts needed by the canonical projection.
+        if (group.keyEpoch > rotation.epoch || (group.keyEpoch == rotation.epoch && eventId.isEmpty())) {
+            return RotationOutcome.IGNORED
+        }
 
         // Rotations must be applied strictly in sequence. Skipping an epoch would leave the
         // intermediate history undecryptable (we would never receive that epoch's key), so the
         // row stays pending until the missing epoch arrives (relay catch-up or a nearby peer).
-        if (rotation.epoch != group.keyEpoch + 1) {
+        if (rotation.epoch > group.keyEpoch + 1) {
             Log.w(
                 TAG,
                 "Deferring key_rotation for epoch ${rotation.epoch} in $groupId, local epoch is ${group.keyEpoch}"
@@ -404,15 +479,12 @@ constructor(
         }
 
         val myPubkey = identity.getPublicKeyHex()
-        val updatedNames = group.memberNames.filterKeys { it in members }
         val myEncryptedKey = rotation.encryptedKeys[myPubkey]
         if (myPubkey !in members || (myEncryptedKey == null && myPubkey !in rotation.members)) {
-            // Either the creator removed me, or it still addressed my revoked key, whose private half
-            // is gone. Advance the epoch without the key: this device can no longer read or write the
-            // group until the creator rotates again, and a group_meta encrypted under the old epoch
-            // cannot re-add it.
+            // A successor cannot decrypt a key addressed only to its retired identity. Record the
+            // rotation without installing a key here; possession must not follow roster succession.
             Log.i(TAG, "No key for me in group $groupId at epoch ${rotation.epoch} (created_at $createdAt)")
-            return if (groupRepo.applyKeyRotation(groupId, rotation.epoch, members, updatedNames)) {
+            return if (groupRepo.applyAuthenticatedRotation(groupId, rotation, authorPubkey, createdAt, eventId)) {
                 RotationOutcome.APPLIED
             } else {
                 RotationOutcome.REJECTED
@@ -451,7 +523,7 @@ constructor(
             Log.i(TAG, "Epoch ${rotation.epoch} key already stored for $groupId, resuming interrupted rotation")
         }
         // Epoch and roster land together: a crash can never leave the new epoch with the old roster.
-        if (!groupRepo.applyKeyRotation(groupId, rotation.epoch, members, updatedNames)) {
+        if (!groupRepo.applyAuthenticatedRotation(groupId, rotation, authorPubkey, createdAt, eventId)) {
             return RotationOutcome.REJECTED
         }
 

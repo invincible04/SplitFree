@@ -9,17 +9,24 @@ import com.splitfree.data.local.entities.DeliveryEntity
 import com.splitfree.data.local.entities.EventEntity
 import com.splitfree.data.local.entities.OutboxEntity
 import com.splitfree.data.nostr.EventThrottler
+import com.splitfree.data.repository.DisplayNameRepository
 import com.splitfree.data.repository.ExpenseEventHistory
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.crypto.NostrEvent
 import com.splitfree.domain.crypto.NostrKind
 import com.splitfree.domain.model.expense.ExpenseIdentity
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.DisplayNameDelivery
+import com.splitfree.domain.repository.DisplayNameGroupChangedException
 import com.splitfree.domain.repository.EventPublisherContract
 import com.splitfree.domain.repository.EventSnapshot
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.repository.OutboxFullException
+import com.splitfree.domain.repository.PreparedDisplayName
+import com.splitfree.domain.repository.SettingsContract
+import com.splitfree.domain.repository.groupMeta
+import com.splitfree.domain.usecase.group.IdentitySwitchCoordinator
 import com.splitfree.sync.worker.OutboxDrainScheduler
 import com.splitfree.util.DebugLog as Log
 import javax.inject.Inject
@@ -45,7 +52,8 @@ constructor(
     private val giftWrap: GiftWrapService,
     private val groupRepo: GroupRepositoryContract,
     private val identity: IdentityContract,
-    private val db: AppDatabase
+    private val db: AppDatabase,
+    private val settings: SettingsContract
 ) : EventPublisherContract {
     override suspend fun publishToGroup(
         event: NostrEvent,
@@ -110,6 +118,67 @@ constructor(
         }
         if (saved) dispatch(listOf(event))
         return saved
+    }
+
+    /** Commit the name projection, exact prepared event, outbox row and revision marker together. */
+    override suspend fun publishDisplayName(prepared: PreparedDisplayName): DisplayNameDelivery? {
+        val (intent, expectedGroup, event) = prepared
+        val result = db.withTransaction {
+            if (!identity.hasIdentity() ||
+                identity.getPublicKeyHex() != intent.identityPubkey ||
+                identity.hasPendingKeyPair() ||
+                identity.stagedIdentitySwitch() != null ||
+                settings.getDisplayNameIntent(intent.identityPubkey)?.revision != intent.revision
+            ) {
+                return@withTransaction null
+            }
+            check(db.controlOperationDao().get(IdentitySwitchCoordinator.SWITCH_ID) == null) {
+                "Finish the pending identity switch before publishing a name"
+            }
+            val dao = db.displayNameDao()
+            val desired = dao.getIntent(intent.identityPubkey)
+            if (desired?.revision != intent.revision) return@withTransaction null
+            val publication = checkNotNull(dao.getPublication(intent.identityPubkey, expectedGroup.id))
+            check(publication.revision == intent.revision && publication.preparedEventJson == event.toJson())
+            if (publication.committedEventId == event.id) {
+                return@withTransaction DisplayNameDelivery.DURABLY_QUEUED
+            }
+            val current = groupRepo.getById(expectedGroup.id) ?: throw DisplayNameGroupChangedException()
+            if (current != expectedGroup ||
+                intent.identityPubkey !in current.members ||
+                groupRepo.nameClockFloor(expectedGroup.id, intent.identityPubkey) >= event.createdAt
+            ) {
+                throw DisplayNameGroupChangedException()
+            }
+            check(event.pubkey == intent.identityPubkey && event.createdAt == publication.lastReservedTimestamp)
+            val now = System.currentTimeMillis() / 1000
+            check(event.createdAt > 0 && event.createdAt <= now + DisplayNameRepository.MAX_FUTURE_SECONDS) {
+                "Prepared name clock is outside the allowed window"
+            }
+            if (!groupRepo.applyAuthenticatedMeta(
+                    current.id,
+                    intent.groupMeta(expectedGroup),
+                    intent.identityPubkey,
+                    event.createdAt,
+                    event.id,
+                    current.keyEpoch,
+                    expectedGroup = current.takeIf { it.createdBy == intent.identityPubkey }
+                )
+            ) {
+                throw DisplayNameGroupChangedException()
+            }
+            val entity = eventEntity(event, current.id, event.content, "group_meta", null, current.keyEpoch)
+            check(commit(entity, listOf(event))) { "Uncompleted name event already exists" }
+            check(dao.complete(intent.identityPubkey, current.id, intent.revision, event.toJson(), event.id) == 1)
+            // Preferences are a separate durable store; reject an edit/identity switch observed before commit.
+            check(identity.getPublicKeyHex() == intent.identityPubkey) { "Identity changed while saving display name" }
+            check(settings.getDisplayNameIntent(intent.identityPubkey)?.revision == intent.revision) {
+                "Display name changed while saving"
+            }
+            DisplayNameDelivery.DURABLY_QUEUED
+        }
+        if (result == DisplayNameDelivery.DURABLY_QUEUED) dispatch(listOf(event))
+        return result
     }
 
     override suspend fun publishDirect(
@@ -294,8 +363,8 @@ constructor(
         val targets = recipients.distinct().filter { it != me }
         if (targets.isEmpty()) return 0
 
-        // Only events I signed myself can be re-wrapped: a `seal:` row is someone else's rumor
-        // (or one I could not re-authenticate), and direct-published types are already on relays.
+        // Re-wrap only verifiable events authored by this identity. Rumor-only rows lack portable
+        // author proof; directly published control events use their original outbox delivery instead.
         val authored =
             eventDao.getEventsByGroup(groupId).filter {
                 it.pubkey == me &&

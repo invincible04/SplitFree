@@ -78,8 +78,7 @@ data class GroupDetailUiState(
 }
 
 /**
- * Drives the group detail screen: observes expenses, computes balances,
- * handles settlements, invite links, member removal, and group export.
+ * Drives expenses, balances, settlements, deletion, invite links, member removal, and relay editing.
  *
  * Balances are all or nothing. A failed computation, a dead observation or an unreadable own key marks
  * [GroupDetailUiState.balancesAvailable] false; [retryBalances] resubscribes both observations and the
@@ -130,7 +129,7 @@ constructor(
     private var inviteGeneration = 0L
     private var inviteMutations = 0
 
-    /** Bumped by [retryBalances]; both observations restart on every bump. */
+    /** Restarts the ledger observation; [retryBalances] also bumps the separate group retry flow. */
     private val retryRequests = MutableStateFlow(0L)
     private val groupRetryRequests = MutableStateFlow(0L)
 
@@ -218,9 +217,8 @@ constructor(
     }
 
     /**
-     * A failing group query or an unreadable own key leaves [GroupDetailUiState.myPubkey] unknown, so debts
-     * cannot be attributed: balances are unavailable until the next successful [applyGroup]. The debts stay in
-     * state, hidden, so recovery restores them rather than showing a false zero.
+     * A failed group query or identity read makes the retained group/key state untrustworthy.
+     * Hide balances until [applyGroup] succeeds; keep the debts so recovery does not imply a zero balance.
      */
     private fun reportGroupFailure(@StringRes fallback: Int, what: String, e: Throwable) {
         if (e is CancellationException || e !is Exception) throw e
@@ -270,6 +268,10 @@ constructor(
         if (!InviteLinkCodec.fitsInviteLink(group.relays)) {
             // Legacy saved lists keep every endpoint for sync. Only an explicit relay edit changes them.
             _uiState.update { it.copy(inviteError = UiMessage.Res(R.string.invite_relays_need_edit)) }
+            return
+        }
+        if (group.creatorTransitions.size > com.splitfree.domain.model.group.CreatorTransition.MAX_INVITE_TRANSITIONS) {
+            _uiState.update { it.copy(inviteError = UiMessage.Res(R.string.invite_creator_history_too_long)) }
             return
         }
         val generation = inviteGeneration

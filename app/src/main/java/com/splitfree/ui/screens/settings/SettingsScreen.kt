@@ -200,6 +200,7 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val npub by viewModel.npub.collectAsStateWithLifecycle()
     val seedPhrase by viewModel.seedPhrase.collectAsStateWithLifecycle()
     val displayName by viewModel.displayName.collectAsStateWithLifecycle()
+    val nameSaveFailed by viewModel.nameSaveFailed.collectAsStateWithLifecycle()
     val outboxStatus by viewModel.outboxStatus.collectAsStateWithLifecycle()
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
     val revokeState by viewModel.revokeState.collectAsStateWithLifecycle()
@@ -209,8 +210,8 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    // The write happens in the ViewModel: a composable scope is cancelled by navigation and
-    // recomposition, which would leave a half-written backup behind.
+    // The ViewModel retains export work across configuration changes and handles partial-file cleanup
+    // if its navigation entry is removed. Ordinary recomposition does not cancel remembered scopes.
     val exportLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
             if (uri != null) viewModel.exportAllGroups(uri)
@@ -232,7 +233,15 @@ fun SettingsScreen(onBack: () -> Unit, onDebugLog: () -> Unit = {}, viewModel: S
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
 
-    // A rotation that finishes while a secret is on screen swaps it for the new identity's secret.
+    val nameSaveFailedMsg = stringResource(R.string.display_name_save_failed)
+    LaunchedEffect(nameSaveFailed) {
+        if (nameSaveFailed) {
+            viewModel.clearNameSaveFailure()
+            scope.launch { snackbarHostState.showSnackbar(nameSaveFailedMsg) }
+        }
+    }
+
+    // Identity replacement refreshes any revealed secret; a group-key rotation does not change it.
     LaunchedEffect(revokeState) {
         if (revokeState is RevokeState.Done) {
             if (nsec.isNotEmpty()) viewModel.revealPrivateKey()
@@ -543,7 +552,7 @@ private fun outboxSummary(state: SettingsUiState): String = if (state.pendingOut
     stringResource(R.string.settings_diagnostics_subtitle)
 }
 
-/** `first 12…last 6` of a public key so the hero line never wraps; short keys are shown whole. */
+/** Compact `first 12…last 6` public key; short keys are shown whole and may wrap at large text sizes. */
 internal fun shortPublicKey(key: String): String =
     if (key.length > NPUB_HEAD + NPUB_TAIL + 1) key.take(NPUB_HEAD) + "…" + key.takeLast(NPUB_TAIL) else key
 
@@ -571,7 +580,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-/** Clipboard labels whose contents are secrets and are auto-cleared after [CLIPBOARD_CLEAR_MS]. */
+/** Secret clipboard labels opt into a best-effort clear after [CLIPBOARD_CLEAR_MS]. */
 private const val CLIP_LABEL_NSEC = "nsec"
 private const val CLIP_LABEL_SEED = "seed"
 private const val CLIP_LABEL_DIAGNOSTICS = "diagnostics"

@@ -36,6 +36,13 @@ class ControlOperationJournal @Inject constructor(private val dao: ControlOperat
         }
     }
 
+    override suspend fun move(operation: ControlOperation, id: String, kind: String) {
+        check(
+            dao.move(operation.id, operation.kind, operation.intentJson, operation.preparedJson, id, kind) == 1 ||
+                (dao.get(operation.id) == null && get(id) == operation.copy(id = id, kind = kind))
+        ) { "Control operation changed during identity reconciliation" }
+    }
+
     override suspend fun complete(id: String) = dao.delete(id)
 
     private fun ControlOperationEntity.toOperation() = ControlOperation(id, kind, intentJson, preparedJson)

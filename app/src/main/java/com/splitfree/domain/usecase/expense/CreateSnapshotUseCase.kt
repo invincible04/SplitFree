@@ -71,8 +71,11 @@ constructor(
         if (eventsSinceSnapshot < 100 && daysSinceSnapshot < 30) return false
 
         // Full replay of exactly this list: the previous snapshot may cover remote events that are absent
-        // locally, and its balances must not be re-published under a coverage list that omits them.
-        val balances = computeBalances.computeWithExclusions(groupId, events, useSnapshots = false).balances
+        // locally, and its balances must not be re-published under a coverage list that omits them. Totals
+        // stay under the keys the signed events name; every reader re-attributes revoked keys itself.
+        val balances = computeBalances
+            .computeWithExclusions(groupId, events, useSnapshots = false, resolveIdentities = false)
+            .balances
         val eventIds = events.map { it.eventId }
         val eventHashes = eventIds.map { HashUtil.eventHashPrefix(it) }
 
@@ -105,8 +108,8 @@ constructor(
                 expenseUuid = snapshot.id
             )
 
-        // Publication is guarded by the same transaction that re-reads the ledger head and the group: a
-        // snapshot, rotation or creator change that landed during computation aborts this one.
+        // Atomically recheck the latest snapshot and creator/epoch before queueing. New ledger events
+        // need not abort this snapshot: its coverage is explicit and readers replay uncovered events.
         return eventRepo.withTransaction {
             val latestNow = eventRepo.getLatestEventByType(groupId, "snapshot")
             if (latestNow?.eventId != lastSnapshot?.eventId) {
@@ -133,9 +136,8 @@ constructor(
          * Hard cap on the serialized snapshot, comfortably under the NIP-44 plaintext limit (65535 bytes)
          * and the 65536-char content check in `EventValidator.isContentSafe`.
          *
-         * With 24-char event hashes each event costs about 27 bytes of JSON, so a group can accumulate
-         * roughly 2,200 events before snapshots stop being produced and every member falls back to a full
-         * replay. Acceptable for v1; a chunked or delta snapshot format is needed beyond that.
+         * Coverage costs about 27 bytes per event, plus balances and metadata. Oversized snapshots are
+         * skipped; readers can still seed from an older valid snapshot and replay uncovered events.
          */
         const val MAX_SNAPSHOT_PLAINTEXT = 60_000
     }

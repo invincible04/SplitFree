@@ -92,7 +92,9 @@ class SyncEngineRotationCatchUpRoomTest {
             journal,
             lock
         )
-        private val revocation = RevokeKeyUseCase(identity, groups, encryption, signer, publisher, journal, lock)
+        private val revocation = RevokeKeyUseCase(
+            identity, groups, encryption, signer, publisher, journal, lock, mockk(relaxed = true), mockk(relaxed = true)
+        )
         private val post =
             EventPostProcessor(groups, rotation, revocation, mockk(relaxed = true), publisher, identity, scope)
         private val settings = mockk<SettingsContract> { every { giftWrapEnabled } returns false }

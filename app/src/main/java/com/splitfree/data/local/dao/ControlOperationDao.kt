@@ -26,12 +26,25 @@ interface ControlOperationDao {
     )
     suspend fun rebase(id: String, expectedIntentJson: String, intentJson: String): Int
 
-    /** Compare-and-set of a prepared plan; the caller only ever appends to it. */
+    /** Compare-and-set; callers must preserve signed events when extending or upgrading a prepared plan. */
     @Query(
         "UPDATE operation_journal SET preparedJson = :preparedJson " +
             "WHERE id = :id AND preparedJson = :expectedPreparedJson"
     )
     suspend fun amend(id: String, expectedPreparedJson: String, preparedJson: String): Int
+
+    @Query(
+        "UPDATE operation_journal SET id = :newId, kind = :newKind " +
+            "WHERE id = :id AND kind = :kind AND intentJson = :intentJson AND preparedJson IS :preparedJson"
+    )
+    suspend fun move(
+        id: String,
+        kind: String,
+        intentJson: String,
+        preparedJson: String?,
+        newId: String,
+        newKind: String
+    ): Int
 
     @Query("DELETE FROM operation_journal WHERE id = :id")
     suspend fun delete(id: String)

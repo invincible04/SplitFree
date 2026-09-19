@@ -115,8 +115,8 @@ class EventProcessorTest {
     )
 
     /**
-     * Make the relaxed [eventDao] behave like Room for the rows this processor writes: inserts are
-     * keyed by id, `getEvent` sees them, `setApplyState` updates them and `getPendingEvents` filters them.
+     * Map-backed DAO double with duplicate inserts, state updates and ordered pending reads.
+     * It models row visibility, not Room transactions or persistence across restarts.
      */
     private fun useInMemoryEventStore() {
         coEvery { eventDao.insert(any()) } answers {
@@ -160,7 +160,6 @@ class EventProcessorTest {
         every { android.util.Log.i(any<String>(), any<String>()) } returns 0
         every { android.util.Log.e(any<String>(), any<String>(), any()) } returns 0
 
-        // Setup EventValidator mock
         every { eventValidator.isWithinRateLimit(any()) } returns true
         every { eventValidator.isWithinGroupRateLimit(any()) } returns true
         every { eventValidator.isTimestampValid(any()) } returns true
@@ -177,6 +176,8 @@ class EventProcessorTest {
         coEvery { groupRepo.getGroupKey(groupId) } returns groupKey
         coEvery { groupRepo.getGroupKeyForEpoch(groupId, any()) } returns groupKey
         coEvery { groupRepo.resolveRoster(any(), any()) } answers { secondArg() }
+        coEvery { groupRepo.isHistoricalCreator(any(), any(), any(), any()) } returns false
+        coEvery { groupRepo.hasRevocationInEpoch(any(), any(), any()) } returns false
         every { encryption.decrypt(any(), groupKey) } returns expenseJson()
         // The relaxed dao would otherwise hand back a non-null relaxed EventEntity here.
         coEvery { eventDao.getEvent(any()) } returns null
@@ -187,6 +188,7 @@ class EventProcessorTest {
         coEvery { postProcessor.handle(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             PostProcessOutcome.APPLIED
         coEvery { membershipHistory.historicalAuthors(any()) } returns emptySet()
+        coEvery { membershipHistory.formerMembers(any()) } returns emptySet()
         coEvery { membershipHistory.removalEpochOf(any(), any()) } returns null
 
         processor =
@@ -689,7 +691,7 @@ class EventProcessorTest {
         assertFalse(result.stored)
     }
 
-    // --- Branch coverage additions ---
+    // --- post-processing delegation ---
 
     @Test
     fun `process with nonCancellable true runs group_meta side effect`() = runBlocking {
@@ -739,8 +741,7 @@ class EventProcessorTest {
 
     @Test
     fun `process key_rotation exception is caught`() = runBlocking {
-        // Post-processing exceptions are caught inside EventPostProcessor; EventProcessor only
-        // delegates. Verify the delegation and that the event is still stored.
+        // No exception is injected here: this verifies delegation and the stored result only.
         every { encryption.decrypt(any(), groupKey) } returns """{"data":"x"}"""
         val result = processor.process(
             makeEvent(eventType = "key_rotation", expenseUuid = null),
@@ -1643,7 +1644,7 @@ class EventProcessorTest {
 
         val result = processor.process(event, knownGroupKey = groupKey)
 
-        // The row is durably stored, but the receipt must not claim the effect landed.
+        // A successful mock insert must not make the receipt claim the side effect applied.
         assertTrue(result.stored)
         assertEquals(IngestOutcome.DEFERRED, result.outcome)
         assertEquals("side effect failed", result.reason)
@@ -1838,7 +1839,7 @@ class EventProcessorTest {
 
             val result = processor.process(event, knownGroupKey = groupKey)
 
-            // A transient failure is retried later; the row is still durably stored.
+            // The mocked pending row remains retryable; this call must not change its apply state.
             assertEquals(IngestOutcome.DEFERRED, result.outcome)
             assertTrue(result.stored)
             assertEquals("side effect failed", result.reason)

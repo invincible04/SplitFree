@@ -4,6 +4,8 @@ import com.splitfree.domain.crypto.ExportKeyDerivation
 import com.splitfree.domain.crypto.nip.Nip44
 import com.splitfree.domain.model.export.ExportedEvent
 import com.splitfree.domain.model.export.SplitFreeExport
+import com.splitfree.domain.model.group.CreatorTransition
+import com.splitfree.domain.model.group.GroupIdentity
 import com.splitfree.domain.repository.EventRepositoryContract
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
@@ -16,10 +18,9 @@ import kotlinx.serialization.json.Json
 /**
  * Export group events as an HMAC-authenticated JSON backup for device transfer.
  *
- * Exports are fully self-contained: the group keys are NIP-44 encrypted to the exporter's own
- * pubkey, so a new device with only the private key can restore everything. The whole file is
- * authenticated with a key derived from that same private key (see [SplitFreeExport]), so a
- * backup can only be restored by the identity that made it.
+ * Available epoch keys are NIP-44 encrypted to the exporter's identity; the file MAC is derived
+ * from the same private key (see [SplitFreeExport]). Restore therefore requires that identity.
+ * Events or epoch keys absent from this device cannot be recovered from this backup alone.
  *
  * @see ImportGroupUseCase for the corresponding import path
  */
@@ -42,6 +43,20 @@ constructor(
      */
     suspend operator fun invoke(groupId: String): String {
         val group = groupRepo.getById(groupId)
+        val rootedGroup = group?.takeIf { GroupIdentity.matches(groupId, it.originalCreator, it.createdAt) }
+        require(group?.creatorTransitions.isNullOrEmpty() || rootedGroup != null) {
+            "Creator transitions require a verified original creator"
+        }
+        if (rootedGroup != null) {
+            require(
+                CreatorTransition.validate(
+                    groupId,
+                    rootedGroup.originalCreator,
+                    rootedGroup.createdAt,
+                    rootedGroup.creatorTransitions
+                )
+            ) { "Invalid creator transition evidence" }
+        }
         val groupKey = groupRepo.getGroupKey(groupId)
         val events = eventRepo.getEventsByGroup(groupId)
         val exportedEvents = events.map { e ->
@@ -61,7 +76,7 @@ constructor(
             if (groupKey != null) {
                 val convKey = Nip44.getConversationKey(privKey, identity.getPublicKeyBytes())
                 encryptedGroupKey = Nip44.encrypt(groupKey, convKey)
-                // Export all epoch keys so events from before key rotations can be decrypted
+                // Include available historical keys; a device may never have held every epoch.
                 val epochKeys = mutableMapOf<String, String>()
                 val currentEpoch = group?.keyEpoch ?: 0
                 for (epoch in 0..currentEpoch) {
@@ -83,7 +98,10 @@ constructor(
                 groupName = group?.name ?: "",
                 relays = group?.relays ?: emptyList(),
                 keyEpoch = group?.keyEpoch ?: 0,
-                encryptedEpochKeys = encryptedEpochKeys
+                encryptedEpochKeys = encryptedEpochKeys,
+                rootCreator = rootedGroup?.originalCreator.orEmpty(),
+                rootCreatedAt = rootedGroup?.createdAt ?: 0,
+                creatorTransitions = rootedGroup?.creatorTransitions.orEmpty()
             )
             val export = unsigned.copy(hmac = ExportMac.compute(unsigned, privKey).toHex())
             return json.encodeToString(export)

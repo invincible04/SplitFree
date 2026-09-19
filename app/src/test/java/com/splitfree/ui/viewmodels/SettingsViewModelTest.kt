@@ -7,12 +7,12 @@ import android.provider.DocumentsContract
 import com.splitfree.data.local.dao.OutboxDao
 import com.splitfree.domain.crypto.GiftWrapService
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.DisplayNamePublishResult
 import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
-import com.splitfree.domain.repository.SettingsContract
 import com.splitfree.domain.usecase.export.ExportGroupUseCase
+import com.splitfree.domain.usecase.group.DisplayNamePublisher
 import com.splitfree.domain.usecase.group.RevokeKeyUseCase
-import com.splitfree.domain.usecase.group.UpdateDisplayNameUseCase
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -26,9 +26,9 @@ import java.io.IOException
 import java.io.OutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -39,8 +39,8 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * The backup export must never leave a half-written file that looks like a backup, and must
- * always report an outcome to the screen.
+ * Export outcomes and best-effort document cleanup, plus shared name/identity-operation state.
+ * Collaborators are mocked; cleanup failure must not mask the original export error.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
@@ -48,9 +48,9 @@ class SettingsViewModelTest {
 
     private val identity = mockk<IdentityContract>(relaxed = true)
     private val giftWrap = mockk<GiftWrapService>(relaxed = true)
-    private val userPreferences = mockk<SettingsContract>(relaxed = true)
     private val revokeKeyUseCase = mockk<RevokeKeyUseCase>(relaxed = true)
-    private val updateDisplayName = mockk<UpdateDisplayNameUseCase>(relaxed = true)
+    private val namePublisher = mockk<DisplayNamePublisher>(relaxed = true)
+    private val desiredName = MutableStateFlow("")
     private val groupRepo = mockk<GroupRepositoryContract>()
     private val exportGroup = mockk<ExportGroupUseCase>()
     private val outboxDao = mockk<OutboxDao> {
@@ -63,9 +63,6 @@ class SettingsViewModelTest {
     private val uri = mockk<Uri>()
 
     private lateinit var vm: SettingsViewModel
-
-    /** Backing store for the mocked preferences so `displayName` round-trips like the real one. */
-    private var storedDisplayName = ""
 
     private val groups = listOf(
         Group(id = "g1", name = "A", createdBy = "p", createdAt = 1, members = listOf("p"), relays = emptyList()),
@@ -83,15 +80,18 @@ class SettingsViewModelTest {
         every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
         every { identity.hasIdentity() } returns false
         every { identity.hasPendingKeyPair() } returns false
-        every { userPreferences.displayName } answers { storedDisplayName }
-        every { userPreferences.displayName = any() } answers { storedDisplayName = firstArg() }
         coEvery { groupRepo.getAll() } returns groups
 
-        vm = SettingsViewModel(
-            identity, giftWrap, userPreferences, revokeKeyUseCase, updateDisplayName,
-            groupRepo, exportGroup, context, testDispatcher, outboxDao
-        )
+        every { namePublisher.displayName } returns desiredName
+        every { namePublisher.result } returns MutableStateFlow(DisplayNamePublishResult())
+        every { namePublisher.submit(any()) } answers { desiredName.value = firstArg() }
+        vm = createViewModel()
     }
+
+    private fun createViewModel() = SettingsViewModel(
+        identity, giftWrap, revokeKeyUseCase, namePublisher,
+        groupRepo, exportGroup, context, testDispatcher, outboxDao
+    )
 
     @After
     fun teardown() {
@@ -171,50 +171,70 @@ class SettingsViewModelTest {
         assertEquals(ExportState.Error("boom"), vm.exportState.value)
     }
 
-    // --- display name debounce ---
-
     @Test
-    fun `first display name edit within the debounce window is published`() = runTest {
-        // The ViewModel was created moments ago; this edit lands well inside the 800 ms window.
+    fun `every edit immediately reaches the application publisher before a debounce can lose it`() = runTest {
         vm.setDisplayName("Alice")
-        coVerify(exactly = 0) { updateDisplayName(any()) }
-
-        advanceTimeBy(801)
-
-        coVerify(exactly = 1) { updateDisplayName("Alice") }
+        verify(exactly = 1) { namePublisher.submit("Alice") }
         assertEquals("Alice", vm.displayName.value)
     }
 
     @Test
-    fun `keystrokes inside the window collapse into one publish of the final name`() = runTest {
-        vm.setDisplayName("A")
-        advanceTimeBy(300)
-        vm.setDisplayName("Al")
-        advanceTimeBy(300)
+    fun `failed durable name save reports failure without crashing or changing displayed value`() = runTest {
+        every { namePublisher.submit(any()) } throws IllegalStateException("storage unavailable")
         vm.setDisplayName("Alice")
-        advanceTimeBy(801)
-
-        coVerify(exactly = 1) { updateDisplayName(any()) }
-        coVerify(exactly = 1) { updateDisplayName("Alice") }
+        assertTrue(vm.nameSaveFailed.value)
+        assertEquals("", vm.displayName.value)
+        vm.clearNameSaveFailure()
+        assertEquals(false, vm.nameSaveFailed.value)
     }
 
     @Test
-    fun `re-entering the already published name is not republished`() = runTest {
+    fun `successful retry clears an earlier name save failure`() = runTest {
+        every { namePublisher.submit(any()) } throws IllegalStateException("disk full")
         vm.setDisplayName("Alice")
-        advanceTimeBy(801)
-        vm.setDisplayName("Alic")
-        advanceTimeBy(100)
+        every { namePublisher.submit(any()) } answers { desiredName.value = firstArg() }
         vm.setDisplayName("Alice")
-        advanceTimeBy(801)
-
-        coVerify(exactly = 1) { updateDisplayName(any()) }
+        assertEquals(false, vm.nameSaveFailed.value)
+        assertEquals("Alice", vm.displayName.value)
     }
 
     @Test
-    fun `the initially persisted name is never republished on its own`() = runTest {
-        advanceTimeBy(5_000)
+    fun `multiple settings screens share one desired name and publication owner`() = runTest {
+        val reopened = createViewModel()
+        vm.setDisplayName("Bob")
+        reopened.setDisplayName("Carol")
+        assertEquals("Carol", vm.displayName.value)
+        assertEquals("Carol", reopened.displayName.value)
+        verify(exactly = 1) { namePublisher.submit("Bob") }
+        verify(exactly = 1) { namePublisher.submit("Carol") }
+    }
 
-        coVerify(exactly = 0) { updateDisplayName(any()) }
+    @Test
+    fun `closing an old settings screen never resubmits its previous name`() = runTest {
+        val reopened = createViewModel()
+        vm.setDisplayName("Bob")
+        reopened.setDisplayName("Carol")
+        androidx.lifecycle.ViewModelStore().apply { put("settings", vm) }.clear()
+        verify(exactly = 2) { namePublisher.submit(any()) }
+        assertEquals("Carol", reopened.displayName.value)
+    }
+
+    @Test
+    fun `opening settings requests recovery instead of assuming persisted name was published`() = runTest {
+        verify(exactly = 1) { namePublisher.start() }
+    }
+
+    @Test
+    fun `a second replace-identity tap while one is running is ignored`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<String>()
+        coEvery { revokeKeyUseCase() } coAnswers { gate.await() }
+
+        vm.revokeKey()
+        vm.revokeKey()
+        gate.complete("newpub")
+
+        coVerify(exactly = 1) { revokeKeyUseCase() }
+        assertEquals(RevokeState.Done("newpub"), vm.revokeState.value)
     }
 
     @Test

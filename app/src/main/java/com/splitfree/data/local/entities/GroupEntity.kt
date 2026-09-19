@@ -1,5 +1,6 @@
 package com.splitfree.data.local.entities
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -10,11 +11,10 @@ import androidx.room.PrimaryKey
  * @property relays JSON array of relay URLs
  * @property memberNames JSON map of pubkey → display name
  * @property lastSyncTimestamp unix timestamp of the last successful relay sync
- * @property lastMetaTimestamp `createdAt` of the most recent group_meta event applied
- * @property lastMetaEventId event id of the most recent group_meta applied; breaks ties between
- *   metas that share a `createdAt` so every device converges on the same one
- * @property memberClocks JSON map of pubkey → `"createdAt:eventId"` of the last self-update
- *   (self-join / own display name) applied for that member, independent of the creator watermark
+ * @property lastMetaTimestamp projection watermark advanced by creator metadata and identity revocations
+ * @property lastMetaEventId event ID paired with the watermark to break same-second ties
+ * @property memberClocks JSON map of name/join clocks, revocation tombstones and replacement/successor links
+ * @property projectionJson canonical checkpoint and control facts; empty for legacy rows awaiting projection
  */
 @Entity(tableName = "groups")
 data class GroupEntity(
@@ -30,5 +30,6 @@ data class GroupEntity(
     val lastMetaTimestamp: Long = 0,
     val keyEpoch: Int = 0,
     val lastMetaEventId: String = "",
-    val memberClocks: String = "{}"
+    val memberClocks: String = "{}",
+    @ColumnInfo(defaultValue = "''") val projectionJson: String = ""
 )
