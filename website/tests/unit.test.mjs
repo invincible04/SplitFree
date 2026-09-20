@@ -316,3 +316,40 @@ test("hero totals and default rupee demo agree", async () => {
     assert.deepEqual(splitBill(parseAmount("1600"), "equal"), [40000, 40000, 40000, 40000]);
     assert.doesNotMatch(html, /US\$|YOU ARE OWED/);
 });
+
+test("social metadata is static and references the shipped 1200 by 630 PNG", async () => {
+    const html = await readFile(path.join(root, "dist/index.html"), "utf8");
+    const head = html.match(/<head>([\s\S]*?)<\/head>/)[1];
+    const meta = new Map();
+    for (const match of head.matchAll(
+        /<meta\s+(?:property|name)="((?:og|twitter):[^"]+)"\s+content="([^"]*)"\s*\/>/g,
+    )) {
+        assert.ok(!meta.has(match[1]), `Duplicate social tag: ${match[1]}`);
+        meta.set(match[1], match[2]);
+    }
+    const site = "https://invincible04.github.io/SplitFree/";
+    const image = `${site}assets/og-image.png`;
+    assert.equal(meta.get("og:url"), site);
+    assert.ok(head.includes(`<link rel="canonical" href="${site}" />`));
+    assert.equal(meta.get("og:site_name"), "SplitFree");
+    assert.equal(meta.get("og:type"), "website");
+    assert.equal(meta.get("og:image"), image);
+    assert.equal(meta.get("twitter:image"), image);
+    assert.equal(meta.get("twitter:card"), "summary_large_image");
+    assert.equal(meta.get("og:image:type"), "image/png");
+    for (const field of ["title", "description", "image:alt"]) {
+        assert.ok(meta.get(`og:${field}`)?.length > 20, field);
+        assert.equal(meta.get(`og:${field}`), meta.get(`twitter:${field}`));
+    }
+    const png = await readFile(path.join(root, "dist/assets/og-image.png"));
+    assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.equal(png.toString("ascii", 12, 16), "IHDR");
+    assert.equal(png.readUInt32BE(16), 1200);
+    assert.equal(png.readUInt32BE(20), 630);
+    assert.equal(meta.get("og:image:width"), String(png.readUInt32BE(16)));
+    assert.equal(meta.get("og:image:height"), String(png.readUInt32BE(20)));
+    assert.ok(png.length < 500_000, "Social preview should stay small enough to fetch quickly");
+    assert.deepEqual(png, await readFile(path.join(root, "public/assets/og-image.png")));
+    assert.ok(PUBLIC_INPUTS.has("assets/og-image.png"));
+    assert.ok(!PUBLIC_INPUTS.has("assets/unreviewed.png"));
+});

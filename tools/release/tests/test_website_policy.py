@@ -146,6 +146,15 @@ class WebsitePolicyTests(unittest.TestCase):
             self.rejected('website/src/reviewed.webp', data, 'UnreviewedSourcePath')
         self.rejected(name, data, 'UnreviewedSourcePath')
 
+    def test_social_image_is_reviewed_at_one_exact_path_only(self):
+        name = 'website/public/assets/og-image.png'
+        root = Path(__file__).resolve().parents[3]
+        data = (root / name).read_bytes()
+        p.inspect_source(name, data)
+        self.rejected(name, data + b'changed', 'UnreviewedBinaryBytes')
+        self.rejected('website/public/assets/other.png', data, 'UnreviewedSourcePath')
+        self.rejected('website/public/og-image.png', data, 'UnreviewedSourcePath')
+
     def test_binary_pins_do_not_bypass_path_guards_or_size_limits(self):
         data = b'\x00synthetic-binary'
         for name, rule in (

@@ -1003,3 +1003,44 @@ test("mobile film popup keeps its close control reachable in a short viewport", 
     else await page.getByRole("button", { name: "Close film" }).click();
     await expect(page.getByRole("dialog")).toBeHidden();
 });
+
+test("social preview is available to crawlers without JavaScript and served as PNG", async ({
+    browser,
+    request,
+}) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    try {
+        const page = await context.newPage();
+        await page.goto("http://127.0.0.1:4173/SplitFree/");
+        await expect(page.locator('meta[name="twitter:card"]')).toHaveAttribute(
+            "content",
+            "summary_large_image",
+        );
+        const imageUrl = await page.locator('meta[property="og:image"]').getAttribute("content");
+        expect(imageUrl).toBe("https://invincible04.github.io/SplitFree/assets/og-image.png");
+        await expect(page.locator('meta[name="twitter:image"]')).toHaveAttribute(
+            "content",
+            imageUrl,
+        );
+        const imagePath = new URL(imageUrl).pathname;
+        for (const localPath of [imagePath, imagePath.replace("/SplitFree", "")]) {
+            const response = await request.get(localPath);
+            expect(response.status()).toBe(200);
+            expect(response.headers()["content-type"]).toBe("image/png");
+            expect(await response.body()).toEqual(
+                await readFile(new URL("../public/assets/og-image.png", import.meta.url)),
+            );
+            const head = await request.head(localPath);
+            expect(head.status()).toBe(200);
+            expect(head.headers()["content-type"]).toBe("image/png");
+        }
+        await page.goto(new URL(imagePath, page.url()).href);
+        const image = page.locator("img");
+        await expect(image).toBeVisible();
+        expect(await image.evaluate((el) => [el.naturalWidth, el.naturalHeight])).toEqual([
+            1200, 630,
+        ]);
+    } finally {
+        await context.close();
+    }
+});

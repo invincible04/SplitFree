@@ -3,6 +3,11 @@
 - **SplitFree code, logo and app design:** this repository, GPL-3.0-or-later.
   The logo is copied unchanged from `assets/splitfree-logo.svg`. Website SVG UI
   symbols and the CSS phone illustrations were authored for this page.
+- **Social preview (`assets/og-image.png`):** an original 1200×630 layout rendered
+  by `scripts/social-image.mjs` using this repository's unchanged logo, approved
+  `assets/screenshots/groups.png` sample screenshot, and the same Manrope/Inter fonts
+  listed below. No external artwork or real-user data is added. The PNG is a
+  reviewed delivery asset; rendering is manual, not part of the production build.
 - **Inter:** the app's Inter variable font, copied from the v2 production assets
   (the same font used by the Android app). SIL Open Font License 1.1.
   Losslessly container-converted to WOFF2 for the web.

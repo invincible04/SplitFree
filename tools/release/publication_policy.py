@@ -59,6 +59,7 @@ REVIEWED_BINARIES = {'app/src/main/res/drawable-nodpi/onboarding_backdrop.webp':
 # Website delivery assets: existing v2 fonts/film and extracted poster.
 # Provenance and licenses: website/THIRD_PARTY_NOTICES.md.
 REVIEWED_BINARIES.update({
+    'website/public/assets/og-image.png': '94beb5b7b48decb23910fb35820b911e5985a0d33a6805950243d6575d2ee543',
     'website/public/assets/film-poster.webp': 'cb8e034a7fe12a932d28442ac27beff4aa90cda9ceb6f32cc45a6846fd0964b3',
     'website/public/assets/inter-variable.woff2': '2f650c1e57db2cbe2a2a7b2388154e7578d2ba715d3bfa2ab33e327e56a9556a',
     'website/public/assets/manrope-800.woff2': 'dd269e40d064e66ec335d0419f7a6b326f1c4b6d3cbed853c80ea88a2c2f3c28',

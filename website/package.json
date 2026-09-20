@@ -15,7 +15,8 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "check": "npm run format:check && npm test && npm run build && npm run test:e2e",
-        "sync:release": "node scripts/sync-release.mjs"
+        "sync:release": "node scripts/sync-release.mjs",
+        "social:image": "node scripts/social-image.mjs"
     },
     "devDependencies": {
         "@axe-core/playwright": "4.13.0",

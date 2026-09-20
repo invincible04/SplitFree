@@ -162,6 +162,30 @@ Source files, tests, lockfiles and reviewed delivery assets belong in Git. Local
 previews, screenshots/evidence, dependencies, coverage and tool caches are ignored.
 Do not hide implementation files simply to make Git status empty.
 
+## Social sharing preview
+
+`public/assets/og-image.png` is the checked-in 1200×630 PNG for Open Graph and X's
+`summary_large_image` card. The static `sections/head.html` includes the absolute
+image URL, dimensions, descriptive alt text, and canonical page URL, so crawlers
+need no JavaScript. The URLs target `https://invincible04.github.io/SplitFree/`;
+update the canonical, `og:url`, and both image URLs together if the site moves.
+
+To edit the artwork, change `scripts/social-image.mjs` and run:
+
+```sh
+npm --prefix website run social:image
+```
+
+Use the locked website dependencies and installed Playwright Chromium. The renderer
+reads only the repository logo, fonts, and approved sample app screenshot, with
+network access blocked. Chromium/platform changes can change output bytes. Inspect
+the resulting PNG before updating its exact SHA-256 pin in
+`tools/release/publication_policy.py`; never auto-update the pin. The normal build
+copies the reviewed image unchanged and does not re-render it.
+
+Local checks cannot refresh public social previews. The image URL will become
+available only after deployment, and platforms may retain cached cards afterward.
+
 ## Checks
 
 ```sh

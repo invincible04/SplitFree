@@ -52,6 +52,7 @@ export function renderHtml(template, config) {
 export const PUBLIC_INPUTS = new Set([
     "assets/splitfree-logo.svg",
     "assets/film-poster.webp",
+    "assets/og-image.png",
     "assets/inter-variable.woff2",
     "assets/manrope-800.woff2",
     "assets/intro.mp4",
@@ -88,7 +89,7 @@ export async function build() {
     );
     await validateTree(
         path.join(root, "public"),
-        new Set([".svg", ".woff2", ".webp", ".mp4", ".txt", ".vtt"]),
+        new Set([".svg", ".woff2", ".webp", ".png", ".mp4", ".txt", ".vtt"]),
         PUBLIC_INPUTS,
     );
     await validateTree(path.join(root, "sections"), new Set([".html"]), SECTION_INPUTS);
