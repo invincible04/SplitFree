@@ -141,7 +141,7 @@ constructor(
         if (pubkey !in _uiState.value.members && pubkey !in draft.participants) return
         edit {
             val values = inputs[splitType].orEmpty() + (pubkey to value.take(ExpenseInputParser.MAX_INPUT_LENGTH + 1))
-            copy(inputs = inputs + (splitType to values))
+            copy(inputs = inputs + (splitType to values), automaticInputModes = automaticInputModes - splitType)
         }
     }
 
@@ -156,7 +156,7 @@ constructor(
         if (!_uiState.value.editable) return
         val updated = draft.update()
         if (updated == draft) return
-        draft = updated.copy(dirty = true)
+        draft = seeder.seedDefaults(updated).copy(dirty = true)
         store.write(draft)
         render(_uiState.value.copy(error = null))
     }
@@ -208,8 +208,9 @@ constructor(
                     participants = current.members.toSet(),
                     initialized = true
                 )
-            store.write(draft)
         }
+        draft = seeder.seedDefaults(draft)
+        store.write(draft)
         render(
             _uiState.value.copy(
                 loading = false,

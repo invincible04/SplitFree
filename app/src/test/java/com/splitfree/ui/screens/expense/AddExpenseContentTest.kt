@@ -10,6 +10,7 @@ import android.view.View
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -49,13 +50,28 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.viewModelScope
 import com.splitfree.R
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
+import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.repository.ExpenseRepositoryContract
+import com.splitfree.domain.repository.GroupRepositoryContract
+import com.splitfree.domain.repository.IdentityContract
+import com.splitfree.domain.usecase.expense.AddExpenseUseCase
+import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
 import com.splitfree.ui.theme.SplitFreeTheme
 import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.AddExpenseUiState
+import com.splitfree.ui.viewmodels.AddExpenseViewModel
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
 import java.io.File
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.flowOf
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -73,10 +89,16 @@ class AddExpenseContentTest {
     val compose = createComposeRule()
 
     private var state by mutableStateOf(readyState())
+    private var liveViewModel: AddExpenseViewModel? = null
     private lateinit var backDispatcher: OnBackPressedDispatcher
     private lateinit var contentView: View
     private var renderedFontScale = 1f
     private var renderedLayoutDirection = LayoutDirection.Ltr
+
+    @After
+    fun clearViewModel() {
+        liveViewModel?.viewModelScope?.cancel()
+    }
 
     @Test
     fun `amount forwards raw decimal input without changing supplied state`() {
@@ -300,6 +322,79 @@ class AddExpenseContentTest {
 
         compose.runOnIdle { assertEquals(listOf("health"), categories) }
         compose.onNodeWithTag("expense_sheet_list").assertDoesNotExist()
+    }
+
+    @Test
+    fun `live editor seeds all split modes and preserves replacement and cleared defaults`() {
+        renderLiveEditor()
+        formNode("expense_split").performClick()
+        for ((mode, input) in listOf("PERCENTAGE" to "25", "SHARES" to "1", "EXACT" to "25")) {
+            sheetNode("split_$mode").performAccessibleClick().assertIsSelected()
+            for (key in state.members) {
+                sheetNode("split_input_$key").assertTextContains(input)
+            }
+        }
+        sheetNode("split_input_member-1").performTextReplacement("40")
+        sheetNode("split_input_member-1").assertTextContains("40")
+        sheetNode("split_input_member-2").assertTextContains("25").performTextReplacement("")
+        sheetNode("split_SHARES").performAccessibleClick()
+        sheetNode("split_input_member-1").assertTextContains("1")
+        sheetNode("split_EXACT").performAccessibleClick()
+        sheetNode("split_input_member-1").assertTextContains("40")
+        compose.runOnIdle {
+            assertEquals("", liveViewModel!!.uiState.value.memberInputs["member-2"])
+        }
+        sheetNode("participant_member-2").performAccessibleClick().assertIsOff()
+        compose.onNodeWithTag("split_input_member-2").assertDoesNotExist()
+        sheetNode("participant_member-2").performAccessibleClick().assertIsOn()
+        compose.runOnIdle {
+            assertEquals("", liveViewModel!!.uiState.value.memberInputs["member-2"])
+            assertEquals("40", liveViewModel!!.uiState.value.memberInputs["member-1"])
+        }
+    }
+
+    @Test
+    fun `live percentage defaults show rounded thirds and rebalance only explicit selections through search`() {
+        renderLiveEditor(members = listOf("you", "member-2", "member-1"))
+        formNode("expense_split").performClick()
+        sheetNode("split_PERCENTAGE").performAccessibleClick()
+        sheetNode("split_input_member-1").assertTextContains("33.34")
+        sheetNode("split_input_member-2").assertTextContains("33.33")
+        sheetNode("split_input_you").assertTextContains("33.33")
+        compose.onNodeWithTag("expense_search").performTextReplacement("Member 2")
+        sheetNode("participant_member-2").performAccessibleClick().assertIsOff()
+        compose.onNodeWithTag("expense_search").performTextReplacement("")
+        sheetNode("split_input_member-1").assertTextContains("50")
+        sheetNode("split_input_you").assertTextContains("50")
+        sheetNode("participant_member-2").performAccessibleClick().assertIsOn()
+        sheetNode("split_input_member-1").assertTextContains("33.34")
+        sheetNode("split_input_member-2").assertTextContains("33.33")
+        compose.runOnIdle { assertEquals(null, liveViewModel!!.uiState.value.splitError) }
+    }
+
+    @Test
+    fun `live exact defaults refresh with total and currency until a member amount is edited`() {
+        val vm = renderLiveEditor(members = listOf("you", "member-1", "member-2"))
+        formNode("expense_split").performClick()
+        sheetNode("split_EXACT").performAccessibleClick()
+        sheetNode("split_input_member-1").assertTextContains("33.34")
+        compose.runOnIdle { vm.updateCurrency("JPY") }
+        sheetNode("split_input_member-1").assertTextContains("34")
+        sheetNode("split_input_you").assertTextContains("33")
+        compose.runOnIdle {
+            vm.updateCurrency("KWD")
+            vm.updateAmount("10.001")
+        }
+        sheetNode("split_input_member-1").assertTextContains("3.334")
+        sheetNode("split_input_member-2").assertTextContains("3.334")
+        sheetNode("split_input_you").assertTextContains("3.333").performTextReplacement("4")
+        compose.runOnIdle { vm.updateAmount("12") }
+        sheetNode("split_input_you").assertTextContains("4")
+        sheetNode("split_input_member-1").assertTextContains("3.334")
+        compose.runOnIdle {
+            assertEquals(1332L, vm.uiState.value.remaining)
+            assertTrue(vm.uiState.value.splitError != null)
+        }
     }
 
     @Test
@@ -749,10 +844,53 @@ class AddExpenseContentTest {
             }
     }
 
+    private fun renderLiveEditor(members: List<String> = state.members): AddExpenseViewModel {
+        val groupRepo = mockk<GroupRepositoryContract>()
+        val expenseRepo = mockk<ExpenseRepositoryContract>()
+        val identity = mockk<IdentityContract>()
+        val group = Group(
+            "g1",
+            state.groupName,
+            createdBy = "you",
+            createdAt = 1L,
+            members = members,
+            memberNames = state.memberNames,
+            relays = emptyList()
+        )
+        coEvery { groupRepo.getById("g1") } returns group
+        every { groupRepo.observeById("g1") } returns flowOf(group)
+        every { identity.getPublicKeyHex() } returns "you"
+        val vm = AddExpenseViewModel(
+            SavedStateHandle(mapOf("groupId" to "g1")),
+            AddExpenseUseCase(expenseRepo),
+            CorrectExpenseUseCase(expenseRepo),
+            groupRepo,
+            identity
+        )
+        liveViewModel = vm
+        render(
+            ExpenseEditorActions(
+                amount = vm::updateAmount,
+                currency = vm::updateCurrency,
+                splitType = vm::updateSplitType,
+                memberInput = vm::updateMemberInput,
+                participant = vm::toggleParticipant
+            ),
+            viewModel = vm
+        )
+        compose.runOnIdle {
+            assertTrue(vm.uiState.value.editable)
+            vm.updateAmount("100")
+            vm.updateDescription("Lunch")
+        }
+        return vm
+    }
+
     private fun render(
         actions: ExpenseEditorActions = ExpenseEditorActions(),
         dark: Boolean = false,
-        layoutDirection: LayoutDirection? = null
+        layoutDirection: LayoutDirection? = null,
+        viewModel: AddExpenseViewModel? = null
     ) {
         compose.setContent {
             backDispatcher = requireNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
@@ -760,7 +898,8 @@ class AddExpenseContentTest {
             contentView = LocalView.current
             CompositionLocalProvider(LocalLayoutDirection provides (layoutDirection ?: LocalLayoutDirection.current)) {
                 renderedLayoutDirection = LocalLayoutDirection.current
-                SplitFreeTheme(darkTheme = dark) { AddExpenseContent(state, actions) }
+                val editorState = viewModel?.uiState?.collectAsState()?.value ?: state
+                SplitFreeTheme(darkTheme = dark) { AddExpenseContent(editorState, actions) }
             }
         }
     }

@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.ViewRootForTest
@@ -36,8 +37,10 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.swipeUp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -300,6 +303,351 @@ class GroupDetailContentTest {
         compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
         compose.onNodeWithTag("group_expense_${MEERA}_taxi").assertIsDisplayed()
         compose.onNodeWithTag("group_pane_summary").assertDoesNotExist()
+    }
+
+    @Test
+    fun `short summary does not scroll a detached header or create empty space`() {
+        assertShortPaneDoesNotScroll(TAB_SUMMARY, "group_pane_summary")
+    }
+
+    @Test
+    fun `short expenses do not scroll a detached header or create empty space`() {
+        assertShortPaneDoesNotScroll(TAB_EXPENSES, "group_pane_expenses")
+    }
+
+    @Test
+    fun `short people list does not scroll a detached header or create empty space`() {
+        assertShortPaneDoesNotScroll(TAB_PEOPLE, "group_pane_people")
+    }
+
+    private fun assertShortPaneDoesNotScroll(tab: Int, paneTag: String) {
+        selectedTab = tab
+        state = state.copy(
+            members = listOf(ME, MEERA),
+            memberCount = 2,
+            debts = listOf(DebtTransaction(MEERA, ME, 250000, "INR")),
+            expenses = state.expenses.filter { it.expense.id == "beach" }
+        )
+        render()
+        val beforeTabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val beforePane = compose.onNodeWithTag(paneTag).fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("group_scroll").performTouchInput {
+            swipeUp(startY = height * 0.85f, endY = height * 0.6f, durationMillis = 1000)
+        }
+        compose.waitForIdle()
+        val afterTabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val afterPane = compose.onNodeWithTag(paneTag).fetchSemanticsNode().boundsInRoot
+        assertEquals("A short page has no extra header-only scroll range", beforeTabs.top, afterTabs.top, 1f)
+        assertEquals("The pane must remain next to the tabs", beforePane.top, afterPane.top, 1f)
+        assertEquals(
+            "Scrolling must not open a blank header-sized gap",
+            beforePane.top - beforeTabs.bottom,
+            afterPane.top - afterTabs.bottom,
+            1f
+        )
+        capture("group-short-$tab-after-swipe")
+    }
+
+    @Test
+    fun `empty pages stay still after vertical swipes in every tab`() {
+        state = state.copy(members = listOf(ME), memberCount = 1, debts = emptyList(), expenses = emptyList())
+        render()
+        listOf(R.string.tab_balances, R.string.tab_expenses, R.string.tab_members).forEach { tab ->
+            showPage(tab)
+            val before = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot.top
+            compose.onNodeWithTag("group_scroll").performTouchInput {
+                swipeUp(startY = height * 0.85f, endY = height * 0.6f, durationMillis = 1000)
+            }
+            compose.waitForIdle()
+            assertEquals(
+                "Empty tab $tab must not collapse into blank space",
+                before,
+                compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot.top,
+                1f
+            )
+        }
+    }
+
+    @Test
+    fun `long content follows the header immediately in every tab without exposing the top bar`() {
+        val guests = (1..15).map { "guest$it".padEnd(64, '0') }
+        val base = state.expenses.first()
+        state = state.copy(
+            members = state.members + guests,
+            debts = guests.map { DebtTransaction(it, ME, 10000, "INR") },
+            expenses = (1..20).map { base.copy(expense = base.expense.copy(id = "long$it", timestamp = it.toLong())) }
+        )
+        render()
+        listOf(
+            R.string.tab_balances to "group_pane_summary",
+            R.string.tab_expenses to "group_pane_expenses",
+            R.string.tab_members to "group_pane_people"
+        ).forEach { (tab, paneTag) ->
+            showPage(tab)
+            val beforeTabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+            val beforePane = compose.onNodeWithTag(paneTag).fetchSemanticsNode().boundsInRoot
+            compose.onNodeWithTag("group_scroll").performTouchInput {
+                swipeUp(startY = height * 0.85f, endY = height * 0.72f, durationMillis = 1000)
+            }
+            compose.waitForIdle()
+            val afterTabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+            val afterPane = compose.onNodeWithTag(paneTag).fetchSemanticsNode().boundsInRoot
+            assertTrue("Long tab $tab should scroll its real content", afterPane.top < beforePane.top - 10f)
+            assertEquals(
+                "Header and content move together in tab $tab",
+                beforePane.top - beforeTabs.bottom,
+                afterPane.top - afterTabs.bottom,
+                1f
+            )
+            val body = compose.onNodeWithTag("group_body").fetchSemanticsNode().boundsInRoot
+            val topBar = compose.onNodeWithTag("group_top_bar").fetchSemanticsNode().boundsInRoot
+            val header = compose.onNodeWithTag("group_summary").fetchSemanticsNode().boundsInRoot
+            assertTrue("The scrolling body starts below the toolbar", body.top >= topBar.bottom)
+            assertTrue("The partially scrolled header is clipped below the toolbar", header.top >= body.top)
+            capture("group-long-$tab-partial-swipe")
+        }
+    }
+
+    @Test
+    fun `switching between a scrolled history and short people page retains each real scroll position`() {
+        selectedTab = TAB_EXPENSES
+        val base = state.expenses.first()
+        state = state.copy(
+            members = listOf(ME, MEERA),
+            memberCount = 2,
+            expenses = (0..30).map { base.copy(expense = base.expense.copy(id = "tab_$it", timestamp = 100L - it)) }
+        )
+        render()
+        scrollScreen(1000f)
+        val anchor = compose.onNodeWithTag("group_expense_${ME}_tab_10").fetchSemanticsNode().positionInRoot.y
+        compose.onNodeWithTag("group_tabs").assertIsDisplayed()
+        val tabsBeforeSwitch = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        showPage(R.string.tab_members)
+        assertEquals(
+            "Changing panes must not move shared tabs vertically",
+            tabsBeforeSwitch,
+            compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        )
+        val tabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val people = compose.onNodeWithTag("group_pane_people").fetchSemanticsNode().boundsInRoot
+        assertEquals("Fresh short page has no stale collapsed-header gap", tabs.bottom + 10f, people.top, 1f)
+        state =
+            state.copy(
+                expenses =
+                listOf(base.copy(expense = base.expense.copy(id = "new_arrival", timestamp = 1000L))) + state.expenses
+            )
+        showPage(R.string.tab_expenses)
+        assertEquals(
+            "Returning to expenses keeps the same row position after an arrival on another tab",
+            anchor,
+            compose.onNodeWithTag("group_expense_${ME}_tab_10").fetchSemanticsNode().positionInRoot.y,
+            1f
+        )
+        scrollScreen(100000f)
+        val last = compose.onNodeWithTag("group_expense_${ME}_tab_30").fetchSemanticsNode().boundsInRoot
+        val add = compose.onNodeWithTag("group_add_expense").fetchSemanticsNode().boundsInRoot
+        assertTrue("Last expense can be read and tapped above Add expense", last.bottom <= add.top - 10f)
+        capture("group-last-expense-clear-of-button")
+        state = state.copy(expenses = emptyList(), debts = emptyList())
+        compose.onNodeWithTag("group_tabs").assertIsDisplayed()
+        compose.onNodeWithTag("group_pane_expenses").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w360dp-h844dp-mdpi")
+    fun `large text tabs support swipes and non adjacent clicks without moving back to another page`() {
+        RuntimeEnvironment.setFontScale(2f)
+        state = state.copy(members = listOf(ME, MEERA), memberCount = 2)
+        render()
+        scrollScreen(100000f)
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeLeft() }
+        compose.waitForIdle()
+        assertSelectedPage(TAB_EXPENSES)
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeLeft() }
+        compose.waitForIdle()
+        assertSelectedPage(TAB_PEOPLE)
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeRight() }
+        compose.waitForIdle()
+        assertSelectedPage(TAB_EXPENSES)
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeRight() }
+        compose.waitForIdle()
+        assertSelectedPage(TAB_SUMMARY)
+        compose.onNodeWithTag("group_tabs").performTouchInput { swipeLeft() }
+        showPage(R.string.tab_members)
+        assertSelectedPage(TAB_PEOPLE)
+        compose.onNodeWithTag("group_tabs").performTouchInput { swipeRight() }
+        showPage(R.string.tab_balances)
+        assertSelectedPage(TAB_SUMMARY)
+        scrollScreen(100000f)
+        val tabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val body = compose.onNodeWithTag("group_body").fetchSemanticsNode().boundsInRoot
+        assertEquals("Large-text tabs remain pinned below the toolbar", body.top + 18f, tabs.top, 1f)
+        capture("group-large-text-pinned-tabs", expectedWidth = 360)
+    }
+
+    @Test
+    fun `non adjacent tab clicks and externally selected tabs settle on the requested page`() {
+        render()
+        listOf(
+            R.string.tab_members to TAB_PEOPLE,
+            R.string.tab_balances to TAB_SUMMARY,
+            R.string.tab_expenses to TAB_EXPENSES,
+            R.string.tab_members to TAB_PEOPLE,
+            R.string.tab_balances to TAB_SUMMARY
+        ).forEach { (label, tab) ->
+            showPage(label)
+            assertSelectedPage(tab)
+        }
+        selectedTab = TAB_EXPENSES
+        compose.waitForIdle()
+        assertSelectedPage(TAB_EXPENSES)
+    }
+
+    private fun assertSelectedPage(tab: Int) {
+        compose.runOnIdle { assertEquals(tab, selectedTab) }
+        val page = compose.onNodeWithTag("group_scroll").fetchSemanticsNode().boundsInRoot
+        val body = compose.onNodeWithTag("group_body").fetchSemanticsNode().boundsInRoot
+        assertEquals("The selected page must fully settle, not stop between tabs", body.left, page.left, 1f)
+        assertEquals("The selected page fills the body", body.width, page.width, 1f)
+    }
+
+    @Test
+    fun `toolbar pixels remain unchanged when a long page is scrolled underneath`() {
+        selectedTab = TAB_EXPENSES
+        val base = state.expenses.first()
+        state = state.copy(
+            expenses = (1..20).map {
+                base.copy(expense = base.expense.copy(id = "toolbar$it", timestamp = it.toLong()))
+            }
+        )
+        render(dark = true)
+        val barHeight = compose.onNodeWithTag("group_top_bar").fetchSemanticsNode().boundsInRoot.bottom.toInt()
+        fun toolbarPixels(): IntArray = compose.runOnIdle {
+            val decor = contentView.rootView
+            val bitmap = Bitmap.createBitmap(decor.width, decor.height, Bitmap.Config.ARGB_8888)
+            decor.draw(Canvas(bitmap))
+            IntArray(decor.width * barHeight).also {
+                bitmap.getPixels(it, 0, decor.width, 0, 0, decor.width, barHeight)
+                bitmap.recycle()
+            }
+        }
+        val before = toolbarPixels()
+        scrollScreen(150f)
+        assertTrue("Header must not draw behind the transparent title bar", before.contentEquals(toolbarPixels()))
+        scrollScreen(10000f)
+        assertTrue("Pinned content must not draw behind the title bar", before.contentEquals(toolbarPixels()))
+        capture("group-dark-pinned-toolbar")
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w640dp-h360dp-land-mdpi")
+    fun `landscape long history keeps tabs reachable and last expense above the action`() {
+        selectedTab = TAB_EXPENSES
+        val base = state.expenses.first()
+        state = state.copy(
+            expenses = (1..20).map {
+                base.copy(expense = base.expense.copy(id = "landscape$it", timestamp = it.toLong()))
+            }
+        )
+        render()
+        scrollScreen(100000f)
+        compose.onNodeWithTag("group_tabs").assertIsDisplayed()
+        val tabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val body = compose.onNodeWithTag("group_body").fetchSemanticsNode().boundsInRoot
+        assertEquals("Tabs pin below the toolbar in landscape", body.top + 18f, tabs.top, 1f)
+        val last = compose.onNodeWithTag("group_expense_${ME}_landscape1").fetchSemanticsNode().boundsInRoot
+        val add = compose.onNodeWithTag("group_add_expense").fetchSemanticsNode().boundsInRoot
+        assertTrue("Landscape last row remains above Add expense", last.bottom <= add.top - 10f)
+        capture("group-landscape-pinned-tabs", expectedWidth = 640, expectedMinHeight = 300)
+    }
+
+    @Test
+    fun `touch scrolling collapses shared chrome and short page can expand it without a gap`() {
+        selectedTab = TAB_EXPENSES
+        val base = state.expenses.first()
+        state = state.copy(
+            members = listOf(ME, MEERA),
+            memberCount = 2,
+            expenses = (0..30).map { base.copy(expense = base.expense.copy(id = "touch$it", timestamp = 100L - it)) }
+        )
+        render()
+        repeat(5) {
+            compose.onNodeWithTag("group_scroll").performTouchInput { swipeUp(durationMillis = 500) }
+            compose.waitForIdle()
+        }
+        val bodyTop = compose.onNodeWithTag("group_body").fetchSemanticsNode().boundsInRoot.top
+        val pinned = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        assertEquals("Real touch scrolling pins shared tabs", bodyTop + 18f, pinned.top, 1f)
+        compose.onNodeWithTag("group_tabs").performTouchInput { swipeDown(durationMillis = 500) }
+        compose.waitForIdle()
+        assertEquals(
+            "Dragging tabs down while the list is deep must not expand chrome",
+            pinned,
+            compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        )
+        showPage(R.string.tab_members)
+        assertEquals(
+            "Tab switch preserves shared chrome",
+            pinned,
+            compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        )
+        compose.onNodeWithTag("group_scroll").performTouchInput { swipeDown(durationMillis = 700) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("group_summary").assertIsDisplayed()
+        val tabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val people = compose.onNodeWithTag("group_pane_people").fetchSemanticsNode().boundsInRoot
+        assertTrue("A downward gesture at short-pane top can restore shared header", tabs.top > pinned.top + 100f)
+        assertEquals("Expanded pane stays immediately below tabs", tabs.bottom + 10f, people.top, 1f)
+        capture("group-shared-header-expanded-on-people")
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w640dp-h360dp-land-mdpi")
+    fun `compact header consumes its own scroll before collapsing so its controls remain reachable`() {
+        RuntimeEnvironment.setFontScale(2f)
+        state = state.copy(balancesAvailable = false)
+        render()
+        val tabs = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("group_header").performTouchInput {
+            swipeUp(startY = height * 0.9f, endY = height * 0.1f, durationMillis = 700)
+        }
+        compose.waitForIdle()
+        assertEquals(
+            "Internal header scroll must not first collapse shared chrome",
+            tabs,
+            compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        )
+        compose.onNodeWithTag("group_retry_balances").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("group_header").performTouchInput { swipeDown(durationMillis = 700) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("group_currency").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `horizontal drag moves only pane content and keeps one shared header and tab strip`() {
+        state = state.copy(members = listOf(ME), memberCount = 1, debts = emptyList(), expenses = emptyList())
+        render()
+        val headerBefore = compose.onNodeWithTag("group_summary").fetchSemanticsNode().boundsInRoot
+        val tabsBefore = compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot
+        val paneBefore = compose.onNodeWithTag("group_pane_summary").fetchSemanticsNode().positionInRoot.x
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("group_scroll").performTouchInput {
+            down(Offset(width * 0.8f, height * 0.65f))
+            moveTo(Offset(width * 0.5f, height * 0.65f), delayMillis = 200)
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onAllNodes(hasTestTag("group_tabs")).assertCountEquals(1)
+        compose.onAllNodes(hasTestTag("group_summary")).assertCountEquals(1)
+        assertEquals(headerBefore, compose.onNodeWithTag("group_summary").fetchSemanticsNode().boundsInRoot)
+        assertEquals(tabsBefore, compose.onNodeWithTag("group_tabs").fetchSemanticsNode().boundsInRoot)
+        assertTrue(
+            "Only the pane moves horizontally",
+            compose.onNodeWithTag("group_pane_summary").fetchSemanticsNode().positionInRoot.x < paneBefore - 20f
+        )
+        capture("group-shared-header-mid-drag")
+        compose.onNodeWithTag("group_scroll").performTouchInput { up() }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
     }
 
     @Test
@@ -1016,7 +1364,7 @@ class GroupDetailContentTest {
 
     /** Scrolls the whole screen (header + pane) vertically by [dy] pixels. */
     private fun scrollScreen(dy: Float) {
-        compose.onNodeWithTag("group_scroll").performSemanticsAction(SemanticsActions.ScrollBy) { scrollBy ->
+        compose.onNodeWithTag("group_body").performSemanticsAction(SemanticsActions.ScrollBy) { scrollBy ->
             scrollBy(0f, dy)
         }
         compose.waitForIdle()

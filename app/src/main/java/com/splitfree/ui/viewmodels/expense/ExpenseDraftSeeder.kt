@@ -11,7 +11,8 @@ import java.text.DecimalFormatSymbols
 import java.util.Locale
 
 /**
- * Rebuilds editor inputs from a stored [Expense]. The protocol keeps only final shares, so the split mode is
+ * Seeds untouched split inputs and rebuilds editor inputs from a stored [Expense].
+ * The protocol keeps only final shares, so the split mode is
  * kept only when its reconstructed inputs reproduce those shares exactly; otherwise the editor opens in
  * exact mode with the stored amounts, which always round-trips.
  */
@@ -20,6 +21,45 @@ internal class ExpenseDraftSeeder(
     private val calculator: ExpenseSplitCalculator,
     private val locale: Locale
 ) {
+    fun seedDefaults(draft: ExpenseDraft): ExpenseDraft {
+        val type = draft.splitType
+        if (type == SplitType.EQUAL) return draft
+        val automatic = type in draft.automaticInputModes || type !in draft.inputs
+        val defaults = defaultInputs(draft)
+        // Authored values include intentional blanks and stored expense allocations, even if they match defaults.
+        val inputs = if (automatic) defaults else defaults + draft.inputs[type].orEmpty()
+        return draft.copy(
+            inputs = draft.inputs + (type to inputs),
+            automaticInputModes = if (automatic) draft.automaticInputModes + type else draft.automaticInputModes
+        )
+    }
+
+    private fun defaultInputs(draft: ExpenseDraft): Map<String, String> = when (draft.splitType) {
+        SplitType.EQUAL -> emptyMap()
+        SplitType.SHARES -> draft.participants.associateWith { "1" }
+        SplitType.PERCENTAGE -> calculator.calculate(
+            HUNDRED.movePointRight(PERCENTAGE_FRACTION_DIGITS).longValueExact(),
+            draft.currency,
+            SplitType.EQUAL,
+            draft.participants,
+            emptyMap()
+        ).splits.associate { it.pubkey to weightText(BigDecimal.valueOf(it.share, PERCENTAGE_FRACTION_DIGITS)) }
+        SplitType.EXACT -> {
+            val amount = try {
+                parser.money(draft.amount, draft.currency).takeIf { it in 1..ExpenseInputParser.MAX_EXPENSE_AMOUNT }
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            if (amount == null) {
+                emptyMap()
+            } else {
+                val digits = parser.fractionDigits(draft.currency)
+                calculator.calculate(amount, draft.currency, SplitType.EQUAL, draft.participants, emptyMap())
+                    .splits.associate { it.pubkey to moneyText(BigDecimal.valueOf(it.share, digits)) }
+            }
+        }
+    }
+
     fun seed(draft: ExpenseDraft, expense: Expense, authorPubkey: String): ExpenseDraft {
         val digits = parser.fractionDigits(expense.currency)
         val participants = expense.splitAmong.map { it.pubkey }.toSet()
@@ -36,6 +76,7 @@ internal class ExpenseDraftSeeder(
             category = expense.category,
             splitType = splitType,
             inputs = mapOf(SplitType.EXACT to exactInputs) + inputs,
+            automaticInputModes = emptySet(),
             participants = participants,
             initialized = true,
             dirty = false
@@ -106,6 +147,7 @@ internal class ExpenseDraftSeeder(
     }
 
     private companion object {
+        const val PERCENTAGE_FRACTION_DIGITS = 2
         val HUNDRED: BigDecimal = BigDecimal.valueOf(100)
     }
 }

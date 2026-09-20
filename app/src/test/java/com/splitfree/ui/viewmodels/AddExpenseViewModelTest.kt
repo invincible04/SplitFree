@@ -7,6 +7,7 @@ import com.splitfree.domain.model.expense.Expense
 import com.splitfree.domain.model.expense.SplitEntry
 import com.splitfree.domain.model.expense.SplitType
 import com.splitfree.domain.model.group.Group
+import com.splitfree.domain.money.ExpenseInputParser
 import com.splitfree.domain.repository.EditableExpense
 import com.splitfree.domain.repository.ExpenseCorrectionCommand
 import com.splitfree.domain.repository.ExpenseRepositoryContract
@@ -15,6 +16,7 @@ import com.splitfree.domain.repository.GroupRepositoryContract
 import com.splitfree.domain.repository.IdentityContract
 import com.splitfree.domain.usecase.expense.AddExpenseUseCase
 import com.splitfree.domain.usecase.expense.CorrectExpenseUseCase
+import com.splitfree.domain.util.RelayDefaults
 import com.splitfree.ui.util.UiMessage
 import com.splitfree.ui.viewmodels.expense.ExpenseDraft
 import io.mockk.coEvery
@@ -22,6 +24,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import java.io.IOException
+import java.math.BigDecimal
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -118,6 +121,295 @@ class AddExpenseViewModelTest {
         assertFalse(state.dirty)
         assertNull(state.amountError)
         assertNull(state.descriptionError)
+    }
+
+    @Test
+    fun `non equal modes have usable defaults without typing each participant value`() = runTest {
+        for ((type, value) in listOf(SplitType.PERCENTAGE to "50", SplitType.SHARES to "1", SplitType.EXACT to "50")) {
+            val vm = create().apply {
+                validExpense()
+                updateSplitType(type)
+            }
+            assertEquals(mapOf("a" to value, "b" to value), vm.uiState.value.memberInputs)
+            assertNull(vm.uiState.value.splitError)
+            vm.submit()
+            assertEquals(type, commands.last().splitType)
+            assertEquals(listOf(SplitEntry("a", 5000), SplitEntry("b", 5000)), commands.last().splitAmong)
+            assertTrue(vm.uiState.value.saved)
+        }
+        assertEquals(3, commands.size)
+    }
+
+    @Test
+    fun `percent defaults sum exactly to 100 for every supported participant count`() {
+        val parser = ExpenseInputParser(Locale.US)
+        for (count in 1..RelayDefaults.MAX_GROUP_MEMBERS) {
+            val members = listOf("a") + (1 until count).map { "person-$it" }
+            groups.value = group.copy(members = members.reversed())
+            val vm = create().apply {
+                updateSplitType(SplitType.PERCENTAGE)
+            }
+            val values = vm.uiState.value.memberInputs.mapValues { parser.weight(it.value) }
+            assertEquals(members.toSet(), values.keys)
+            assertEquals(0, values.values.fold(BigDecimal.ZERO, BigDecimal::add).compareTo(BigDecimal(100)))
+            assertTrue(values.values.all { it.signum() > 0 })
+            assertTrue(values.values.maxOrNull()!! - values.values.minOrNull()!! <= BigDecimal("0.01"))
+            if (count == 3) {
+                assertEquals(
+                    mapOf("a" to "33.34", "person-1" to "33.33", "person-2" to "33.33"),
+                    vm.uiState.value.memberInputs
+                )
+            }
+            vm.updateAmount("100")
+            assertNull(vm.uiState.value.splitError)
+            assertEquals(10000L, vm.uiState.value.previewSplits.sumOf { it.share })
+        }
+    }
+
+    @Test
+    fun `percentage and shares defaults do not require a valid total or currency`() {
+        val vm = create()
+        vm.updateCurrency("")
+        vm.updateSplitType(SplitType.PERCENTAGE)
+        assertEquals(mapOf("a" to "50", "b" to "50"), vm.uiState.value.memberInputs)
+        vm.updateSplitType(SplitType.SHARES)
+        assertEquals(mapOf("a" to "1", "b" to "1"), vm.uiState.value.memberInputs)
+        vm.updateSplitType(SplitType.EXACT)
+        assertTrue(vm.uiState.value.memberInputs.isEmpty())
+        vm.updateCurrency("INR")
+        vm.updateAmount("100")
+        assertEquals(mapOf("a" to "50", "b" to "50"), vm.uiState.value.memberInputs)
+    }
+
+    @Test
+    fun `exact defaults distribute currency minor units with deterministic remainder`() {
+        groups.value = group.copy(members = listOf("c", "b", "a"))
+        val vm = create().apply { updateSplitType(SplitType.EXACT) }
+        for ((currency, inputs) in listOf(
+            "INR" to listOf("33.34", "33.33", "33.33"),
+            "JPY" to listOf("34", "33", "33"),
+            "KWD" to listOf("33.334", "33.333", "33.333")
+        )) {
+            vm.updateCurrency(currency)
+            vm.updateAmount("100")
+            assertEquals(listOf("a", "b", "c").zip(inputs).toMap(), vm.uiState.value.memberInputs)
+            assertEquals(0L, vm.uiState.value.remaining)
+            assertNull(vm.uiState.value.splitError)
+            assertEquals(ExpenseInputParser().money("100", currency), vm.uiState.value.previewSplits.sumOf { it.share })
+        }
+    }
+
+    @Test
+    fun `exact automatic defaults clear invalid totals then resume without retaining stale amounts`() {
+        val vm = create().apply {
+            validExpense()
+            updateSplitType(SplitType.EXACT)
+        }
+        for (invalid in listOf("", "0", "-1", "1.", "1.001", "10000000000.01", "99999999999999999999999999999999")) {
+            vm.updateAmount(invalid)
+            assertTrue("Must not seed invalid total $invalid", vm.uiState.value.memberInputs.isEmpty())
+            vm.updateAmount("100.01")
+            assertEquals(mapOf("a" to "50.01", "b" to "50"), vm.uiState.value.memberInputs)
+            assertNull(vm.uiState.value.splitError)
+        }
+        vm.updateCurrency("ZZZ")
+        assertTrue(vm.uiState.value.memberInputs.isEmpty())
+        vm.updateCurrency("KWD")
+        assertEquals(mapOf("a" to "50.005", "b" to "50.005"), vm.uiState.value.memberInputs)
+        vm.updateAmount("1000000000")
+        assertEquals(ExpenseInputParser.MAX_EXPENSE_AMOUNT, vm.uiState.value.previewSplits.sumOf { it.share })
+        assertNull(vm.uiState.value.splitError)
+    }
+
+    @Test
+    fun `tiny exact defaults conserve total but cannot bypass positive participant validation`() = runTest {
+        val vm = create().apply {
+            validExpense()
+            updateAmount("0.01")
+            updateSplitType(SplitType.EXACT)
+        }
+        assertEquals(mapOf("a" to "0.01", "b" to "0"), vm.uiState.value.memberInputs)
+        assertEquals(0L, vm.uiState.value.remaining)
+        assertNotNull(vm.uiState.value.splitError)
+        vm.submit()
+        assertTrue(commands.isEmpty())
+        vm.toggleParticipant("b")
+        assertNull(vm.uiState.value.splitError)
+        vm.submit()
+        assertEquals(listOf(SplitEntry("a", 1)), commands.single().splitAmong)
+    }
+
+    @Test
+    fun `untouched defaults follow selection and mode changes including empty selection`() {
+        val vm = create().apply { validExpense() }
+        for (type in listOf(SplitType.PERCENTAGE, SplitType.SHARES, SplitType.EXACT)) {
+            vm.updateSplitType(type)
+            val defaults = vm.uiState.value.memberInputs
+            vm.toggleParticipant("b")
+            assertEquals(mapOf("a" to if (type == SplitType.SHARES) "1" else "100"), vm.uiState.value.memberInputs)
+            vm.toggleParticipant("a")
+            assertTrue(vm.uiState.value.memberInputs.isEmpty())
+            assertNotNull(vm.uiState.value.splitError)
+            vm.toggleParticipant("b")
+            vm.toggleParticipant("a")
+            assertEquals(defaults, vm.uiState.value.memberInputs)
+            assertNull(vm.uiState.value.splitError)
+        }
+        vm.updateSplitType(SplitType.EQUAL)
+        vm.updateAmount("200")
+        vm.toggleParticipant("b")
+        vm.updateSplitType(SplitType.EXACT)
+        assertEquals(mapOf("a" to "200"), vm.uiState.value.memberInputs)
+        vm.updateSplitType(SplitType.PERCENTAGE)
+        assertEquals(mapOf("a" to "100"), vm.uiState.value.memberInputs)
+    }
+
+    @Test
+    fun `group observations never select new members or redistribute departed participants defaults`() {
+        val vm = create().apply {
+            validExpense()
+            updateSplitType(SplitType.PERCENTAGE)
+        }
+        val before = vm.uiState.value.memberInputs
+        groups.value = group.copy(members = listOf("c", "b", "a"))
+        assertEquals(before, vm.uiState.value.memberInputs)
+        assertEquals(setOf("a", "b"), vm.uiState.value.participants)
+        vm.toggleParticipant("c")
+        assertEquals(mapOf("a" to "33.34", "b" to "33.33", "c" to "33.33"), vm.uiState.value.memberInputs)
+        groups.value = group.copy(members = listOf("a", "c"))
+        assertEquals(setOf("a", "b", "c"), vm.uiState.value.participants)
+        assertEquals("33.33", vm.uiState.value.memberInputs["b"])
+        assertNotNull(vm.uiState.value.splitError)
+        vm.toggleParticipant("b")
+        assertEquals(mapOf("a" to "50", "c" to "50"), vm.uiState.value.memberInputs)
+        assertNull(vm.uiState.value.splitError)
+    }
+
+    @Test
+    fun `editing even a default looking value freezes that mode across total currency and selection changes`() {
+        val vm = create().apply {
+            validExpense()
+            updateSplitType(SplitType.EXACT)
+            updateMemberInput("a", "50")
+        }
+        val authored = vm.uiState.value.memberInputs
+        vm.updateAmount("200")
+        vm.updateCurrency("KWD")
+        vm.toggleParticipant("b")
+        vm.updateSplitType(SplitType.EQUAL)
+        vm.updateSplitType(SplitType.EXACT)
+        assertEquals(authored, vm.uiState.value.memberInputs)
+        assertNotNull(vm.uiState.value.splitError)
+        vm.toggleParticipant("b")
+        assertEquals(authored, vm.uiState.value.memberInputs)
+        assertNotNull(vm.uiState.value.splitError)
+    }
+
+    @Test
+    fun `intentional blank stays blank across mode changes recreation and participant reselection`() {
+        val handle = handle()
+        val first = create(handle).apply {
+            validExpense()
+            updateSplitType(SplitType.PERCENTAGE)
+            updateMemberInput("a", "")
+            toggleParticipant("a")
+            updateSplitType(SplitType.SHARES)
+            updateAmount("200")
+        }
+        first.viewModelScope.cancel()
+        val restored = create(restore(handle))
+        restored.updateSplitType(SplitType.PERCENTAGE)
+        restored.toggleParticipant("a")
+        assertEquals(mapOf("a" to "", "b" to "50"), restored.uiState.value.memberInputs)
+        assertNotNull(restored.uiState.value.splitError)
+    }
+
+    @Test
+    fun `custom modes retain existing values and seed only newly selected member entries`() {
+        groups.value = group.copy(members = listOf("a", "b", "c"))
+        val vm = create().apply {
+            validExpense()
+            toggleParticipant("c")
+            updateSplitType(SplitType.PERCENTAGE)
+            updateMemberInput("a", "60")
+            updateMemberInput("b", "40")
+            toggleParticipant("c")
+        }
+        assertEquals(mapOf("a" to "60", "b" to "40", "c" to "33.33"), vm.uiState.value.memberInputs)
+        assertNotNull(vm.uiState.value.splitError)
+        vm.toggleParticipant("c")
+        assertNull(vm.uiState.value.splitError)
+        vm.updateSplitType(SplitType.SHARES)
+        vm.updateMemberInput("a", "2")
+        vm.toggleParticipant("c")
+        assertEquals(mapOf("a" to "2", "b" to "1", "c" to "1"), vm.uiState.value.memberInputs)
+        assertNull(vm.uiState.value.splitError)
+    }
+
+    @Test
+    fun `automatic mode provenance and localized defaults survive process recreation`() {
+        Locale.setDefault(Locale.GERMANY)
+        groups.value = group.copy(members = listOf("c", "b", "a"))
+        val handle = handle()
+        val first = create(handle).apply {
+            validExpense()
+            updateSplitType(SplitType.PERCENTAGE)
+        }
+        assertEquals("33,34", first.uiState.value.memberInputs["a"])
+        first.updateSplitType(SplitType.EXACT)
+        assertEquals("33,34", first.uiState.value.memberInputs["a"])
+        val before = first.uiState.value
+        first.viewModelScope.cancel()
+        Locale.setDefault(Locale.US)
+        val restored = create(restore(handle))
+        assertEquals(before, restored.uiState.value)
+        restored.updateCurrency("KWD")
+        assertEquals("33,334", restored.uiState.value.memberInputs["a"])
+        restored.updateAmount("200,001")
+        assertEquals(mapOf("a" to "66,667", "b" to "66,667", "c" to "66,667"), restored.uiState.value.memberInputs)
+        restored.updateSplitType(SplitType.PERCENTAGE)
+        restored.toggleParticipant("b")
+        assertEquals(mapOf("a" to "50", "c" to "50"), restored.uiState.value.memberInputs)
+    }
+
+    @Test
+    fun `legacy draft without provenance keeps saved custom and blank values`() {
+        val handle = handle()
+        create(handle).apply {
+            validExpense()
+            exact("", "50")
+            viewModelScope.cancel()
+        }
+        val serialized = checkNotNull(handle.get<String>("expenseDraft"))
+        val legacy = Json.parseToJsonElement(serialized).jsonObject.filterKeys { it != "automaticInputModes" }
+        handle["expenseDraft"] = Json.encodeToString(JsonObject.serializer(), JsonObject(legacy))
+        val restored = create(restore(handle))
+        restored.updateAmount("200")
+        assertEquals(mapOf("a" to "", "b" to "50"), restored.uiState.value.memberInputs)
+        restored.updateSplitType(SplitType.PERCENTAGE)
+        assertEquals(mapOf("a" to "50", "b" to "50"), restored.uiState.value.memberInputs)
+    }
+
+    @Test
+    fun `restored authored expense inputs are never treated as automatic defaults`() {
+        val equal = storedExpense.copy(
+            amount = 10000,
+            splitType = SplitType.EQUAL,
+            splitAmong = listOf(SplitEntry("a", 5000), SplitEntry("b", 5000))
+        )
+        stored(equal)
+        val vm = create(editHandle())
+        assertFalse(vm.uiState.value.dirty)
+        vm.updateAmount("200")
+        vm.updateSplitType(SplitType.EXACT)
+        assertEquals(mapOf("a" to "50", "b" to "50"), vm.uiState.value.memberInputs)
+        assertNotNull(vm.uiState.value.splitError)
+        vm.updateSplitType(SplitType.PERCENTAGE)
+        assertEquals(mapOf("a" to "50", "b" to "50"), vm.uiState.value.memberInputs)
+        vm.toggleParticipant("b")
+        assertEquals(mapOf("a" to "100"), vm.uiState.value.memberInputs)
+        vm.updateSplitType(SplitType.EXACT)
+        assertEquals(mapOf("a" to "50", "b" to "50"), vm.uiState.value.memberInputs)
     }
 
     @Test

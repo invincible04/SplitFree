@@ -6,8 +6,16 @@ import { validateConfig } from "./build.mjs";
 const file = new URL("../site.config.json", import.meta.url);
 const temporary = new URL(`../.site-config-${crypto.randomUUID()}.tmp`, import.meta.url);
 const config = JSON.parse(await readFile(file, "utf8"));
-const release = await fetchLatestRelease();
-validateConfig({ ...config, release });
+let release;
+try {
+    release = await fetchLatestRelease();
+    validateConfig({ ...config, release });
+} catch (error) {
+    console.warn(
+        `Unable to refresh latest release from GitHub (${error?.message ?? error}); retaining bundled fallback for ${config.release?.tag ?? "current version"}.`,
+    );
+    process.exit(0);
+}
 let created = false;
 try {
     await writeFile(temporary, JSON.stringify({ ...config, release }, null, 4) + "\n", {

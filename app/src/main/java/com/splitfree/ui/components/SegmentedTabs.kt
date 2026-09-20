@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -22,11 +20,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
@@ -67,6 +67,26 @@ fun SegmentedTabs(
 ) {
     val scrollable = LocalDensity.current.fontScale >= SCROLLABLE_FONT_SCALE
     val count = options.size.coerceAtLeast(1)
+    val scrollState = rememberScrollState()
+    val segmentWidths = remember(options, scrollable) { mutableStateMapOf<Int, Int>() }
+    // Reveal only within this strip. A bring-into-view request also scrolls ancestor lists/pagers,
+    // which can pull a group tab animation back onto the outgoing page at large text sizes.
+    LaunchedEffect(selectedIndex, scrollable, segmentWidths.toMap(), scrollState.viewportSize, scrollState.maxValue) {
+        if (scrollable &&
+            selectedIndex in options.indices &&
+            (0..selectedIndex).all { it in segmentWidths } &&
+            scrollState.viewportSize > 0
+        ) {
+            val start = (0 until selectedIndex).sumOf { segmentWidths.getValue(it) }
+            val end = start + segmentWidths.getValue(selectedIndex)
+            val target = when {
+                start < scrollState.value -> start
+                end > scrollState.value + scrollState.viewportSize -> end - scrollState.viewportSize
+                else -> scrollState.value
+            }.coerceIn(0, scrollState.maxValue)
+            if (target != scrollState.value) scrollState.animateScrollTo(target)
+        }
+    }
     val pillIndex by animateFloatAsState(
         targetValue = selectedIndex.coerceIn(0, count - 1).toFloat(),
         animationSpec = tween(SfMotion.Base, easing = SfMotion.Ease),
@@ -85,15 +105,11 @@ fun SegmentedTabs(
         Row(
             Modifier
                 .fillMaxWidth()
-                .then(if (scrollable) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
+                .then(if (scrollable) Modifier.horizontalScroll(scrollState) else Modifier)
                 .selectableGroup()
         ) {
             options.forEachIndexed { index, label ->
                 val selected = index == selectedIndex
-                val bringIntoView = remember { BringIntoViewRequester() }
-                LaunchedEffect(selected, scrollable) {
-                    if (selected && scrollable) bringIntoView.bringIntoView()
-                }
                 val ink by animateColorAsState(
                     targetValue =
                     if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -104,6 +120,7 @@ fun SegmentedTabs(
                     modifier =
                     Modifier
                         .then(if (scrollable) Modifier else Modifier.weight(1f))
+                        .onSizeChanged { segmentWidths[index] = it.width }
                         .then(optionModifier(index))
                         .padding(horizontal = SegmentInset)
                         .heightIn(min = SegmentMinHeight)
@@ -115,7 +132,6 @@ fun SegmentedTabs(
                                 Modifier
                             }
                         )
-                        .bringIntoViewRequester(bringIntoView)
                         .selectable(
                             selected = selected,
                             interactionSource = null,

@@ -1,6 +1,12 @@
 package com.splitfree.ui.components
 
 import android.app.Application
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -146,6 +152,44 @@ class SegmentedTabsTest {
         }
         selected = 0
         compose.onNodeWithTag("tab_0").assertIsDisplayed().assertIsSelected()
+    }
+
+    @Test
+    @Config(qualifiers = "en-rUS-w360dp-h640dp-mdpi")
+    fun `automatic large text selection reveals within the strip without scrolling its parent`() {
+        RuntimeEnvironment.setFontScale(2f)
+        lateinit var parentScroll: ScrollState
+        var selected by mutableIntStateOf(3)
+        compose.setContent {
+            parentScroll = rememberScrollState()
+            SplitFreeTheme {
+                Column(Modifier.verticalScroll(parentScroll)) {
+                    Spacer(Modifier.height(800.dp))
+                    SegmentedTabs(
+                        options = wideLabels,
+                        selectedIndex = selected,
+                        onSelect = { selected = it },
+                        modifier = Modifier.testTag("nested_tabs"),
+                        optionModifier = { Modifier.testTag("tab_$it") }
+                    )
+                    Spacer(Modifier.height(800.dp))
+                }
+            }
+        }
+        compose.runOnIdle { assertEquals("Initial selection must not move the outer page", 0, parentScroll.value) }
+        selected = 0
+        compose.runOnIdle { assertEquals("Selection changes must not move the outer page", 0, parentScroll.value) }
+        selected = 3
+        compose.runOnIdle { assertEquals("Returning to a wide segment must not move the page", 0, parentScroll.value) }
+        // performScrollTo targets the nearest scrollable ancestor, first reveal the strip vertically.
+        compose.onNodeWithTag("nested_tabs").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("tab_3").performScrollTo().assertIsDisplayed().assertIsSelected()
+        compose.runOnIdle {
+            assertTrue(
+                "Explicit accessibility relocation still reaches the control",
+                parentScroll.value > 0
+            )
+        }
     }
 
     @Test

@@ -159,8 +159,8 @@ class CreatorInviteProofTest {
         val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(
             link,
             com.google.zxing.BarcodeFormat.QR_CODE,
-            512,
-            512
+            1024,
+            1024
         )
         val pixels = IntArray(matrix.width * matrix.height) { index ->
             if (matrix[index % matrix.width, index / matrix.width]) 0xff000000.toInt() else 0xffffffff.toInt()

@@ -32,6 +32,8 @@ internal data class ExpenseDraft(
     val category: String = "",
     val splitType: SplitType = SplitType.EQUAL,
     val inputs: Map<SplitType, Map<String, String>> = emptyMap(),
+    // Only untouched generated inputs may follow total, currency or participant changes.
+    val automaticInputModes: Set<SplitType> = emptySet(),
     val participants: Set<String> = emptySet(),
     val initialized: Boolean = false,
     val dirty: Boolean = false,

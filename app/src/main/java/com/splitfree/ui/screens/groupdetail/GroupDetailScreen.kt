@@ -6,6 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.PersistableBundle
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -22,7 +26,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -35,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,18 +51,22 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.scrollBy
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -291,9 +300,10 @@ private val FabElevation = 6.dp
 
 /**
  * Stateless body of the group screen: top bar, member header, per-currency summary card, segmented tabs over
- * one of three panes (summary / expenses / people) that swap in place, the Add expense button and
- * whichever [sheet] is open. The scrolling content is one lazy list: header, tabs, then the pane, where the
- * expenses pane contributes one item per row so long histories compose only what is on screen.
+ * three swipeable panes (summary / expenses / people), the Add expense button and whichever [sheet] is
+ * open. The header and tabs are shared outside the pager, so only pane content moves horizontally.
+ * Vertical drags collapse the header only by the active pane's real overflow, growing its viewport in
+ * the same layout pass. Each pane retains its lazy-list position; there is no header-sized list padding.
  * [selectedCurrency] `null` means "not chosen yet" and falls back to [defaultBalanceCurrency]; [selectedTab]
  * is one of [TAB_SUMMARY], [TAB_EXPENSES], [TAB_PEOPLE].
  */
@@ -321,9 +331,10 @@ internal fun GroupDetailContent(
             pagerState.scrollToPage(selectedTab)
         }
     }
-    LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage != selectedTab) {
-            onSelectTab(pagerState.currentPage)
+    // Report only the settled page; reporting an intermediate page can cancel a non-adjacent tab animation.
+    LaunchedEffect(pagerState.settledPage) {
+        if (pagerState.settledPage != selectedTab) {
+            onSelectTab(pagerState.settledPage)
         }
     }
 
@@ -331,33 +342,51 @@ internal fun GroupDetailContent(
     val expensesListState = rememberLazyListState()
     val peopleListState = rememberLazyListState()
 
-    var headerHeightPx by remember { mutableFloatStateOf(0f) }
-    var tabsHeightPx by remember { mutableFloatStateOf(0f) }
-    var headerOffsetPx by remember { mutableFloatStateOf(0f) }
-
-    val nestedScrollConnection = remember {
+    var fabHeightPx by remember { mutableIntStateOf(0) }
+    val headerScroll = remember { GroupHeaderScrollState() }
+    val activeList = when (pagerState.settledPage) {
+        TAB_SUMMARY -> summaryListState
+        TAB_EXPENSES -> expensesListState
+        else -> peopleListState
+    }
+    val verticalScroll = remember(activeList, pagerState, headerScroll) {
         object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                val delta = available.y
-                if (delta < 0f && headerHeightPx > 0f) {
-                    val newOffset = (headerOffsetPx + delta).coerceIn(-headerHeightPx, 0f)
-                    val consumed = newOffset - headerOffsetPx
-                    headerOffsetPx = newOffset
-                    return Offset(0f, consumed)
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset =
+                if (available.y < 0f && !pagerState.isScrollInProgress) {
+                    Offset(0f, -headerScroll.collapse(-available.y, activeList))
+                } else {
+                    Offset.Zero
                 }
-                return Offset.Zero
-            }
 
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                val delta = available.y
-                if (delta > 0f && headerHeightPx > 0f) {
-                    val newOffset = (headerOffsetPx + delta).coerceIn(-headerHeightPx, 0f)
-                    val consumed = newOffset - headerOffsetPx
-                    headerOffsetPx = newOffset
-                    return Offset(0f, consumed)
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+                if (available.y > 0f && !pagerState.isScrollInProgress && !activeList.canScrollBackward) {
+                    Offset(0f, headerScroll.expand(available.y))
+                } else {
+                    Offset.Zero
                 }
-                return Offset.Zero
+        }
+    }
+    val headerNestedScroll = remember(activeList, pagerState, headerScroll) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (pagerState.isScrollInProgress) return Offset.Zero
+                return when {
+                    available.y < 0f -> Offset(0f, -headerScroll.collapse(-available.y, activeList))
+                    available.y > 0f && !activeList.canScrollBackward -> Offset(0f, headerScroll.expand(available.y))
+                    else -> Offset.Zero
+                }
             }
+        }
+    }
+    val chromeScroll = rememberScrollableState { delta ->
+        if (pagerState.isScrollInProgress) {
+            0f
+        } else if (delta < 0f) {
+            -headerScroll.collapse(-delta, activeList)
+        } else if (!activeList.canScrollBackward) {
+            headerScroll.expand(delta)
+        } else {
+            0f
         }
     }
 
@@ -369,13 +398,12 @@ internal fun GroupDetailContent(
     val currency = selectedCurrency?.takeIf { it in currencies } ?: defaultCurrency
     val expenses = rememberCurrencyExpenses(state, currency)
 
-    val currentHeaderOffset = if (headerHeightPx > 0f) headerOffsetPx.coerceIn(-headerHeightPx, 0f) else 0f
-
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             SfTopBar(
                 title = state.groupName,
+                modifier = Modifier.testTag("group_top_bar"),
                 onBack = actions.back,
                 actions = {
                     SfTextButton(
@@ -399,129 +427,38 @@ internal fun GroupDetailContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = padding.calculateTopPadding())
-                .nestedScroll(nestedScrollConnection)
-        ) {
-            val totalHeaderDp = with(density) { (headerHeightPx + tabsHeightPx).toDp() }
-            val listPadding = PaddingValues(
-                top = totalHeaderDp,
-                bottom = bottomInset + FabHeight + tokens.screenPaddingHorizontal * 2
-            )
-
-            HorizontalPager(
-                state = pagerState,
-                key = { it },
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
-                when (page) {
-                    TAB_SUMMARY -> {
-                        LazyColumn(
-                            state = summaryListState,
-                            contentPadding = listPadding,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(
-                                    if (pagerState.currentPage ==
-                                        TAB_SUMMARY
-                                    ) {
-                                        Modifier.testTag("group_scroll")
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                        ) {
-                            item(key = "summary_content") {
-                                Column(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = tokens.screenPaddingHorizontal)
-                                ) {
-                                    SummaryPane(
-                                        state = state,
-                                        currency = currency,
-                                        onSettle = { onSheet(GroupSheet.Settle(it)) },
-                                        onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) },
-                                        onSeeAll = { scope.launch { pagerState.animateScrollToPage(TAB_EXPENSES) } }
-                                    )
-                                }
+                .clipToBounds()
+                .testTag("group_body")
+                .semantics {
+                    scrollBy { _, y ->
+                        scope.launch {
+                            if (y > 0f) {
+                                val collapsed = headerScroll.collapse(y, activeList)
+                                activeList.scrollBy(y - collapsed)
+                            } else {
+                                val consumed = activeList.scrollBy(y)
+                                headerScroll.expand(-(y - consumed))
                             }
                         }
-                    }
-                    TAB_EXPENSES -> {
-                        LazyColumn(
-                            state = expensesListState,
-                            contentPadding = listPadding,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(
-                                    if (pagerState.currentPage ==
-                                        TAB_EXPENSES
-                                    ) {
-                                        Modifier.testTag("group_scroll")
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                        ) {
-                            expenseItems(
-                                state = state,
-                                expenses = expenses,
-                                currency = currency,
-                                horizontalPadding = tokens.screenPaddingHorizontal,
-                                rowModifier = Modifier,
-                                onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) }
-                            )
-                        }
-                    }
-                    TAB_PEOPLE -> {
-                        LazyColumn(
-                            state = peopleListState,
-                            contentPadding = listPadding,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(
-                                    if (pagerState.currentPage ==
-                                        TAB_PEOPLE
-                                    ) {
-                                        Modifier.testTag("group_scroll")
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                        ) {
-                            item(key = "people_content") {
-                                Column(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = tokens.screenPaddingHorizontal)
-                                ) {
-                                    PeoplePane(
-                                        state = state,
-                                        onInvite = { onSheet(GroupSheet.Invite) },
-                                        onRemove = { onSheet(GroupSheet.RemoveMember(it)) }
-                                    )
-                                }
-                            }
-                        }
+                        true
                     }
                 }
-            }
+        ) {
+            val fabHeight = with(density) { fabHeightPx.toDp() }.coerceAtLeast(FabHeight)
+            val listPadding = PaddingValues(
+                bottom = bottomInset + fabHeight + tokens.screenPaddingHorizontal * 2
+            )
 
-            // Shared Collapsing Header & Sticky Tabs
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .zIndex(1f)
-                    .graphicsLayer {
-                        translationY = currentHeaderOffset
-                    }
-                    .background(MaterialTheme.colorScheme.background)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onSizeChanged { headerHeightPx = it.height.toFloat() }
-                ) {
-                    Column(Modifier.padding(horizontal = tokens.screenPaddingHorizontal)) {
+            Layout(
+                modifier = Modifier.fillMaxSize(),
+                content = {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .testTag("group_header")
+                            .nestedScroll(headerNestedScroll)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = tokens.screenPaddingHorizontal)
+                    ) {
                         GroupHeader(state)
                         CurrencyLine(
                             currencies = currencies,
@@ -533,26 +470,106 @@ internal fun GroupDetailContent(
                         )
                         SummaryCard(state = state, currency = currency, onRetry = actions.retryBalances)
                     }
+                    Box(
+                        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                            .scrollable(chromeScroll, Orientation.Vertical)
+                    ) {
+                        SegmentedTabs(
+                            options = listOf(
+                                stringResource(R.string.tab_balances),
+                                stringResource(R.string.tab_expenses),
+                                stringResource(R.string.tab_members)
+                            ),
+                            selectedIndex = pagerState.currentPage,
+                            onSelect = { tab -> scope.launch { pagerState.animateScrollToPage(tab) } },
+                            positionProvider = { pagerState.currentPage + pagerState.currentPageOffsetFraction },
+                            modifier = Modifier.padding(horizontal = tokens.screenPaddingHorizontal)
+                                .padding(top = 18.dp, bottom = 10.dp).testTag("group_tabs")
+                        )
+                    }
+                    HorizontalPager(
+                        state = pagerState,
+                        key = { it },
+                        modifier = Modifier.fillMaxSize().testTag("group_pager")
+                    ) { page ->
+                        val listState = when (page) {
+                            TAB_SUMMARY -> summaryListState
+                            TAB_EXPENSES -> expensesListState
+                            else -> peopleListState
+                        }
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = listPadding,
+                            modifier = Modifier.fillMaxSize()
+                                .nestedScroll(
+                                    if (page == pagerState.settledPage) verticalScroll else EmptyGroupScrollConnection
+                                )
+                                .then(
+                                    if (pagerState.currentPage ==
+                                        page
+                                    ) {
+                                        Modifier.testTag("group_scroll")
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                        ) {
+                            when (page) {
+                                TAB_SUMMARY -> item(key = "summary_content") {
+                                    Column(
+                                        Modifier.fillMaxWidth().padding(horizontal = tokens.screenPaddingHorizontal)
+                                    ) {
+                                        SummaryPane(
+                                            state = state,
+                                            currency = currency,
+                                            onSettle = { onSheet(GroupSheet.Settle(it)) },
+                                            onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) },
+                                            onSeeAll = {
+                                                scope.launch { pagerState.animateScrollToPage(TAB_EXPENSES) }
+                                            }
+                                        )
+                                    }
+                                }
+                                TAB_EXPENSES -> expenseItems(
+                                    state = state,
+                                    expenses = expenses,
+                                    currency = currency,
+                                    horizontalPadding = tokens.screenPaddingHorizontal,
+                                    rowModifier = Modifier,
+                                    onOpenExpense = { onSheet(GroupSheet.ExpenseDetail(it)) }
+                                )
+                                TAB_PEOPLE -> item(key = "people_content") {
+                                    Column(
+                                        Modifier.fillMaxWidth().padding(horizontal = tokens.screenPaddingHorizontal)
+                                    ) {
+                                        PeoplePane(
+                                            state = state,
+                                            onInvite = { onSheet(GroupSheet.Invite) },
+                                            onRemove = { onSheet(GroupSheet.RemoveMember(it)) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onSizeChanged { tabsHeightPx = it.height.toFloat() }
-                ) {
-                    SegmentedTabs(
-                        options = listOf(
-                            stringResource(R.string.tab_balances),
-                            stringResource(R.string.tab_expenses),
-                            stringResource(R.string.tab_members)
-                        ),
-                        selectedIndex = pagerState.currentPage,
-                        onSelect = { tab -> scope.launch { pagerState.animateScrollToPage(tab) } },
-                        positionProvider = { pagerState.currentPage + pagerState.currentPageOffsetFraction },
-                        modifier = Modifier
-                            .padding(horizontal = tokens.screenPaddingHorizontal)
-                            .padding(top = 18.dp, bottom = 10.dp)
-                            .testTag("group_tabs")
-                    )
+            ) { measurables, constraints ->
+                val width = constraints.maxWidth
+                val height = constraints.maxHeight
+                val chromeConstraints = Constraints(minWidth = width, maxWidth = width)
+                val tabs = measurables[1].measure(chromeConstraints)
+                // A bounded, internally scrollable header keeps all controls reachable on compact windows.
+                val minimumPane = minOf(96.dp.roundToPx(), (height - tabs.height).coerceAtLeast(0))
+                val header = measurables[0].measure(
+                    chromeConstraints.copy(maxHeight = (height - tabs.height - minimumPane).coerceAtLeast(0))
+                )
+                val visibleHeader = headerScroll.measure(header.height)
+                val pagerHeight = (height - tabs.height - visibleHeader).coerceAtLeast(0)
+                val pager = measurables[2].measure(Constraints.fixed(width, pagerHeight))
+                layout(width, height) {
+                    header.placeRelative(0, visibleHeader - header.height)
+                    tabs.placeRelative(0, visibleHeader)
+                    pager.placeRelative(0, visibleHeader + tabs.height)
                 }
             }
 
@@ -567,6 +584,7 @@ internal fun GroupDetailContent(
                     .padding(end = tokens.screenPaddingHorizontal, bottom = tokens.screenPaddingHorizontal)
                     .shadow(FabElevation, MaterialTheme.shapes.large)
                     .width(IntrinsicSize.Max)
+                    .onSizeChanged { fabHeightPx = it.height }
                     .heightIn(min = FabHeight)
                     .testTag("group_add_expense")
             )
